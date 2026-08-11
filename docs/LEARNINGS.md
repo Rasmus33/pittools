@@ -165,9 +165,35 @@ trotz Erfolg).
   installieren. `build.sh` erzeugt deshalb NIE still einen neuen Keystore,
   sondern bricht ab (`ALLOW_NEW_KEYSTORE=1` erzwingt).
 
-## 9. Test-Harness
+## 9. UI-Einstiegspunkte (Panel öffnen)
 
-`solver-test.js` lädt den Solver-Block per `new Function` aus dem Userscript.
+- **Menüpunkt in der EA-Navigationsleiste** ist der bevorzugte Weg (ab v4.6.0):
+  ein eigenes `button.ut-tab-bar-item` in die `.ut-tab-bar` hängen. Das ist
+  exakt PaleTools' Rezept — dort heißt es `button.ut-tab-bar-item.paletools-icon`
+  mit einem `<img>` (CSS: `height: 1.8em`, flex-column). Die EA-Klasse
+  mitnehmen, damit Größe/Abstände der Leiste geerbt werden.
+  Zwei Fallen: (a) es gibt je nach Ausrichtung MEHRERE `.ut-tab-bar` im DOM,
+  eine davon unsichtbar — die sichtbare über `offsetParent`/`getClientRects`
+  wählen, sonst hängt der Menüpunkt im Nichts. (b) Die App rendert die Leiste
+  bei View-Wechseln neu → alle 500ms nachhängen (zwei DOM-Lookups, billiger als
+  ein Observer über die ganze App). `launcher.*` im Diagnose-Report zeigt
+  `tabItemAttached`, `tabAttachCount` (läuft der Wert hoch, entfernt EA unser
+  Item ständig) und `tabBarCount`.
+- Der runde FAB bleibt als **Notausgang**, wenn keine Leiste da ist — er wird
+  automatisch ausgeblendet, solange der Menüpunkt steht (er war sonst im Weg).
+- **Ziehen muss auf Pointer-Events laufen.** Die erste Panel-Drag-Implementierung
+  hörte nur auf `mousedown`/`mousemove` und war am Handy — dem einzigen Gerät,
+  auf dem gearbeitet wird — komplett unbenutzbar. Dazu gehört zwingend
+  `touch-action: none` im CSS (sonst scrollt Android die Seite statt zu ziehen)
+  und `setPointerCapture`. Klick und Zug per Schwelle (6px) trennen, sonst
+  öffnet sich das Panel bei jedem Verschieben.
+- Gemerkte Positionen nach `resize` neu einklemmen: nach Drehen des Handys
+  liegt eine gespeicherte Position sonst außerhalb des Bildschirms.
+
+## 10. Test-Harness
+
+`solver-test.js` lädt den Solver-Block per `new Function` aus dem Userscript
+(Marker `// [SOLVER-BEGIN]` / `// [SOLVER-END]`).
 Brute-Force-Referenz (`bruteBest`) rechnet das V-Ziel über alle Teilmengen —
 Pflicht bei jeder Objective-Änderung. Der Karten-Kosten-Spiegel
 (`cardCostFn`) MUSS synchron zum Solver gehalten werden (inkl. Rarity-Schutz).

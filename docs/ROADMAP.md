@@ -22,12 +22,19 @@
 2. **APK beim Kollegen testen**: v1.3.0 (PitTools, Hochformat, Pitroipa-Icon,
    GitHub-URL als Default) ist gebaut, aber der EA-Login im WebView ist erst auf
    EINEM Gerät verifiziert. Mögliche Stolpersteine: SSO-Popups, Captcha.
-3. **Count-Parsing verifizieren**: Die "Ohne-Team-Rating ⇒ Vorgabe gilt für
+3. **Menüpunkt live verifizieren** (v4.6.0): Steht der `.ut-tab-bar`-Eintrag in
+   der mobilen Hochformat-Ansicht, und bleibt er beim View-Wechsel? Im
+   Diagnose-Report auf `launcher.*` schauen — läuft `tabAttachCount` dauerhaft
+   hoch, entfernt die EA-App unser Item immer wieder (dann Einhängen über den
+   Tab-Bar-Controller statt per DOM, wie PaleTools es macht). Ist
+   `tabItemAttached` false und `tabBarCount` 0, greift die Klasse in der
+   mobilen Ansicht nicht — dann bleibt der (jetzt verschiebbare) FAB.
+4. **Count-Parsing verifizieren**: Die "Ohne-Team-Rating ⇒ Vorgabe gilt für
    alle Slots"-Regel deckt die bekannten Fälle ab. Falls eine SBC auftaucht,
    bei der das falsch ist (Min-OVR-Count < Slots ohne Team-Rating), muss die
    echte Count-Quelle im Challenge-Objektbaum gefunden werden
    (Diagnose-Feld einbauen, reqDump erweitern).
-4. **F5-Refresh-Restfälle**: Weg 0 (submitViaApp) aktualisiert die Ansicht
+5. **F5-Refresh-Restfälle**: Weg 0 (submitViaApp) aktualisiert die Ansicht
    zuverlässig. Falls die Fallback-Wege (http/services) greifen, ist die
    Ansicht evtl. erst nach Reopen aktuell — akzeptiert, aber beobachten
    (`submitVia` im Diagnose-Report zeigt den benutzten Weg).

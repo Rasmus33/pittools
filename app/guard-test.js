@@ -1,14 +1,15 @@
 /**
  * Test für den PaleTools-Wächter aus MainActivity.java.
  *
- * Aufruf:  node app/guard-test.js     (aus dem Repo-Wurzelverzeichnis oder app/)
+ * Aufruf:  node app/guard-test.js
  *
  * Warum es diesen Test gibt: der Wächter ist ein aus Java-String-Literalen
- * zusammengesetztes JS-Programm. Ein Syntaxfehler oder ein Logikfehler darin
- * führt dazu, dass PaleTools STILL nicht lädt - man sieht am Gerät nichts,
- * nur "keine Rückmeldung". Deshalb wird der Code hier aus der Java-Quelle
- * extrahiert (gleiches Prinzip wie solver-test.js beim Userscript), auf
- * Syntax geprüft und in einem Fake-DOM durchgespielt.
+ * zusammengesetztes JS-Programm, das am Gerät STILL ausfallen kann - man sieht
+ * dann nur "PaleTools läuft nicht". Genau diese Logik war schon zweimal falsch
+ * (zu früh injiziert; dann nach 60s trotzdem ausgeführt und damit den einzigen
+ * Versuch verbrannt). Deshalb wird der Code hier aus der Java-Quelle extrahiert
+ * (gleiches Prinzip wie solver-test.js beim Userscript) und in einem Fake-DOM
+ * durchgespielt.
  *
  * Keine Dependencies.
  */
@@ -73,8 +74,10 @@ function makeSandbox(opts) {
     sandbox.innerWidth = 420;      // Hochformat, wie die App läuft
     sandbox.innerHeight = 900;
     sandbox.__pt_buf = ['globalThis.__PALE_RAN=1;'];   // der "PaleTools"-Code
-    // localStorage-Stub: so viele "paletools*"-Keys, wie der Test vorgibt -
-    // daran erkennt die Nachkontrolle, ob PaleTools sich eingerichtet hat.
+    // Testhooks für die Zeitschwellen (Ticks à 250ms), sonst müsste der Test
+    // 2 bzw. 30 Minuten warten.
+    if (opts.softAfter !== undefined) sandbox.__pt_soft_after = opts.softAfter;
+    if (opts.hardAfter !== undefined) sandbox.__pt_hard_after = opts.hardAfter;
     const keys = (opts.lsKeys || []).slice();
     sandbox.localStorage = {
         get length() { return keys.length; },
@@ -82,8 +85,10 @@ function makeSandbox(opts) {
     };
     const paletoolsEls = [];
     for (let i = 0; i < (opts.domEls || 0); i++) {
-        // getClientRects gefüllt = sichtbar
-        paletoolsEls.push({ offsetParent: null, getClientRects: () => (i < (opts.domVisible || 0) ? [{}] : []) });
+        paletoolsEls.push({
+            offsetParent: null,
+            getClientRects: () => (i < (opts.domVisible || 0) ? [{}] : [])
+        });
     }
     sandbox.document = {
         body: {},
@@ -112,71 +117,103 @@ function start(guard, opts) {
     return { sandbox: sandbox, ctx: ctx };
 }
 
-function makeEaClassesAppear(ctx) {
-    vm.runInContext('var UIItemActionEvent={};var UTStandardButtonControl={};'
-        + 'var services={};', ctx);
+// Die EA-App wird "bereit": tragende Symbole. UIItemActionEvent bewusst
+// separat - es ist der unsichere Marker.
+function appReady(ctx, withItemActionEvent) {
+    vm.runInContext('var services={};var getAppMain=function(){};'
+        + 'var UTStandardButtonControl={};', ctx);
+    if (withItemActionEvent) vm.runInContext('var UIItemActionEvent={};', ctx);
 }
 
-// ---- Tests ---------------------------------------------------------------
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
 let failed = 0;
 function ok(name, cond, detail) {
     console.log((cond ? '  ok  ' : '  FEHLER  ') + name + (detail ? ': ' + detail : ''));
     if (!cond) failed++;
 }
 
-const guard = extractGuard();
+// ---- Tests ---------------------------------------------------------------
+(async function main() {
+    const guard = extractGuard();
 
-// 1. Syntax
-let syntaxOk = true;
-try { new vm.Script(guard); } catch (e) { syntaxOk = false; ok('Syntax', false, e.message); }
-if (syntaxOk) ok('Syntax', true, guard.length + ' Zeichen gültiges JS');
+    // 1. Syntax
+    try {
+        new vm.Script(guard);
+        ok('Syntax', true, guard.length + ' Zeichen gültiges JS');
+    } catch (e) {
+        ok('Syntax', false, e.message);
+    }
 
-// 2. Ohne EA-Klassen darf NICHT ausgeführt werden (das war der Live-Fehler:
-//    "UIItemActionEvent is not defined", weil zu früh injiziert wurde).
-const a = start(guard, {});
-ok('wartet ohne EA-Klassen', !a.sandbox.__pt_status && !a.sandbox.__PALE_RAN,
-    'Status=' + a.sandbox.__pt_status);
+    // 2. Ohne EA-Klassen NICHT ausführen. Das war der erste Live-Fehler:
+    //    "UIItemActionEvent is not defined", weil zu früh injiziert wurde.
+    const a = start(guard, {});
+    await wait(600);
+    ok('wartet ohne EA-Klassen', !a.sandbox.__pt_status && !a.sandbox.__PALE_RAN,
+        'wait=' + a.sandbox.__pt_wait);
+    ok('meldet, worauf gewartet wird', /fehlt: services/.test(a.sandbox.__pt_wait || ''),
+        a.sandbox.__pt_wait);
+    ok('Puffer bleibt erhalten, solange nicht ausgeführt',
+        Array.isArray(a.sandbox.__pt_buf), 'buf=' + typeof a.sandbox.__pt_buf);
 
-// 3. Erscheinen die Klassen später, wird ausgeführt und der Status gesetzt.
-const b = start(guard, {});
-setTimeout(function () { makeEaClassesAppear(b.ctx); }, 400);
-setTimeout(function () {
+    // 3. Sind alle Symbole da, wird ausgeführt - auch wenn es lange dauert
+    //    (im Live-Log kam die App erst nach über einer Minute).
+    const b = start(guard, {});
+    await wait(1200);
+    appReady(b.ctx, true);
+    await wait(600);
     ok('führt aus, sobald EA-Klassen da sind', b.sandbox.__PALE_RAN === 1);
     ok('Status "geladen"', /^geladen \(\d+ Zeichen\)$/.test(b.sandbox.__pt_status || ''),
         JSON.stringify(b.sandbox.__pt_status));
-    ok('Puffer freigegeben', b.sandbox.__pt_buf === null);
+    ok('Puffer nach Erfolg freigegeben', b.sandbox.__pt_buf === null);
 
-    // 4. Blockt eine CSP das inline-<script>, muss new Function übernehmen -
+    // 4. Fehlt NUR UIItemActionEvent, wird nach SOFT trotzdem gestartet -
+    //    das Symbol könnte in dieser FC-Version gar nicht existieren.
+    const c = start(guard, { softAfter: 2 });
+    appReady(c.ctx, false);
+    await wait(1500);
+    ok('startet ohne UIItemActionEvent nach SOFT', c.sandbox.__PALE_RAN === 1);
+    ok('Status vermerkt das fehlende Symbol',
+        /ohne UIItemActionEvent/.test(c.sandbox.__pt_status || ''),
+        JSON.stringify(c.sandbox.__pt_status));
+
+    // 5. Fehlen tragende Symbole dauerhaft, wird NICHT ausgeführt (der Versuch
+    //    darf nicht verbrannt werden - genau das ist in v1.4.1 passiert).
+    const d = start(guard, { hardAfter: 3 });
+    await wait(1500);
+    ok('gibt auf, ohne auszuführen', !d.sandbox.__PALE_RAN);
+    ok('Status nennt die fehlenden Symbole',
+        /^NICHT ausgefuehrt, fehlt dauerhaft: .*services/.test(d.sandbox.__pt_status || ''),
+        JSON.stringify(d.sandbox.__pt_status));
+    ok('Puffer nach Aufgeben noch da (erneuter Versuch möglich)',
+        Array.isArray(d.sandbox.__pt_buf));
+
+    // 6. Blockt eine CSP das inline-<script>, muss new Function übernehmen -
     //    das passiert STILL, ohne Exception, daher der Sentinel im Code.
-    const c = start(guard, { cspBlocksInline: true });
-    setTimeout(function () { makeEaClassesAppear(c.ctx); }, 300);
-    setTimeout(function () {
-        ok('CSP-Fallback (new Function) greift', c.sandbox.__PALE_RAN === 1);
-        ok('Status auch im Fallback "geladen"', /^geladen /.test(c.sandbox.__pt_status || ''),
-            JSON.stringify(c.sandbox.__pt_status));
-        testNachkontrolle();
-    }, 1200);
-}, 1400);
+    const e = start(guard, { cspBlocksInline: true });
+    appReady(e.ctx, true);
+    await wait(600);
+    ok('CSP-Fallback (new Function) greift', e.sandbox.__PALE_RAN === 1);
+    ok('Status auch im Fallback "geladen"', /^geladen /.test(e.sandbox.__pt_status || ''),
+        JSON.stringify(e.sandbox.__pt_status));
 
-// 5. Die Nachkontrolle (~6s nach dem Ausführen) ist die eigentliche Diagnose:
-//    Sie muss "läuft nicht" von "läuft, aber unsichtbar" unterscheiden. Wenn
-//    sie still in einen Fehler läuft, fehlt genau die Information, für die sie
-//    da ist - deshalb wird sie hier mitgeprüft.
-function testNachkontrolle() {
-    const d = start(guard, {
+    // 7. Die Nachkontrolle (~6s später) ist die eigentliche Diagnose: sie muss
+    //    "läuft nicht" von "läuft, aber unsichtbar" unterscheiden. Fällt sie
+    //    still aus, fehlt genau die Information, für die sie da ist.
+    const f = start(guard, {
         lsKeys: ['paletools:settings', 'paletools:storage:version', 'fremd:key'],
         domEls: 5, domVisible: 2, tabBars: 1
     });
-    makeEaClassesAppear(d.ctx);
-    setTimeout(function () {
-        const st = d.sandbox.__pt_status || '';
-        ok('Nachkontrolle läuft ohne Fehler', st.indexOf('Nachkontrolle:') < 0, st);
-        ok('Nachkontrolle zählt localStorage-Keys', /LS-Keys:2\b/.test(st), st);
-        ok('Nachkontrolle zählt DOM + Sichtbarkeit', /DOM:5 sichtbar:2/.test(st), st);
-        ok('Nachkontrolle meldet Ausrichtung', /orient:hoch/.test(st), st);
-        console.log(failed
-            ? '\n' + failed + ' Test(s) fehlgeschlagen.'
-            : '\nAlle Wächter-Tests bestanden.');
-        process.exit(failed ? 1 : 0);
-    }, 7000);
-}
+    appReady(f.ctx, true);
+    await wait(7000);
+    const st = f.sandbox.__pt_status || '';
+    ok('Nachkontrolle läuft ohne Fehler', st.indexOf('Nachkontrolle:') < 0, st);
+    ok('Nachkontrolle zählt localStorage-Keys', /LS-Keys:2\b/.test(st), st);
+    ok('Nachkontrolle zählt DOM + Sichtbarkeit', /DOM:5 sichtbar:2/.test(st), st);
+    ok('Nachkontrolle meldet Ausrichtung', /orient:hoch/.test(st), st);
+
+    console.log(failed
+        ? '\n' + failed + ' Test(s) fehlgeschlagen.'
+        : '\nAlle Wächter-Tests bestanden.');
+    process.exit(failed ? 1 : 0);
+})();

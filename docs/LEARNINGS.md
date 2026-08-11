@@ -167,9 +167,21 @@ trotz Erfolg).
   injiziert stirbt es sofort mit `UIItemActionEvent is not defined`, und zwar
   komplett. Als Tampermonkey-Script läuft es bei `document-idle`, also lange
   nach unserem Script — das muss die App nachbilden.
-  Ab v1.4.1: Übertragung in `onPageFinished` und ein Wächter im JS, der auf
-  `UIItemActionEvent` + `UTStandardButtonControl` + `services` + `document.body`
-  wartet (alle 250ms, nach ~60s wird trotzdem versucht und im Status vermerkt).
+  Ab v1.4.1: Übertragung in `onPageFinished` und ein Wächter im JS, der auf die
+  EA-Symbole wartet, bevor er ausführt.
+- **Die EA-Klassen kommen erst nach dem Login — und das dauert Minuten.** Im
+  Live-Log (v1.5.0, Pixel 8 Pro) stand `geladen (…, EA-Klassen fehlten)`, und
+  die Reihenfolge zeigte es klar: PaleTools lief los, bevor die App bereit war;
+  SBC-Erkennung und Pool-Load kamen erst danach. Die Web App lädt ihr
+  Haupt-Bundle offenbar erst nach dem Login.
+  **Ein Timeout, der dann „trotzdem ausführt", ist deshalb schädlich** — er
+  verbrennt den einzigen Versuch zum schlechtesten Zeitpunkt (v1.4.1/v1.5.0).
+  Ab v1.5.1: 30 Minuten Geduld, und wenn es dann nicht geht, wird NICHT
+  ausgeführt und der Puffer behalten. Nur wenn ausschließlich
+  `UIItemActionEvent` fehlt (unsicherer Marker — existiert vielleicht gar
+  nicht), wird nach 2 Minuten gestartet und das im Status vermerkt.
+  Der Wächter meldet in `__pt_wait` laufend, WELCHES Symbol fehlt; die App
+  schreibt das jede Minute ins Log.
   **Genau umgekehrt zu unserem Script**, das so früh wie möglich laufen MUSS
   (fetch/XHR-Interception vor dem EA-Bundle) — die beiden Scripts haben
   entgegengesetzte Anforderungen, deshalb zwei getrennte Wege.

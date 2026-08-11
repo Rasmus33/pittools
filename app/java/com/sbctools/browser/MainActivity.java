@@ -286,12 +286,16 @@ public class MainActivity extends Activity {
             "function exec(note){try{" +
             "  if(!window.__pt_buf){window.__pt_status='no-buffer';return;}" +
             "  var code=window.__pt_buf.join('')+'\\n;window.__pt_ran=1;';" +
-            "  window.__pt_buf=null;var n=code.length;" +
+            // Puffer NICHT vorab freigeben: schlaegt die Ausfuehrung fehl,
+            // waere der einzige Versuch sonst unwiederbringlich verbraucht.
+            "  var n=code.length;" +
             "  try{var s=document.createElement('script');s.textContent=code;" +
             "    (document.head||document.documentElement).appendChild(s);" +
             "    if(s.parentNode)s.parentNode.removeChild(s);}catch(e1){}" +
             "  if(!window.__pt_ran){try{(new Function(code))();}" +
             "    catch(e2){window.__pt_status='FEHLER: '+(e2&&e2.message||e2);return;}}" +
+            // Erst JETZT freigeben - erledigt, die ~900 KB duerfen weg.
+            "  if(window.__pt_ran)window.__pt_buf=null;" +
             "  window.__pt_status=(window.__pt_ran?'geladen':'still fehlgeschlagen')" +
             "    +' ('+n+' Zeichen'+note+')';" +
             // Nachkontrolle: hat PaleTools sich tatsaechlich eingerichtet?
@@ -315,12 +319,34 @@ public class MainActivity extends Activity {
             "  6000);" +
             "}catch(e){window.__pt_status='FEHLER: '+(e&&e.message||e);}}" +
             // PaleTools fasst EA-Symbole direkt beim Laden an - erst warten.
-            "function ready(){return typeof UIItemActionEvent!=='undefined'" +
-            "  &&typeof UTStandardButtonControl!=='undefined'" +
-            "  &&typeof services!=='undefined'&&!!document.body;}" +
+            // Einzeln pruefen, damit im Log steht, WORAUF gewartet wird.
+            "function miss(){var m=[];" +
+            "  if(typeof services==='undefined')m.push('services');" +
+            "  if(typeof getAppMain!=='function')m.push('getAppMain');" +
+            "  if(typeof UTStandardButtonControl==='undefined')m.push('UTStandardButtonControl');" +
+            "  if(typeof UIItemActionEvent==='undefined')m.push('UIItemActionEvent');" +
+            "  if(!document.body)m.push('body');return m;}" +
+            // Schwellen in Ticks (250ms): SOFT = ab wann ohne
+            // UIItemActionEvent gestartet wird (2 Min), HARD = endgueltiges
+            // Aufgeben (30 Min). Ueberschreibbar, damit guard-test.js beide
+            // Pfade pruefen kann, ohne Minuten zu warten.
+            "var SOFT=window.__pt_soft_after||480,HARD=window.__pt_hard_after||7200;" +
             "var t=0;(function w(){" +
-            "  if(ready()){exec('');return;}" +
-            "  if(++t>240){exec(', EA-Klassen fehlten');return;}" + // ~60s, dann trotzdem
+            "  var m=miss();" +
+            "  window.__pt_wait='t='+t+(m.length?(' fehlt: '+m.join(',')):' bereit');" +
+            "  if(!m.length){exec('');return;}" +
+            // Wenn die App sonst bereit ist und nur UIItemActionEvent fehlt,
+            // nach 2 Min trotzdem starten - das Symbol koennte in dieser
+            // FC-Version gar nicht existieren und PaleTools es nur in einem
+            // toten Zweig anfassen.
+            "  var blockers=m.filter(function(x){return x!=='UIItemActionEvent';});" +
+            "  if(!blockers.length&&t>SOFT){exec(', ohne UIItemActionEvent');return;}" +
+            // 30 Minuten Geduld: der EA-Login dauert, und die App laedt ihre
+            // Klassen erst danach. VORZEITIG ausfuehren ist schaedlich -
+            // PaleTools stirbt an fehlenden Symbolen und der einzige Versuch
+            // ist verbraucht (genau das ist in v1.4.1 passiert).
+            "  if(++t>HARD){window.__pt_status='NICHT ausgefuehrt, fehlt dauerhaft: '" +
+            "    +m.join(',');return;}" +
             "  setTimeout(w,250);})();" +
             "})()", null);
     }
@@ -535,8 +561,11 @@ class PalePoll implements Runnable, ValueCallback<String> {
     PalePoll(MainActivity a, int tries, boolean toasted) {
         this.a = a; this.tries = tries; this.toasted = toasted;
     }
+    static final String SEP = "|~|";
     @Override public void run() {
-        a.web.evaluateJavascript("window.__pt_status||''", this);
+        // Status UND Wartefortschritt in einem Rutsch holen.
+        a.web.evaluateJavascript(
+            "(window.__pt_status||'')+'" + SEP + "'+(window.__pt_wait||'')", this);
     }
     @Override public void onReceiveValue(String value) {
         String s = (value == null) ? "" : value;
@@ -545,23 +574,32 @@ class PalePoll implements Runnable, ValueCallback<String> {
             s = s.substring(1, s.length() - 1)
                  .replace("\\\"", "\"").replace("\\\\", "\\").replace("\\n", " ");
         }
-        boolean have = s.length() > 0 && !"null".equals(s);
-        boolean isNew = have && !s.equals(a.paleStatus);
+        String status = s, wait = "";
+        int i = s.indexOf(SEP);
+        if (i >= 0) { status = s.substring(0, i); wait = s.substring(i + SEP.length()); }
+
+        boolean have = status.length() > 0 && !"null".equals(status);
         boolean didToast = toasted;
-        if (isNew) {
-            a.paleStatus = s;
-            a.addLog("PaleTools-Status: " + s);
+        if (have && !status.equals(a.paleStatus)) {
+            a.paleStatus = status;
+            a.addLog("PaleTools-Status: " + status);
             if (!didToast) {
-                Toast.makeText(a, "PaleTools: " + s, Toast.LENGTH_LONG).show();
+                Toast.makeText(a, "PaleTools: " + status, Toast.LENGTH_LONG).show();
                 didToast = true;
             }
         }
-        if (tries < 45) {
-            a.web.postDelayed(new PalePoll(a, tries + 1, didToast), 2000);
+        // Solange gewartet wird, jede Minute eine Zeile - daran ist im Log zu
+        // sehen, auf welches Symbol es hängt, ohne den Puffer zu fluten.
+        if (!have && wait.length() > 0 && tries % 12 == 0) {
+            a.addLog("PaleTools wartet: " + wait);
+        }
+        // ~20 Minuten mitlaufen: der Login kann dauern, und die Nachkontrolle
+        // kommt erst 6s nach dem Ausführen.
+        if (tries < 240) {
+            a.web.postDelayed(new PalePoll(a, tries + 1, didToast), 5000);
         } else if (!have) {
-            a.paleStatus = "keine Rückmeldung";
-            a.addLog("PaleTools-Status: keine Rückmeldung (Wächter hat nie ausgeführt)");
-            Toast.makeText(a, "PaleTools: keine Rückmeldung", Toast.LENGTH_LONG).show();
+            a.paleStatus = "keine Rückmeldung (letzter Wartestand: " + wait + ")";
+            a.addLog("PaleTools-Status: " + a.paleStatus);
         }
     }
 }

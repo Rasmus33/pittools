@@ -13,7 +13,7 @@ automatisch die neuesten Userscripts und injiziert sie — kein Tampermonkey nö
 
 ## Installation (für den Kollegen)
 
-1. `pittools-v1.5.0.apk` aufs Handy schicken (z.B. WhatsApp/Mail/Drive).
+1. `pittools-v1.5.1.apk` aufs Handy schicken (z.B. WhatsApp/Mail/Drive).
 2. Antippen → Installation aus unbekannten Quellen einmalig erlauben.
    (Play Protect ggf. mit „Trotzdem installieren" bestätigen — die App ist
    selbstsigniert.)
@@ -61,7 +61,7 @@ Signatur macht Updates in-place unmöglich.
 Nach dem Build gegenprüfen, dass die Signatur zur installierten Version passt:
 
 ```bash
-apksigner verify --print-certs build/pittools-v1.5.0.apk   # SHA-256: 41f23895…1b17
+apksigner verify --print-certs build/pittools-v1.5.1.apk   # SHA-256: 41f23895…1b17
 ```
 
 ## Logs vom Gerät holen
@@ -81,10 +81,10 @@ Der PaleTools-Status sagt, woran es liegt:
 | `… LS-Keys:0 DOM:0` | ausgeführt, aber PaleTools hat sich nicht eingerichtet |
 | `… DOM:12 sichtbar:0` | läuft, aber die UI ist unsichtbar (Layout/Ausrichtung) |
 | `still fehlgeschlagen` | eine CSP blockt das inline-Script-Tag |
-| `…, EA-Klassen fehlten` | Wächter wartete 60 s, die Marker-Symbole passen nicht |
+| `NICHT ausgefuehrt, fehlt dauerhaft: …` | 30 min gewartet, Symbol kam nie |
 | `keine Rückmeldung` | der Wächter hat nie ausgeführt |
 
-`node app/guard-test.js` prüft diesen Wächter samt Nachkontrolle (11 Tests).
+`node app/guard-test.js` prüft diesen Wächter samt Nachkontrolle (18 Tests).
 
 ## Technik-Notizen
 

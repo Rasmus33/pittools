@@ -2,6 +2,18 @@
 
 ## Offen (konkret)
 
+0. **Batch-Abgabe live verifizieren** (v4.11.0, NOCH NICHT am Gerät getestet):
+   Die Planung ist durchgetestet (8 Testfälle), der ABGABE-Weg
+   `services.SBC.submitChallenge` ist aber nur aus PaleTools abgeleitet (es
+   hookt `UTSBCService.prototype.submitChallenge`) und nie live gelaufen.
+   Vor dem ersten echten Lauf: Diagnose-Report prüfen, Feld `batch.*` —
+   `submitChallengeThere` muss true sein, `submitChallengeArity` sagt, wieviele
+   Argumente EA erwartet (wir übergeben die Challenge, analog zu
+   `saveChallenge`). Erster Test mit Anzahl 2 an einer billigen SBC.
+   Offen ist außerdem, ob die App die Ansicht nach dem Abgeben selbst neu
+   aufbaut — der Lauf wartet 2,5s und prüft dann; wenn keine Challenge da ist,
+   bricht er ab (statt blind weiterzumachen).
+
 1. **PaleTools in der App zum Laufen bringen** — Rasmus braucht es parallel.
    Stand: App v1.4.0 injiziert es gestückelt (16 Chunks à 60k, IPC-Limit war
    der wahrscheinliche Grund, warum es gar nicht lief). Am Gerät zu prüfen:
@@ -44,9 +56,8 @@
 - **Desktop-Modus-Schalter in der App** (⚙-Menü): Desktop-UA + Querformat
   für die "große" Web-App-Ansicht, falls die mobile Ansicht irgendwo klemmt.
 - **Icon/Branding**: adaptives Icon (Android 13+ themed icons).
-- **Mehrere SBCs am Stück**: "Set abarbeiten"-Modus (Optimieren + Eintragen
-  über alle offenen Challenges eines Sets). Vorsicht: Submit bleibt bewusst
-  manuell.
+- **Set abarbeiten**: über alle offenen Challenges eines SETS (der Batch aus
+  v4.11.0 macht dieselbe Challenge mehrfach, nicht verschiedene).
 - **Kosten-Tabelle pro Saison-Phase**: Presets (z.B. "FUTTIES-Phase")
   speicherbar/umschaltbar.
 - **iOS**: Userscripts-App/Orion dokumentieren, falls je ein iPhone dazukommt.

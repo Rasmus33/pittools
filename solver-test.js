@@ -442,6 +442,49 @@ function mulberry32(a) {
         res3.ok && res3.ovr >= 84, res3.ok ? ('ovr=' + res3.ovr) : res3.reason);
 }
 
+// ========== 8b4. Batch-Planung (dieselbe SBC mehrfach) ==========
+{
+    // 3x dasselbe 84er-Team planen: die Runden dürfen sich KEINE Karte teilen,
+    // sonst wäre der zweite Durchlauf im Spiel nicht mehr eintragbar.
+    const pool = many(35, 84);
+    const b = SolverCore.planBatch(pool, cfg(84), 3);
+    check('Batch: 3 Runden geplant', b.planned === 3,
+        'planned=' + b.planned + ' reason=' + b.stoppedReason);
+    const allIds = [].concat.apply([], b.rounds.map(r => r.players.map(p => p.id)));
+    check('Batch: keine Karte in zwei Runden', new Set(allIds).size === allIds.length,
+        'ids=' + allIds.length + ' unique=' + new Set(allIds).size);
+    check('Batch: jede Runde erreicht das Ziel',
+        b.rounds.length === 3 && b.rounds.every(r => r.ovr >= 84),
+        JSON.stringify(b.rounds.map(r => r.ovr)));
+    check('Batch: usedIds deckt alle Runden ab', b.usedIds.length === allIds.length);
+
+    // Reicht der Pool nur für 2 Runden, muss die Planung das SAGEN statt
+    // stillschweigend weniger zu liefern.
+    const b2 = SolverCore.planBatch(many(25, 84), cfg(84), 4);
+    check('Batch: Abbruch wird gemeldet', b2.planned === 2 && !!b2.stoppedReason,
+        'planned=' + b2.planned + ' reason=' + b2.stoppedReason);
+    check('Batch: requested bleibt erhalten', b2.requested === 4);
+
+    // Mit Rarity-Vorgabe braucht JEDE Runde ihre eigene geschützte Karte.
+    const futties = many(2, 84, { special: true, rareflag: 137, groups: [83], storage: true });
+    const golds = many(24, 84, { groups: [19] });
+    const b3 = SolverCore.planBatch([].concat(futties, golds), cfg(84, {
+        rarityConstraints: [{ label: 'PLAYER_RARITY_GROUP', ids: [], count: 1, groupId: 83 }]
+    }), 2);
+    const protPerRound = b3.rounds.map(r =>
+        r.players.filter(p => p.groups && p.groups.indexOf(83) > -1).length);
+    check('Batch: jede Runde erfüllt die Rarity-Vorgabe mit genau 1 Karte',
+        b3.planned === 2 && protPerRound.every(n => n === 1),
+        'planned=' + b3.planned + ' prot=' + JSON.stringify(protPerRound));
+    // Dritte Runde ist unmöglich - nur zwei geschützte Karten vorhanden.
+    const b4 = SolverCore.planBatch([].concat(futties, golds), cfg(84, {
+        rarityConstraints: [{ label: 'PLAYER_RARITY_GROUP', ids: [], count: 1, groupId: 83 }]
+    }), 3);
+    check('Batch: stoppt, wenn die Vorgabe nicht mehr erfüllbar ist',
+        b4.planned === 2 && /Rarity-Vorgabe/.test(b4.stoppedReason || ''),
+        'planned=' + b4.planned + ' reason=' + b4.stoppedReason);
+}
+
 // ========== 8c. Spieler-Eindeutigkeit (EA: gleiche assetId nur 1x pro Squad) ==========
 {
     // 4 Kopien desselben Spielers (gleiche assetId, verschiedene Item-IDs,

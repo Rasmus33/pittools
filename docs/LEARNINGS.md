@@ -145,6 +145,21 @@ trotz Erfolg).
   App) für Cross-Origin-Requests bereitstellt — die fehlt bei uns. Betroffen
   sind damit nur die externen Preisabfragen (futbin/futwiz/fut.gg), nicht das
   Laden von PaleTools selbst.
+- **Ohne Logs vom Gerät ist PaleTools-Debugging Raten** — am Handy hängt keine
+  DevTools-Konsole, und die App-Toasts reichten nicht (der Download-Toast
+  "Optimizer OK / PaleTools OK" hat sogar in die Irre geführt: er sagt nur,
+  dass die DATEIEN geholt wurden, nicht dass PaleTools läuft — deshalb heißt er
+  jetzt "Scripts geladen"). Ab v1.5.0 sammelt `SbcChromeClient.onConsoleMessage`
+  alle Konsolenmeldungen der Seite (inkl. PaleTools und uncaught errors) in
+  einem Ringpuffer, teilbar über ⚙ → "Log teilen".
+- **Die entscheidende Frage ist "läuft nicht" vs. "läuft, aber unsichtbar".**
+  Marker, an denen sich ein laufendes PaleTools erkennen lässt:
+  `localStorage`-Keys mit Prefix `paletools` (u.a. `paletools:settings`,
+  `paletools:storage:version`) und DOM-Elemente mit `paletools-*`-Klassen.
+  Der Wächter hängt das ~6s nach dem Ausführen an den Status an
+  (`LS-Keys:… DOM:… sichtbar:… tabbar:… orient:…`). `DOM>0` bei `sichtbar:0`
+  heißt: PaleTools läuft, aber seine UI hängt am Layout — plausibel, denn seine
+  Mobile-CSS-Regeln sind `.landscape`-lastig und wir laufen im Hochformat.
 - **PaleTools darf NICHT früh injiziert werden** (das war der eigentliche
   Grund, live bestätigt): es referenziert EA-Symbole direkt beim Laden auf
   Top-Level — `UIItemActionEvent`, `UTStandardButtonControl` (65×),

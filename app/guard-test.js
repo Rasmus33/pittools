@@ -70,7 +70,21 @@ function makeSandbox(opts) {
     const sandbox = {};
     sandbox.window = sandbox;
     sandbox.setTimeout = setTimeout;
+    sandbox.innerWidth = 420;      // Hochformat, wie die App läuft
+    sandbox.innerHeight = 900;
     sandbox.__pt_buf = ['globalThis.__PALE_RAN=1;'];   // der "PaleTools"-Code
+    // localStorage-Stub: so viele "paletools*"-Keys, wie der Test vorgibt -
+    // daran erkennt die Nachkontrolle, ob PaleTools sich eingerichtet hat.
+    const keys = (opts.lsKeys || []).slice();
+    sandbox.localStorage = {
+        get length() { return keys.length; },
+        key: function (i) { return keys[i]; }
+    };
+    const paletoolsEls = [];
+    for (let i = 0; i < (opts.domEls || 0); i++) {
+        // getClientRects gefüllt = sichtbar
+        paletoolsEls.push({ offsetParent: null, getClientRects: () => (i < (opts.domVisible || 0) ? [{}] : []) });
+    }
     sandbox.document = {
         body: {},
         documentElement: { appendChild: function () {} },
@@ -80,7 +94,12 @@ function makeSandbox(opts) {
                 vm.runInContext(node.textContent, sandbox.__ctx);
             }
         },
-        createElement: function () { return { textContent: '', parentNode: null }; }
+        createElement: function () { return { textContent: '', parentNode: null }; },
+        querySelectorAll: function (sel) {
+            if (sel.indexOf('paletools') >= 0) return paletoolsEls;
+            if (sel.indexOf('ut-tab-bar') >= 0) return new Array(opts.tabBars || 0);
+            return [];
+        }
     };
     return sandbox;
 }
@@ -135,9 +154,29 @@ setTimeout(function () {
         ok('CSP-Fallback (new Function) greift', c.sandbox.__PALE_RAN === 1);
         ok('Status auch im Fallback "geladen"', /^geladen /.test(c.sandbox.__pt_status || ''),
             JSON.stringify(c.sandbox.__pt_status));
+        testNachkontrolle();
+    }, 1200);
+}, 1400);
+
+// 5. Die Nachkontrolle (~6s nach dem Ausführen) ist die eigentliche Diagnose:
+//    Sie muss "läuft nicht" von "läuft, aber unsichtbar" unterscheiden. Wenn
+//    sie still in einen Fehler läuft, fehlt genau die Information, für die sie
+//    da ist - deshalb wird sie hier mitgeprüft.
+function testNachkontrolle() {
+    const d = start(guard, {
+        lsKeys: ['paletools:settings', 'paletools:storage:version', 'fremd:key'],
+        domEls: 5, domVisible: 2, tabBars: 1
+    });
+    makeEaClassesAppear(d.ctx);
+    setTimeout(function () {
+        const st = d.sandbox.__pt_status || '';
+        ok('Nachkontrolle läuft ohne Fehler', st.indexOf('Nachkontrolle:') < 0, st);
+        ok('Nachkontrolle zählt localStorage-Keys', /LS-Keys:2\b/.test(st), st);
+        ok('Nachkontrolle zählt DOM + Sichtbarkeit', /DOM:5 sichtbar:2/.test(st), st);
+        ok('Nachkontrolle meldet Ausrichtung', /orient:hoch/.test(st), st);
         console.log(failed
             ? '\n' + failed + ' Test(s) fehlgeschlagen.'
             : '\nAlle Wächter-Tests bestanden.');
         process.exit(failed ? 1 : 0);
-    }, 1200);
-}, 1400);
+    }, 7000);
+}

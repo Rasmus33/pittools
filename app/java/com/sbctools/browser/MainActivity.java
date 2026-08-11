@@ -19,11 +19,15 @@ package com.sbctools.browser;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.DialogInterface;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.Color;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -77,6 +81,77 @@ public class MainActivity extends Activity {
     String scriptPale = null;      // Inhalt PaleTools
     volatile boolean scriptsReady = false;
     boolean paleInjected = false;  // pro Seitenladen nur einmal (teuer)
+
+    // ---- Log-Puffer ---------------------------------------------------------
+    // Am Gerät hängt keine Konsole. Deshalb sammelt die App alle
+    // console-Ausgaben der Seite (auch die von PaleTools selbst) in einem
+    // Ringpuffer, der sich über ⚙ teilen oder kopieren lässt.
+    static final int LOG_MAX = 400;
+    static final int LOG_LINE_MAX = 600;
+    final java.util.ArrayList<String> logLines = new java.util.ArrayList<String>();
+
+    void addLog(String line) {
+        if (line == null) return;
+        if (line.length() > LOG_LINE_MAX) {
+            line = line.substring(0, LOG_LINE_MAX) + " …[gekürzt]";
+        }
+        synchronized (logLines) {
+            logLines.add(line);
+            while (logLines.size() > LOG_MAX) logLines.remove(0);
+        }
+    }
+
+    /** Der komplette Bericht: Kopfdaten + gesammelte Konsolenzeilen. */
+    String buildLogReport() {
+        StringBuilder sb = new StringBuilder(8192);
+        sb.append("PitTools-Log\n");
+        sb.append("App-Version: ").append(appVersion()).append('\n');
+        sb.append("Android: ").append(Build.VERSION.RELEASE)
+          .append(" (SDK ").append(Build.VERSION.SDK_INT).append(")")
+          .append(", ").append(Build.MANUFACTURER).append(' ').append(Build.MODEL).append('\n');
+        sb.append("Optimizer: ").append(scriptSbc == null ? "FEHLT"
+                : (scriptSbc.length() + " Zeichen")).append('\n');
+        sb.append("PaleTools: ").append(scriptPale == null ? "FEHLT/aus"
+                : (scriptPale.length() + " Zeichen")).append('\n');
+        sb.append("PaleTools-Status: ").append(paleStatus == null ? "(noch keiner)" : paleStatus)
+          .append("\n\n--- Konsole (neueste zuletzt) ---\n");
+        synchronized (logLines) {
+            for (int i = 0; i < logLines.size(); i++) sb.append(logLines.get(i)).append('\n');
+            if (logLines.isEmpty()) sb.append("(leer)\n");
+        }
+        return sb.toString();
+    }
+
+    String paleStatus = null;   // letzte Rückmeldung des PaleTools-Wächters
+
+    String appVersion() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception e) { return "?"; }
+    }
+
+    void shareLog() {
+        String text = buildLogReport();
+        // Der Intent-Extra geht über Binder - grob begrenzen, sonst fliegt es
+        // bei langen Logs (dieselbe Grenze wie bei evaluateJavascript).
+        if (text.length() > 120000) text = text.substring(text.length() - 120000);
+        Intent i = new Intent(Intent.ACTION_SEND);
+        i.setType("text/plain");
+        i.putExtra(Intent.EXTRA_SUBJECT, "PitTools-Log " + appVersion());
+        i.putExtra(Intent.EXTRA_TEXT, text);
+        startActivity(Intent.createChooser(i, "Log senden an"));
+    }
+
+    void copyLog() {
+        try {
+            ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            cm.setPrimaryClip(ClipData.newPlainText("PitTools-Log", buildLogReport()));
+            Toast.makeText(this, "Log in die Zwischenablage kopiert", Toast.LENGTH_SHORT).show();
+        } catch (Exception e) {
+            Toast.makeText(this, "Kopieren fehlgeschlagen: " + e.getMessage(),
+                    Toast.LENGTH_LONG).show();
+        }
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -138,7 +213,7 @@ public class MainActivity extends Activity {
         cm.setAcceptCookie(true);
         cm.setAcceptThirdPartyCookies(web, true);
 
-        web.setWebChromeClient(new WebChromeClient());
+        web.setWebChromeClient(new SbcChromeClient(this));
         web.setWebViewClient(new SbcWebViewClient(this));
     }
 
@@ -219,6 +294,25 @@ public class MainActivity extends Activity {
             "    catch(e2){window.__pt_status='FEHLER: '+(e2&&e2.message||e2);return;}}" +
             "  window.__pt_status=(window.__pt_ran?'geladen':'still fehlgeschlagen')" +
             "    +' ('+n+' Zeichen'+note+')';" +
+            // Nachkontrolle: hat PaleTools sich tatsaechlich eingerichtet?
+            // Es schreibt localStorage-Keys mit Prefix "paletools" und baut
+            // Elemente mit paletools-*-Klassen. Damit ist "laeuft nicht" von
+            // "laeuft, aber man sieht nichts" unterscheidbar (die
+            // Mobile-UI-Regeln von PaleTools sind .landscape-lastig, wir
+            // laufen im Hochformat).
+            "  setTimeout(function(){try{" +
+            "    var ls=0,k;for(var i=0;i<localStorage.length;i++){" +
+            "      k=String(localStorage.key(i));" +
+            "      if(k.indexOf('paletools')===0)ls++;}" +
+            "    var el=document.querySelectorAll('[class*=\"paletools\"]');var vis=0;" +
+            "    for(var j=0;j<el.length;j++){" +
+            "      if(el[j].offsetParent!==null||el[j].getClientRects().length)vis++;}" +
+            "    window.__pt_status=(window.__pt_status||'')+' | LS-Keys:'+ls" +
+            "      +' DOM:'+el.length+' sichtbar:'+vis" +
+            "      +' tabbar:'+document.querySelectorAll('.ut-tab-bar').length" +
+            "      +' orient:'+(window.innerWidth>window.innerHeight?'quer':'hoch');" +
+            "  }catch(e2){window.__pt_status=(window.__pt_status||'')+' | Nachkontrolle: '+e2;}}," +
+            "  6000);" +
             "}catch(e){window.__pt_status='FEHLER: '+(e&&e.message||e);}}" +
             // PaleTools fasst EA-Symbole direkt beim Laden an - erst warten.
             "function ready(){return typeof UIItemActionEvent!=='undefined'" +
@@ -321,6 +415,27 @@ public class MainActivity extends Activity {
         urlPale.setText(prefs.getString("paleUrl", DEFAULT_PALETOOLS_URL));
         box.addView(urlPale);
 
+        // Diagnose: die gesammelten Konsolenmeldungen rausbekommen. Am Gerät
+        // hängt keine Konsole, also muss der Log teilbar sein.
+        TextView l2 = new TextView(this);
+        l2.setText("\nDiagnose");
+        box.addView(l2);
+        TextView logInfo = new TextView(this);
+        int n;
+        synchronized (logLines) { n = logLines.size(); }
+        logInfo.setText("Konsole: " + n + " Zeilen · PaleTools: "
+                + (paleStatus == null ? "kein Status" : paleStatus));
+        logInfo.setTextSize(11f);
+        box.addView(logInfo);
+        Button bShare = new Button(this);
+        bShare.setText("Log teilen (WhatsApp/Mail)");
+        bShare.setOnClickListener(new LogShare(this));
+        box.addView(bShare);
+        Button bCopy = new Button(this);
+        bCopy.setText("Log kopieren");
+        bCopy.setOnClickListener(new LogCopy(this));
+        box.addView(bCopy);
+
         new AlertDialog.Builder(this)
             .setTitle("Script-Einstellungen")
             .setView(box)
@@ -406,10 +521,20 @@ class GearRestore implements Runnable {
  * Holt window.__pt_status ab, sobald der Wächter im JS ihn gesetzt hat, und
  * zeigt ihn als Toast - am Gerät hängt keine Konsole.
  */
+/**
+ * Pollt window.__pt_status. Läuft bewusst WEITER, nachdem der erste Status da
+ * ist: der Wächter hängt ~6s später die Nachkontrolle an (localStorage-Keys,
+ * DOM-Elemente, Ausrichtung). Jede Änderung wird geloggt, getoastet wird nur
+ * die erste Meldung.
+ */
 class PalePoll implements Runnable, ValueCallback<String> {
     private final MainActivity a;
     private final int tries;
-    PalePoll(MainActivity a, int tries) { this.a = a; this.tries = tries; }
+    private final boolean toasted;
+    PalePoll(MainActivity a, int tries) { this(a, tries, false); }
+    PalePoll(MainActivity a, int tries, boolean toasted) {
+        this.a = a; this.tries = tries; this.toasted = toasted;
+    }
     @Override public void run() {
         a.web.evaluateJavascript("window.__pt_status||''", this);
     }
@@ -420,13 +545,57 @@ class PalePoll implements Runnable, ValueCallback<String> {
             s = s.substring(1, s.length() - 1)
                  .replace("\\\"", "\"").replace("\\\\", "\\").replace("\\n", " ");
         }
-        if (s.length() > 0 && !"null".equals(s)) {
-            Toast.makeText(a, "PaleTools: " + s, Toast.LENGTH_LONG).show();
-            return;
+        boolean have = s.length() > 0 && !"null".equals(s);
+        boolean isNew = have && !s.equals(a.paleStatus);
+        boolean didToast = toasted;
+        if (isNew) {
+            a.paleStatus = s;
+            a.addLog("PaleTools-Status: " + s);
+            if (!didToast) {
+                Toast.makeText(a, "PaleTools: " + s, Toast.LENGTH_LONG).show();
+                didToast = true;
+            }
         }
-        // Noch kein Status - der Wächter wartet auf die EA-Klassen.
-        if (tries < 45) a.web.postDelayed(new PalePoll(a, tries + 1), 2000);
-        else Toast.makeText(a, "PaleTools: keine Rückmeldung", Toast.LENGTH_LONG).show();
+        if (tries < 45) {
+            a.web.postDelayed(new PalePoll(a, tries + 1, didToast), 2000);
+        } else if (!have) {
+            a.paleStatus = "keine Rückmeldung";
+            a.addLog("PaleTools-Status: keine Rückmeldung (Wächter hat nie ausgeführt)");
+            Toast.makeText(a, "PaleTools: keine Rückmeldung", Toast.LENGTH_LONG).show();
+        }
+    }
+}
+
+class LogShare implements View.OnClickListener {
+    private final MainActivity a;
+    LogShare(MainActivity a) { this.a = a; }
+    @Override public void onClick(View v) { a.shareLog(); }
+}
+
+class LogCopy implements View.OnClickListener {
+    private final MainActivity a;
+    LogCopy(MainActivity a) { this.a = a; }
+    @Override public void onClick(View v) { a.copyLog(); }
+}
+
+/**
+ * Fängt die Konsolenausgaben der Seite ab - inklusive der von PaleTools und
+ * uncaught errors. Ohne das ist am Gerät nicht zu sehen, warum etwas nicht
+ * läuft (kein angeschlossenes DevTools).
+ */
+class SbcChromeClient extends WebChromeClient {
+    private final MainActivity a;
+    SbcChromeClient(MainActivity a) { this.a = a; }
+    @Override public boolean onConsoleMessage(android.webkit.ConsoleMessage m) {
+        try {
+            String lvl = (m.messageLevel() == null) ? "LOG" : m.messageLevel().name();
+            String src = m.sourceId() == null ? "" : m.sourceId();
+            int cut = src.lastIndexOf('/');
+            if (cut >= 0 && cut + 1 < src.length()) src = src.substring(cut + 1);
+            a.addLog("[" + lvl + "] " + m.message()
+                    + (src.length() > 0 ? ("  (" + src + ":" + m.lineNumber() + ")") : ""));
+        } catch (Exception e) { /* Logging darf nie stören */ }
+        return false; // zusätzlich normal ins Logcat
     }
 }
 
@@ -482,9 +651,17 @@ class ScriptLoader implements Runnable {
         a.scriptPale = pale;
         a.scriptsReady = true;
 
-        String info = "Scripts bereit: Optimizer " +
+        // BEWUSST "geladen", nicht "bereit": das sagt nur, dass die Dateien
+        // heruntergeladen sind. Ob PaleTools auch LÄUFT, meldet erst der
+        // Wächter über den zweiten Toast (window.__pt_status).
+        String info = "Scripts geladen: Optimizer " +
                 (a.scriptSbc != null ? "OK" : "FEHLT") +
                 (paleOn ? (" / PaleTools " + (a.scriptPale != null ? "OK" : "FEHLT")) : "");
+        a.addLog("Download: Optimizer=" + (a.scriptSbc != null ? a.scriptSbc.length() : -1)
+                + " Zeichen, PaleTools=" + (a.scriptPale != null ? a.scriptPale.length() : -1)
+                + " Zeichen (paleOn=" + paleOn + ")");
+        a.addLog("Quellen: sbcUrl=" + (sbcUrl.isEmpty() ? "(Asset)" : sbcUrl)
+                + " | paleUrl=" + paleUrl);
         a.runOnUiThread(new StartWebApp(a, info));
     }
 }

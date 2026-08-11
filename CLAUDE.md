@@ -65,9 +65,17 @@ JS/Java-Engineering. Umgangssprache: Deutsch.
 
 ## Debugging-Konvention
 
-Im Panel gibt es "Diagnose in Konsole schreiben" → JSON-Report (ohne
-Session-Tokens) in Konsole + Zwischenablage. Rasmus pastet den Report in den
-Chat. Wichtigste Felder: `lastErrors` (inkl. Server-BODY bei PUT-Fehlern),
+Zwei Kanäle vom Handy — beide liefert Rasmus per Copy-Paste in den Chat:
+
+1. **Script-Diagnose** (im Panel): "Diagnose in Konsole schreiben" → JSON-Report.
+2. **App-Log** (ab App v1.5.0, ⚙-Menü): Die App sammelt ALLE Konsolenmeldungen
+   der Seite in einem Ringpuffer (400 Zeilen) — auch die von PaleTools und
+   uncaught errors. "Log teilen" schickt sie per WhatsApp/Mail, "Log kopieren"
+   in die Zwischenablage. Kopf enthält App-Version, Gerät, Script-Größen und
+   `paleStatus`. Das ist der einzige Weg an PaleTools-Fehler zu kommen — am
+   Gerät hängt keine DevTools-Konsole.
+
+Zum Script-Report: Wichtigste Felder: `lastErrors` (inkl. Server-BODY bei PUT-Fehlern),
 `refreshLog`, `submitVia` (app/http/services), `controllerScan`, `sbc.*`
 (erkannte Vorgaben inkl. reqDump/usableSlots), `rareflagHistogram`,
 `challengeResponseSample`. Fehlt Info für ein neues Problem: erst ein

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.6.0
+// @version      4.7.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -51,7 +51,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.6.0';
+    const VERSION = '4.7.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -2661,6 +2661,24 @@
     // ---- Einstiegspunkte: Menuepunkt in der EA-Leiste + FAB als Notausgang --
     const TAB_ID = 'pittools-tab-item';
     let tabAttachCount = 0;
+    let tabRejected = 0;
+    /**
+     * Sind wir im SBC-Bereich? Gemessen an der View-Controller-Kette der App
+     * (dieselbe Quelle, aus der auch die Challenge gelesen wird).
+     * WICHTIG: liefert die Kette nichts (z.B. vor dem App-Start), geben wir
+     * true zurueck - lieber ein Knopf zu viel als gar kein Einstieg.
+     */
+    function inSbcView() {
+        try {
+            const chain = getControllerChain();
+            if (!chain.length) return true;
+            for (const c of chain) {
+                const n = (c.constructor && c.constructor.name) || '';
+                if (/sbc/i.test(n)) return true;
+            }
+        } catch (e) { return true; }
+        return false;
+    }
     function togglePanel() {
         if (!ui.panel) return;
         const open = ui.panel.classList.toggle('open');
@@ -2694,29 +2712,91 @@
         lbl.textContent = 'PitTools';
         btn.appendChild(img);
         btn.appendChild(lbl);
-        btn.addEventListener('click', function (ev) {
-            ev.preventDefault();
-            ev.stopPropagation(); // sonst wechselt die EA-App zusaetzlich die View
-            togglePanel();
-        });
+        // KEIN Listener am Element: die EA-App baut die Leiste neu und kopiert
+        // dabei Knoten - ein Klon haette den Listener verloren (Button sichtbar,
+        // Klick tot). Stattdessen delegiert ueber document, siehe
+        // installLauncherDelegation().
         return btn;
     }
+    function installLauncherDelegation() {
+        if (STATE.launcherDelegated) return;
+        STATE.launcherDelegated = true;
+        // capture=true: vor den EA-Handlern der Leiste, damit die App nicht
+        // zusaetzlich die View wechselt.
+        document.addEventListener('click', function (ev) {
+            try {
+                const t = ev.target;
+                const hit = t && t.closest ? t.closest('#' + TAB_ID) : null;
+                if (!hit) return;
+                ev.preventDefault();
+                ev.stopPropagation();
+                togglePanel();
+            } catch (e) {}
+        }, true);
+    }
     /**
-     * Haengt den Menuepunkt in die Navigationsleiste und haelt ihn dort - die
-     * EA-App rendert die Leiste bei View-Wechseln neu. Solange der Menuepunkt
-     * steht, wird der FAB ausgeblendet (der war "im Weg"); faellt die Leiste
-     * weg, ist er sofort wieder da, damit man nie ohne Einstieg dasteht.
+     * Sitzt der Menuepunkt wirklich brauchbar in der Leiste?
+     * Zwei Faelle, die live aufgeschlagen sind:
+     *  1. UMBRUCH: im mobilen Hochformat ist die Leiste voll (6 Items). Unser
+     *     7. Item rutscht per flex-wrap in eine zweite Zeile UNTER die Leiste.
+     *  2. Der ⚙-Knopf der Android-App ist ein NATIVER Button ueber dem WebView
+     *     (unten links). Was im DOM darunter liegt, ist nicht antippbar -
+     *     der Menuepunkt sah da, reagierte aber nicht.
+     * Beides ist per Geometrie erkennbar: gleiche Zeile wie die Geschwister?
+     * und Finger weg von der unteren linken Ecke.
+     */
+    const NATIVE_GEAR_ZONE = 72; // px, grosszuegig - nativer ⚙ ist 110 Layout-px
+    function tabFits(tab) {
+        try {
+            const r = tab.getBoundingClientRect();
+            if (!r.width || !r.height) return false;
+            // (2) Kollision mit dem nativen ⚙ unten links?
+            if (r.left < NATIVE_GEAR_ZONE && r.bottom > window.innerHeight - NATIVE_GEAR_ZONE) {
+                return false;
+            }
+            // (1) Steht es in derselben Zeile wie ein Geschwister-Item?
+            const sibs = tab.parentNode ? tab.parentNode.children : [];
+            for (let i = 0; i < sibs.length; i++) {
+                if (sibs[i] === tab) continue;
+                const s = sibs[i].getBoundingClientRect();
+                if (!s.width || !s.height) continue;
+                const overlap = Math.min(r.bottom, s.bottom) - Math.max(r.top, s.top);
+                return overlap > Math.min(r.height, s.height) * 0.5;
+            }
+            return true; // keine Geschwister zum Vergleichen -> annehmen
+        } catch (e) { return false; }
+    }
+    /**
+     * Haelt den Einstiegspunkt aktuell. Regeln:
+     *  - NUR im SBC-Bereich sichtbar (Wunsch von Rasmus - sonst ist der Knopf
+     *    ueberall im Weg).
+     *  - Menuepunkt in der EA-Leiste bevorzugt, aber nur wenn er dort auch
+     *    brauchbar sitzt (tabFits) - sonst raus und der verschiebbare FAB
+     *    uebernimmt.
+     *  - Beim Verlassen des SBC-Bereichs geht das Panel zu, damit es nicht
+     *    ueber dem Transfermarkt schwebt.
      */
     function syncLauncher() {
         if (!ui.fab || !ui.panel) return;
-        const bar = visibleTabBar();
         let tab = document.getElementById(TAB_ID);
+        if (!inSbcView()) {
+            if (tab && tab.parentNode) tab.parentNode.removeChild(tab);
+            ui.fab.classList.add('sbc-opt-hidden');
+            if (ui.panel.classList.contains('open')) togglePanel();
+            return;
+        }
+        const bar = visibleTabBar();
         if (bar) {
             if (!tab || tab.parentNode !== bar) {
                 if (tab && tab.parentNode) tab.parentNode.removeChild(tab);
                 tab = buildTabButton();
                 bar.appendChild(tab);
                 tabAttachCount++;
+            }
+            if (tab && !tabFits(tab)) {
+                tab.parentNode.removeChild(tab);
+                tab = null;
+                tabRejected++;
             }
         } else if (tab && tab.parentNode) {
             tab.parentNode.removeChild(tab);
@@ -2787,20 +2867,57 @@
             // oder fällt die App auf den FAB zurück? tabBarCount zeigt, ob
             // mehrere (auch unsichtbare) Leisten im DOM stehen.
             launcher: (function () {
-                let bars = 0, cls = null;
+                function rect(el) {
+                    try {
+                        const r = el.getBoundingClientRect();
+                        return { l: Math.round(r.left), t: Math.round(r.top),
+                                 w: Math.round(r.width), h: Math.round(r.height) };
+                    } catch (e) { return null; }
+                }
+                let bars = 0, cls = null, barRect = null, itemRects = null;
                 try {
                     const all = document.querySelectorAll('.ut-tab-bar');
                     bars = all.length;
                     const bar = visibleTabBar();
-                    if (bar) cls = String(bar.className).slice(0, 120);
+                    if (bar) {
+                        cls = String(bar.className).slice(0, 120);
+                        barRect = rect(bar);
+                        // Geometrie ALLER Items: daran ist zu sehen, ob unser
+                        // Eintrag in eine zweite Zeile umbricht (live passiert)
+                        // und ob die Leiste in der ⚙-Ecke der App liegt.
+                        itemRects = [];
+                        for (let i = 0; i < bar.children.length && i < 12; i++) {
+                            itemRects.push({
+                                id: bar.children[i].id || null,
+                                cls: String(bar.children[i].className || '').slice(0, 40),
+                                r: rect(bar.children[i])
+                            });
+                        }
+                    }
                 } catch (e) {}
                 let fabPos = null;
                 try { fabPos = localStorage.getItem('sbcOptFabPos'); } catch (e) {}
+                const tab = document.getElementById(TAB_ID);
                 return {
+                    inSbcView: inSbcView(),
+                    controllerNames: (function () {
+                        try {
+                            return getControllerChain().map(function (c) {
+                                return (c.constructor && c.constructor.name) || '?';
+                            });
+                        } catch (e) { return null; }
+                    })(),
                     tabBarCount: bars,
                     visibleTabBarClass: cls,
-                    tabItemAttached: !!document.getElementById(TAB_ID),
+                    visibleTabBarRect: barRect,
+                    tabBarItems: itemRects,
+                    tabItemAttached: !!tab,
+                    tabItemRect: tab ? rect(tab) : null,
+                    tabItemFits: tab ? tabFits(tab) : null,
                     tabAttachCount: tabAttachCount,
+                    tabRejected: tabRejected, // >0 = Umbruch/⚙-Kollision erkannt
+                    viewport: { w: window.innerWidth, h: window.innerHeight,
+                                dpr: window.devicePixelRatio || 1 },
                     fabVisible: !!(ui.fab && !ui.fab.classList.contains('sbc-opt-hidden')),
                     fabSavedPos: fabPos,
                     panelOpen: !!(ui.panel && ui.panel.classList.contains('open'))
@@ -3124,6 +3241,7 @@
         if (document.getElementById('sbc-opt-fab')) return;
         injectStyles();
         buildPanel();
+        installLauncherDelegation();
         log('UI initialisiert. Version', VERSION);
     }
     function waitForBody() {

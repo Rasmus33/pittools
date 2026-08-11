@@ -167,20 +167,36 @@ trotz Erfolg).
 
 ## 9. UI-Einstiegspunkte (Panel öffnen)
 
-- **Menüpunkt in der EA-Navigationsleiste** ist der bevorzugte Weg (ab v4.6.0):
-  ein eigenes `button.ut-tab-bar-item` in die `.ut-tab-bar` hängen. Das ist
-  exakt PaleTools' Rezept — dort heißt es `button.ut-tab-bar-item.paletools-icon`
-  mit einem `<img>` (CSS: `height: 1.8em`, flex-column). Die EA-Klasse
-  mitnehmen, damit Größe/Abstände der Leiste geerbt werden.
-  Zwei Fallen: (a) es gibt je nach Ausrichtung MEHRERE `.ut-tab-bar` im DOM,
-  eine davon unsichtbar — die sichtbare über `offsetParent`/`getClientRects`
-  wählen, sonst hängt der Menüpunkt im Nichts. (b) Die App rendert die Leiste
-  bei View-Wechseln neu → alle 500ms nachhängen (zwei DOM-Lookups, billiger als
-  ein Observer über die ganze App). `launcher.*` im Diagnose-Report zeigt
-  `tabItemAttached`, `tabAttachCount` (läuft der Wert hoch, entfernt EA unser
-  Item ständig) und `tabBarCount`.
-- Der runde FAB bleibt als **Notausgang**, wenn keine Leiste da ist — er wird
-  automatisch ausgeblendet, solange der Menüpunkt steht (er war sonst im Weg).
+- **Menüpunkt in der EA-Navigationsleiste**: ein eigenes `button.ut-tab-bar-item`
+  in die `.ut-tab-bar` hängen — exakt PaleTools' Rezept (dort
+  `button.ut-tab-bar-item.paletools-icon` mit `<img>`, CSS `height: 1.8em`,
+  flex-column). Die EA-Klasse mitnehmen, damit Größe/Abstände geerbt werden.
+  **Im mobilen Hochformat trägt das aber nicht** (live, v4.6.0): die Leiste ist
+  voll, unser zusätzliches Item bricht per flex-wrap in eine zweite Zeile
+  unter die Leiste — genau in die linke untere Ecke. Bezeichnend: PaleTools'
+  eigene CSS-Regeln dafür sind alle mit `.landscape` präfixiert, der Weg ist
+  dort also fürs Querformat gedacht. Wir laufen bewusst im Hochformat (§8).
+  Seit v4.7.0 prüft `tabFits()` die Geometrie selbst (gleiche Zeile wie die
+  Geschwister? Finger weg von der ⚙-Ecke) und verwirft den Menüpunkt, wenn er
+  nicht brauchbar sitzt → der FAB übernimmt. `launcher.*` im Diagnose-Report
+  liefert dafür alle Item-Rects.
+- **Der ⚙-Knopf der Android-App ist ein NATIVER Button über dem WebView**
+  (`Gravity.BOTTOM|START`, 110×110). Was im DOM darunter liegt, ist nicht
+  antippbar — der Menüpunkt war sichtbar, reagierte aber auf keinen Tap. Bei
+  DOM-Elementen in der unteren linken Ecke immer mitdenken.
+- **Kein Listener am Tab-Item selbst.** Die EA-App baut die Leiste neu und
+  kopiert dabei Knoten; ein Klon verliert den Listener (Button da, Klick tot).
+  Klicks laufen deshalb delegiert über `document` in der Capture-Phase — das
+  hält auch EAs eigene View-Wechsel vom Menüpunkt weg. Wichtig: dann KEINEN
+  zweiten Listener am Element registrieren, sonst toggelt das Panel doppelt
+  (auf und sofort wieder zu = sieht aus wie "tot").
+- Es gibt je nach Ausrichtung MEHRERE `.ut-tab-bar` im DOM, eine davon
+  unsichtbar — die sichtbare über `offsetParent`/`getClientRects` wählen.
+- Der runde FAB ist der **verlässliche Weg** und bleibt als Notausgang, wenn
+  Leiste oder Menüpunkt nicht taugen. Ab v4.7.0 erscheinen beide Einstiege NUR
+  im SBC-Bereich (Controller-Kette auf `/sbc/i`), weil der Knopf sonst überall
+  im Weg ist. Liefert die Kette nichts, wird der Einstieg bewusst NICHT
+  versteckt — lieber ein Knopf zu viel als eine unbenutzbare App.
 - **Ziehen muss auf Pointer-Events laufen.** Die erste Panel-Drag-Implementierung
   hörte nur auf `mousedown`/`mousemove` und war am Handy — dem einzigen Gerät,
   auf dem gearbeitet wird — komplett unbenutzbar. Dazu gehört zwingend

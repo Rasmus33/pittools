@@ -54,6 +54,12 @@ public class MainActivity extends Activity {
 
     static final String WEB_APP_URL =
             "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/";
+    // Deployment-Quelle: Push auf main = Update auf allen Geraeten (siehe
+    // CLAUDE.md). Frueher war der Default leer -> die App blieb dauerhaft auf
+    // dem in der APK gebuendelten Asset haengen, solange die URL nicht pro
+    // Geraet manuell eingetragen wurde.
+    static final String DEFAULT_SBC_URL =
+            "https://raw.githubusercontent.com/Rasmus33/pittools/main/ea-fc-sbc-optimizer.user.js";
     static final String DEFAULT_PALETOOLS_URL =
             "https://pale.tools/fifa/dist/latest/paletools-mobile.user.js";
 
@@ -192,11 +198,13 @@ public class MainActivity extends Activity {
         box.setPadding(pad, pad, pad, pad);
 
         TextView l1 = new TextView(this);
-        l1.setText("URL für den SBC-Optimizer (.user.js)\nLeer = eingebaute Version verwenden");
+        l1.setText("URL für den SBC-Optimizer (.user.js)\n"
+                + "Vorbelegt mit GitHub (main) — holt bei jedem Start die\n"
+                + "neueste Version. Leer = eingebaute Version verwenden.");
         box.addView(l1);
         EditText urlSbc = new EditText(this);
         urlSbc.setHint("https://.../ea-fc-sbc-optimizer.user.js");
-        urlSbc.setText(prefs.getString("sbcUrl", ""));
+        urlSbc.setText(prefs.getString("sbcUrl", DEFAULT_SBC_URL));
         box.addView(urlSbc);
 
         CheckBox paleOn = new CheckBox(this);
@@ -251,7 +259,7 @@ class ScriptLoader implements Runnable {
     private final MainActivity a;
     ScriptLoader(MainActivity a) { this.a = a; }
     @Override public void run() {
-        String sbcUrl = a.prefs.getString("sbcUrl", "").trim();
+        String sbcUrl = a.prefs.getString("sbcUrl", MainActivity.DEFAULT_SBC_URL).trim();
         boolean paleOn = a.prefs.getBoolean("paleOn", true);
         String paleUrl = a.prefs.getString("paleUrl", MainActivity.DEFAULT_PALETOOLS_URL).trim();
 

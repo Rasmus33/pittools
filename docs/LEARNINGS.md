@@ -136,6 +136,34 @@ trotz Erfolg).
   deshalb NUR benannte Top-Level-Klassen in MainActivity.java.
 - Drittanbieter-Cookies aktiv (EA-SSO). Icon: Jonathan Pitroipa (fotmob
   38216), Kreis mit Türkis-Ring, generiert in build-Zeit via PIL.
+- **Der Update-Default war ein stiller Deployment-Killer** (bis v1.2.0): die
+  Optimizer-URL hatte den Default `""`, und `""` heißt "gebündeltes Asset
+  verwenden". Ohne manuellen Eintrag pro Gerät zog die App also NIE von GitHub —
+  "Push auf main = Deployment" galt nur auf Papier. Ab v1.3.0 ist
+  `DEFAULT_SBC_URL` die Raw-URL; leer bleibt als bewusster Offline-Modus.
+- PaleTools kann so nicht laufen: es verlangt `GM_*`/`unsafeWindow` (die nackte
+  `evaluateJavascript`-Injection liefert die nicht) und ist mit 912 KB am
+  Binder-IPC-Limit (~1 MB). Details + Lösungsweg in ROADMAP §1.
+- `build.sh` hatte vier Fallen, alle beim ersten Build auf einem anderen Rechner
+  aufgeschlagen (der v1.2.0-Build lief im Cloud-Container):
+  1. build-tools/Platform waren auf `34.0.0`/`android-34` hart kodiert → jetzt
+     automatisch die höchste installierte STABILE Version (rc/beta wird
+     übersprungen).
+  2. Tool-Namen: unter Windows `d8.bat`, `aapt2.exe`, `apksigner.bat` → werden
+     jetzt mit Endungs-Fallback aufgelöst.
+  3. `zip` fehlt in Git Bash → Python- bzw. `jar`-Fallback für classes.dex.
+     Vorsicht: `python3` ist unter Windows oft nur ein Store-Stub, der nichts
+     ausführt — jeden Kandidaten testen (`python -c "import zipfile"`).
+  4. Der `cp` des Scripts ins Asset zeigte auf einen Pfad, den es hier nicht
+     gibt (`../sbc-optimizer/…`), und `|| true` schluckte den Fehler → das
+     gebündelte Fallback-Asset wäre unbemerkt veraltet. Jetzt harter Fehler.
+  Außerdem fehlte der `res`-Schritt (`aapt2 compile --dir res` + `link -R`) —
+  ohne ihn findet aapt2 das `@mipmap/ic_launcher` aus dem Manifest nicht.
+- Signatur-Check nach jedem Build: `apksigner verify --print-certs` muss
+  SHA-256 `41f23895…1b17` zeigen (= `app/debug.keystore`, Alias `sbctools`).
+  Weicht es ab, lässt sich die APK nicht über die installierte Version
+  installieren. `build.sh` erzeugt deshalb NIE still einen neuen Keystore,
+  sondern bricht ab (`ALLOW_NEW_KEYSTORE=1` erzwingt).
 
 ## 9. Test-Harness
 

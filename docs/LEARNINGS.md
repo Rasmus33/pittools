@@ -1,0 +1,146 @@
+# LEARNINGS — Probleme & Lösungen (chronologisch destilliert)
+
+Alles hier ist live gegen die EA FC 26 Web App verifiziert (Stand: Aug 2026,
+Script v4.5.2). Wer am Code arbeitet, liest das VORHER.
+
+## 1. Die echte Squad-Rating-Formel
+
+EA rechnet NICHT den gerundeten Durchschnitt:
+
+```
+avg    = summe / N
+excess = Σ (rating_i − avg)  für alle Spieler ÜBER dem Durchschnitt
+rating = floor( round(summe + excess) / N )
+```
+
+Verifiziert gegen Rasmus' Beispiele (9×84+2×83=84; 2×85+3×84+6×83=84) und
+PaleTools' Dezimalanzeige. Ganzzahliges Maß im Solver:
+`V = N·sum + Σ max(0, N·r − sum) = N² · exaktes_Rating`. Machbarkeit:
+`V ≥ NEED = N²·T − floor(N/2)`. Der Solver (band-zerlegter Bounded-Knapsack-
+DP über Booster ≥ floor(st/N)+1 und Füller) minimiert V, im Fenster
+`windowV = maxOvershoot·N²` entscheiden die Kartenkosten.
+Kostenmodell: `alpha/anzahl(rating) + bandkosten(rating)`; Storage:
+`(basis/2 − beta)`; Rarity-Schutz (+8 für Gruppe-83) NACH dem Storage-Rabatt.
+WICHTIG (war ein Bug): innerhalb eines Ratings konsumiert der DP in
+KOSTEN-Reihenfolge (costOf zuerst, Storage/Stapel nur als Tiebreak).
+
+## 2. Karten-Klassifikation (rareflag & Co.)
+
+- `rareflag 0/1` = normale Karte ("Gold"), `≥2` = Special, `3` = TOTW.
+  (Anfangs falsch herum interpretiert → Pool bestand nur aus 58 Karten.)
+- `groups`-Array am Item = Rarity-Gruppen. Gruppe **83** = TOTW/TOTS/FOF/
+  FUTTIES — exakt das, was `PLAYER_RARITY_GROUP`-Vorgaben verlangen.
+  Matching NUR über `p.groups.includes(groupId)`, nie über Heuristiken.
+- Evolutions: tragen rareflag wie normale Karten! Erkennung über
+  `academyAttributes`, `academyId`, `tradableBeforeAcademy !== undefined` u.a.
+- Leihspieler: `loans > 0`. Konzept-Spieler: `concept/isConcept`-Flags —
+  beide nie in den Pool.
+- Duplikate desselben Spielers haben verschiedene Item-IDs, aber dieselbe
+  `assetId`.
+
+## 3. API-Zugriff
+
+- Basis: `https://utas.mob.v5.prd.futc-ext.gcp.ea.com:443/ut/game/fc26/`.
+  Auth über abgefangene Header (X-UT-SID, X-UT-PHISHING-TOKEN, X-UT-Route,
+  Easw-Session-Data-Nucleus-Id) aus fetch/XHR-Interception ab document-start.
+- Eigene Requests mit `credentials:'omit'` — mit 'include' blockt CORS.
+- Club laden: `club?...count=91&start=N` paginiert. Unassigned:
+  `purchased/items`. Storage: `storagepile`. SBC: `sbs/sets`,
+  `sbs/setId/{id}/challenges`, GET/PUT `sbs/challenge/{id}/squad`.
+- PUT-Body: IMMER alle Slots (23), `{index, itemData:{id, dream:false}}`,
+  leere Slots id 0. (Format live vom App-PUT abgeschnitten.)
+
+## 4. 401er — zwei völlig verschiedene Ursachen
+
+1. **Session abgelaufen** → `nudgeSession()`: einen App-eigenen Request
+   anstoßen (wechselnde Endpunkte: Unassigned → Tradepile → Watchlist, weil
+   Unassigned aus dem App-Cache kommen kann!), dann AKTIV warten bis die
+   Interception eine NEUE SID sieht (bis 8s; fixer Sleep war zu kurz).
+2. **Rate-Limit** (zu schnelle Club-Pagination) → Session ist noch gültig,
+   Nudge ändert nichts. Lösung: 250ms zwischen Seiten (120ms = Abbruch bei
+   Seite ~55, live passiert), beim Retry 3s-Cooldown statt zweitem Nudge.
+- Keep-Alive: alle 240s ein leichter App-Request.
+
+## 5. Eintragen + F5-freie Ansicht (der härteste Brocken)
+
+Falsche Wege (alle probiert, alle gescheitert):
+selbstgebaute Items via `Object.assign(new UTItemEntity(), raw)` crashen die
+View ("Cannot read isDream of undefined"); `_generateSquadOverview()` &
+Co. zeichnen nicht neu; `origLoadChallenge` lädt aus dem App-Cache, nicht
+vom Server.
+
+**Der funktionierende Weg (PaleTools-Rezept, submitViaApp):**
+```js
+const factory = new UTItemEntityFactory();
+const entities = players.map(p => factory.createItem(p.raw)); // ECHTE Entities
+liveSquad.setPlayers(arr, true);          // arr = Array über ALLE Slots
+await services.SBC.saveChallenge(liveChallenge);
+```
+`liveSquad`/`liveChallenge` kommen aus dem LIVE-Controller
+(`UTSBCSquadSplitViewController`, via getAppMain()-Kette; Challenge hängt am
+`_overviewController._challenge`). saveChallenge macht den PUT UND
+aktualisiert die Ansicht selbst. Fallback: eigener HTTP-PUT + GET-Verify
+(Erfolg misst sich am GET, NICHT am PUT-Status — EA liefert teils 400/460
+trotz Erfolg).
+
+**HTTP-460-Ursachen (alle live gehabt):**
+1. Zwei Karten desselben Spielers (assetId) im Team → Dedupe im Solver:
+   pro assetId genau EINE Karte (Präferenz: manuelle Wahl > erfüllt
+   Rarity-Vorgabe > Storage > höchstes Rating).
+2. Brick-Slots: manche SBCs sperren Slots. `playerRequirements` in der
+   GET-squad-Antwort sagt exakt, welche Indizes nutzbar sind — NUR dort
+   eintragen, Teamgröße = nutzbare Slots.
+3. Veralteter Pool (Karte nicht mehr im Besitz) → "Spieler laden" verwirft
+   jetzt den alten Bestand komplett (der Merge behielt früher Karteileichen).
+
+## 6. SBC-Erkennung
+
+- Primär: Hook auf `services.SBC.loadChallenge` + Netzwerk-Scan. ABER: die
+  App bedient Reopenings aus dem Cache und Submit-/Reward-Antworten
+  verschmutzen den Zustand (live nach Pack-Öffnen). Deshalb wird bei jedem
+  Optimieren mit der OFFEN SICHTBAREN Challenge synchronisiert
+  (`syncSbcWithOpenChallenge` → Live-Controller → `captureChallengeEntity`).
+- Challenge-Wechsel setzt ALLE Vorgaben zurück (`setCurrentChallenge`).
+- Vorgaben-Typen: TEAM_RATING (Ziel-OVR), PLAYER_RARITY_GROUP (Gruppen-ID
+  in `value`!), PLAYER_OVERALL_RATING_MIN (Spieler-Level),
+  PLAYER_QUALITY (1=Bronze ≤64, 2=Silber 65-74, 3=Gold ≥75 — als
+  Band-Filter für das ganze Team).
+- EAs Count-Feld ("Min. 4") ist im Objektbaum unzuverlässig zu finden
+  (liegt am Eltern-Objekt der KV-Paare, parst oft als 1). Robuste Regel:
+  **ohne Team-Rating gilt eine Min-OVR-Vorgabe für ALLE Slots** (bei
+  Tausch-/Provisions-SBCs ist die Slot-Zahl die geforderte Spieleranzahl).
+
+## 7. Pool-Verwaltung
+
+- Auto-Load einmalig beim Start, sobald Session steht. 250ms/Seite (§4!).
+- Nach Eintragen: verbaute IDs aus dem Pool entfernen. Wird eine SBC doch
+  nicht abgegeben, fehlen die Karten im Pool → einmal "Spieler laden".
+- "Spieler laden" = Voll-Refresh (alter Bestand wird verworfen, Backup bei
+  Fehlschlag). Unvollständiger Load setzt `loadIncomplete` → Warnung beim
+  Optimieren.
+
+## 8. Android-App (app/)
+
+- WebView-Wrapper nach PaleBrowser-Vorbild. Lädt beide Scripts pro App-Start
+  von URLs (8s Timeout) → Cache → gebündeltes Asset. Injection via
+  `evaluateJavascript` in `onPageStarted` (vor dem EA-Bundle!) mit
+  `window.__inj_*`-Guards; Sicherheitsnetz in `onPageFinished`.
+- **Kein Desktop-UA, keine Querformat-Sperre!** Die EA-Seite erkennt Handys
+  und will ihre mobile Hochformat-Ansicht — erzwungenes Querformat führte
+  zum festhängenden "Rotate device"-Screen. Lösung: Geräte-UA ohne
+  WebView-Marker ("; wv", "Version/4.0"), Orientierung frei. PaleTools hat
+  dafür einen eigenen Mobile-Build:
+  `https://pale.tools/fifa/dist/latest/paletools-mobile.user.js`.
+- Build OHNE Gradle (javac → d8 → aapt2 → zipalign → apksigner). Achtung:
+  d8 crasht auf anonymen inneren Klassen (NPE im InnerClasses-Attribut) —
+  deshalb NUR benannte Top-Level-Klassen in MainActivity.java.
+- Drittanbieter-Cookies aktiv (EA-SSO). Icon: Jonathan Pitroipa (fotmob
+  38216), Kreis mit Türkis-Ring, generiert in build-Zeit via PIL.
+
+## 9. Test-Harness
+
+`solver-test.js` lädt den Solver-Block per `new Function` aus dem Userscript.
+Brute-Force-Referenz (`bruteBest`) rechnet das V-Ziel über alle Teilmengen —
+Pflicht bei jeder Objective-Änderung. Der Karten-Kosten-Spiegel
+(`cardCostFn`) MUSS synchron zum Solver gehalten werden (inkl. Rarity-Schutz).
+Kein `Math.random` ohne Seed (mulberry32 vorhanden).

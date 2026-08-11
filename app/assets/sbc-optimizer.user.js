@@ -1,0 +1,3011 @@
+// ==UserScript==
+// @name         EA FC SBC Rating-Optimizer
+// @namespace    https://github.com/sbc-optimizer
+// @version      4.5.2
+// @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
+// @author       SBC Optimizer
+// @match        https://www.ea.com/*/fc/ut/webapp/*
+// @match        https://www.ea.com/fc/ut/webapp/*
+// @match        https://www.ea.com/*/ultimate-team/web-app/*
+// @match        https://www.ea.com/ultimate-team/web-app/*
+// @run-at       document-start
+// @grant        none
+// ==/UserScript==
+/*
+ * ============================================================================
+ *  EA FC SBC RATING-OPTIMIZER  (v2.0.0)
+ * ----------------------------------------------------------------------------
+ *  Änderungen gegenüber v1:
+ *   - FIX: SBC-Endpunkte der Web App laufen über "sbs/..." — v1 lauschte nur
+ *     auf "sbc/..." und hat deshalb nie etwas erkannt.
+ *   - NEU: Zweite Datenzugriffs-Ebene über die internen App-Services
+ *     (window.services.Club / .Item / .SBC). Funktioniert auch dann, wenn die
+ *     Netzwerk-Interception nichts abfangen kann.
+ *   - NEU: Hook auf services.SBC.loadChallenge — die geöffnete Challenge wird
+ *     direkt als Objekt erfasst (Ziel-OVR, Rarity, IDs).
+ *   - NEU: Generischer Requirement-Scanner (Deep-Scan) statt geratener
+ *     Response-Strukturen.
+ *   - NEU: Exakter DP-Solver (bounded knapsack) statt Greedy+Backtrack:
+ *     garantiert minimaler Rating-Waste; Storage-Priorität und
+ *     Abundance-Schonung als echte Tiebreaker.
+ *   - NEU: Diagnose-Button — schreibt einen Debug-Report in die Konsole
+ *     (ohne Session-Tokens), den man zur Fehlersuche weitergeben kann.
+ *   - FIX: Leihspieler (loans) werden ausgeschlossen.
+ *   - FIX: Header-Erfassung auch für Array-Form und XHR responseType=json.
+ *
+ *  Es geht ausschliesslich um Rating - Chemie, Formation, Positionen werden
+ *  bewusst ignoriert (so vom Nutzer gewünscht).
+ *
+ *  Auswahl-Priorität der Spieler (bei gleichem Rating):
+ *    1. Gold-Karten aus dem SBC-Storage
+ *    2. Special-Karten aus dem SBC-Storage
+ *    3. Gold-Karten aus dem Verein
+ *    4. Special-Karten aus dem Verein
+ *
+ *  Zusätzlich: bei gleichem Waste werden Ratings bevorzugt, von denen man
+ *  VIELE besitzt - seltene Ratings werden geschont.
+ * ============================================================================
+ */
+(function () {
+    'use strict';
+    // ========================================================================
+    //  0. GLOBALE KONSTANTEN & ZUSTAND
+    // ========================================================================
+    const VERSION = '4.5.2';
+    const LOG_PREFIX = '[SBC-Optimizer]';
+    // rareflag-Semantik (FUT-Standard):
+    //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
+    //   ab 2 = Special-Version (TOTW, FUTTIES, Heroes, ...)
+    // (Die alte Annahme "3/12 = Gold" war falsch herum und hat normale
+    //  Vereins-Golds als Specials wegggefiltert.)
+    function isNormalCard(rf) {
+        return isNaN(rf) || rf === 0 || rf === 1;
+    }
+    const STATE = {
+        session: {
+            sid: null,               // X-UT-SID
+            phishing: null,          // X-UT-PHISHING-TOKEN
+            route: null,             // X-UT-Route
+            nucleusId: null,         // Easw-Session-Data-Nucleus-Id
+            apiBase: null            // z.B. https://utas.mob.v1.fut.ea.com/ut/game/fc26/
+        },
+        sbc: {
+            setId: null,
+            challengeId: null,
+            squadId: null,
+            targetOVR: null,
+            formationSlots: 11,
+            squadSlotTotal: null,
+            rarityConstraints: [],       // [{ label, ids, count }]
+            playerLevelConstraints: [],  // [{ label, minRating, count }]
+            reqDump: [],                 // alle erkannten Requirement-Knoten
+            apiPrefix: 'sbs',            // beobachtetes Pfad-Präfix (sbs oder sbc)
+            entity: null                 // via services.SBC.loadChallenge erfasst
+        },
+        poolById: new Map(),         // id -> Player
+        pool: [],                    // Array-Sicht auf poolById
+        lastResult: null,
+        loading: false,
+        servicesHooked: false,
+        cancelLoad: false,
+        lastChallengeRaw: null,      // letzte SBC-Response (fürs Debugging)
+        lastSetChallenges: null,     // gecachte Challenge-Liste des geöffneten Sets
+        diag: {
+            fetchSeen: 0,
+            xhrSeen: 0,
+            utasSeen: 0,
+            lastUtasPaths: [],       // letzte utas-Pfade (IDs maskiert)
+            lastErrors: [],          // letzte Fehlermeldungen (ohne Tokens)
+            evoExcluded: 0           // ausgeschlossene Evolution-Karten
+        }
+    };
+    function log(...args) { try { console.log(LOG_PREFIX, ...args); } catch (e) {} }
+    function warn(...args) { try { console.warn(LOG_PREFIX, ...args); } catch (e) {} }
+    function diagError(msg) {
+        try {
+            const arr = STATE.diag.lastErrors;
+            arr.push(String(msg).slice(0, 300));
+            if (arr.length > 24) arr.shift();
+        } catch (e) {}
+    }
+    // ========================================================================
+    //  1. FETCH / XHR INTERCEPTION  (ab document-start)
+    // ========================================================================
+    function pickHeader(headersLike, name) {
+        if (!headersLike) return null;
+        const lower = name.toLowerCase();
+        // 1) fetch Headers-Instanz
+        if (typeof headersLike.get === 'function') {
+            try {
+                const v = headersLike.get(name) || headersLike.get(lower);
+                if (v) return v;
+            } catch (e) {}
+        }
+        // 2) Array von [name, value]-Paaren
+        if (Array.isArray(headersLike)) {
+            for (const pair of headersLike) {
+                if (pair && String(pair[0]).toLowerCase() === lower) return pair[1];
+            }
+            return null;
+        }
+        // 3) Plain-Objekt
+        if (typeof headersLike === 'object') {
+            for (const key in headersLike) {
+                if (Object.prototype.hasOwnProperty.call(headersLike, key) &&
+                    key.toLowerCase() === lower) {
+                    return headersLike[key];
+                }
+            }
+        }
+        return null;
+    }
+    function absorbSessionHeaders(headersLike) {
+        if (!headersLike) return;
+        const s = STATE.session;
+        const sid = pickHeader(headersLike, 'X-UT-SID');
+        const phishing = pickHeader(headersLike, 'X-UT-PHISHING-TOKEN');
+        const route = pickHeader(headersLike, 'X-UT-Route');
+        const nucleus = pickHeader(headersLike, 'Easw-Session-Data-Nucleus-Id');
+        if (sid && sid !== s.sid) { s.sid = sid; log('X-UT-SID erfasst'); refreshDiagUI(); }
+        if (phishing) s.phishing = phishing;
+        if (route) s.route = route;
+        if (nucleus) s.nucleusId = nucleus;
+    }
+    // API-Base aus einer URL ableiten. Marker ist "/ut/game/{spiel}/" –
+    // der Host kann variieren (utas.mob.v1.fut.ea.com, utas.external..., ...).
+    function detectApiBase(url) {
+        try {
+            const u = String(url);
+            const m = u.match(/^(https?:\/\/[^/]+\/ut\/game\/[^/]+\/)/i);
+            if (m && m[1] && STATE.session.apiBase !== m[1]) {
+                STATE.session.apiBase = m[1];
+                log('API-Base erkannt:', m[1]);
+                refreshDiagUI();
+            }
+            if (/\/ut\/game\//i.test(u)) {
+                STATE.diag.utasSeen++;
+                const path = u.replace(/^https?:\/\/[^/]+/, '').split('?')[0]
+                    .replace(/\d{4,}/g, '{id}');
+                const arr = STATE.diag.lastUtasPaths;
+                if (arr[arr.length - 1] !== path) {
+                    arr.push(path);
+                    if (arr.length > 15) arr.shift();
+                }
+                // sbs- oder sbc-Präfix merken
+                const pm = u.match(/\/ut\/game\/[^/]+\/(sbs|sbc)\//i);
+                if (pm) STATE.sbc.apiPrefix = pm[1].toLowerCase();
+            }
+        } catch (e) {}
+    }
+    // Interessante Endpunkte. WICHTIG: Die Web App nutzt "sbs/..." für SBCs.
+    function classifyUrl(url) {
+        const u = String(url);
+        // Liste aller Challenges eines Sets - HIER stehen die Anforderungen
+        // (Ziel-OVR, Rarity) pro Challenge. Live verifiziert (fc26).
+        if (/\/(sbs|sbc)\/setId\/\d+\/challenges/i.test(u)) return 'sbc-set-challenges';
+        if (/\/(sbs|sbc)\/setId\/\d+\/challengeId\/\d+/i.test(u) ||
+            /\/(sbs|sbc)\/challenge\/\d+/i.test(u)) return 'sbc-challenge';
+        if (/\/(sbs|sbc)\/sets/i.test(u)) return 'sbc-sets';
+        if (/\/club(\?|$)/i.test(u)) return 'club';
+        if (/\/purchased\/items/i.test(u)) return 'unassigned';
+        // SBC-Storage - Endpunkt heisst "storagepile". Live verifiziert (fc26).
+        if (/\/storagepile(\?|$|\/)/i.test(u)) return 'storage';
+        if (/\/(sbs|sbc)\/[^?]*storage/i.test(u)) return 'storage';
+        return null;
+    }
+    function handleResponseBody(url, bodyText) {
+        const kind = classifyUrl(url);
+        if (!kind || !bodyText) return;
+        let json;
+        try { json = (typeof bodyText === 'string') ? JSON.parse(bodyText) : bodyText; }
+        catch (e) { return; }
+        try {
+            if (kind === 'sbc-set-challenges') {
+                // Challenge-Liste eines Sets: enthält die Anforderungen pro
+                // Challenge. Cachen und (falls Challenge schon bekannt) anwenden.
+                STATE.lastSetChallenges = json;
+                STATE.lastChallengeRaw = json;
+                const sm = String(url).match(/setId\/(\d+)/i);
+                if (sm) STATE.sbc.setId = parseInt(sm[1], 10);
+                applyFromSetChallenges();
+            } else if (kind === 'sbc-challenge' || kind === 'sbc-sets') {
+                STATE.lastChallengeRaw = json;
+                parseSbcChallenge(json, url);
+            } else if (kind === 'club' || kind === 'unassigned') {
+                // Passiv mitlesen: was die App ohnehin lädt, wandert in den Pool.
+                harvestItems(json, false);
+            } else if (kind === 'storage') {
+                harvestItems(json, true);
+            }
+        } catch (e) {
+            warn('Fehler beim Verarbeiten einer Response:', e);
+        }
+    }
+    // ---- fetch() Wrapper ---------------------------------------------------
+    const _origFetch = window.fetch ? window.fetch.bind(window) : null;
+    if (_origFetch) {
+        window.fetch = function (input, init) {
+            try {
+                STATE.diag.fetchSeen++;
+                const url = (typeof input === 'string') ? input : (input && input.url);
+                if (url) {
+                    detectApiBase(url);
+                    if (init && init.headers) absorbSessionHeaders(init.headers);
+                    if (input && input.headers) absorbSessionHeaders(input.headers);
+                }
+            } catch (e) {}
+            return _origFetch(input, init).then(function (resp) {
+                try {
+                    const url = (typeof input === 'string') ? input : (input && input.url);
+                    if (url && classifyUrl(url)) {
+                        resp.clone().text().then(function (txt) {
+                            handleResponseBody(url, txt);
+                        }).catch(function () {});
+                    }
+                } catch (e) {}
+                return resp;
+            });
+        };
+        log('fetch() Interception aktiv');
+    }
+    // ---- XMLHttpRequest Wrapper -------------------------------------------
+    const XHR = window.XMLHttpRequest;
+    if (XHR && XHR.prototype) {
+        const origOpen = XHR.prototype.open;
+        const origSend = XHR.prototype.send;
+        const origSetHeader = XHR.prototype.setRequestHeader;
+        XHR.prototype.open = function (method, url) {
+            this.__sbcUrl = url;
+            this.__sbcMethod = String(method || '').toUpperCase();
+            this.__sbcHeaders = {};
+            try { detectApiBase(url); } catch (e) {}
+            return origOpen.apply(this, arguments);
+        };
+        XHR.prototype.setRequestHeader = function (name, value) {
+            try {
+                if (!this.__sbcHeaders) this.__sbcHeaders = {};
+                this.__sbcHeaders[name] = value;
+            } catch (e) {}
+            return origSetHeader.apply(this, arguments);
+        };
+        XHR.prototype.send = function (body) {
+            try {
+                STATE.diag.xhrSeen++;
+                if (this.__sbcHeaders) absorbSessionHeaders(this.__sbcHeaders);
+                const url = this.__sbcUrl;
+                // Referenz-Body mitschneiden: So sendet die App selbst einen
+                // SBC-Squad (wenn man manuell einen Spieler einträgt).
+                if (body && this.__sbcMethod === 'PUT' &&
+                    /\/(sbs|sbc)\/challenge\/\d+\/squad/i.test(String(url))) {
+                    try { STATE.diag.lastSquadPutBody = String(body).slice(0, 3000); } catch (e) {}
+                }
+                if (url && classifyUrl(url)) {
+                    this.addEventListener('load', function () {
+                        try {
+                            let data = null;
+                            const rt = this.responseType;
+                            if (!rt || rt === 'text') data = this.responseText;
+                            else if (rt === 'json' && this.response != null) data = this.response;
+                            if (data) handleResponseBody(url, data);
+                        } catch (e) {}
+                    });
+                }
+            } catch (e) {}
+            return origSend.apply(this, arguments);
+        };
+        log('XHR Interception aktiv');
+    }
+    // ========================================================================
+    //  2. GENERISCHES REQUIREMENT-PARSING (Deep-Scan)
+    // ------------------------------------------------------------------------
+    //  Statt eine bestimmte Response-Struktur zu raten, durchsuchen wir den
+    //  gesamten Objektgraphen (begrenzt) nach requirement-artigen Objekten.
+    //  Funktioniert für Netzwerk-JSON UND für App-interne Entities.
+    // ========================================================================
+    function scopeString(o) {
+        const cand = [o.scope, o.type, o.key, o.requirementKey, o.name];
+        for (const c of cand) {
+            if (typeof c === 'string' && c.length >= 3 && /[A-Za-z]/.test(c)) return c.toUpperCase();
+        }
+        return null;
+    }
+    function reqValue(o) {
+        let v = (o.minimum != null) ? o.minimum
+              : (o.eligibilityValue != null) ? o.eligibilityValue
+              : (o.value != null) ? o.value
+              : (Array.isArray(o.eligibilityValues) && o.eligibilityValues.length === 1) ? o.eligibilityValues[0]
+              : o.count;
+        v = parseInt(v, 10);
+        return isNaN(v) ? null : v;
+    }
+    function reqIds(o) {
+        const ids = o.eligibilityValues || o.values || o.rarityIds || [];
+        return Array.isArray(ids) ? ids.map(Number).filter(n => !isNaN(n)) : [];
+    }
+    function reqCount(o, parents) {
+        // EA hängt den Count ("Min. 4") oft an das ELTERN-Objekt der
+        // Requirement-KV-Paare (UTSBCEligibilityRequirement.count), nicht an
+        // das Wert-Objekt selbst - deshalb die Eltern-Kette mitprüfen.
+        const chain = [o].concat(parents || []);
+        const keys = ['count', 'requirementCount', 'keyCount', 'amount', 'minimum', '_count'];
+        for (const node of chain) {
+            if (!node || typeof node !== 'object') continue;
+            for (const k of keys) {
+                const c = parseInt(node[k], 10);
+                if (!isNaN(c) && c >= 1 && c <= 11) return c;
+            }
+        }
+        return 1;
+    }
+    function isDomOrWindow(o) {
+        try {
+            return (typeof Node !== 'undefined' && o instanceof Node) ||
+                   (typeof Window !== 'undefined' && o instanceof Window);
+        } catch (e) { return false; }
+    }
+    /**
+     * Durchsucht ein Objekt (Response-JSON oder Challenge-Entity) nach
+     * Team-Rating- und Rarity-Anforderungen sowie squadId.
+     */
+    function deepScanChallenge(root) {
+        const out = { target: null, rarity: [], squadId: null, slots: null, playerLevel: [], quality: [], reqs: [] };
+        if (!root || typeof root !== 'object') return out;
+        const seen = new Set();
+        const queue = [{ o: root, d: 0, par: [] }];
+        let visited = 0;
+        while (queue.length && visited < 20000) {
+            const cur = queue.shift();
+            const o = cur.o, d = cur.d, par = cur.par;
+            if (!o || typeof o !== 'object' || seen.has(o) || d > 7 || isDomOrWindow(o)) continue;
+            seen.add(o);
+            visited++;
+            // squadId nur aus explizit benannten Feldern
+            if (out.squadId == null && o.squadId != null && (typeof o.squadId === 'number' || typeof o.squadId === 'string')) {
+                out.squadId = o.squadId;
+            }
+            const scope = scopeString(o);
+            if (scope) {
+                const v = reqValue(o);
+                // Roh-Dump für Transparenz/Diagnose (max 25 Einträge)
+                if (out.reqs.length < 25 &&
+                    (scope.indexOf('RATING') > -1 || scope.indexOf('RARITY') > -1 ||
+                     scope.indexOf('PLAYER') > -1 || scope.indexOf('OVR') > -1 ||
+                     scope.indexOf('LEVEL') > -1 || scope.indexOf('QUALITY') > -1 ||
+                     scope.indexOf('CLUB') > -1 || scope.indexOf('LEAGUE') > -1 ||
+                     scope.indexOf('NATION') > -1 || scope.indexOf('CHEM') > -1)) {
+                    out.reqs.push({ scope: scope, value: v, ids: reqIds(o), count: reqCount(o, par) });
+                }
+                const isTeamRating =
+                    scope.indexOf('TEAM_RATING') > -1 || scope.indexOf('SQUAD_RATING') > -1 ||
+                    ((scope.indexOf('RATING') > -1 || scope.indexOf('OVR') > -1) &&
+                     scope.indexOf('PLAYER') === -1 && scope.indexOf('CHEM') === -1);
+                if (isTeamRating) {
+                    if (v != null && v >= 40 && v <= 99) {
+                        // höchste gefundene Team-Rating-Anforderung gewinnt
+                        if (out.target == null || v > out.target) out.target = v;
+                    }
+                }
+                // Spieler-Level-Vorgabe: "min. N Spieler mit Rating X+"
+                const isPlayerLevel = scope.indexOf('PLAYER') > -1 &&
+                    (scope.indexOf('RATING') > -1 || scope.indexOf('OVR') > -1 ||
+                     scope.indexOf('LEVEL') > -1) &&
+                    scope.indexOf('CHEM') === -1;
+                if (isPlayerLevel && v != null && v >= 40 && v <= 99) {
+                    out.playerLevel.push({ label: scope, minRating: v, count: reqCount(o, par) });
+                }
+                // Qualitäts-Vorgabe (Tausch-/Upgrade-SBCs ohne Team-Rating):
+                // PLAYER_QUALITY 1=Bronze, 2=Silber, 3=Gold.
+                if (scope.indexOf('QUALITY') > -1 && v != null && v >= 1 && v <= 3) {
+                    out.quality.push({ label: scope, quality: Number(v), count: reqCount(o, par) });
+                }
+                if (scope.indexOf('RARITY') > -1) {
+                    out.rarity.push({
+                        label: scope,
+                        ids: reqIds(o),
+                        count: reqCount(o, par),
+                        // Bei RARITY_GROUP ist der Wert die Gruppen-ID -
+                        // Karten matchen über ihr "groups"-Feld.
+                        groupId: (scope.indexOf('GROUP') > -1 && v != null) ? v : null
+                    });
+                }
+            }
+            // Slot-Anzahl (manche SBCs haben < 11 Spieler)
+            if (out.slots == null && o.slots != null) {
+                const s = parseInt(o.slots, 10);
+                if (!isNaN(s) && s >= 1 && s <= 11) out.slots = s;
+            }
+            // Kinder einreihen
+            const childPar = [o].concat(par).slice(0, 2);
+            if (Array.isArray(o)) {
+                if (o.length <= 2000) {
+                    for (const child of o) {
+                        if (child && typeof child === 'object') queue.push({ o: child, d: d + 1, par: childPar });
+                    }
+                }
+            } else {
+                for (const k in o) {
+                    let child;
+                    try { child = o[k]; } catch (e) { continue; }
+                    if (child && typeof child === 'object' && typeof child !== 'function') {
+                        queue.push({ o: child, d: d + 1, par: childPar });
+                    }
+                }
+            }
+        }
+        // Duplikate entfernen (gleiche label+ids/values)
+        function dedupe(arr, keyFn) {
+            const seen = new Set(), res = [];
+            for (const x of arr) {
+                const key = keyFn(x);
+                if (!seen.has(key)) { seen.add(key); res.push(x); }
+            }
+            return res;
+        }
+        out.rarity = dedupe(out.rarity, rc => rc.label + '|' + rc.ids.join(',') + '|' + rc.count);
+        out.playerLevel = dedupe(out.playerLevel, pl => pl.label + '|' + pl.minRating + '|' + pl.count);
+        out.quality = dedupe(out.quality, q => q.label + '|' + q.quality + '|' + q.count);
+        out.reqs = dedupe(out.reqs, r => r.scope + '|' + r.value + '|' + r.count + '|' + r.ids.join(','));
+        return out;
+    }
+    // Wechsel der aktiven Challenge: alte Anforderungen zurücksetzen, damit
+    // nichts von der vorherigen SBC hängen bleibt.
+    function setCurrentChallenge(cid) {
+        if (cid == null) return;
+        cid = parseInt(cid, 10);
+        if (isNaN(cid) || STATE.sbc.challengeId === cid) return;
+        STATE.sbc.challengeId = cid;
+        STATE.sbc.targetOVR = null;
+        STATE.sbc.squadId = null;
+        STATE.sbc.rarityConstraints = [];
+        STATE.sbc.playerLevelConstraints = [];
+        STATE.sbc.qualityConstraints = [];
+        STATE.sbc.reqDump = [];
+        STATE.sbc.formationSlots = 11;
+        STATE.sbc.squadSlotTotal = null;
+        STATE.sbc.usableSlots = null;
+        refreshSbcInfoUI();
+    }
+    // Im Challenge-Listen-JSON den Knoten der aktuell geöffneten Challenge finden.
+    function findChallengeNode(root, cid) {
+        if (!root || typeof root !== 'object' || cid == null) return null;
+        const seen = new Set();
+        const queue = [{ o: root, d: 0 }];
+        let visited = 0;
+        while (queue.length && visited < 20000) {
+            const cur = queue.shift();
+            const o = cur.o, d = cur.d;
+            if (!o || typeof o !== 'object' || seen.has(o) || d > 6 || isDomOrWindow(o)) continue;
+            seen.add(o);
+            visited++;
+            const oid = (o.challengeId != null) ? o.challengeId : o.id;
+            // Nur Knoten akzeptieren, die wie eine Challenge aussehen
+            if (oid != null && String(oid) === String(cid) &&
+                (o.elgReq || o.requirements || o.eligibilityRequirements || o.name || o.challengeId != null)) {
+                return o;
+            }
+            if (Array.isArray(o)) {
+                for (const child of o) {
+                    if (child && typeof child === 'object') queue.push({ o: child, d: d + 1 });
+                }
+            } else {
+                for (const k in o) {
+                    let child;
+                    try { child = o[k]; } catch (e) { continue; }
+                    if (child && typeof child === 'object') queue.push({ o: child, d: d + 1 });
+                }
+            }
+        }
+        return null;
+    }
+    // Anforderungen der aktuellen Challenge aus der gecachten Set-Liste ziehen.
+    function applyFromSetChallenges() {
+        if (!STATE.lastSetChallenges || STATE.sbc.challengeId == null) return;
+        const node = findChallengeNode(STATE.lastSetChallenges, STATE.sbc.challengeId);
+        if (node) {
+            const scan = deepScanChallenge(node);
+            applyScan(scan, 'Set-Challenges');
+        }
+    }
+    function parseSbcChallenge(json, url) {
+        const u = String(url);
+        const sm = u.match(/setId\/(\d+)/i);
+        if (sm) STATE.sbc.setId = parseInt(sm[1], 10);
+        const cm = u.match(/challengeId\/(\d+)/i) || u.match(/challenge\/(\d+)/i);
+        if (cm) setCurrentChallenge(cm[1]);
+        // Gesamtzahl der Squad-Slots merken (Startelf + Bank) - wird beim
+        // Eintragen gebraucht, die App sendet IMMER alle Slots.
+        try {
+            if (json && json.squad && Array.isArray(json.squad.players) && json.squad.players.length) {
+                STATE.sbc.squadSlotTotal = json.squad.players.length;
+            }
+        } catch (e) {}
+        // BRICK-SLOTS: manche SBCs (Tausch-/Provisions-Upgrades) sperren
+        // einen Teil der 11 Slots. playerRequirements sagt exakt, welche
+        // Indizes nutzbar sind - dort (und NUR dort) wird eingetragen.
+        try {
+            if (json && Array.isArray(json.playerRequirements) && json.playerRequirements.length) {
+                const usable = [];
+                for (const pr of json.playerRequirements) {
+                    if (pr && pr.index != null && String(pr.playerType).toUpperCase() !== 'BRICK') {
+                        usable.push(Number(pr.index));
+                    }
+                }
+                if (usable.length) {
+                    usable.sort((a, b) => a - b);
+                    STATE.sbc.usableSlots = usable;
+                    STATE.sbc.formationSlots = usable.length;
+                    log('Nutzbare SBC-Slots:', usable.join(','), '(' + usable.length + ' von ' + json.playerRequirements.length + ')');
+                    refreshSbcInfoUI();
+                }
+            }
+        } catch (e) {}
+        const scan = deepScanChallenge(json);
+        applyScan(scan, 'Netzwerk');
+        // Response selbst enthielt keinen Ziel-OVR (z.B. nur das Squad)?
+        // -> Anforderungen aus der gecachten Challenge-Liste des Sets holen.
+        if (STATE.sbc.targetOVR == null) applyFromSetChallenges();
+    }
+    function captureChallengeEntity(challenge) {
+        if (!challenge || typeof challenge !== 'object') return;
+        STATE.sbc.entity = challenge;
+        if (challenge.id != null) setCurrentChallenge(challenge.id);
+        if (challenge.setId != null) STATE.sbc.setId = challenge.setId;
+        // Brick-Slots auch aus der Live-Entity erkennen (falls kein
+        // frischer /squad-GET lief, z.B. bei Cache-Reopen).
+        try {
+            if (!STATE.sbc.usableSlots && challenge.squad &&
+                typeof challenge.squad.getSBCSlots === 'function') {
+                const slots = challenge.squad.getSBCSlots();
+                if (Array.isArray(slots) && slots.length) {
+                    const usable = [];
+                    for (const s of slots) {
+                        if (!s || s.index == null) continue;
+                        const t = (s.playerType != null) ? s.playerType : s._playerType;
+                        const brick = s.brick === true || s.isBrick === true ||
+                            (t != null && String(t).toUpperCase().indexOf('BRICK') > -1);
+                        if (!brick) usable.push(Number(s.index));
+                    }
+                    if (usable.length && usable.length < slots.length) {
+                        usable.sort((a, b) => a - b);
+                        STATE.sbc.usableSlots = usable;
+                        STATE.sbc.formationSlots = usable.length;
+                        log('Nutzbare SBC-Slots (Entity):', usable.join(','));
+                    }
+                }
+            }
+        } catch (e) {}
+        const scan = deepScanChallenge(challenge);
+        applyScan(scan, 'App-Service');
+        if (STATE.sbc.targetOVR == null) applyFromSetChallenges();
+    }
+    function applyScan(scan, source) {
+        let changed = false;
+        if (scan.target != null) { STATE.sbc.targetOVR = scan.target; changed = true; }
+        if (scan.squadId != null) { STATE.sbc.squadId = scan.squadId; changed = true; }
+        // usableSlots (aus playerRequirements) ist präziser als jeder
+        // "slots"-Fund im Objektbaum - dann nicht überschreiben.
+        if (scan.slots != null && !STATE.sbc.usableSlots) { STATE.sbc.formationSlots = scan.slots; changed = true; }
+        if (scan.rarity.length) { STATE.sbc.rarityConstraints = scan.rarity; changed = true; }
+        if (scan.playerLevel.length) { STATE.sbc.playerLevelConstraints = scan.playerLevel; changed = true; }
+        if (scan.quality && scan.quality.length) { STATE.sbc.qualityConstraints = scan.quality; changed = true; }
+        if (scan.reqs.length) { STATE.sbc.reqDump = scan.reqs; changed = true; }
+        if (changed) {
+            log('SBC erkannt (' + source + '):', JSON.stringify({
+                setId: STATE.sbc.setId,
+                challengeId: STATE.sbc.challengeId,
+                squadId: STATE.sbc.squadId,
+                targetOVR: STATE.sbc.targetOVR,
+                slots: STATE.sbc.formationSlots,
+                rarity: STATE.sbc.rarityConstraints
+            }));
+            refreshSbcInfoUI();
+        }
+    }
+    /**
+     * SBC-Daten mit der OFFEN SICHTBAREN Challenge synchronisieren.
+     * Der loadChallenge-Hook fängt nicht immer die richtige Challenge (die
+     * App bedient Reopenings aus dem Cache, und Submit-/Reward-Antworten
+     * können den Zustand verschmutzen - live gesehen nach Pack-Öffnen).
+     * Die Wahrheit ist der Live-Controller der offenen Ansicht: dessen
+     * _challenge wird hier durch dieselbe Erkennung gezogen wie der Hook.
+     * setCurrentChallenge() setzt bei einer anderen Challenge-ID alle
+     * Vorgaben sauber zurück.
+     */
+    function syncSbcWithOpenChallenge() {
+        try {
+            for (const c of getControllerChain()) {
+                const n = (c.constructor && c.constructor.name) || '';
+                if (!/sbc/i.test(n)) continue;
+                let ch = null;
+                for (const key of ['_overviewController', 'leftController', '_leftController']) {
+                    const oc = c[key];
+                    if (oc && oc._challenge && typeof oc._challenge === 'object') { ch = oc._challenge; break; }
+                }
+                ch = ch || (c._challenge && typeof c._challenge === 'object' ? c._challenge : null);
+                if (ch) {
+                    const prevId = STATE.sbc.challengeId;
+                    captureChallengeEntity(ch);
+                    if (STATE.sbc.challengeId !== prevId) {
+                        log('SBC aus offener Ansicht synchronisiert: Challenge', STATE.sbc.challengeId, '(vorher', prevId + ')');
+                    }
+                    return true;
+                }
+            }
+        } catch (e) { warn('SBC-Sync fehlgeschlagen:', e.message); }
+        return false;
+    }
+    // ========================================================================
+    //  3. SPIELER-DATENMODELL & NORMALISIERUNG
+    // ========================================================================
+    // EVOLUTION-Karten erkennen (EA-intern "Academy"). Die behalten die
+    // rareflag einer normalen Karte, sollen aber NIE verbaut werden.
+    function isEvolution(raw) {
+        try {
+            if (raw.academyId != null && Number(raw.academyId) > 0) return true;
+            if (raw.academyItemId != null && Number(raw.academyItemId) > 0) return true;
+            if (Array.isArray(raw.academyAttributes) && raw.academyAttributes.length) return true;
+            if (raw.academyAttributes && typeof raw.academyAttributes === 'object' &&
+                Object.keys(raw.academyAttributes).length) return true;
+            if (raw.evolutionId != null && Number(raw.evolutionId) > 0) return true;
+            if (raw.evolutionData || raw.evoPath || raw.isEvo === true || raw.isAcademy === true) return true;
+            // Live verifiziert (fc26): Evos tragen tradableBeforeAcademy
+            if (raw.tradableBeforeAcademy !== undefined && raw.tradableBeforeAcademy !== null) return true;
+            if (typeof raw.isAcademyItem === 'function' && raw.isAcademyItem()) return true;
+        } catch (e) {}
+        return false;
+    }
+    function normalizePlayer(raw, fromStorage) {
+        if (!raw || typeof raw !== 'object') return null;
+        const itemType = raw.itemType || raw.type;
+        if (itemType && String(itemType).toLowerCase() !== 'player') return null;
+        // Leihspieler ausschliessen
+        if (raw.loans != null && Number(raw.loans) > 0) return null;
+        // KONZEPT-SPIELER ausschliessen (nicht im Besitz!) - mehrere mögliche Flags
+        if (raw.concept === true || raw.isConcept === true || raw.conceptItem === true) return null;
+        try { if (typeof raw.isConcept === 'function' && raw.isConcept()) return null; } catch (e) {}
+        // EVOLUTIONS niemals verwenden
+        if (isEvolution(raw)) { STATE.diag.evoExcluded++; return null; }
+        const id = raw.id || raw.itemId;
+        const rating = parseInt(raw.rating != null ? raw.rating : raw.ovr, 10);
+        if (id == null || isNaN(rating)) return null;
+        const rareflag = raw.rareflag != null ? raw.rareflag
+                       : (raw.rarityId != null ? raw.rarityId : raw.rarity);
+        const rf = parseInt(rareflag, 10);
+        const isGold = isNormalCard(rf);
+        return {
+            id: id,
+            assetId: raw.assetId || raw.definitionId || raw.resourceId || id,
+            rating: rating,
+            rareflag: isNaN(rf) ? null : rf,
+            isGold: isGold,
+            isSpecial: !isGold,
+            isStorage: !!fromStorage,
+            name: resolvePlayerName(raw),
+            untradeable: raw.untradeable === true || raw.tradeable === false,
+            // Rarity-GRUPPEN der Karte (live verifiziert, fc26): darüber lassen
+            // sich Vorgaben wie "TOTW/TOTS/FOF/FUTTIES" (Gruppe 83) EXAKT matchen.
+            groups: Array.isArray(raw.groups) ? raw.groups.map(Number) : null,
+            raw: raw // Original behalten - wird fürs Eintragen über App-Services gebraucht
+        };
+    }
+    function resolvePlayerName(raw) {
+        const sd = raw.staticData || raw._staticData || {};
+        return raw.name ||
+               raw.commonName ||
+               sd.name ||
+               sd.commonName ||
+               ((sd.firstName || raw.firstName || '') + ' ' + (sd.lastName || raw.lastName || '')).trim() ||
+               ('#' + (raw.assetId || raw.definitionId || raw.id));
+    }
+    // Spieler in den Pool mergen. Storage-Flag gewinnt bei Duplikaten.
+    function mergeIntoPool(players) {
+        let added = 0;
+        for (const p of players) {
+            if (!p) continue;
+            const existing = STATE.poolById.get(p.id);
+            if (!existing) { STATE.poolById.set(p.id, p); added++; }
+            else if (p.isStorage && !existing.isStorage) STATE.poolById.set(p.id, p);
+        }
+        if (added) {
+            STATE.pool = Array.from(STATE.poolById.values());
+            refreshSbcInfoUI();
+        }
+        return added;
+    }
+    // Verbaute Karten aus dem Pool nehmen (nach erfolgreichem Eintragen) -
+    // so bleibt der Pool ohne Neu-Laden für die nächste SBC nutzbar.
+    function removeFromPool(players) {
+        try {
+            let removed = 0;
+            for (const p of players) {
+                if (p && STATE.poolById.delete(p.id)) removed++;
+            }
+            if (removed) {
+                STATE.pool = Array.from(STATE.poolById.values());
+                if (ui.poolcount) ui.poolcount.textContent = String(STATE.pool.length);
+                refreshSbcInfoUI();
+                log(removed + ' verbaute Karten aus dem Pool entfernt (' + STATE.pool.length + ' übrig).');
+            }
+        } catch (e) { warn('removeFromPool:', e.message); }
+    }
+    function harvestItems(json, fromStorage) {
+        const items = extractItems(json);
+        if (!items.length) return 0;
+        const players = [];
+        for (const it of items) {
+            const p = normalizePlayer(it, fromStorage);
+            if (p) players.push(p);
+        }
+        const n = mergeIntoPool(players);
+        if (n) log('Passiv erfasst:', n, 'Spieler (storage=' + !!fromStorage + ')');
+        return n;
+    }
+    function extractItems(json) {
+        if (!json) return [];
+        if (Array.isArray(json.itemData)) return json.itemData;
+        if (Array.isArray(json.items)) return json.items;
+        if (Array.isArray(json.entries)) return json.entries;
+        if (Array.isArray(json)) return json;
+        return [];
+    }
+    // ========================================================================
+    //  4. DATENZUGRIFF
+    // ------------------------------------------------------------------------
+    //  Ebene A: interne App-Services (window.services...) - bevorzugt,
+    //           denn sie funktionieren ohne eigene Session-Header.
+    //  Ebene B: direkte HTTP-Calls mit gecapturten Session-Headern.
+    // ========================================================================
+    function servicesAvailable() {
+        try {
+            return typeof window.services === 'object' && !!window.services &&
+                   !!window.services.Club && !!window.services.Item;
+        } catch (e) { return false; }
+    }
+    // ---- Ebene A: App-Services ----------------------------------------------
+    function obsPromise(observable) {
+        // EA-Observable -> Promise. observe(this, cb), cb(sender, response)
+        return new Promise(function (resolve, reject) {
+            const OBS = {};
+            let done = false;
+            try {
+                observable.observe(OBS, function (sender, response) {
+                    if (done) return;
+                    done = true;
+                    try { sender.unobserve(OBS); } catch (e) {}
+                    resolve(response);
+                });
+            } catch (e) { reject(e); }
+            setTimeout(function () {
+                if (!done) { done = true; reject(new Error('Timeout beim Warten auf App-Service.')); }
+            }, 30000);
+        });
+    }
+    function responseItems(response) {
+        if (!response) return [];
+        const r = response.response || response.data || response;
+        if (r && Array.isArray(r.items)) return r.items;
+        if (Array.isArray(r)) return r;
+        return [];
+    }
+    function responseOk(response) {
+        if (!response) return false;
+        if (response.success === false) return false;
+        if (typeof response.status === 'number' && response.status >= 400) return false;
+        return true;
+    }
+    async function fetchClubViaServices(onProgress) {
+        const all = [];
+        const svm = new window.UTBucketedItemSearchViewModel();
+        const criteria = svm.searchCriteria;
+        if (typeof window.SearchType !== 'undefined' && window.SearchType.PLAYER != null) {
+            criteria.type = window.SearchType.PLAYER;
+        }
+        // Konzept-Spieler explizit ausschliessen, falls das Kriterium existiert
+        try { if ('concept' in criteria) criteria.concept = false; } catch (e) {}
+        const count = criteria.count || 91;
+        let offset = 0;
+        let rawSeen = 0;
+        for (let page = 0; page < 300; page++) {
+            if (STATE.cancelLoad) break;
+            criteria.offset = offset;
+            const response = await obsPromise(window.services.Club.search(criteria));
+            if (!responseOk(response)) throw new Error('Club-Suche über App-Service fehlgeschlagen.');
+            const items = responseItems(response);
+            rawSeen += items.length;
+            for (const it of items) {
+                const p = normalizePlayer(it, false);
+                if (p) all.push(p);
+            }
+            mergeIntoPool(all.splice(0));
+            if (onProgress) onProgress(STATE.pool.length, null);
+            if (items.length < count) break;
+            // Notbremse: die Suche liefert offenbar auch Konzept-Spieler /
+            // die ganze Datenbank. Die eigenen Karten sind zu diesem Zeitpunkt
+            // längst im Pool (Konzept-Filter greift beim Normalisieren) -
+            // also NICHT hart abbrechen, sondern mit dem Stand weitermachen.
+            if (rawSeen > 30000) {
+                warn('Club-Suche gestoppt nach ' + rawSeen + ' Roh-Items (Konzept-Datenbank?). Pool-Stand: ' + STATE.pool.length);
+                diagError('Services-Club-Suche nach ' + rawSeen + ' Items gestoppt (Pool: ' + STATE.pool.length + ')');
+                break;
+            }
+            offset += items.length;
+        }
+        return rawSeen;
+    }
+    async function fetchUnassignedViaServices() {
+        const out = [];
+        try {
+            if (typeof window.services.Item.requestUnassignedItems === 'function') {
+                const response = await obsPromise(window.services.Item.requestUnassignedItems());
+                for (const it of responseItems(response)) {
+                    const p = normalizePlayer(it, false);
+                    if (p) out.push(p);
+                }
+            }
+        } catch (e) { warn('Unassigned via App-Service fehlgeschlagen:', e); }
+        return out;
+    }
+    async function fetchStorageViaServices() {
+        const out = [];
+        try {
+            const svc = window.services.Item;
+            const fns = ['requestStorageItems', 'requestSbcStorageItems'];
+            for (const fn of fns) {
+                if (typeof svc[fn] === 'function') {
+                    const response = await obsPromise(svc[fn]());
+                    for (const it of responseItems(response)) {
+                        const p = normalizePlayer(it, true);
+                        if (p) out.push(p);
+                    }
+                    if (out.length) break;
+                }
+            }
+        } catch (e) { warn('Storage via App-Service fehlgeschlagen:', e); }
+        return out;
+    }
+    // ---- Ebene B: direkte HTTP-Calls ----------------------------------------
+    function sessionReady() {
+        return !!(STATE.session.apiBase && STATE.session.sid);
+    }
+    function apiHeaders() {
+        const h = { 'Accept': 'application/json' };
+        const s = STATE.session;
+        if (s.sid) h['X-UT-SID'] = s.sid;
+        if (s.phishing) h['X-UT-PHISHING-TOKEN'] = s.phishing;
+        if (s.route) h['X-UT-Route'] = s.route;
+        if (s.nucleusId) h['Easw-Session-Data-Nucleus-Id'] = s.nucleusId;
+        return h;
+    }
+    // WICHTIG: credentials 'omit'! Die Auth läuft komplett über die
+    // X-UT-Header. Mit credentials:'include' blockiert der Browser die
+    // Cross-Origin-Requests zur utas-API (CORS + Wildcard-Origin).
+    function httpErrText(method, path, status) {
+        return method + ' ' + path + ' -> HTTP ' + status +
+            (status === 401 ? ' (Session abgelaufen? Kurz in der App navigieren, z.B. Verein öffnen, dann erneut versuchen.)' : '');
+    }
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    // Session-Refresh erzwingen: einen App-eigenen Request anstossen. Der darf
+    // selbst mit 401 scheitern - die App re-authet daraufhin und unsere
+    // Interception schnappt die FRISCHE SID auf. Entscheidend: wir warten,
+    // bis die SID sich WIRKLICH geändert hat (Re-Auth braucht Zeit; ein fixer
+    // 400ms-Schlaf war zu kurz - der Retry lief dann mit der alten SID los).
+    async function nudgeSession() {
+        const oldSid = STATE.session.sid;
+        const svc = window.services && window.services.Item;
+        // Verschiedene App-Requests durchprobieren: requestUnassignedItems
+        // kann aus dem App-Cache bedient werden (kein Netz-Request -> keine
+        // Re-Auth beobachtbar). Tradepile/Watchlist gehen zuverlässiger raus.
+        const pokeFns = ['requestUnassignedItems', 'requestTradeItems', 'requestWatchedItems'];
+        let pokeIdx = 0;
+        const poke = async () => {
+            try {
+                for (let t = 0; t < pokeFns.length; t++) {
+                    const fn = pokeFns[(pokeIdx + t) % pokeFns.length];
+                    if (svc && typeof svc[fn] === 'function') {
+                        pokeIdx = (pokeIdx + t + 1) % pokeFns.length;
+                        await obsPromise(svc[fn]());
+                        return;
+                    }
+                }
+            } catch (e) {}
+        };
+        await poke();
+        for (let i = 0; i < 32; i++) { // bis zu 8 Sekunden
+            if (STATE.session.sid && STATE.session.sid !== oldSid) {
+                log('Session erneuert (neue SID nach ' + ((i + 1) * 0.25).toFixed(1) + 's).');
+                return true;
+            }
+            await sleep(250);
+            // Weitere Anstösse über WECHSELNDE Endpunkte, falls der erste
+            // aus dem Cache kam oder die App den 401 geschluckt hat.
+            if (i === 8 || i === 20) await poke();
+        }
+        // SID unverändert heisst NICHT zwingend Fehler: bei einem
+        // Rate-Limit-401 ist die Session noch gültig - der Aufrufer soll
+        // nach kurzem Cooldown einfach nochmal versuchen.
+        warn('Session-Nudge: SID unverändert (Session evtl. noch gültig / Rate-Limit).');
+        return false;
+    }
+    async function apiGet(path, _attempt) {
+        const url = STATE.session.apiBase + path.replace(/^\//, '');
+        let resp;
+        try {
+            resp = await _origFetch(url, { method: 'GET', headers: apiHeaders(), credentials: 'omit' });
+        } catch (e) {
+            diagError('GET ' + path + ' -> ' + (e.message || e));
+            throw e;
+        }
+        if (!resp.ok) {
+            // 401 heisst entweder "Session abgelaufen" ODER "zu schnell"
+            // (Rate-Limit). Versuch 1: App-Re-Auth anstossen. Versuch 2:
+            // schlichter Cooldown - bei Rate-Limit ist die Session gültig.
+            if (resp.status === 401 && (_attempt || 0) < 2) {
+                if ((_attempt || 0) === 0) { await nudgeSession(); }
+                else { await sleep(3000); }
+                return apiGet(path, (_attempt || 0) + 1);
+            }
+            diagError('GET ' + path + ' -> HTTP ' + resp.status);
+            throw new Error(httpErrText('GET', path, resp.status));
+        }
+        return resp.json();
+    }
+    async function apiPut(path, body, _attempt) {
+        const url = STATE.session.apiBase + path.replace(/^\//, '');
+        const headers = apiHeaders();
+        headers['Content-Type'] = 'application/json';
+        let resp;
+        try {
+            resp = await _origFetch(url, {
+                method: 'PUT', headers: headers, credentials: 'omit',
+                body: JSON.stringify(body)
+            });
+        } catch (e) {
+            diagError('PUT ' + path + ' -> ' + (e.message || e));
+            throw e;
+        }
+        if (!resp.ok) {
+            if (resp.status === 401 && (_attempt || 0) < 2) {
+                if ((_attempt || 0) === 0) { await nudgeSession(); }
+                else { await sleep(3000); }
+                return apiPut(path, body, (_attempt || 0) + 1);
+            }
+            // Fehler-BODY mitloggen - EA schreibt dort den Ablehnungsgrund
+            // (z.B. "item not owned" bei veraltetem Pool).
+            let bodyTxt = '';
+            try { bodyTxt = (await resp.text()).slice(0, 200); } catch (e) {}
+            diagError('PUT ' + path + ' -> HTTP ' + resp.status + (bodyTxt ? ' BODY: ' + bodyTxt : ''));
+            throw new Error(httpErrText('PUT', path, resp.status));
+        }
+        try { return await resp.json(); } catch (e) { return {}; }
+    }
+    async function fetchClubViaHttp(onProgress) {
+        let page = 0;
+        let found = 0;
+        const count = 91;
+        let total = Infinity;
+        let gotAny = false;
+        STATE.loadIncomplete = false;
+        while (page * count < total) {
+            if (STATE.cancelLoad) break;
+            const start = page * count;
+            const path = 'club?sort=desc&sortBy=value&type=player&count=' + count + '&start=' + start;
+            let json = null;
+            // Pro Seite bis zu 3 Versuche (apiGet macht bei 401 zusätzlich
+            // selbst einen Nudge+Retry) - abgelaufene Sessions mitten im
+            // Laden haben sonst den halben Pool gekostet.
+            for (let attempt = 0; attempt < 3 && !json; attempt++) {
+                try { json = await apiGet(path); }
+                catch (e) {
+                    warn('Club-Fetch Fehler Seite', page, 'Versuch', attempt + 1, e.message);
+                    if (attempt < 2) await new Promise(r => setTimeout(r, 1200 * (attempt + 1)));
+                }
+            }
+            if (!json) {
+                if (!gotAny) throw new Error('Club-Laden fehlgeschlagen (Session?). Bitte kurz in der App navigieren und erneut versuchen.');
+                STATE.loadIncomplete = true;
+                break;
+            }
+            gotAny = true;
+            // Kurz atmen zwischen den Seiten - zu schnelle Pagination
+            // provoziert Rate-Limit-401er (live bestätigt: 120ms war zu
+            // schnell, Abbruch bei Seite ~55). 250ms ist der bewährte Wert.
+            await new Promise(r => setTimeout(r, 250));
+            const items = extractItems(json);
+            if (json.totalItemCount != null) total = json.totalItemCount;
+            else if (json.total != null) total = json.total;
+            else if (items.length < count) total = start + items.length;
+            const players = [];
+            for (const it of items) {
+                const p = normalizePlayer(it, false);
+                if (p) players.push(p);
+            }
+            found += players.length;
+            mergeIntoPool(players);
+            if (onProgress) onProgress(STATE.pool.length, total === Infinity ? null : total);
+            if (items.length === 0) break;
+            page++;
+            if (page > 300) break;
+        }
+        return found;
+    }
+    async function fetchUnassignedViaHttp() {
+        const out = [];
+        try {
+            const json = await apiGet('purchased/items');
+            for (const it of extractItems(json)) {
+                const p = normalizePlayer(it, false);
+                if (p) out.push(p);
+            }
+        } catch (e) { warn('Unassigned-Fetch Fehler:', e); }
+        return out;
+    }
+    async function fetchStorageViaHttp() {
+        const out = [];
+        // "storagepile" ist der echte Endpunkt (live verifiziert, fc26).
+        try {
+            const json = await apiGet('storagepile');
+            for (const it of extractItems(json)) {
+                const p = normalizePlayer(it, true);
+                if (p) out.push(p);
+            }
+        } catch (e) { warn('storagepile-Fetch Fehler:', e.message); }
+        return out;
+    }
+    // ---- Kombinierter Pool-Load ---------------------------------------------
+    async function loadPool(onProgress) {
+        const canServices = servicesAvailable() &&
+                            typeof window.UTBucketedItemSearchViewModel === 'function';
+        if (!canServices && !sessionReady()) {
+            throw new Error('Weder App-Services noch Session verfügbar. Bitte einmal durch die Web-App navigieren (z.B. Verein öffnen) und erneut versuchen. Details: Diagnose-Button.');
+        }
+        STATE.cancelLoad = false;
+        let clubCount = 0, unassigned = [], storage = [];
+        // PRIMÄR: HTTP-Club-Endpunkt. Der liefert nur Karten, die du wirklich
+        // besitzt (keine Konzept-Spieler) und ist der dokumentierte Weg.
+        if (sessionReady()) {
+            log('Lade Pool über HTTP...');
+            try {
+                clubCount = await fetchClubViaHttp(onProgress);
+            } catch (e) {
+                warn('HTTP-Weg fehlgeschlagen:', e);
+                clubCount = 0;
+            }
+        }
+        // FALLBACK: App-Services (mit Konzept-Filter + Notbremse), nur wenn
+        // der HTTP-Weg nichts geliefert hat. Fehler hier sind nicht fatal -
+        // Storage/Unassigned werden trotzdem noch geladen.
+        if (!clubCount && canServices && !STATE.cancelLoad) {
+            log('Lade Pool über App-Services (Fallback)...');
+            try {
+                await fetchClubViaServices(onProgress);
+            } catch (e) {
+                warn('Services-Fallback fehlgeschlagen:', e);
+                diagError('Services-Fallback: ' + (e.message || e));
+            }
+        }
+        if (!STATE.cancelLoad) {
+            unassigned = sessionReady() ? await fetchUnassignedViaHttp() : [];
+            if (!unassigned.length && canServices) unassigned = await fetchUnassignedViaServices();
+            storage = sessionReady() ? await fetchStorageViaHttp() : [];
+            if (!storage.length && canServices) storage = await fetchStorageViaServices();
+        }
+        mergeIntoPool(unassigned);
+        mergeIntoPool(storage); // Storage zuletzt: Storage-Flag gewinnt beim Merge
+        log('Pool geladen:', STATE.pool.length, 'Spieler (Storage:', storage.length,
+            ', Unassigned:', unassigned.length, ')' + (STATE.cancelLoad ? ' [abgebrochen]' : ''));
+        if (STATE.loadIncomplete || (!storage.length && !STATE.cancelLoad)) {
+            toast('ACHTUNG: Pool evtl. unvollständig geladen (' + STATE.pool.length + ' Karten' +
+                (!storage.length ? ', kein Storage' : '') + '). Bitte "Spieler laden" erneut ausführen.', 'warn');
+        }
+        return STATE.pool;
+    }
+    // ========================================================================
+    //  5. SOLVER  (exakter DP, rein Rating-basiert)
+    // ------------------------------------------------------------------------
+    //  Team-Rating-Formel: teamOVR = Math.round(sum / N)
+    //  Für Ziel T gilt: minSum = N*T - floor(N/2)
+    //
+    //  Der Solver ist ein bounded-knapsack DP über Rating-Gruppen:
+    //   - PRIMÄR: minimale Gesamtsumme >= minSum (= minimaler Waste, exakt)
+    //   - SEKUNDÄR: Karten aus häufigen Ratings bevorzugen (Scarcity-Kosten
+    //     1/Anzahl) -> seltene Ratings werden geschont
+    //   - Innerhalb eines Ratings werden Karten in Prioritätsreihenfolge
+    //     konsumiert: Storage-Gold -> Storage-Special -> Verein-Gold ->
+    //     Verein-Special
+    // ========================================================================
+    // [SOLVER-BEGIN]
+    const SolverCore = (function () {
+        function priorityOf(p) {
+            if (p.isStorage && p.isGold) return 1;
+            if (p.isStorage && p.isSpecial) return 2;
+            if (!p.isStorage && p.isGold) return 3;
+            return 4; // Verein + Special
+        }
+        // Konsum-Reihenfolge innerhalb eines Ratings:
+        //  1. Priorität (Storage-Gold -> Storage-Special -> Verein-Gold -> Verein-Special)
+        //  2. Spieler-Duplikate: vom GRÖSSTEN Stapel desselben Spielers zuerst
+        function makeConsumeCmp(list) {
+            const counts = new Map();
+            for (const p of list) {
+                const k = (p.assetId != null) ? p.assetId : p.name;
+                counts.set(k, (counts.get(k) || 0) + 1);
+            }
+            return function (a, b) {
+                const pa = priorityOf(a), pb = priorityOf(b);
+                if (pa !== pb) return pa - pb;
+                const ka = (a.assetId != null) ? a.assetId : a.name;
+                const kb = (b.assetId != null) ? b.assetId : b.name;
+                return (counts.get(kb) || 0) - (counts.get(ka) || 0);
+            };
+        }
+        /**
+         * EXAKTE Squad-Rating-Formel von EA FC (community-verifiziert,
+         * gleiche Formel wie im FC26-Solver von Regista6 / EasySBC):
+         *   avg    = summe / n
+         *   excess = SUMME( rating_i - avg )  für alle rating_i > avg
+         *   rating = floor( round(summe + excess) / n )
+         * Hohe Karten zählen also doppelt: in der Summe UND im Excess.
+         */
+        function squadRating(ratings) {
+            const n = ratings.length;
+            if (!n) return 0;
+            let sum = 0;
+            for (const r of ratings) sum += r;
+            const avg = sum / n;
+            let excess = 0;
+            for (const r of ratings) if (r > avg) excess += r - avg;
+            return Math.floor(Math.round(sum + excess) / n);
+        }
+        // Exakter Dezimalwert (wie ihn PaleTools anzeigt, z.B. 84.18)
+        function squadRatingExact(ratings) {
+            const n = ratings.length;
+            if (!n) return 0;
+            let sum = 0;
+            for (const r of ratings) sum += r;
+            const avg = sum / n;
+            let excess = 0;
+            for (const r of ratings) if (r > avg) excess += r - avg;
+            return (sum + excess) / n;
+        }
+        // Ganzzahliges Rating-Mass V = N*(summe + excess) = N*sum + SUMME max(0, N*r - sum).
+        // exakt = V / N². Das ist die Grösse, die minimiert wird ("84.0x statt 84.7").
+        function squadV(ratings) {
+            const n = ratings.length;
+            let sum = 0;
+            for (const r of ratings) sum += r;
+            let v = n * sum;
+            for (const r of ratings) {
+                const d = n * r - sum;
+                if (d > 0) v += d;
+            }
+            return v;
+        }
+        // Rating-Kosten-Tabelle (Pack-Ökonomie), editierbar im Panel.
+        // Standard = Rasmus' Tabelle (Stand FUTTIES-Phase FC26).
+        const DEFAULT_RATING_COST_SPEC = '0-80:0, 81-83:2, 84:1, 85-86:5, 87-88:2, 89-90:3, 91-92:4, 93+:12';
+        function parseRatingCosts(spec) {
+            const costs = new Array(100).fill(0);
+            if (spec) {
+                const tokens = String(spec).split(/[,;\n]+/);
+                for (const t of tokens) {
+                    const m = t.trim().match(/^(\d{1,2})(?:\s*-\s*(\d{1,2})|\s*\+)?\s*:\s*(\d+(?:[.,]\d+)?)$/);
+                    if (!m) continue;
+                    const lo = parseInt(m[1], 10);
+                    const hi = m[2] != null ? parseInt(m[2], 10) : (t.indexOf('+') > -1 ? 99 : lo);
+                    const cost = parseFloat(m[3].replace(',', '.'));
+                    for (let r = lo; r <= Math.min(99, hi); r++) costs[r] = cost;
+                }
+            }
+            return function (r) {
+                r = Math.max(0, Math.min(99, r | 0));
+                return costs[r] || 0;
+            };
+        }
+        // TOTW-Karte (Team of the Week / Inform): rareflag 3.
+        function isTotw(p) { return Number(p.rareflag) === 3; }
+        // Gewicht der Summen-Überschreitung. Klein => innerhalb des
+        // erlaubten Waste-Fensters entscheiden die KARTEN-Kosten.
+        // Mit Max-Waste = 0 (Standard) ist das Fenster {stMin}, d.h. die
+        // minimale Summe ist die harte Prämisse und die Karten-Kosten
+        // brechen nur Gleichstände AUF der Minimalsumme. Erst wer Max-Waste
+        // erhöht, erlaubt bewusst etwas mehr Summe, um teure Karten
+        // (96er/93+) zu schonen.
+        const WASTE_WEIGHT = 0.05;
+        function matchesRarity(p, c) {
+            if (!c) return p.isSpecial;
+            // EXAKTES Matching über Rarity-GRUPPEN (live verifiziert, fc26):
+            // Vorgabe "PLAYER_RARITY_GROUP 83" <=> 83 in p.groups.
+            if (c.groupId != null && Array.isArray(p.groups)) {
+                return p.groups.indexOf(Number(c.groupId)) > -1;
+            }
+            if (c.ids && c.ids.length) {
+                const rf = Number(p.rareflag);
+                return c.ids.map(Number).indexOf(rf) > -1;
+            }
+            // Fallback-Heuristik ohne Gruppen-Info: irgendeine Special-Karte
+            return p.isSpecial;
+        }
+        /**
+         * Bounded-Knapsack-DP mit Kartenkosten.
+         * Liefert für jedes (Anzahl j, exp-Zähler e, Summe s) die minimalen
+         * Kosten und kann die konkreten Spieler rekonstruieren.
+         */
+        function buildDp(players, kMax, sMax, costOf, exp, cmp) {
+            const groups = new Map();
+            for (const p of players) {
+                if (!groups.has(p.rating)) groups.set(p.rating, []);
+                groups.get(p.rating).push(p);
+            }
+            const ratings = Array.from(groups.keys()).sort((a, b) => a - b);
+            // Verbrauchsreihenfolge innerhalb eines Ratings: KOSTEN zuerst
+            // (Rarity-Schutz & Band-Kosten wirken), Konsum-Präferenz
+            // (Storage, Duplikat-Stapel) als Tiebreak.
+            for (const r of ratings) groups.get(r).sort((a, b) => (costOf(a) - costOf(b)) || cmp(a, b));
+            const E = exp ? Math.max(0, exp.budget) + 1 : 1;
+            const S = Math.max(0, sMax) + 1;
+            const size = (kMax + 1) * E * S;
+            const idx = (j, e, s) => (j * E + e) * S + s;
+            let cur = new Float64Array(size).fill(Infinity);
+            cur[idx(0, 0, 0)] = 0;
+            const stageChoices = [];
+            for (const r of ratings) {
+                const list = groups.get(r);
+                const c = Math.min(list.length, kMax);
+                // kumulierte Kosten in Konsum-Reihenfolge
+                const qCost = [0];
+                for (let q = 1; q <= c; q++) qCost.push(qCost[q - 1] + costOf(list[q - 1]));
+                const isExp = !!(exp && r >= exp.th);
+                const next = new Float64Array(size).fill(Infinity);
+                const choice = new Uint8Array(size);
+                for (let j = 0; j <= kMax; j++) {
+                    for (let e = 0; e < E; e++) {
+                        for (let s = 0; s < S; s++) {
+                            const base = cur[idx(j, e, s)];
+                            if (base === Infinity) continue;
+                            for (let q = 0; q <= c; q++) {
+                                const nj = j + q;
+                                if (nj > kMax) break;
+                                const ns = s + q * r;
+                                if (ns >= S) break;
+                                const ne = isExp ? e + q : e;
+                                if (ne >= E) break;
+                                const cost = base + qCost[q];
+                                const ii = idx(nj, ne, ns);
+                                if (cost < next[ii]) { next[ii] = cost; choice[ii] = q; }
+                            }
+                        }
+                    }
+                }
+                stageChoices.push(choice);
+                cur = next;
+            }
+            return {
+                E: E, S: S,
+                cost: function (j, e, s) {
+                    if (j < 0 || j > kMax || e < 0 || e >= E || s < 0 || s >= S) return Infinity;
+                    return cur[idx(j, e, s)];
+                },
+                reconstruct: function (j, e, s) {
+                    const picked = [];
+                    for (let t = ratings.length - 1; t >= 0; t--) {
+                        const r = ratings[t];
+                        const isExp = !!(exp && r >= exp.th);
+                        const q = stageChoices[t][idx(j, e, s)];
+                        if (q > 0) {
+                            const list = groups.get(r);
+                            for (let x = 0; x < q; x++) picked.push(list[x]);
+                            j -= q; s -= q * r;
+                            if (isExp) e -= q;
+                        }
+                    }
+                    return picked;
+                }
+            };
+        }
+        /**
+         * Kern-Solver v3 - rechnet mit der ECHTEN Squad-Rating-Formel.
+         *
+         * Mathematische Grundlage: Für Gesamtsumme S und "Booster" (Spieler
+         * über dem Durchschnitt, Anzahl b, Ratingsumme H) gilt
+         *   rating >= T  <=>  N*(S + H) - b*S >= N²*T - floor(N/2)
+         * Booster sind genau die Spieler mit rating >= floor(S/N)+1.
+         * Der Solver sucht die kleinste machbare Gesamtsumme (stMin) und
+         * optimiert im Fenster [stMin, stMin+maxWaste] die Kartenkosten.
+         * Waste ist also relativ zum POOL-Minimum definiert.
+         */
+        function solve(poolAll, cfg) {
+            const warnings = [];
+            const N = cfg.slots || 11;
+            const target = cfg.targetOVR;
+            // ---- Pool filtern ----
+            const minRating = cfg.minRating || 0;
+            // Qualitäts-Vorgabe (Tausch-/Upgrade-SBCs): 1=Bronze(<=64),
+            // 2=Silber(65-74), 3=Gold(>=75). Gilt als Band-Filter für das
+            // ganze Team; bei mehreren Vorgaben zählt die höchste Qualität.
+            let qLo = minRating, qHi = 99, qualityLabel = null;
+            const qcs = (cfg.applyRarity === false) ? [] : (cfg.qualityConstraints || []);
+            if (qcs.length) {
+                const QBAND = { 1: [0, 64], 2: [65, 74], 3: [75, 99] };
+                const q = qcs.reduce((m, c) => Math.max(m, Number(c.quality) || 1), 1);
+                const band = QBAND[q] || [0, 99];
+                qualityLabel = (q === 3) ? 'Gold' : (q === 2) ? 'Silber' : 'Bronze';
+                qHi = band[1];
+                qLo = Math.max(minRating, band[0]);
+                if (qLo > qHi) {
+                    qLo = band[0];
+                    warnings.push('Min-Rating (' + minRating + ') kollidiert mit der Qualitäts-Vorgabe ' +
+                        qualityLabel + ' - Min-Rating wird ignoriert.');
+                }
+            }
+            let pool = poolAll.filter(p => p.rating >= qLo && p.rating <= qHi);
+            if (cfg.specialOnlyFromStorage) {
+                pool = pool.filter(p => !(p.isSpecial && !p.isStorage));
+            }
+            // ---- SPIELER-EINDEUTIGKEIT (Fix für HTTP 460) ----
+            // EA erlaubt denselben SPIELER (assetId) nur EINMAL pro Squad.
+            // Duplikat-Karten (gleicher Spieler, mehrere Item-IDs, z.B. aus
+            // Packs) führen sonst dazu, dass der Server einzelne Slots
+            // ablehnt. Pro assetId bleibt genau EINE Karte im Lösungs-Pool:
+            //   1. eine manuell gesetzte Karte (Anker / Rarity-Pick)
+            //   2. eine, die die aktuelle Rarity-Vorgabe erfüllen kann
+            //   3. eine Storage-Karte (Verbrauchs-Priorität)
+            //   4. höchstes Rating, dann stabil kleinste id
+            {
+                const rcsForDedupe = (cfg.applyRarity === false) ? [] : (cfg.rarityConstraints || []);
+                function dupeScore(p) {
+                    let s = 0;
+                    if (cfg.anchorId != null && String(p.id) === String(cfg.anchorId)) s += 1000;
+                    if (cfg.rarityPickId != null && String(p.id) === String(cfg.rarityPickId)) s += 1000;
+                    for (const rc of rcsForDedupe) { if (matchesRarity(p, rc)) { s += 100; break; } }
+                    if (p.isStorage) s += 10;
+                    return s;
+                }
+                const byAsset = new Map();
+                for (const p of pool) {
+                    const key = (p.assetId != null && p.assetId !== 0) ? 'a' + p.assetId : 'i' + p.id;
+                    const cur = byAsset.get(key);
+                    if (!cur) { byAsset.set(key, p); continue; }
+                    const sp = dupeScore(p), sc = dupeScore(cur);
+                    if (sp > sc ||
+                        (sp === sc && (p.rating > cur.rating ||
+                            (p.rating === cur.rating && Number(p.id) < Number(cur.id))))) {
+                        byAsset.set(key, p);
+                    }
+                }
+                if (byAsset.size < pool.length) pool = Array.from(byAsset.values());
+            }
+            const used = new Set();
+            const reserved = [];
+            const reserveCmp = makeConsumeCmp(pool);
+            // ---- Kartenkosten (Band + persönliche Scarcity, Storage-Bonus) ----
+            // VOR den Reservierungen definiert: auch Vorgabe-Karten werden
+            // nach KOSTEN gewählt (87er TOTW mit Kosten 2 schlägt 85er mit 5).
+            const bandFn = (typeof cfg.ratingCostFn === 'function')
+                ? cfg.ratingCostFn
+                : parseRatingCosts(cfg.ratingCostSpec != null ? cfg.ratingCostSpec : DEFAULT_RATING_COST_SPEC);
+            let alpha = cfg.scarcityWeight != null ? cfg.scarcityWeight : 18;
+            let beta = cfg.storageBonus != null ? cfg.storageBonus : 2;
+            if (alpha <= 0) alpha = 1e-6;
+            if (beta <= 0) beta = 1e-7;
+            const countByRating = new Map();
+            for (const p of pool) countByRating.set(p.rating, (countByRating.get(p.rating) || 0) + 1);
+            // RARITY-SCHUTZ: Karten, die Requirement-Rarities erfüllen können
+            // (TOTW/TOTS/FOF/FUTTIES = Rarity-Gruppe 83), sind wertvoller als
+            // ihr Rating - sie werden für künftige SBC-Vorgaben gebraucht.
+            // Sie bekommen einen festen Kosten-Aufschlag: ohne Vorgabe meidet
+            // der Solver sie, mit Vorgabe wird GENAU die geforderte Anzahl
+            // reserviert und der Rest trotzdem gemieden. Der Aufschlag wirkt
+            // NACH dem Storage-Rabatt (wird also nicht halbiert).
+            const guardGroups = Array.isArray(cfg.protectedGroups) && cfg.protectedGroups.length
+                ? cfg.protectedGroups.map(Number) : [83];
+            const guardCost = Math.max(0, cfg.rarityGuardCost != null ? Number(cfg.rarityGuardCost) : 8);
+            function isProtectedRarity(p) {
+                if (!guardCost || !Array.isArray(p.groups) || !p.groups.length) return false;
+                for (const g of guardGroups) if (p.groups.indexOf(g) > -1) return true;
+                return false;
+            }
+            function costOf(p) {
+                const n = countByRating.get(p.rating) || 1;
+                const base = alpha / n + bandFn(p.rating);
+                return (p.isStorage ? (base / 2 - beta) : base) +
+                       (isProtectedRarity(p) ? guardCost : 0);
+            }
+            // ---- Anker ----
+            if (cfg.anchorId != null && cfg.anchorId !== '') {
+                const anchor = pool.find(p => String(p.id) === String(cfg.anchorId));
+                if (anchor) { used.add(anchor.id); reserved.push(anchor); }
+                else {
+                    const inAll = poolAll.find(p => String(p.id) === String(cfg.anchorId));
+                    warnings.push(inAll
+                        ? 'Anker-Spieler ist durch die Filter ausgeschlossen und wurde ignoriert.'
+                        : 'Anker-Spieler nicht im Pool gefunden und wurde ignoriert.');
+                }
+            }
+            // ---- Manuell gewählte Karte für die Rarity-Vorgabe ----
+            // (Rarity-GRUPPEN wie "TOTW/TOTS/FOF/FUTTIES" lassen sich nicht
+            // zuverlässig automatisch auf rareflags mappen - der Nutzer wählt
+            // die passende Karte selbst; sie zählt für jede Rarity-Vorgabe.)
+            let forcedPickId = null;
+            if (cfg.rarityPickId != null && cfg.rarityPickId !== '') {
+                let pick = pool.find(p => String(p.id) === String(cfg.rarityPickId) && !used.has(p.id));
+                if (!pick) {
+                    const inAll = poolAll.find(p => String(p.id) === String(cfg.rarityPickId) && !used.has(p.id));
+                    if (inAll) {
+                        pick = inAll;
+                        warnings.push('Gewählte Rarity-Karte ist durch die Filter ausgeschlossen - trotzdem verwendet.');
+                    }
+                }
+                if (pick) {
+                    used.add(pick.id);
+                    reserved.push(pick);
+                    forcedPickId = pick.id;
+                    warnings.push('Rarity-Vorgabe: ' + pick.name + ' (' + pick.rating + ') manuell gesetzt.');
+                } else {
+                    warnings.push('Gewählte Rarity-Karte nicht im Pool gefunden - Automatik greift.');
+                }
+            }
+            // ---- Spieler-Level-Vorgaben (z.B. "min. 10 Spieler mit 85+") ----
+            // Bei SBCs OHNE Team-Rating (Tausch-/Provisions-Upgrades) gilt
+            // die Min-OVR-Vorgabe praktisch immer für ALLE geforderten
+            // Spieler ("4x 87+"; die Slot-Zahl IST die Spieleranzahl). EAs
+            // Count-Feld ist im Objektbaum unzuverlässig auffindbar - darum
+            // wird der Count hier auf die Slot-Zahl angehoben.
+            let plBoosted = false;
+            const plList = ((cfg.applyRarity === false) ? [] : (cfg.playerLevelConstraints || [])).map(function (pl) {
+                if (!target && (pl.count || 1) < N) {
+                    plBoosted = true;
+                    return Object.assign({}, pl, { count: N });
+                }
+                return pl;
+            });
+            if (plBoosted) {
+                warnings.push('Ohne Team-Rating: Min-OVR-Vorgabe auf alle ' + N + ' Slots angewendet.');
+            }
+            for (const pl of plList) {
+                const needCount = pl.count || 1;
+                let have = reserved.filter(p => p.rating >= pl.minRating).length;
+                while (have < needCount) {
+                    const cand = pool
+                        .filter(p => !used.has(p.id) && p.rating >= pl.minRating)
+                        .sort((a, b) => (costOf(a) - costOf(b)) || (a.rating - b.rating) || reserveCmp(a, b))[0];
+                    if (!cand) {
+                        return { ok: false, reason: 'Spieler-Vorgabe "min. ' + needCount + 'x ' + pl.minRating + '+" kann mit dem aktuellen Pool nicht erfüllt werden.', warnings: warnings };
+                    }
+                    used.add(cand.id);
+                    reserved.push(cand);
+                    warnings.push('Vorgabe ' + pl.minRating + '+: ' + cand.name + ' (' + cand.rating + ') reserviert.');
+                    have++;
+                }
+            }
+            // ---- Rarity-Vorgaben ----
+            const rcList = (cfg.applyRarity === false) ? [] : (cfg.rarityConstraints || []);
+            for (const rc of rcList) {
+                const needCount = rc.count || 1;
+                let have = reserved.filter(p => matchesRarity(p, rc) ||
+                    (forcedPickId != null && p.id === forcedPickId)).length;
+                while (have < needCount) {
+                    // Quellen-Regel für Vorgaben (Rasmus):
+                    //  - Storage: jede passende Karte (Special/TOTW) erlaubt
+                    //  - Verein: NUR TOTW - andere Club-Specials kommen nie
+                    //    in SBCs (wie Evolutions)
+                    // Billigste passende Karte zuerst: 85er Club-TOTW schlägt
+                    // 96er aus dem Storage.
+                    const cand = poolAll
+                        .filter(p => p.rating >= minRating && !used.has(p.id) && matchesRarity(p, rc) &&
+                            (!cfg.specialOnlyFromStorage || p.isStorage || !p.isSpecial || isTotw(p)))
+                        .sort((a, b) => (costOf(a) - costOf(b)) || (a.rating - b.rating) || reserveCmp(a, b))[0];
+                    if (!cand) {
+                        return { ok: false, reason: 'Rarity-Vorgabe "' + (rc.label || '?') + '" kann mit dem aktuellen Pool nicht erfüllt werden.', warnings: warnings };
+                    }
+                    used.add(cand.id);
+                    reserved.push(cand);
+                    warnings.push('Vorgabe ' + (rc.label || 'Rarity') + ': ' + cand.name + ' (' + cand.rating + (cand.isSpecial ? ', Special' : '') + ') reserviert.');
+                    have++;
+                }
+            }
+            // Transparenz: Vorgaben erkannt, aber Anwendung ausgeschaltet?
+            if (cfg.applyRarity === false &&
+                ((cfg.rarityConstraints || []).length || (cfg.playerLevelConstraints || []).length)) {
+                warnings.push('ACHTUNG: SBC-Vorgaben erkannt, aber "Vorgaben automatisch erfüllen" ist AUS - das Team erfüllt sie evtl. nicht!');
+            }
+            if (reserved.length > N) {
+                return { ok: false, reason: 'Mehr reservierte Spieler (' + reserved.length + ') als Slots (' + N + ').', warnings: warnings };
+            }
+            const k = N - reserved.length;
+            const reservedSum = reserved.reduce((s, p) => s + p.rating, 0);
+            const avail = pool.filter(p => !used.has(p.id));
+            if (avail.length < k) {
+                return { ok: false, reason: 'Nicht genug passende Spieler im Pool (' + (avail.length + reserved.length) + ' < ' + N + '). Erst "Spieler laden" ausführen oder Filter lockern.', warnings: warnings };
+            }
+            const cmp = makeConsumeCmp(avail);
+            // Pool-Transparenz: woraus wurde überhaupt gewählt?
+            const poolInfo = (function () {
+                if (!pool.length) return null;
+                let lo = 99, hi = 0;
+                for (const p of pool) { if (p.rating < lo) lo = p.rating; if (p.rating > hi) hi = p.rating; }
+                return { count: pool.length, min: lo, max: hi };
+            })();
+            function finishTeam(team) {
+                const sum = team.reduce((s, p) => s + p.rating, 0);
+                const rats = team.map(p => p.rating);
+                const ovr = squadRating(rats);
+                const exact = squadRatingExact(rats);
+                return {
+                    ok: target ? ovr >= target : true,
+                    players: team,
+                    sum: sum,
+                    ovr: ovr,
+                    ovrExact: Math.round(exact * 100) / 100,
+                    // "Waste" = Überschuss des EXAKTEN Ratings über das Ziel
+                    // (z.B. +0.08 bei 84.08 / Ziel 84) - das ist die Grösse,
+                    // die minimiert wird.
+                    waste: target ? Math.round((exact - target) * 100) / 100 : 0,
+                    target: target || null,
+                    poolInfo: poolInfo,
+                    reason: (target && ovr < target) ? ('Erreichter OVR ' + ovr + ' < Ziel ' + target + '.') : null,
+                    warnings: warnings
+                };
+            }
+            // ---- Kein Team-Rating erkannt: nur Vorgaben erfüllen, billig auffüllen ----
+            if (!target) {
+                if (!reserved.length && !qualityLabel) {
+                    return { ok: false, reason: 'Kein Ziel-OVR und keine Vorgaben erkannt. Bitte SBC-Challenge öffnen (und ggf. Diagnose prüfen).', warnings: warnings };
+                }
+                if (qualityLabel) warnings.push('Qualitäts-Vorgabe ' + qualityLabel + ': billigste passende Karten (' + qLo + '-' + qHi + ').');
+                const fillers = avail.slice().sort((a, b) =>
+                    (costOf(a) - costOf(b)) || (a.rating - b.rating) || cmp(a, b)).slice(0, k);
+                if (reserved.length + fillers.length < N) {
+                    return { ok: false, reason: 'Zu wenige passende Karten für die Vorgabe (' + (reserved.length + fillers.length) + '/' + N + ').', warnings: warnings };
+                }
+                return finishTeam(reserved.concat(fillers));
+            }
+            // ---- Max-teure-Beschränkung ----
+            let exp = null;
+            if (cfg.maxExpensiveEnabled) {
+                const th = cfg.expensiveThreshold || 99;
+                const budget = (cfg.maxExpensiveCount || 0) - reserved.filter(p => p.rating >= th).length;
+                if (budget < 0) {
+                    warnings.push('Max-teure-Vorgabe ist schon durch reservierte Spieler überschritten - Beschränkung ignoriert.');
+                } else {
+                    exp = { th: th, budget: budget };
+                }
+            }
+            const NEED = N * N * target - Math.floor(N / 2);
+            const sortedAsc = avail.slice().sort((a, b) => a.rating - b.rating);
+            let kCheapest = 0;
+            for (let i = 0; i < k; i++) kCheapest += sortedAsc[i].rating;
+            const stLow = reservedSum + kCheapest;
+            // Für die Quick-Obergrenze: höchste Ratings (reserviert + verfügbar)
+            const allDesc = reserved.map(p => p.rating)
+                .concat(avail.map(p => p.rating))
+                .sort((a, b) => b - a)
+                .slice(0, N);
+            function quickUB(st) {
+                let best = N * st; // b = 0
+                let hs = 0;
+                for (let b = 1; b <= allDesc.length; b++) {
+                    hs += allDesc[b - 1];
+                    const v = N * st + N * hs - b * st;
+                    if (v > best) best = v;
+                }
+                return best;
+            }
+            function runSearch(expDims) {
+                // Fenster in V-Einheiten: 1 Einheit = 1/121 Rating-Dezimal
+                // (bei N=11). Innerhalb des Fensters über dem V-Minimum
+                // entscheiden die KARTEN-Kosten.
+                const windowV = Math.max(0, Math.round(
+                    (cfg.maxOvershoot != null ? cfg.maxOvershoot : 0.10) * N * N));
+                // Band-Cache: DPs hängen nur von der Booster-Grenze ab
+                const bandCache = new Map();
+                function bandFor(st) {
+                    const rBoost = Math.floor(st / N) + 1;
+                    let band = bandCache.get(rBoost);
+                    if (!band) {
+                        const lowP = avail.filter(p => p.rating < rBoost);
+                        const highP = avail.filter(p => p.rating >= rBoost);
+                        const sMaxLow = Math.min(k * Math.max(0, rBoost - 1), 1300);
+                        const sMaxHigh = Math.min(k * 99, 1300);
+                        band = {
+                            rBoost: rBoost,
+                            dpLow: buildDp(lowP, k, sMaxLow, costOf, expDims, cmp),
+                            dpHigh: buildDp(highP, k, sMaxHigh, costOf, expDims, cmp)
+                        };
+                        bandCache.set(rBoost, band);
+                    }
+                    return band;
+                }
+                // Alle (Booster-Anzahl, Booster-Summe)-Kombos einer Gesamtsumme
+                // durchgehen; cb(V, kosten, ref) für jede machbare Kombination.
+                // V = N*(st + H) - b*st = N² * exaktes Rating.
+                function scanSt(st, vCap, cb) {
+                    const band = bandFor(st);
+                    const S_target = st - reservedSum;
+                    if (S_target < 0) return;
+                    let bRes = 0, HRes = 0;
+                    for (const p of reserved) {
+                        if (p.rating >= band.rBoost) { bRes++; HRes += p.rating; }
+                    }
+                    const budget = expDims ? expDims.budget : 0;
+                    for (let bA = 0; bA <= k; bA++) {
+                        const b = bRes + bA;
+                        const base = N * st + N * HRes - b * st;
+                        // NEED <= V = base + N*HA <= vCap
+                        const HAmin = Math.max(0, bA * band.rBoost,
+                            Math.ceil((NEED - base) / N - 1e-9));
+                        const HAcap = (vCap === Infinity)
+                            ? Infinity : Math.floor((vCap - base) / N + 1e-9);
+                        const HAmax = Math.min(band.dpHigh.S - 1, S_target, HAcap);
+                        for (let HA = HAmin; HA <= HAmax; HA++) {
+                            const sLow = S_target - HA;
+                            const V = base + N * HA;
+                            for (let eH = 0; eH <= budget; eH++) {
+                                const cH = band.dpHigh.cost(bA, eH, HA);
+                                if (cH === Infinity) continue;
+                                for (let eL = 0; eL + eH <= budget; eL++) {
+                                    const cL = band.dpLow.cost(k - bA, eL, sLow);
+                                    if (cL === Infinity) continue;
+                                    cb(V, cH + cL, { st: st, bA: bA, HA: HA, eH: eH, eL: eL, sLow: sLow });
+                                    if (!expDims) break;
+                                }
+                                if (!expDims) break;
+                            }
+                        }
+                    }
+                }
+                // Phase 1: erste machbare Lösung -> obere Schranke für V
+                const stHardCap = stLow + 900;
+                let vBound = -1;
+                for (let st = stLow; st <= stHardCap && vBound < 0; st++) {
+                    if (quickUB(st) < NEED) continue;
+                    let found = -1;
+                    scanSt(st, Infinity, function (V) {
+                        if (found < 0 || V < found) found = V;
+                    });
+                    if (found >= 0) vBound = found;
+                }
+                if (vBound < 0) return null;
+                // Phase 2: alle relevanten Summen scannen (V >= N*st begrenzt
+                // die Summe nach oben); beste Kosten je V sammeln.
+                let vMin = vBound;
+                const bestByV = new Map();
+                for (let st = stLow; st <= stHardCap; st++) {
+                    if (N * st > vMin + windowV) break;
+                    if (quickUB(st) < NEED) continue;
+                    scanSt(st, vMin + windowV, function (V, cost, ref) {
+                        if (V < NEED) return;
+                        const cur = bestByV.get(V);
+                        if (!cur || cost < cur.cost - 1e-12) {
+                            bestByV.set(V, { cost: cost, ref: ref });
+                        }
+                        if (V < vMin) vMin = V;
+                    });
+                }
+                // Auswahl: minimale Kosten im Fenster [vMin, vMin+windowV];
+                // bei (nahezu) gleichen Kosten das kleinere V (näher am Ziel).
+                let chosen = null;
+                bestByV.forEach(function (cand, V) {
+                    if (V > vMin + windowV) return;
+                    const obj = cand.cost + (V - vMin) * 1e-4;
+                    if (!chosen || obj < chosen.obj - 1e-12) {
+                        chosen = { obj: obj, V: V, ref: cand.ref };
+                    }
+                });
+                if (!chosen) return null;
+                const band = bandFor(chosen.ref.st);
+                const high = band.dpHigh.reconstruct(chosen.ref.bA, chosen.ref.eH, chosen.ref.HA);
+                const low = band.dpLow.reconstruct(k - chosen.ref.bA, chosen.ref.eL, chosen.ref.sLow);
+                return { team: reserved.concat(high, low), V: chosen.V, vMin: vMin };
+            }
+            let result = runSearch(exp);
+            if (!result && exp) {
+                result = runSearch(null);
+                if (result) warnings.push('Max. teure Spieler (' + cfg.maxExpensiveCount + ' ab ' + exp.th + '+) ist mit diesem Pool nicht einhaltbar - Beschränkung gelockert.');
+            }
+            if (!result) {
+                return { ok: false, reason: 'Ziel-OVR ' + target + ' ist mit dem aktuellen Pool nicht erreichbar. Filter lockern oder bessere Karten laden.', warnings: warnings };
+            }
+            return finishTeam(result.team);
+        }
+        return {
+            solve: solve,
+            squadRating: squadRating,
+            squadRatingExact: squadRatingExact,
+            squadV: squadV,
+            priorityOf: priorityOf,
+            parseRatingCosts: parseRatingCosts,
+            DEFAULT_RATING_COST_SPEC: DEFAULT_RATING_COST_SPEC,
+            WASTE_WEIGHT: WASTE_WEIGHT
+        };
+    })();
+    // [SOLVER-END]
+    // ========================================================================
+    //  6. IN SBC EINTRAGEN
+    // ========================================================================
+    // Weg A: über die App-eigenen Services (setPlayers + saveChallenge).
+    // Nutzt dieselben Codepfade wie die App beim manuellen Eintragen -
+    // damit stimmen Body-Format und interne Zustände garantiert.
+    // Eintragen über den App-eigenen Weg: setPlayers + saveChallenge.
+    // WICHTIG: Dieser Weg läuft über die HTTP-Schicht der App und bringt
+    // deren automatische Session-Erneuerung mit (kein 401-Problem).
+    async function submitViaServices(result) {
+        const entity = STATE.sbc.entity;
+        if (!entity) throw new Error('Keine Challenge-Entity erfasst.');
+        const sbcSvc = window.services && window.services.SBC;
+        if (!sbcSvc || typeof sbcSvc.saveChallenge !== 'function')
+            throw new Error('services.SBC.saveChallenge nicht verfügbar.');
+        const squad = entity.squad;
+        if (!squad || typeof squad.setPlayers !== 'function')
+            throw new Error('Challenge-Squad hat kein setPlayers().');
+        const items = result.players.map(toItemEntity);
+        // Für den SAVE-Pfad "silent" setzen (zweites Argument true) - das
+        // triggert kein UI-Event und hält den Squad konsistent für saveChallenge.
+        try { squad.setPlayers(items, true); }
+        catch (e) { squad.setPlayers(items); }
+        // Signatur-Varianten probieren
+        let response = null;
+        try { response = await obsPromise(sbcSvc.saveChallenge(entity)); } catch (e) { response = null; }
+        if (!responseOk(response)) {
+            try { response = await obsPromise(sbcSvc.saveChallenge(entity, squad)); } catch (e) { response = null; }
+        }
+        if (!responseOk(response)) {
+            throw new Error('saveChallenge abgelehnt (Status ' + (response && response.status) + ').');
+        }
+        return true;
+    }
+    // Gesamtzahl der Squad-Slots (Startelf + Bank). Die App sendet beim
+    // Eintragen IMMER alle Slots, unbenutzte mit id 0.
+    function detectSquadSlotTotal() {
+        try {
+            if (STATE.diag.lastSquadPutBody) {
+                const b = JSON.parse(STATE.diag.lastSquadPutBody);
+                if (b && Array.isArray(b.players) && b.players.length) return b.players.length;
+            }
+        } catch (e) {}
+        if (STATE.sbc.squadSlotTotal) return STATE.sbc.squadSlotTotal;
+        return 23; // Standard der Web App (live beobachtet, fc26)
+    }
+    // Weg A: direkter HTTP-PUT im EXAKTEN Format der App
+    // (live mitgeschnitten): alle Slots, itemData mit id + dream:false.
+    async function submitViaHttp(result) {
+        if (!STATE.sbc.challengeId)
+            throw new Error('Keine Challenge-ID erkannt. Bitte die SBC-Challenge im Spiel öffnen.');
+        if (!sessionReady())
+            throw new Error('Keine Session für den HTTP-Eintrag erfasst. Bitte einmal durch die App navigieren (z.B. Verein öffnen) und erneut versuchen.');
+        const total = Math.max(detectSquadSlotTotal(), result.players.length);
+        // Spieler auf die NUTZBAREN Slots legen (Brick-Slots überspringen) -
+        // sonst lehnt der Server mit 460 ab.
+        const targetIdx = (Array.isArray(STATE.sbc.usableSlots) && STATE.sbc.usableSlots.length >= result.players.length)
+            ? STATE.sbc.usableSlots
+            : null;
+        const byIndex = new Map();
+        for (let i = 0; i < result.players.length; i++) {
+            const idx = targetIdx ? targetIdx[i] : i;
+            byIndex.set(idx, result.players[i].id);
+        }
+        const players = [];
+        for (let i = 0; i < total; i++) {
+            players.push({ index: i, itemData: { id: byIndex.get(i) || 0, dream: false } });
+        }
+        const pfx = STATE.sbc.apiPrefix || 'sbs';
+        await apiPut(pfx + '/challenge/' + STATE.sbc.challengeId + '/squad', { players: players });
+        return true;
+    }
+    // Server-Wahrheit: wie viele der gewünschten Spieler stehen WIRKLICH im
+    // Squad? Erfolg misst sich daran, NICHT am PUT-Statuscode (EA liefert
+    // teils 400/460 trotz erfolgreicher Speicherung).
+    async function verifySquadCount(result) {
+        try {
+            const pfx = STATE.sbc.apiPrefix || 'sbs';
+            const json = await apiGet(pfx + '/challenge/' + STATE.sbc.challengeId + '/squad');
+            if (json && json.squad && Array.isArray(json.squad.players)) {
+                const wantIds = new Set(result.players.map(p => Number(p.id)));
+                let match = 0;
+                for (const sl of json.squad.players) {
+                    if (sl && sl.itemData && wantIds.has(Number(sl.itemData.id))) match++;
+                }
+                return match;
+            }
+        } catch (e) { warn('Squad-Verifikation fehlgeschlagen:', e.message); }
+        return -1;
+    }
+    /**
+     * WEG 0 - das komplette PaleTools-Rezept:
+     *   1. ECHTE Item-Entities über die App-eigene UTItemEntityFactory aus
+     *      unseren Pool-Rohdaten bauen (createItem(raw) - derselbe Weg, den
+     *      PaleTools für purchased/items-JSON nutzt; funktioniert damit auch
+     *      für Storage-Karten).
+     *   2. Entities ins LIVE gebundene Squad des offenen Controllers setzen.
+     *   3. services.SBC.saveChallenge(liveChallenge) - die App macht den PUT
+     *      selbst UND aktualisiert ihre eigene Ansicht. Kein F5, kein
+     *      manueller Repaint nötig.
+     */
+    async function submitViaApp(result) {
+        if (typeof window.UTItemEntityFactory !== 'function')
+            throw new Error('UTItemEntityFactory nicht verfügbar.');
+        const sbcSvc = window.services && window.services.SBC;
+        if (!sbcSvc || typeof sbcSvc.saveChallenge !== 'function')
+            throw new Error('services.SBC.saveChallenge nicht verfügbar.');
+        // Live-Controller der offenen SBC-Ansicht suchen
+        let ctrl = null;
+        for (const c of getControllerChain()) {
+            const n = (c.constructor && c.constructor.name) || '';
+            if (/sbc/i.test(n) && (c._squad || (c.getSquad && c.getSquad()))) { ctrl = c; }
+        }
+        if (!ctrl) throw new Error('Kein offener SBC-Squad-Controller gefunden (Challenge im Spiel öffnen).');
+        const liveSquad = ctrl._squad || (ctrl.getSquad && ctrl.getSquad());
+        if (!liveSquad || typeof liveSquad.setPlayers !== 'function')
+            throw new Error('Live-Squad hat kein setPlayers().');
+        // Die Challenge, an der die Ansicht hängt (PaleTools: _leftController._challenge)
+        let challenge = null;
+        for (const key of ['_overviewController', 'leftController', '_leftController']) {
+            const oc = ctrl[key];
+            if (oc && oc._challenge) { challenge = oc._challenge; break; }
+        }
+        challenge = challenge || ctrl._challenge || STATE.sbc.entity;
+        if (!challenge) throw new Error('Keine Live-Challenge gefunden.');
+        // Echte Entities über die App-Factory
+        const factory = new window.UTItemEntityFactory();
+        const entities = result.players.map(p => {
+            if (!p.raw) throw new Error('Rohdaten fehlen für Karte ' + p.id);
+            const it = factory.createItem(p.raw);
+            if (!it || Number(it.id) !== Number(p.id)) throw new Error('Factory-Item unbrauchbar für ' + p.id);
+            return it;
+        });
+        const cur = (typeof liveSquad.getPlayers === 'function') ? liveSquad.getPlayers() : null;
+        const targetIdx = (Array.isArray(STATE.sbc.usableSlots) && STATE.sbc.usableSlots.length >= entities.length)
+            ? STATE.sbc.usableSlots
+            : null;
+        const maxIdx = targetIdx ? targetIdx[entities.length - 1] : (entities.length - 1);
+        const total = Math.max((cur && cur.length) || 0, maxIdx + 1);
+        const arr = new Array(total);
+        // Auf die NUTZBAREN Slots verteilen (Brick-Slots bleiben leer).
+        for (let i = 0; i < entities.length; i++) arr[targetIdx ? targetIdx[i] : i] = entities[i];
+        liveSquad.setPlayers(arr, true); // silent, wie PaleTools
+        const resp = await obsPromise(sbcSvc.saveChallenge(challenge));
+        if (!responseOk(resp))
+            throw new Error('saveChallenge abgelehnt (Status ' + (resp && resp.status) + ').');
+        return true;
+    }
+    async function submitToSbc(result) {
+        if (!result || !result.players || result.players.length === 0)
+            throw new Error('Kein Ergebnis zum Eintragen.');
+        const need = result.players.length;
+        let lastErr = null;
+        // Weg 0: App-eigener Save (PaleTools-Rezept) - speichert UND
+        // aktualisiert die offene Ansicht in einem Rutsch.
+        try {
+            await submitViaApp(result);
+            const c0 = await verifySquadCount(result);
+            if (c0 >= need) { STATE.diag.submitVia = 'app'; return { confirmed: c0, via: 'app' }; }
+        } catch (e) { lastErr = e; warn('App-Eintrag meldete Fehler:', e.message); diagError('submitViaApp: ' + (e.message || e)); }
+        // Weg A: HTTP-PUT im exakt mitgeschnittenen App-Format.
+        try { await submitViaHttp(result); }
+        catch (e) { lastErr = e; warn('HTTP-Eintrag meldete Fehler:', e.message); diagError('submitViaHttp: ' + (e.message || e)); }
+        // Server fragen: sind die Spieler drin? (unabhängig vom PUT-Status)
+        let confirmed = await verifySquadCount(result);
+        if (confirmed >= need) { STATE.diag.submitVia = 'http'; return { confirmed: confirmed, via: 'http' }; }
+        // Weg B: alter Services-Weg (Entity-Squad + saveChallenge).
+        try { await submitViaServices(result); }
+        catch (e) { lastErr = e; warn('Service-Eintrag meldete Fehler:', e.message); diagError('submitViaServices: ' + (e.message || e)); }
+        confirmed = await verifySquadCount(result);
+        if (confirmed >= need) { STATE.diag.submitVia = 'services'; return { confirmed: confirmed, via: 'services' }; }
+        // Nichts hat gegriffen.
+        throw lastErr || new Error('Eintragen fehlgeschlagen (Server bestätigt ' + Math.max(0, confirmed) + '/' + need + ').');
+    }
+    // Spieler-Objekt in eine App-Entity umwandeln (für setPlayers).
+    function toItemEntity(p) {
+        try {
+            if (typeof window.UTItemEntity === 'function') {
+                if (p.raw && p.raw instanceof window.UTItemEntity) return p.raw;
+                // Konstruktor mit Rohdaten zuerst - so initialisiert die App
+                // ihre Items selbst (korrekte interne Felder statt Object.assign).
+                if (p.raw) {
+                    try {
+                        const viaCtor = new window.UTItemEntity(p.raw);
+                        if (viaCtor && Number(viaCtor.id) === Number(p.raw.id || p.id)) return viaCtor;
+                    } catch (e) {}
+                }
+                const it = new window.UTItemEntity();
+                if (p.raw) { try { Object.assign(it, p.raw); } catch (e) {} }
+                if (it.id == null || it.id === 0) it.id = p.id;
+                return it;
+            }
+        } catch (e) {}
+        return p.raw || { id: p.id };
+    }
+    // View-Controller-Kette der App einsammeln (Root -> aktiver Controller).
+    function getControllerChain() {
+        const out = [];
+        try {
+            let cur = (typeof window.getAppMain === 'function') ? window.getAppMain() : null;
+            const chainFns = ['getRootViewController', 'getPresentedViewController', 'getCurrentViewController', 'getCurrentController'];
+            const visited = new Set();
+            let depth = 0;
+            while (cur && depth < 14 && !visited.has(cur)) {
+                visited.add(cur);
+                out.push(cur);
+                let next = null;
+                for (const fn of chainFns) {
+                    if (typeof cur[fn] === 'function') {
+                        try {
+                            const c = cur[fn]();
+                            if (c && typeof c === 'object' && !visited.has(c)) { next = c; break; }
+                        } catch (e) {}
+                    }
+                }
+                if (!next) break;
+                cur = next; depth++;
+            }
+        } catch (e) {}
+        return out;
+    }
+    // CONTROLLER-SCAN: läuft die View-Controller-Kette der App entlang und
+    // sammelt Klassennamen, squad-bezogene Methoden und SBC-Felder des
+    // aktiven Controllers - die Landkarte für gezielte UI-Refreshes.
+    function controllerScan() {
+        const out = [];
+        try {
+            let cur = (typeof window.getAppMain === 'function') ? window.getAppMain() : null;
+            if (!cur) return ['getAppMain fehlt'];
+            const chainFns = ['getRootViewController', 'getPresentedViewController', 'getCurrentViewController', 'getCurrentController'];
+            const visited = new Set();
+            let depth = 0;
+            while (cur && depth < 12 && !visited.has(cur)) {
+                visited.add(cur);
+                out.push(((cur.constructor && cur.constructor.name) || '?'));
+                let next = null;
+                for (const fn of chainFns) {
+                    if (typeof cur[fn] === 'function') {
+                        try {
+                            const cand = cur[fn]();
+                            if (cand && typeof cand === 'object' && !visited.has(cand)) { next = cand; break; }
+                        } catch (e) {}
+                    }
+                }
+                if (!next) break;
+                cur = next;
+                depth++;
+            }
+            if (cur) {
+                const methods = [];
+                let proto = cur;
+                while (proto && methods.length < 40) {
+                    for (const k of Object.getOwnPropertyNames(proto)) {
+                        try {
+                            if (/squad|render|refresh|repaint|challenge/i.test(k) &&
+                                typeof cur[k] === 'function' && methods.indexOf(k) < 0) methods.push(k);
+                        } catch (e) {}
+                    }
+                    proto = Object.getPrototypeOf(proto);
+                }
+                out.push('METHODS: ' + methods.join(','));
+                for (const k in cur) {
+                    try {
+                        const v = cur[k];
+                        if (v && typeof v === 'object' && v.constructor &&
+                            /sbc|squad/i.test(v.constructor.name)) {
+                            out.push('FIELD ' + k + ': ' + v.constructor.name);
+                            // Methoden + View-Klasse der Sub-Controller mitkartieren -
+                            // dort hängt die sichtbare Pitch-Ansicht.
+                            const ms = [];
+                            let pr = v;
+                            while (pr && pr !== Object.prototype && ms.length < 30) {
+                                for (const n of Object.getOwnPropertyNames(pr)) {
+                                    try {
+                                        if (/squad|render|refresh|repaint|paint|update|rebuild/i.test(n) &&
+                                            typeof v[n] === 'function' && ms.indexOf(n) < 0) ms.push(n);
+                                    } catch (e) {}
+                                }
+                                pr = Object.getPrototypeOf(pr);
+                            }
+                            if (ms.length) out.push('  ' + k + '.METHODS: ' + ms.join(','));
+                            let vw = null;
+                            try { vw = (typeof v.getView === 'function') ? v.getView() : v._view; } catch (e) {}
+                            if (vw && vw.constructor) {
+                                const vms = [];
+                                let vpr = vw;
+                                while (vpr && vpr !== Object.prototype && vms.length < 30) {
+                                    for (const n of Object.getOwnPropertyNames(vpr)) {
+                                        try {
+                                            if (/squad|render|refresh|repaint|paint|update|rebuild|slot/i.test(n) &&
+                                                typeof vw[n] === 'function' && vms.indexOf(n) < 0) vms.push(n);
+                                        } catch (e) {}
+                                    }
+                                    vpr = Object.getPrototypeOf(vpr);
+                                }
+                                out.push('  ' + k + '.VIEW ' + vw.constructor.name + ': ' + vms.join(','));
+                            }
+                        }
+                    } catch (e) {}
+                }
+            }
+        } catch (e) { out.push('Fehler: ' + (e.message || e)); }
+        return out.slice(0, 80);
+    }
+    /**
+     * VIEW-REFRESH (F5-Killer) nach PaleTools-Vorbild. Ablauf:
+     *   1. Der Aufrufer hat die Challenge per Original-loadChallenge frisch
+     *      vom Server geladen - die App hat dabei ECHTE Item-Entities gebaut.
+     *   2. Diese echten Entities werden (falls nötig) ins live gebundene
+     *      _squad des UTSBCSquadSplitViewController kopiert.
+     *   3. overviewController.setSquad(liveSquad) bindet neu und pusht die
+     *      Entities in die UTSBCSquadOverviewView (die sichtbare Pitch).
+     * WICHTIG: hier laufen NIE selbstgebaute Pseudo-Items durch - die haben
+     * die View mit "Cannot read isDream of undefined" crashen lassen.
+     */
+    function refreshOpenSbcView() {
+        const report = [];
+        let ok = false;
+        try {
+            let cur = (typeof window.getAppMain === 'function') ? window.getAppMain() : null;
+            if (!cur) { STATE.diag.refreshLog = ['getAppMain fehlt']; return false; }
+            const chainFns = ['getRootViewController', 'getPresentedViewController', 'getCurrentViewController', 'getCurrentController'];
+            const visited = new Set();
+            const controllers = [];
+            let depth = 0;
+            // Controller-Kette einsammeln
+            while (cur && depth < 14 && !visited.has(cur)) {
+                visited.add(cur);
+                controllers.push(cur);
+                let next = null;
+                for (const fn of chainFns) {
+                    if (typeof cur[fn] === 'function') {
+                        try {
+                            const c = cur[fn]();
+                            if (c && typeof c === 'object' && !visited.has(c)) { next = c; break; }
+                        } catch (e) {}
+                    }
+                }
+                if (!next) break;
+                cur = next; depth++;
+            }
+            function viewOf(o) {
+                try { return (typeof o.getView === 'function') ? o.getView() : o._view; }
+                catch (e) { return null; }
+            }
+            // Sieht ein Array nach echten, NICHT-leeren App-Item-Entities aus?
+            // (mindestens eine Karte mit id > 0 - sonst würden wir ein volles
+            // Live-Squad mit einem leeren Reload überschreiben)
+            function looksLikeItems(arr) {
+                if (!Array.isArray(arr) || !arr.length) return false;
+                for (const p of arr) {
+                    if (p && typeof p === 'object' && Number(p.id) > 0 &&
+                        (p.rating != null || p.resourceId != null || p.definitionId != null)) return true;
+                }
+                return false;
+            }
+            const entity = STATE.sbc.entity;
+            const srcSquad = entity && entity.squad;
+            for (const ctrl of controllers) {
+                const cname = (ctrl.constructor && ctrl.constructor.name) || '';
+                if (!/sbc|squad/i.test(cname)) continue;
+                const liveSquad = ctrl._squad || (ctrl.getSquad && ctrl.getSquad());
+                if (!liveSquad) continue;
+                // Falls die Ansicht an einem ANDEREN Squad-Objekt hängt als die
+                // frisch vom Server geladene Challenge-Entity: die ECHTEN
+                // Entities (von der App selbst gebaut) hinüberkopieren. Nie
+                // wieder selbstgebaute Pseudo-Items - die haben die View mit
+                // "isDream undefined" crashen lassen.
+                if (srcSquad && srcSquad !== liveSquad &&
+                    typeof srcSquad.getPlayers === 'function' &&
+                    typeof liveSquad.setPlayers === 'function') {
+                    try {
+                        const ps = srcSquad.getPlayers();
+                        if (looksLikeItems(ps)) {
+                            liveSquad.setPlayers(ps, true);
+                            report.push(cname + ': Server-Squad übernommen (' + ps.length + ' Slots)');
+                        }
+                    } catch (e) { report.push(cname + '.setPlayers FEHLER: ' + String(e && e.message).slice(0, 60)); }
+                }
+                // PaleTools-Rezept rückwärts: die Pitch-Ansicht hängt am
+                // UTSBCSquadOverviewViewController. setSquad(liveSquad) bindet
+                // neu und pusht die (jetzt echten) Entities in die View.
+                const subsSeen = new Set();
+                for (const key of ['_overviewController', 'leftController', '_leftController']) {
+                    const oc = ctrl[key];
+                    if (!oc || typeof oc !== 'object' || subsSeen.has(oc)) continue;
+                    subsSeen.add(oc);
+                    if (typeof oc.setSquad === 'function') {
+                        try { oc.setSquad(liveSquad); report.push(key + '.setSquad(liveSquad)'); ok = true; }
+                        catch (e) { report.push(key + '.setSquad FEHLER: ' + String(e && e.message).slice(0, 60)); }
+                    }
+                    if (!ok && typeof oc._pushSquadToView === 'function') {
+                        try { oc._pushSquadToView(); report.push(key + '._pushSquadToView()'); ok = true; }
+                        catch (e) { report.push(key + '._pushSquadToView FEHLER: ' + String(e && e.message).slice(0, 60)); }
+                    }
+                    const ovw = viewOf(oc);
+                    if (!ok && ovw && typeof ovw.setSquad === 'function') {
+                        try { ovw.setSquad(liveSquad); report.push(key + '.view.setSquad(liveSquad)'); ok = true; } catch (e) {}
+                    }
+                }
+            }
+            STATE.diag.refreshLog = report.slice(0, 40);
+            log('View-Refresh:', ok ? 'ausgeführt' : 'keine Methode gefunden', '-', report.join(' | '));
+        } catch (e) {
+            warn('View-Refresh fehlgeschlagen:', e.message);
+            diagError('refreshOpenSbcView: ' + (e.message || e));
+        }
+        return ok;
+    }
+    // App-Cache der Challenge vom Server neu laden (originale loadChallenge-
+    // Funktion) - danach zeigt mindestens das NEU-ÖFFNEN der Challenge die
+    // eingetragenen Spieler, ganz ohne F5.
+    async function refreshChallengeCache() {
+        try {
+            if (STATE.origLoadChallenge && STATE.sbc.entity) {
+                await obsPromise(STATE.origLoadChallenge(STATE.sbc.entity));
+                log('Challenge-Cache der App vom Server neu geladen.');
+                return true;
+            }
+        } catch (e) { warn('Cache-Refresh fehlgeschlagen:', e.message); }
+        return false;
+    }
+    // ========================================================================
+    //  7. UI-PANEL
+    // ========================================================================
+    let ui = {};
+    function injectStyles() {
+        const css = `
+        #sbc-opt-fab {
+            position: fixed; right: 22px; bottom: 22px; z-index: 999999;
+            width: 56px; height: 56px; border-radius: 50%;
+            background: linear-gradient(135deg,#00e0b8,#0077ff);
+            color: #001018; font-size: 26px; border: none; cursor: pointer;
+            box-shadow: 0 4px 18px rgba(0,0,0,.5); display: flex;
+            align-items: center; justify-content: center;
+            transition: transform .15s ease;
+        }
+        #sbc-opt-fab:hover { transform: scale(1.08); }
+        #sbc-opt-panel {
+            position: fixed; right: 22px; bottom: 90px; z-index: 999999;
+            width: 340px; max-height: 78vh; overflow-y: auto;
+            background: #0f1620; color: #e6edf3; border: 1px solid #1f2b3a;
+            border-radius: 14px; box-shadow: 0 8px 40px rgba(0,0,0,.6);
+            font-family: 'Segoe UI', Roboto, sans-serif; font-size: 13px;
+            display: none; padding: 0;
+        }
+        #sbc-opt-panel.open { display: block; }
+        .sbc-opt-header {
+            background: linear-gradient(135deg,#00e0b8,#0077ff);
+            color:#001018; font-weight:700; font-size:15px;
+            padding:12px 16px; border-radius:14px 14px 0 0;
+            display:flex; justify-content:space-between; align-items:center;
+            cursor:move; user-select:none;
+        }
+        .sbc-opt-body { padding: 14px 16px; }
+        #sbc-opt-advanced { margin: 4px 0 10px; }
+        #sbc-opt-advanced summary {
+            cursor: pointer; color: #9db2c8; font-weight: 600;
+            padding: 8px 10px; background: #131e2b; border: 1px solid #1f2b3a;
+            border-radius: 8px; user-select: none; list-style: none;
+        }
+        #sbc-opt-advanced summary::-webkit-details-marker { display: none; }
+        #sbc-opt-advanced summary::before { content: '▸ '; color: #00e0b8; }
+        #sbc-opt-advanced[open] summary::before { content: '▾ '; }
+        #sbc-opt-advanced[open] summary { margin-bottom: 10px; }
+        .sbc-opt-info {
+            background:#131e2b; border:1px solid #1f2b3a; border-radius:8px;
+            padding:8px 10px; margin-bottom:12px; line-height:1.6;
+        }
+        .sbc-opt-info b { color:#00e0b8; }
+        .sbc-opt-debug { color:#7d93ab; font-size:11px; margin-top:4px; }
+        .sbc-opt-row { margin-bottom:12px; }
+        .sbc-opt-row label { display:block; margin-bottom:4px; color:#9db2c8; font-size:12px; }
+        .sbc-opt-row input[type=number], .sbc-opt-row input[type=text], .sbc-opt-row select {
+            width:100%; background:#0b1219; color:#e6edf3;
+            border:1px solid #24405f; border-radius:6px; padding:7px 9px; font-size:13px;
+        }
+        .sbc-opt-inline { display:flex; align-items:center; gap:8px; }
+        .sbc-opt-inline input[type=number] { flex:1; }
+        .sbc-opt-toggle { display:flex; align-items:center; gap:8px; cursor:pointer; }
+        .sbc-opt-toggle input { width:auto; }
+        .sbc-opt-btn {
+            width:100%; border:none; border-radius:8px; padding:10px;
+            font-weight:700; font-size:13px; cursor:pointer; margin-top:6px;
+        }
+        .sbc-opt-btn.primary { background:#00e0b8; color:#001018; }
+        .sbc-opt-btn.blue { background:#0077ff; color:#fff; }
+        .sbc-opt-btn.ghost { background:#1c2938; color:#cfe0f2; }
+        .sbc-opt-btn:disabled { opacity:.5; cursor:not-allowed; }
+        .sbc-opt-result {
+            margin-top:12px; background:#0b1219; border:1px solid #1f2b3a;
+            border-radius:8px; padding:10px; display:none;
+        }
+        .sbc-opt-result.show { display:block; }
+        .sbc-opt-player {
+            display:flex; justify-content:space-between; align-items:center;
+            padding:4px 2px; border-bottom:1px solid #16212e;
+        }
+        .sbc-opt-player:last-child { border-bottom:none; }
+        .sbc-opt-badge {
+            background:#00e0b8; color:#001018; font-weight:700;
+            border-radius:5px; padding:1px 7px; font-size:12px; min-width:26px; text-align:center;
+        }
+        .sbc-opt-badge.special { background:#ffcf4d; }
+        .sbc-opt-badge.storage { outline:2px solid #0077ff; }
+        .sbc-opt-summary { margin:10px 0 4px; font-size:14px; }
+        .sbc-opt-summary b { color:#00e0b8; }
+        .sbc-opt-warn { color:#ffcf4d; font-size:12px; margin-top:6px; }
+        .sbc-opt-bandhead, .sbc-opt-bandrow {
+            display:grid; grid-template-columns: 16px 1fr 1fr 1fr 26px; gap:4px;
+            align-items:center; margin-bottom:4px;
+        }
+        .sbc-opt-bandhead span { color:#7d93ab; font-size:11px; }
+        .sbc-opt-bandrow input {
+            width:100%; background:#0b1219; color:#e6edf3;
+            border:1px solid #24405f; border-radius:6px; padding:4px 6px; font-size:12px;
+        }
+        .sbc-opt-bandrow button {
+            background:#1c2938; color:#ff5470; border:none; border-radius:6px;
+            cursor:pointer; padding:4px 0; font-size:12px;
+        }
+        .sbc-opt-bandrow .sbc-opt-draghandle {
+            color:#7d93ab; cursor:grab; user-select:none; text-align:center;
+            font-size:13px; line-height:1;
+        }
+        .sbc-opt-bandrow.sbc-opt-dragover { outline:2px dashed #00e0b8; border-radius:6px; }
+        #sbc-opt-toast-wrap {
+            position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%);
+            z-index: 1000000; display:flex; flex-direction:column; gap:8px; align-items:center;
+        }
+        .sbc-opt-toast {
+            background:#131e2b; color:#e6edf3; border:1px solid #24405f;
+            border-left:4px solid #00e0b8; padding:10px 16px; border-radius:8px;
+            font-family:'Segoe UI',sans-serif; font-size:13px; box-shadow:0 4px 20px rgba(0,0,0,.5);
+            max-width:80vw;
+        }
+        .sbc-opt-toast.error { border-left-color:#ff5470; }
+        .sbc-opt-toast.warn { border-left-color:#ffcf4d; }
+        `;
+        const style = document.createElement('style');
+        style.textContent = css;
+        (document.head || document.documentElement).appendChild(style);
+    }
+    function toast(msg, type) {
+        let wrap = document.getElementById('sbc-opt-toast-wrap');
+        if (!wrap) {
+            wrap = document.createElement('div');
+            wrap.id = 'sbc-opt-toast-wrap';
+            document.body.appendChild(wrap);
+        }
+        const t = document.createElement('div');
+        t.className = 'sbc-opt-toast ' + (type || '');
+        t.textContent = msg;
+        wrap.appendChild(t);
+        setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity .4s'; }, 3800);
+        setTimeout(() => { try { wrap.removeChild(t); } catch (e) {} }, 4300);
+    }
+    function buildPanel() {
+        const fab = document.createElement('button');
+        fab.id = 'sbc-opt-fab';
+        fab.title = 'SBC Rating-Optimizer v' + VERSION;
+        fab.textContent = '⚡';
+        document.body.appendChild(fab);
+        const panel = document.createElement('div');
+        panel.id = 'sbc-opt-panel';
+        panel.innerHTML = `
+            <div class="sbc-opt-header">
+                <span>⚡ SBC Rating-Optimizer <span style="font-size:11px;font-weight:400;opacity:.75;">v` + VERSION + `</span></span>
+                <span id="sbc-opt-close" style="cursor:pointer;">✕</span>
+            </div>
+            <div class="sbc-opt-body">
+                <div class="sbc-opt-info" id="sbc-opt-info">
+                    Ziel-OVR: <b id="sbc-opt-target">–</b><br>
+                    Vorgaben: <b id="sbc-opt-rarity">keine</b><br>
+                    Spieler im Pool: <b id="sbc-opt-poolcount">0</b><br>
+                    Status: <b id="sbc-opt-status">bereit</b>
+                    <div class="sbc-opt-debug" id="sbc-opt-debug">API: – · SID: – · Services: –</div>
+                </div>
+                <button class="sbc-opt-btn ghost" id="sbc-opt-load">Spieler laden</button>
+                <div class="sbc-opt-row">
+                    <label>Min. Rating pro Spieler</label>
+                    <input type="number" id="sbc-opt-minrating" value="75" min="1" max="99">
+                </div>
+                <div class="sbc-opt-row">
+                    <label>Max. Rating-Überschuss über Minimum (z.B. 0.10 = bis 84.10 statt 84.00)</label>
+                    <input type="number" id="sbc-opt-maxwaste" value="0.10" min="0" max="2" step="0.01">
+                </div>
+                <details id="sbc-opt-advanced">
+                    <summary>Erweiterte Einstellungen</summary>
+                <div class="sbc-opt-row">
+                    <label class="sbc-opt-toggle">
+                        <input type="checkbox" id="sbc-opt-applyrarity" checked>
+                        Erkannte SBC-Vorgaben automatisch erfüllen (Rarity / Spieler-Level)
+                    </label>
+                </div>
+                <div class="sbc-opt-row">
+                    <label class="sbc-opt-toggle">
+                        <input type="checkbox" id="sbc-opt-specialstorage" checked>
+                        Special-Karten nur aus Storage
+                    </label>
+                </div>
+                <div class="sbc-opt-row">
+                    <label class="sbc-opt-toggle">
+                        <input type="checkbox" id="sbc-opt-maxexp-en">
+                        Max. teure Spieler begrenzen
+                    </label>
+                    <div class="sbc-opt-inline" style="margin-top:6px;">
+                        <input type="number" id="sbc-opt-maxexp-count" value="4" min="0" max="11" title="max. Anzahl">
+                        <span style="color:#9db2c8;">Stück ab</span>
+                        <input type="number" id="sbc-opt-maxexp-th" value="88" min="1" max="99" title="Rating-Schwelle">
+                        <span style="color:#9db2c8;">OVR</span>
+                    </div>
+                </div>
+                <div class="sbc-opt-row">
+                    <label>Rating-Kosten (höher = Karten dieser Stufe mehr schonen)</label>
+                    <div class="sbc-opt-bandhead"><span></span><span>von</span><span>bis</span><span>Kosten</span><span></span></div>
+                    <div id="sbc-opt-bands"></div>
+                    <div class="sbc-opt-inline" style="margin-top:4px;">
+                        <button class="sbc-opt-btn ghost" id="sbc-opt-band-add" style="margin:0;padding:5px;">+ Stufe</button>
+                        <button class="sbc-opt-btn ghost" id="sbc-opt-band-reset" style="margin:0;padding:5px;">Zurücksetzen</button>
+                    </div>
+                </div>
+                <div class="sbc-opt-row">
+                    <label>Seltene Club-Karten schonen</label>
+                    <select id="sbc-opt-scarcity">
+                        <option value="0">Aus (nur Waste zählt)</option>
+                        <option value="8">Leicht</option>
+                        <option value="18" selected>Normal</option>
+                        <option value="35">Stark</option>
+                    </select>
+                </div>
+                <div class="sbc-opt-row">
+                    <label>Storage-Karten bevorzugt verbrauchen</label>
+                    <select id="sbc-opt-storagebonus">
+                        <option value="0">Aus</option>
+                        <option value="1">Leicht</option>
+                        <option value="2" selected>Normal</option>
+                        <option value="4">Stark</option>
+                    </select>
+                </div>
+                <div class="sbc-opt-row">
+                    <label>Rarity-Karten schützen (TOTW/TOTS/FOF/FUTTIES)</label>
+                    <select id="sbc-opt-rarityguard">
+                        <option value="0">Aus</option>
+                        <option value="4">Leicht</option>
+                        <option value="8" selected>Normal</option>
+                        <option value="20">Stark</option>
+                    </select>
+                </div>
+                <div class="sbc-opt-row">
+                    <label>Karte für Rarity-Vorgabe (z.B. TOTW/FUTTIES) - übersteuert die Automatik</label>
+                    <input type="text" id="sbc-opt-raritypick-filter" placeholder="Name filtern..." style="margin-bottom:6px;">
+                    <select id="sbc-opt-raritypick"><option value="">– automatisch wählen –</option></select>
+                </div>
+                </details>
+                <button class="sbc-opt-btn primary" id="sbc-opt-run">Optimieren + Eintragen</button>
+                <div class="sbc-opt-result" id="sbc-opt-result"></div>
+                <button class="sbc-opt-btn blue" id="sbc-opt-submit" style="display:none;">Erneut eintragen</button>
+                <button class="sbc-opt-btn ghost" id="sbc-opt-diag" style="margin-top:10px;">Diagnose in Konsole schreiben</button>
+            </div>
+        `;
+        document.body.appendChild(panel);
+        ui = {
+            fab, panel,
+            target: panel.querySelector('#sbc-opt-target'),
+            rarity: panel.querySelector('#sbc-opt-rarity'),
+            poolcount: panel.querySelector('#sbc-opt-poolcount'),
+            status: panel.querySelector('#sbc-opt-status'),
+            debug: panel.querySelector('#sbc-opt-debug'),
+            minrating: panel.querySelector('#sbc-opt-minrating'),
+            maxwaste: panel.querySelector('#sbc-opt-maxwaste'),
+            applyrarity: panel.querySelector('#sbc-opt-applyrarity'),
+            specialstorage: panel.querySelector('#sbc-opt-specialstorage'),
+            maxexpEn: panel.querySelector('#sbc-opt-maxexp-en'),
+            maxexpCount: panel.querySelector('#sbc-opt-maxexp-count'),
+            maxexpTh: panel.querySelector('#sbc-opt-maxexp-th'),
+            scarcity: panel.querySelector('#sbc-opt-scarcity'),
+            storagebonus: panel.querySelector('#sbc-opt-storagebonus'),
+            rarityguard: panel.querySelector('#sbc-opt-rarityguard'),
+            bands: panel.querySelector('#sbc-opt-bands'),
+            bandAdd: panel.querySelector('#sbc-opt-band-add'),
+            bandReset: panel.querySelector('#sbc-opt-band-reset'),
+            rarityPickFilter: panel.querySelector('#sbc-opt-raritypick-filter'),
+            rarityPick: panel.querySelector('#sbc-opt-raritypick'),
+            load: panel.querySelector('#sbc-opt-load'),
+            run: panel.querySelector('#sbc-opt-run'),
+            result: panel.querySelector('#sbc-opt-result'),
+            submit: panel.querySelector('#sbc-opt-submit'),
+            diagBtn: panel.querySelector('#sbc-opt-diag')
+        };
+        fab.addEventListener('click', () => panel.classList.toggle('open'));
+        panel.querySelector('#sbc-opt-close').addEventListener('click', () => panel.classList.remove('open'));
+        makePanelDraggable(panel);
+        ui.load.addEventListener('click', onLoadClick);
+        ui.run.addEventListener('click', onRunClick);
+        ui.submit.addEventListener('click', onSubmitClick);
+        ui.diagBtn.addEventListener('click', onDiagClick);
+        ui.rarityPickFilter.addEventListener('input', renderRarityPickOptions);
+        // Zustand der "Erweiterte Einstellungen" merken
+        const adv = panel.querySelector('#sbc-opt-advanced');
+        try { if (localStorage.getItem('sbcOptAdvancedOpen') === '1') adv.open = true; } catch (e) {}
+        adv.addEventListener('toggle', function () {
+            try { localStorage.setItem('sbcOptAdvancedOpen', adv.open ? '1' : '0'); } catch (e) {}
+        });
+        initBandEditor();
+        refreshSbcInfoUI();
+        refreshDiagUI();
+    }
+    // ---- Rating-Kosten Band-Editor ------------------------------------------
+    let ratingBands = [];
+    function defaultBands() {
+        return [
+            { lo: 0, hi: 80, cost: 0 },
+            { lo: 81, hi: 83, cost: 2 },
+            { lo: 84, hi: 84, cost: 1 },
+            { lo: 85, hi: 86, cost: 5 },
+            { lo: 87, hi: 88, cost: 2 },
+            { lo: 89, hi: 90, cost: 3 },
+            { lo: 91, hi: 92, cost: 4 },
+            { lo: 93, hi: 99, cost: 12 }
+        ];
+    }
+    function bandsToSpec(bands) {
+        return bands
+            .filter(b => b.lo != null && b.hi != null && b.cost != null)
+            .map(b => b.lo + '-' + b.hi + ':' + b.cost)
+            .join(', ');
+    }
+    function saveBands() {
+        try { localStorage.setItem('sbcOptRatingBands', JSON.stringify(ratingBands)); } catch (e) {}
+    }
+    function initBandEditor() {
+        try {
+            const saved = JSON.parse(localStorage.getItem('sbcOptRatingBands') || 'null');
+            ratingBands = (Array.isArray(saved) && saved.length) ? saved : defaultBands();
+        } catch (e) { ratingBands = defaultBands(); }
+        renderBandRows();
+        ui.bandAdd.addEventListener('click', function () {
+            ratingBands.push({ lo: 75, hi: 99, cost: 0 });
+            saveBands(); renderBandRows();
+        });
+        ui.bandReset.addEventListener('click', function () {
+            ratingBands = defaultBands();
+            saveBands(); renderBandRows();
+            toast('Rating-Kosten auf Standard zurückgesetzt.', '');
+        });
+    }
+    let bandDragIndex = null;
+    function renderBandRows() {
+        if (!ui.bands) return;
+        ui.bands.innerHTML = '';
+        ratingBands.forEach(function (band, i) {
+            const row = document.createElement('div');
+            row.className = 'sbc-opt-bandrow';
+            // Drag-Handle zum Umsortieren der Zeilen
+            const handle = document.createElement('span');
+            handle.className = 'sbc-opt-draghandle';
+            handle.textContent = '⠿';
+            handle.title = 'Zeile verschieben (ziehen)';
+            handle.draggable = true;
+            handle.addEventListener('dragstart', function (ev) {
+                bandDragIndex = i;
+                try { ev.dataTransfer.setData('text/plain', String(i)); } catch (e) {}
+                try { ev.dataTransfer.effectAllowed = 'move'; } catch (e) {}
+            });
+            row.addEventListener('dragover', function (ev) {
+                if (bandDragIndex == null) return;
+                ev.preventDefault();
+                row.classList.add('sbc-opt-dragover');
+            });
+            row.addEventListener('dragleave', function () {
+                row.classList.remove('sbc-opt-dragover');
+            });
+            row.addEventListener('drop', function (ev) {
+                ev.preventDefault();
+                row.classList.remove('sbc-opt-dragover');
+                if (bandDragIndex == null || bandDragIndex === i) { bandDragIndex = null; return; }
+                const moved = ratingBands.splice(bandDragIndex, 1)[0];
+                ratingBands.splice(i, 0, moved);
+                bandDragIndex = null;
+                saveBands(); renderBandRows();
+            });
+            const lo = document.createElement('input');
+            lo.type = 'number'; lo.min = '0'; lo.max = '99'; lo.value = band.lo;
+            const hi = document.createElement('input');
+            hi.type = 'number'; hi.min = '0'; hi.max = '99'; hi.value = band.hi;
+            const cost = document.createElement('input');
+            cost.type = 'number'; cost.min = '0'; cost.step = '0.5'; cost.value = band.cost;
+            const del = document.createElement('button');
+            del.textContent = '✕';
+            del.title = 'Stufe entfernen';
+            function upd() {
+                band.lo = Math.max(0, Math.min(99, parseInt(lo.value, 10) || 0));
+                band.hi = Math.max(0, Math.min(99, parseInt(hi.value, 10) || 0));
+                band.cost = Math.max(0, parseFloat(String(cost.value).replace(',', '.')) || 0);
+                saveBands();
+            }
+            lo.addEventListener('change', upd);
+            hi.addEventListener('change', upd);
+            cost.addEventListener('change', upd);
+            del.addEventListener('click', function () {
+                ratingBands.splice(i, 1);
+                saveBands(); renderBandRows();
+            });
+            row.appendChild(handle); row.appendChild(lo); row.appendChild(hi); row.appendChild(cost); row.appendChild(del);
+            ui.bands.appendChild(row);
+        });
+    }
+    // Panel am Header verschiebbar machen; Position wird gemerkt.
+    function makePanelDraggable(panel) {
+        const header = panel.querySelector('.sbc-opt-header');
+        if (!header) return;
+        const POS_KEY = 'sbcOptPanelPos';
+        function applyPos(left, top) {
+            const w = panel.offsetWidth || 340;
+            const h = 60;
+            left = Math.min(Math.max(0, left), Math.max(0, window.innerWidth - w));
+            top = Math.min(Math.max(0, top), Math.max(0, window.innerHeight - h));
+            panel.style.left = left + 'px';
+            panel.style.top = top + 'px';
+            panel.style.right = 'auto';
+            panel.style.bottom = 'auto';
+        }
+        // Gespeicherte Position wiederherstellen
+        try {
+            const saved = JSON.parse(localStorage.getItem(POS_KEY) || 'null');
+            if (saved && typeof saved.left === 'number' && typeof saved.top === 'number') {
+                applyPos(saved.left, saved.top);
+            }
+        } catch (e) {}
+        let dragging = false, offX = 0, offY = 0;
+        header.addEventListener('mousedown', function (ev) {
+            if (ev.target && ev.target.id === 'sbc-opt-close') return;
+            dragging = true;
+            const rect = panel.getBoundingClientRect();
+            offX = ev.clientX - rect.left;
+            offY = ev.clientY - rect.top;
+            ev.preventDefault();
+        });
+        window.addEventListener('mousemove', function (ev) {
+            if (!dragging) return;
+            applyPos(ev.clientX - offX, ev.clientY - offY);
+        });
+        window.addEventListener('mouseup', function () {
+            if (!dragging) return;
+            dragging = false;
+            try {
+                const rect = panel.getBoundingClientRect();
+                localStorage.setItem(POS_KEY, JSON.stringify({ left: rect.left, top: rect.top }));
+            } catch (e) {}
+        });
+    }
+    function setStatus(txt) { if (ui.status) ui.status.textContent = txt; }
+    function refreshSbcInfoUI() {
+        if (!ui.target) return;
+        ui.target.textContent = STATE.sbc.targetOVR || '–';
+        const parts = [];
+        for (const pl of (STATE.sbc.playerLevelConstraints || [])) {
+            parts.push(pl.count + 'x ' + pl.minRating + '+');
+        }
+        for (const rc of (STATE.sbc.rarityConstraints || [])) {
+            parts.push(rc.label + (rc.count > 1 ? ' x' + rc.count : ''));
+        }
+        for (const qc of (STATE.sbc.qualityConstraints || [])) {
+            parts.push('Qualität: ' + (qc.quality === 3 ? 'Gold' : qc.quality === 2 ? 'Silber' : 'Bronze'));
+        }
+        ui.rarity.textContent = parts.length ? parts.join(', ') : 'keine';
+        ui.poolcount.textContent = STATE.pool.length;
+    }
+    function refreshDiagUI() {
+        if (!ui.debug) return;
+        const s = STATE.session;
+        ui.debug.textContent =
+            'API: ' + (s.apiBase ? '✓' : '–') +
+            ' · SID: ' + (s.sid ? '✓' : '–') +
+            ' · Services: ' + (servicesAvailable() ? '✓' : '–') +
+            ' · utas: ' + STATE.diag.utasSeen;
+    }
+    function buildDiagReport() {
+        // Bewusst OHNE Session-Token-Werte!
+        let servicesKeys = null;
+        try {
+            if (window.services && typeof window.services === 'object') {
+                servicesKeys = Object.keys(window.services).slice(0, 60);
+            }
+        } catch (e) {}
+        let challengeSample = null;
+        try {
+            if (STATE.lastChallengeRaw) {
+                challengeSample = JSON.stringify(STATE.lastChallengeRaw).slice(0, 8000);
+            }
+        } catch (e) {}
+        return {
+            version: VERSION,
+            url: location.href.split('?')[0],
+            apiBaseDetected: STATE.session.apiBase,
+            sidCaptured: !!STATE.session.sid,
+            phishingCaptured: !!STATE.session.phishing,
+            servicesAvailable: servicesAvailable(),
+            servicesHooked: STATE.servicesHooked,
+            servicesKeys: servicesKeys,
+            hasSearchViewModel: typeof window.UTBucketedItemSearchViewModel === 'function',
+            counts: {
+                fetchSeen: STATE.diag.fetchSeen,
+                xhrSeen: STATE.diag.xhrSeen,
+                utasSeen: STATE.diag.utasSeen
+            },
+            lastUtasPaths: STATE.diag.lastUtasPaths,
+            lastErrors: STATE.diag.lastErrors,
+            uiScan: STATE.diag.uiScan || null,
+            refreshLog: STATE.diag.refreshLog || null,
+            submitVia: STATE.diag.submitVia || null,
+            controllerScan: controllerScan(),
+            appSquadPutBodySample: STATE.diag.lastSquadPutBody || null,
+            sbc: {
+                setId: STATE.sbc.setId,
+                challengeId: STATE.sbc.challengeId,
+                squadId: STATE.sbc.squadId,
+                targetOVR: STATE.sbc.targetOVR,
+                slots: STATE.sbc.formationSlots,
+                apiPrefix: STATE.sbc.apiPrefix,
+                rarityConstraints: STATE.sbc.rarityConstraints,
+                playerLevelConstraints: STATE.sbc.playerLevelConstraints,
+                qualityConstraints: STATE.sbc.qualityConstraints || [],
+                usableSlots: STATE.sbc.usableSlots || null,
+                reqDump: STATE.sbc.reqDump,
+                entityCaptured: !!STATE.sbc.entity,
+                setChallengesCached: !!STATE.lastSetChallenges
+            },
+            poolSize: STATE.pool.length,
+            // Verteilung der rareflags im Pool - zum Verifizieren der
+            // Gold/Special-Klassifizierung
+            rareflagHistogram: (function () {
+                const m = {};
+                for (const p of STATE.pool) {
+                    const key = String(p.rareflag);
+                    m[key] = (m[key] || 0) + 1;
+                }
+                return m;
+            })(),
+            poolSpecialCount: STATE.pool.filter(p => p.isSpecial).length,
+            evoExcluded: STATE.diag.evoExcluded,
+            // Struktur-Samples hoher Karten: verrät uns die echten Feldnamen,
+            // falls Evolutions/Specials noch falsch klassifiziert werden.
+            highCardSamples: STATE.pool
+                .filter(p => p.rating >= 85)
+                .slice(0, 5)
+                .map(function (p) {
+                    return {
+                        id: p.id, rating: p.rating, rareflag: p.rareflag,
+                        isSpecial: p.isSpecial, isStorage: p.isStorage,
+                        rawKeys: p.raw ? Object.keys(p.raw).slice(0, 60) : null
+                    };
+                }),
+            challengeResponseSample: challengeSample
+        };
+    }
+    function onDiagClick() {
+        const report = buildDiagReport();
+        console.log(LOG_PREFIX + ' ===== DIAGNOSE-REPORT (bitte komplett kopieren) =====');
+        console.log(JSON.stringify(report, null, 2));
+        console.log(LOG_PREFIX + ' ===== ENDE DIAGNOSE-REPORT =====');
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(JSON.stringify(report, null, 2))
+                    .then(() => toast('Diagnose in Konsole geschrieben und in Zwischenablage kopiert.', ''))
+                    .catch(() => toast('Diagnose in Konsole geschrieben (F12 → Console).', ''));
+                return;
+            }
+        } catch (e) {}
+        toast('Diagnose in Konsole geschrieben (F12 → Console).', '');
+    }
+    // (Anker-Spieler-Feature auf Nutzerwunsch entfernt - der Solver kann
+    // cfg.anchorId weiterhin, nur die UI dafür ist weg.)
+    function renderAnchorOptions() {
+        renderRarityPickOptions();
+    }
+    // Auswahl-Liste für die Rarity-Vorgabe: nur Special-Karten
+    function renderRarityPickOptions() {
+        if (!ui.rarityPick) return;
+        const filter = (ui.rarityPickFilter.value || '').toLowerCase();
+        const prev = ui.rarityPick.value;
+        const list = STATE.pool
+            .filter(p => p.isSpecial)
+            .filter(p => !filter || (p.name || '').toLowerCase().indexOf(filter) > -1)
+            .sort((a, b) => a.rating - b.rating)
+            .slice(0, 300);
+        let html = '<option value="">– automatisch wählen –</option>';
+        for (const p of list) {
+            html += '<option value="' + p.id + '">' + escapeHtml(p.name) + ' (' + p.rating +
+                    (p.isStorage ? ', Storage' : '') + ')</option>';
+        }
+        ui.rarityPick.innerHTML = html;
+        ui.rarityPick.value = prev;
+    }
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, c => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[c]));
+    }
+    function readConfig() {
+        return {
+            targetOVR: STATE.sbc.targetOVR,
+            slots: STATE.sbc.formationSlots || 11,
+            minRating: parseInt(ui.minrating.value, 10) || 1,
+            maxOvershoot: Math.max(0, parseFloat(String(ui.maxwaste.value).replace(',', '.')) || 0),
+            applyRarity: ui.applyrarity.checked,
+            specialOnlyFromStorage: ui.specialstorage.checked,
+            maxExpensiveEnabled: ui.maxexpEn.checked,
+            maxExpensiveCount: parseInt(ui.maxexpCount.value, 10) || 0,
+            expensiveThreshold: parseInt(ui.maxexpTh.value, 10) || 99,
+            scarcityWeight: parseFloat(ui.scarcity.value) || 0,
+            storageBonus: parseFloat(ui.storagebonus.value) || 0,
+            rarityGuardCost: parseFloat(ui.rarityguard.value) || 0,
+            ratingCostSpec: bandsToSpec(ratingBands),
+            anchorId: null,
+            rarityPickId: ui.rarityPick.value || null,
+            rarityConstraints: STATE.sbc.rarityConstraints || [],
+            qualityConstraints: STATE.sbc.qualityConstraints || [],
+            playerLevelConstraints: STATE.sbc.playerLevelConstraints || []
+        };
+    }
+    // Hintergrund-Ladung beim App-Start (gleiche Mechanik wie der Button,
+    // nur ohne Klick). Fehler sind still - der Button bleibt der Notausgang.
+    async function autoLoadPool() {
+        if (STATE.loading || STATE.pool.length) return;
+        STATE.loading = true;
+        if (ui.load) ui.load.textContent = 'Abbrechen';
+        setStatus('lade Spieler automatisch...');
+        try {
+            await loadPool((n, total) => {
+                setStatus('lade (auto)... ' + n + (total ? ' / ' + total : ''));
+                if (ui.poolcount) ui.poolcount.textContent = String(n);
+            });
+            refreshSbcInfoUI();
+            renderAnchorOptions();
+            setStatus('Pool bereit (' + STATE.pool.length + ')');
+            toast('Spieler automatisch geladen: ' + STATE.pool.length + ' Karten.', '');
+        } catch (e) {
+            warn('Auto-Load fehlgeschlagen:', e.message);
+            setStatus('Auto-Load fehlgeschlagen - bitte "Spieler laden" drücken');
+        } finally {
+            STATE.loading = false;
+            STATE.cancelLoad = false;
+            if (ui.load) ui.load.textContent = 'Spieler laden';
+            refreshDiagUI();
+        }
+    }
+    async function onLoadClick() {
+        // Während des Ladens fungiert der Button als Abbrechen-Knopf.
+        if (STATE.loading) {
+            STATE.cancelLoad = true;
+            setStatus('breche ab...');
+            return;
+        }
+        STATE.loading = true;
+        ui.load.textContent = 'Abbrechen';
+        setStatus('lade Spieler...');
+        // VOLL-REFRESH: alten Pool verwerfen. Der Merge behält sonst Karten,
+        // die längst verbraucht/verkauft sind - und der Server lehnt solche
+        // Karteileichen beim Eintragen mit 460 ab. Bei Fehlschlag wird der
+        // alte Stand wiederhergestellt.
+        const backupById = STATE.poolById, backupPool = STATE.pool;
+        STATE.poolById = new Map();
+        STATE.pool = [];
+        try {
+            await loadPool((n, total) => {
+                setStatus('lade... ' + n + (total ? ' / ' + total : ''));
+                ui.poolcount.textContent = String(n);
+            });
+            if (!STATE.pool.length) { STATE.poolById = backupById; STATE.pool = backupPool; }
+            refreshSbcInfoUI();
+            renderAnchorOptions();
+            setStatus(STATE.cancelLoad ? 'abgebrochen (' + STATE.pool.length + ')' : 'Pool bereit (' + STATE.pool.length + ')');
+            toast(STATE.pool.length + ' Spieler im Pool.', '');
+        } catch (e) {
+            if (!STATE.pool.length) { STATE.poolById = backupById; STATE.pool = backupPool; }
+            setStatus('Fehler beim Laden');
+            toast(e.message || 'Fehler beim Laden.', 'error');
+            warn('Laden fehlgeschlagen:', e);
+        } finally {
+            STATE.loading = false;
+            STATE.cancelLoad = false;
+            ui.load.textContent = 'Spieler laden';
+            refreshDiagUI();
+        }
+    }
+    async function onRunClick() {
+        // Erkennung IMMER mit der offen sichtbaren Challenge abgleichen -
+        // der Hook-Zustand kann nach Pack-Öffnen/Submit veraltet sein.
+        syncSbcWithOpenChallenge();
+        if (!STATE.sbc.targetOVR && !(STATE.sbc.playerLevelConstraints || []).length &&
+            !(STATE.sbc.rarityConstraints || []).length &&
+            !(STATE.sbc.qualityConstraints || []).length) {
+            toast('Kein Ziel-OVR erkannt. Bitte SBC-Challenge im Spiel öffnen (und ggf. Diagnose-Button nutzen).', 'error');
+            return;
+        }
+        if (STATE.pool.length === 0) {
+            toast('Pool leer. Bitte zuerst "Spieler laden".', 'error');
+            return;
+        }
+        if (STATE.loadIncomplete) {
+            toast('ACHTUNG: Der Pool ist unvollständig geladen (' + STATE.pool.length +
+                ' Karten) - das Ergebnis kann schlechter oder unlösbar sein. Am besten erst "Spieler laden" erneut ausführen.', 'warn');
+        }
+        setStatus('optimiere...');
+        ui.run.disabled = true;
+        try {
+            const cfg = readConfig();
+            let res;
+            try { res = SolverCore.solve(STATE.pool, cfg); }
+            catch (e) { toast('Optimierungsfehler: ' + e.message, 'error'); setStatus('Fehler'); warn(e); return; }
+            renderResult(res);
+            if (res.ok) {
+                setStatus('Lösung gefunden (OVR ' + res.ovr + ') - trage ein...');
+                // Direkt eintragen - ein Klick, fertig. Der separate Button
+                // bleibt als "Erneut eintragen"-Fallback sichtbar.
+                await submitCurrentResult();
+            } else {
+                setStatus('keine Lösung');
+                toast(res.reason || 'Keine Lösung gefunden.', 'error');
+            }
+        } finally {
+            ui.run.disabled = false;
+        }
+    }
+    function renderResult(res) {
+        if (!ui.result) return;
+        if (!res.ok && (!res.players || !res.players.length)) {
+            ui.result.className = 'sbc-opt-result show';
+            let h = '<div class="sbc-opt-warn">' + escapeHtml(res.reason || 'Keine Lösung.') + '</div>';
+            for (const w of (res.warnings || [])) h += '<div class="sbc-opt-warn">⚠ ' + escapeHtml(w) + '</div>';
+            ui.result.innerHTML = h;
+            ui.submit.style.display = 'none';
+            return;
+        }
+        let html = '';
+        const players = res.players.slice().sort((a, b) => b.rating - a.rating);
+        for (const p of players) {
+            const badgeCls = 'sbc-opt-badge' + (p.isSpecial ? ' special' : '') + (p.isStorage ? ' storage' : '');
+            html += '<div class="sbc-opt-player"><span>' + escapeHtml(p.name) +
+                    (p.isStorage ? ' <span style="color:#0077ff;font-size:11px;">[Storage]</span>' : '') +
+                    '</span><span class="' + badgeCls + '">' + p.rating + '</span></div>';
+        }
+        const nStorage = res.players.filter(p => p.isStorage).length;
+        const wasteTxt = (typeof res.waste === 'number')
+            ? ((res.waste >= 0 ? '+' : '') + res.waste.toFixed(2)) : '–';
+        html += '<div class="sbc-opt-summary">Team-OVR: <b>' + res.ovr + '</b>' +
+                (res.ovrExact != null ? ' <span style="color:#9db2c8;">(' + res.ovrExact.toFixed(2) + ')</span>' : '') +
+                (res.target ? ' / Ziel ' + res.target : '') +
+                ' &nbsp; Überschuss: <b>' + wasteTxt + '</b>' +
+                (nStorage ? ' &nbsp; Storage: <b>' + nStorage + '</b>' : '') + '</div>';
+        if (res.poolInfo) {
+            html += '<div style="color:#7d93ab;font-size:11px;">Pool nach Filtern: ' + res.poolInfo.count +
+                    ' Karten (' + res.poolInfo.min + '–' + res.poolInfo.max + ')</div>';
+        }
+        for (const w of (res.warnings || [])) html += '<div class="sbc-opt-warn">⚠ ' + escapeHtml(w) + '</div>';
+        if (!res.ok && res.reason) html += '<div class="sbc-opt-warn">⚠ ' + escapeHtml(res.reason) + '</div>';
+        ui.result.className = 'sbc-opt-result show';
+        ui.result.innerHTML = html;
+        ui.submit.style.display = res.ok ? 'block' : 'none';
+    }
+    async function onSubmitClick() {
+        await submitCurrentResult();
+    }
+    async function submitCurrentResult() {
+        const res = STATE.lastResult;
+        if (!res || !res.ok) {
+            toast('Kein gültiges Ergebnis zum Eintragen. Erst "Optimieren" ausführen.', 'error');
+            return;
+        }
+        ui.submit.disabled = true;
+        setStatus('trage in SBC ein...');
+        try {
+            // Sicherstellen, dass wir in die offen sichtbare Challenge eintragen.
+            syncSbcWithOpenChallenge();
+            const sub = await submitToSbc(res);
+            let live = (sub.via === 'app'); // App-Save aktualisiert die Ansicht selbst
+            if (!live) {
+                // Fallback-Wege: Challenge vom Server neu laden (App baut echte
+                // Entities) und die offene Ansicht gezielt neu binden.
+                await refreshChallengeCache();
+                live = refreshOpenSbcView() || live;
+            }
+            // Verbaute Karten sofort aus dem Pool nehmen - die nächste SBC
+            // kann ohne Neu-Laden optimiert werden.
+            removeFromPool(res.players);
+            setStatus('eingetragen ✓ (' + sub.confirmed + ' bestätigt)');
+            if (live) {
+                toast('Team eingetragen ✓ Server bestätigt ' + sub.confirmed + ' Spieler. Prüfen und selbst auf Submit drücken.', '');
+            } else {
+                toast('Team eingetragen ✓ Server bestätigt ' + sub.confirmed + ' Spieler. Falls das Feld leer aussieht: Challenge einmal verlassen und neu öffnen.', 'warn');
+            }
+        } catch (e) {
+            setStatus('Eintrag fehlgeschlagen');
+            const hint = /460|400/.test(String(e && e.message))
+                ? ' Tipp: Der Server lehnt vermutlich eine Karte ab, die nicht mehr verfügbar ist (Pool veraltet). Einmal "Spieler laden" drücken und neu optimieren.'
+                : '';
+            toast('Eintragen fehlgeschlagen: ' + (e.message || e) + hint, 'error');
+        } finally {
+            ui.submit.disabled = false;
+        }
+    }
+    // ========================================================================
+    //  8. BOOTSTRAP
+    // ========================================================================
+    function installServicesHooks() {
+        try {
+            if (STATE.servicesHooked) return;
+            if (typeof window.services !== 'object' || !window.services || !window.services.SBC) return;
+            const sbc = window.services.SBC;
+            if (typeof sbc.loadChallenge === 'function') {
+                const orig = sbc.loadChallenge;
+                STATE.origLoadChallenge = orig.bind(sbc);
+                sbc.loadChallenge = function (challenge) {
+                    try { captureChallengeEntity(challenge); } catch (e) {}
+                    return orig.apply(this, arguments);
+                };
+                log('Hook auf services.SBC.loadChallenge installiert.');
+            }
+            STATE.servicesHooked = true;
+            refreshDiagUI();
+        } catch (e) {}
+    }
+    function boot() {
+        if (document.getElementById('sbc-opt-fab')) return;
+        injectStyles();
+        buildPanel();
+        log('UI initialisiert. Version', VERSION);
+    }
+    function waitForBody() {
+        if (document.body) { boot(); }
+        else {
+            const obs = new MutationObserver(() => {
+                if (document.body) { obs.disconnect(); boot(); }
+            });
+            obs.observe(document.documentElement, { childList: true });
+            window.addEventListener('DOMContentLoaded', boot);
+        }
+        // Die EA-App räumt das DOM teils um - UI ggf. wieder anhängen.
+        setInterval(function () {
+            try {
+                if (document.body && ui.fab && !document.getElementById('sbc-opt-fab')) {
+                    document.body.appendChild(ui.fab);
+                    document.body.appendChild(ui.panel);
+                }
+                refreshDiagUI();
+            } catch (e) {}
+        }, 2000);
+        // App-Services erscheinen erst nach dem App-Start.
+        setInterval(installServicesHooks, 1000);
+        // AUTO-LOAD: den Pool EINMAL im Hintergrund laden, sobald die Session
+        // steht - dann ist beim Öffnen der ersten SBC schon alles da und
+        // "Spieler laden" ist nur noch für manuelle Aktualisierung nötig.
+        setInterval(function () {
+            try {
+                if (STATE.autoLoadTried || STATE.loading || STATE.pool.length) return;
+                if (!sessionReady() || !ui.load) return;
+                STATE.autoLoadTried = true;
+                setTimeout(autoLoadPool, 2500); // App kurz ankommen lassen
+            } catch (e) {}
+        }, 2000);
+        // Session-Keep-Alive: alle 4 Minuten ein leichter App-Request, damit
+        // die EA-Session nicht abläuft, während man im Panel arbeitet.
+        // (Der Request läuft über die App selbst - frische SID wird dabei
+        // automatisch von unserer Interception aufgeschnappt.)
+        setInterval(function () {
+            try {
+                if (window.services && window.services.Item &&
+                    typeof window.services.Item.requestUnassignedItems === 'function') {
+                    obsPromise(window.services.Item.requestUnassignedItems())
+                        .then(function (r) {
+                            if (!responseOk(r)) warn('Keep-Alive: Session evtl. abgelaufen (Status', r && r.status, ')');
+                        })
+                        .catch(function () {});
+                }
+            } catch (e) {}
+        }, 240000);
+    }
+    // Ergebnis von onRunClick für den Submit merken
+    const _origSolve = SolverCore.solve;
+    SolverCore.solve = function (pool, cfg) {
+        const res = _origSolve(pool, cfg);
+        STATE.lastResult = res;
+        return res;
+    };
+    // Debug-Zugriff für die Konsole
+    try { window.__SBC_OPT = { STATE: STATE, Solver: SolverCore, diag: buildDiagReport }; } catch (e) {}
+    waitForBody();
+})();

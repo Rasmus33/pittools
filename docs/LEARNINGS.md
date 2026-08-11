@@ -145,6 +145,19 @@ trotz Erfolg).
   App) für Cross-Origin-Requests bereitstellt — die fehlt bei uns. Betroffen
   sind damit nur die externen Preisabfragen (futbin/futwiz/fut.gg), nicht das
   Laden von PaleTools selbst.
+- **PaleTools darf NICHT früh injiziert werden** (das war der eigentliche
+  Grund, live bestätigt): es referenziert EA-Symbole direkt beim Laden auf
+  Top-Level — `UIItemActionEvent`, `UTStandardButtonControl` (65×),
+  `UTSBCSquadDetailPanelView` (38×) und viele weitere. In `onPageStarted`
+  injiziert stirbt es sofort mit `UIItemActionEvent is not defined`, und zwar
+  komplett. Als Tampermonkey-Script läuft es bei `document-idle`, also lange
+  nach unserem Script — das muss die App nachbilden.
+  Ab v1.4.1: Übertragung in `onPageFinished` und ein Wächter im JS, der auf
+  `UIItemActionEvent` + `UTStandardButtonControl` + `services` + `document.body`
+  wartet (alle 250ms, nach ~60s wird trotzdem versucht und im Status vermerkt).
+  **Genau umgekehrt zu unserem Script**, das so früh wie möglich laufen MUSS
+  (fetch/XHR-Interception vor dem EA-Bundle) — die beiden Scripts haben
+  entgegengesetzte Anforderungen, deshalb zwei getrennte Wege.
 - **Große Scripts müssen gestückelt injiziert werden** (ab App v1.4.0):
   PaleTools ist ~910 KB, und `evaluateJavascript` schiebt den String per
   Binder-IPC zum Renderer — Transaktionslimit ~1 MB (geteilter Puffer), also

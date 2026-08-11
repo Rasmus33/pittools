@@ -13,7 +13,7 @@ automatisch die neuesten Userscripts und injiziert sie — kein Tampermonkey nö
 
 ## Installation (für den Kollegen)
 
-1. `pittools-v1.4.0.apk` aufs Handy schicken (z.B. WhatsApp/Mail/Drive).
+1. `pittools-v1.4.1.apk` aufs Handy schicken (z.B. WhatsApp/Mail/Drive).
 2. Antippen → Installation aus unbekannten Quellen einmalig erlauben.
    (Play Protect ggf. mit „Trotzdem installieren" bestätigen — die App ist
    selbstsigniert.)
@@ -61,7 +61,7 @@ Signatur macht Updates in-place unmöglich.
 Nach dem Build gegenprüfen, dass die Signatur zur installierten Version passt:
 
 ```bash
-apksigner verify --print-certs build/pittools-v1.4.0.apk   # SHA-256: 41f23895…1b17
+apksigner verify --print-certs build/pittools-v1.4.1.apk   # SHA-256: 41f23895…1b17
 ```
 
 ## Technik-Notizen
@@ -73,6 +73,10 @@ apksigner verify --print-certs build/pittools-v1.4.0.apk   # SHA-256: 41f23895�
   laufen). PaleTools wird gestückelt übertragen und dann über ein
   `<script>`-Tag ausgeführt — eine einzelne `evaluateJavascript`-Transaktion
   hält keine ~910 KB (Binder-Limit ~1 MB).
+- **PaleTools wird bewusst spät ausgeführt** (`onPageFinished` + Wächter, der
+  auf die EA-Klassen wartet): es fasst `UIItemActionEvent` & Co. direkt beim
+  Laden an und stirbt sonst mit "is not defined". `node app/guard-test.js`
+  prüft diesen Wächter.
 - Der ⚙-Knopf ist verschiebbar (ziehen; Tippen öffnet die Einstellungen). Als
   nativer Button liegt er über dem WebView und macht alles im DOM darunter
   untippbar — unten links war er eine Totzone.

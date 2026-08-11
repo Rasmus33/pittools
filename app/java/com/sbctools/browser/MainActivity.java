@@ -149,19 +149,33 @@ public class MainActivity extends Activity {
         new Thread(new ScriptLoader(this)).start();
     }
 
+    /**
+     * Unser Optimizer: so FRÜH wie möglich (onPageStarted), die fetch/XHR-
+     * Interception muss vor dem EA-Bundle stehen.
+     */
     void injectScripts() {
         if (!scriptsReady) return;
         if (scriptSbc != null) {
-            // Direkt als Code: bewährt, und muss so früh wie möglich laufen
-            // (die fetch/XHR-Interception muss vor dem EA-Bundle stehen).
             web.evaluateJavascript(
                 "if(!window.__inj_sbc){window.__inj_sbc=1;try{" + scriptSbc +
                 "\n}catch(e){console.error('SBC-Optimizer Injection:',e);}}", null);
         }
-        if (scriptPale != null && !paleInjected) {
-            paleInjected = true;
-            injectPaleChunked();
-        }
+    }
+
+    /**
+     * PaleTools: bewusst SPÄT (onPageFinished) und zusätzlich abgesichert
+     * durch einen Wächter, der auf die EA-Klassen wartet.
+     * Grund: PaleTools referenziert EA-Symbole auf Top-Level
+     * (UIItemActionEvent, UTStandardButtonControl, UTSBCSquadDetailPanelView …)
+     * und stirbt sofort mit "… is not defined", wenn das EA-Bundle noch nicht
+     * gelaufen ist. Als Tampermonkey-Script läuft es bei document-idle, also
+     * lange nach unserem Script - das muss die App nachbilden.
+     */
+    void injectPaleLate() {
+        if (!scriptsReady || scriptPale == null || paleInjected) return;
+        paleInjected = true;
+        injectPaleChunked();
+        web.postDelayed(new PalePoll(this, 0), 1500);
     }
 
     /**
@@ -187,19 +201,34 @@ public class MainActivity extends Activity {
             web.evaluateJavascript(
                 "window.__pt_buf&&window.__pt_buf.push(" + jsQuote(part) + ");", null);
         }
+        // Ausfuehren, sobald die EA-Klassen stehen. Der Status landet in
+        // window.__pt_status und wird von PalePoll abgeholt (der Callback von
+        // evaluateJavascript kann ihn nicht liefern - das Ergebnis kommt
+        // asynchron, oft erst Sekunden spaeter).
         web.evaluateJavascript(
-            "(function(){try{" +
-            "if(!window.__pt_buf)return'no-buffer';" +
-            "var code=window.__pt_buf.join('')+'\\n;window.__pt_ran=1;';" +
-            "window.__pt_buf=null;var n=code.length;" +
-            "try{var s=document.createElement('script');s.textContent=code;" +
-            "(document.head||document.documentElement).appendChild(s);" +
-            "if(s.parentNode)s.parentNode.removeChild(s);}catch(e1){}" +
-            "if(!window.__pt_ran){try{(new Function(code))();}" +
-            "catch(e2){return'FEHLER: '+(e2&&e2.message||e2);}}" +
-            "return (window.__pt_ran?'geladen':'still fehlgeschlagen')+' ('+n+' Zeichen)';" +
-            "}catch(e){return'FEHLER: '+(e&&e.message||e);}})()",
-            new PaleResult(this));
+            "(function(){" +
+            "if(window.__pt_waiting)return;window.__pt_waiting=1;" +
+            "function exec(note){try{" +
+            "  if(!window.__pt_buf){window.__pt_status='no-buffer';return;}" +
+            "  var code=window.__pt_buf.join('')+'\\n;window.__pt_ran=1;';" +
+            "  window.__pt_buf=null;var n=code.length;" +
+            "  try{var s=document.createElement('script');s.textContent=code;" +
+            "    (document.head||document.documentElement).appendChild(s);" +
+            "    if(s.parentNode)s.parentNode.removeChild(s);}catch(e1){}" +
+            "  if(!window.__pt_ran){try{(new Function(code))();}" +
+            "    catch(e2){window.__pt_status='FEHLER: '+(e2&&e2.message||e2);return;}}" +
+            "  window.__pt_status=(window.__pt_ran?'geladen':'still fehlgeschlagen')" +
+            "    +' ('+n+' Zeichen'+note+')';" +
+            "}catch(e){window.__pt_status='FEHLER: '+(e&&e.message||e);}}" +
+            // PaleTools fasst EA-Symbole direkt beim Laden an - erst warten.
+            "function ready(){return typeof UIItemActionEvent!=='undefined'" +
+            "  &&typeof UTStandardButtonControl!=='undefined'" +
+            "  &&typeof services!=='undefined'&&!!document.body;}" +
+            "var t=0;(function w(){" +
+            "  if(ready()){exec('');return;}" +
+            "  if(++t>240){exec(', EA-Klassen fehlten');return;}" + // ~60s, dann trotzdem
+            "  setTimeout(w,250);})();" +
+            "})()", null);
     }
 
     /** Escaped einen Beliebig-Text als JS-String-Literal (inkl. Quotes). */
@@ -373,18 +402,31 @@ class GearRestore implements Runnable {
     }
 }
 
-/** Ergebnis der PaleTools-Injection sichtbar machen (ohne Konsole am Gerät). */
-class PaleResult implements ValueCallback<String> {
+/**
+ * Holt window.__pt_status ab, sobald der Wächter im JS ihn gesetzt hat, und
+ * zeigt ihn als Toast - am Gerät hängt keine Konsole.
+ */
+class PalePoll implements Runnable, ValueCallback<String> {
     private final MainActivity a;
-    PaleResult(MainActivity a) { this.a = a; }
+    private final int tries;
+    PalePoll(MainActivity a, int tries) { this.a = a; this.tries = tries; }
+    @Override public void run() {
+        a.web.evaluateJavascript("window.__pt_status||''", this);
+    }
     @Override public void onReceiveValue(String value) {
-        String s = (value == null) ? "keine Antwort" : value;
+        String s = (value == null) ? "" : value;
         // evaluateJavascript liefert JSON - Strings kommen in Anführungszeichen
         if (s.length() >= 2 && s.charAt(0) == '"' && s.charAt(s.length() - 1) == '"') {
             s = s.substring(1, s.length() - 1)
                  .replace("\\\"", "\"").replace("\\\\", "\\").replace("\\n", " ");
         }
-        Toast.makeText(a, "PaleTools: " + s, Toast.LENGTH_LONG).show();
+        if (s.length() > 0 && !"null".equals(s)) {
+            Toast.makeText(a, "PaleTools: " + s, Toast.LENGTH_LONG).show();
+            return;
+        }
+        // Noch kein Status - der Wächter wartet auf die EA-Klassen.
+        if (tries < 45) a.web.postDelayed(new PalePoll(a, tries + 1), 2000);
+        else Toast.makeText(a, "PaleTools: keine Rückmeldung", Toast.LENGTH_LONG).show();
     }
 }
 
@@ -406,6 +448,9 @@ class SbcWebViewClient extends android.webkit.WebViewClient {
         // Sicherheitsnetz: falls die frühe Injection zu früh kam.
         // (Guards in injectScripts verhindern Doppel-Ausführung.)
         a.injectScripts();
+        // PaleTools erst JETZT - es fasst EA-Symbole beim Laden an und stirbt
+        // in onPageStarted mit "UIItemActionEvent is not defined".
+        a.injectPaleLate();
     }
 }
 

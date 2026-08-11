@@ -33,9 +33,14 @@ JS/Java-Engineering. Umgangssprache: Deutsch.
    (wird im Panel-Header angezeigt — daran erkennt Rasmus, ob Tampermonkey/
    die App wirklich die neue Version geladen hat).
 5. Push auf `main` → beide Handys ziehen die Version automatisch.
-6. Bei App-Änderungen: `cd app && ./build.sh`, APK an Rasmus. Signatur mit
-   `debug.keystore` (liegt NICHT im Repo — Rasmus hat ihn; Passwort:
-   android). Ohne denselben Keystore ist kein Update-in-place möglich.
+6. Bei App-Änderungen: `node app/guard-test.js` (prüft den aus Java-Literalen
+   zusammengesetzten PaleTools-Wächter — der fällt sonst STILL aus), dann
+   `cd app && ./build.sh`, APK an Rasmus. `versionCode` UND `versionName` im
+   Manifest bumpen. Signatur mit `debug.keystore` (liegt NICHT im Repo —
+   Rasmus hat ihn; Passwort: android). Ohne denselben Keystore ist kein
+   Update-in-place möglich; `build.sh` bricht deshalb ab, statt einen neuen
+   Keystore zu erzeugen. Nach dem Build muss `apksigner verify --print-certs`
+   SHA-256 `41f23895…1b17` zeigen.
 
 ## Produkt-Regeln (von Rasmus, gelten immer)
 

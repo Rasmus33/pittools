@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.8.0
+// @version      4.9.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -10,6 +10,13 @@
 // @match        https://www.ea.com/ultimate-team/web-app/*
 // @run-at       document-start
 // @grant        none
+// Auto-Update in Tampermonkey: zeigt auf main - Push = Update auf allen
+// Geräten. Tampermonkey vergleicht dazu @version, die MUSS also bei jeder
+// Änderung hoch (siehe CLAUDE.md). @name/@namespace NIE ändern: die beiden
+// bilden die Script-Identität, sonst legt Tampermonkey ein zweites Script an
+// statt dieses zu aktualisieren.
+// @updateURL    https://raw.githubusercontent.com/Rasmus33/pittools/main/ea-fc-sbc-optimizer.user.js
+// @downloadURL  https://raw.githubusercontent.com/Rasmus33/pittools/main/ea-fc-sbc-optimizer.user.js
 // ==/UserScript==
 /*
  * ============================================================================
@@ -51,7 +58,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.8.0';
+    const VERSION = '4.9.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -1313,7 +1320,39 @@
          * optimiert im Fenster [stMin, stMin+maxWaste] die Kartenkosten.
          * Waste ist also relativ zum POOL-Minimum definiert.
          */
+        /**
+         * Rarity-Schutz als HARTE Grenze (Rasmus): Karten der geschützten
+         * Gruppen (TOTW/TOTS/FOF/FUTTIES) werden für künftige SBC-Vorgaben
+         * gebraucht. Fordert die SBC N davon, werden GENAU N reserviert und
+         * alle weiteren gesperrt - lieber eine hohe Gold-Karte aus dem Verein
+         * als unnötig eine zweite FUTTIES aus dem Storage.
+         *
+         * Warum hart und nicht über die Kosten: der Aufschlag (+8) konnte den
+         * Storage-Rabatt nicht überstimmen. costOf halbiert die Basis für
+         * Storage-Karten, und die Basis wächst mit alpha/n bei seltenen hohen
+         * Ratings - ein 92er FUTTIES aus dem Storage landete bei 12.5, das
+         * gleichwertige Vereins-Gold bei 13. Live passiert bei einem 90er-Team
+         * (zwei FUTTIES verbaut, eine gefordert). Kosten-Feintuning hätte das
+         * nur verschoben, nicht behoben.
+         *
+         * Ist die SBC so nicht lösbar, wird die Sperre aufgehoben und gewarnt -
+         * gleiches Muster wie bei "max. teure Spieler".
+         */
         function solve(poolAll, cfg) {
+            const strict = solveCore(poolAll, cfg, true);
+            if (strict && strict.ok) return strict;
+            const loose = solveCore(poolAll, cfg, false);
+            if (loose && loose.ok) {
+                loose.warnings = (loose.warnings || []).concat(
+                    'Ohne zusätzliche geschützte Karten (TOTW/TOTS/FOF/FUTTIES) ist die ' +
+                    'SBC mit diesem Pool nicht lösbar - Schutz gelockert.');
+                return loose;
+            }
+            // Beide gescheitert: die Meldung des LOCKEREN Versuchs ist die
+            // aussagekräftigere (die Sperre war dort nicht die Ursache).
+            return loose || strict;
+        }
+        function solveCore(poolAll, cfg, limitProtected) {
             const warnings = [];
             const N = cfg.slots || 11;
             const target = cfg.targetOVR;
@@ -1513,7 +1552,15 @@
             }
             const k = N - reserved.length;
             const reservedSum = reserved.reduce((s, p) => s + p.rating, 0);
-            const avail = pool.filter(p => !used.has(p.id));
+            let avail = pool.filter(p => !used.has(p.id));
+            // Geschützte Karten, die NICHT für eine Vorgabe reserviert wurden,
+            // aus der Suche nehmen (siehe solve()). Die reservierten sind schon
+            // über `used` draussen, also bleibt genau die geforderte Anzahl.
+            // Bleiben dadurch zu wenige Karten, scheitert dieser Durchlauf -
+            // solve() wiederholt ihn dann ohne Sperre UND mit Warnung. Bewusst
+            // kein stilles Überspringen hier: sonst würden zusätzliche
+            // geschützte Karten unbemerkt verbaut.
+            if (limitProtected) avail = avail.filter(p => !isProtectedRarity(p));
             if (avail.length < k) {
                 return { ok: false, reason: 'Nicht genug passende Spieler im Pool (' + (avail.length + reserved.length) + ' < ' + N + '). Erst "Spieler laden" ausführen oder Filter lockern.', warnings: warnings };
             }

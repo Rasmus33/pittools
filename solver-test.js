@@ -330,6 +330,89 @@ function mulberry32(a) {
         res3.players.some(p => p.groups && p.groups.indexOf(83) > -1));
 }
 
+// ========== 8b2. Rarity-Schutz bei HOHEN Ratings (Live-Fall 90er-Team) ==========
+{
+    // Live mit v4.8.0: 90er-Team gebaut, ZWEI FUTTIES verbaut, obwohl die SBC
+    // nur eine forderte. Ursache: ab Rating 93 ist die Band-Kostenstufe 12,
+    // damit ist die Storage-Ersparnis (base/2 + beta) immer grösser als der
+    // Schutz-Aufschlag (+8) - eine Storage-FUTTIES ist dann billiger als das
+    // gleichwertige Vereins-Gold. Am Aufschlag zu drehen hätte die Grenze nur
+    // verschoben; die Regel ist "über die geforderte Anzahl hinaus gar nicht".
+    const REAL = {
+        scarcityWeight: 18, storageBonus: 2,
+        ratingCostSpec: '0-80:0,81-83:2,84:1,85-86:5,87-88:2,89-90:3,91-92:4,93+:12'
+    };
+    const need1 = [{ label: 'PLAYER_RARITY_GROUP', ids: [], count: 1, groupId: 83 }];
+
+    // Bestes erreichbares OVR bei HÖCHSTENS maxProt geschützten Karten -
+    // damit die Erwartungswerte unten nicht aus dem Kopf kommen.
+    function bestWithProtected(pool, N, maxProt) {
+        let bestOvr = -1, bestTeam = null;
+        const idx = [];
+        (function rec(start, cnt, prot) {
+            if (prot > maxProt) return;
+            if (cnt === N) {
+                const rats = idx.map(i => pool[i].rating);
+                const ovr = SolverCore.squadRating(rats);
+                if (ovr > bestOvr) { bestOvr = ovr; bestTeam = rats.slice(); }
+                return;
+            }
+            if (pool.length - start < N - cnt) return;
+            for (let i = start; i < pool.length; i++) {
+                idx.push(i);
+                rec(i + 1, cnt + 1, prot + (((pool[i].groups || []).indexOf(83) > -1) ? 1 : 0));
+                idx.pop();
+            }
+        })(0, 0, 0);
+        return { ovr: bestOvr, team: bestTeam };
+    }
+    const protCount = (res) => res.ok
+        ? res.players.filter(p => p.groups && p.groups.indexOf(83) > -1).length : -1;
+
+    // Fall 1: Es gibt Vereins-Gold als Alternative auf 93 -> genau EINE
+    // geschützte Karte muss reichen.
+    const pool = [].concat(
+        many(2, 93, { special: true, rareflag: 137, groups: [83], storage: true }),
+        many(2, 93, { groups: [19] }),
+        many(9, 89, { groups: [19] }));
+    const bf1 = bestWithProtected(pool, 11, 1);
+    check('Brute-Force: Ziel 90 ist mit genau 1 Gruppe-83-Karte erreichbar',
+        bf1.ovr >= 90, 'bestOvr=' + bf1.ovr + ' team=' + JSON.stringify(bf1.team));
+    const res = SolverCore.solve(pool,
+        cfg(90, Object.assign({}, REAL, { rarityConstraints: need1 })));
+    check('90er-Team: genau 1 geschützte Karte trotz Storage-Rabatt bei 93+',
+        res.ok && protCount(res) === 1,
+        res.ok ? ('protected=' + protCount(res) + ' ovr=' + res.ovr) : res.reason);
+    check('90er-Team: Ziel dabei trotzdem erreicht', res.ok && res.ovr >= 90,
+        res.ok ? ('ovr=' + res.ovr) : res.reason);
+
+    // Fall 2: Ohne Vereins-Gold auf 93 geht es NUR mit zwei geschützten Karten.
+    // Dann muss die Sperre sich lösen - mit Warnung, damit es nicht unbemerkt
+    // passiert.
+    const poolNoAlt = [].concat(
+        many(2, 93, { special: true, rareflag: 137, groups: [83], storage: true }),
+        many(9, 89, { groups: [19] }));
+    const bfOnly1 = bestWithProtected(poolNoAlt, 11, 1);
+    const bfUpTo2 = bestWithProtected(poolNoAlt, 11, 2);
+    check('Brute-Force: ohne Alternative nur mit 2 geschützten Karten möglich',
+        bfOnly1.ovr < 90 && bfUpTo2.ovr >= 90,
+        'maxOvr mit 1=' + bfOnly1.ovr + ', mit 2=' + bfUpTo2.ovr);
+    const res2 = SolverCore.solve(poolNoAlt,
+        cfg(90, Object.assign({}, REAL, { rarityConstraints: need1 })));
+    check('Schutz wird gelockert, wenn die SBC sonst unlösbar ist',
+        res2.ok && protCount(res2) === 2 &&
+        res2.warnings.some(w => /Schutz gelockert/.test(w)),
+        res2.ok ? ('protected=' + protCount(res2) + ' warn=' + JSON.stringify(res2.warnings))
+                : res2.reason);
+
+    // Fall 3: Ohne Vorgabe darf auch bei 93+ keine geschützte Karte rein,
+    // solange eine Alternative existiert.
+    const res3 = SolverCore.solve(pool, cfg(90, REAL));
+    check('Ohne Vorgabe: keine geschützte Karte, obwohl sie billiger wäre',
+        res3.ok && protCount(res3) === 0,
+        res3.ok ? ('protected=' + protCount(res3)) : res3.reason);
+}
+
 // ========== 8c. Spieler-Eindeutigkeit (EA: gleiche assetId nur 1x pro Squad) ==========
 {
     // 4 Kopien desselben Spielers (gleiche assetId, verschiedene Item-IDs,

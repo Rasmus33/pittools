@@ -21,6 +21,16 @@ DP über Booster ≥ floor(st/N)+1 und Füller) minimiert V, im Fenster
 `windowV = maxOvershoot·N²` entscheiden die Kartenkosten.
 Kostenmodell: `alpha/anzahl(rating) + bandkosten(rating)`; Storage:
 `(basis/2 − beta)`; Rarity-Schutz (+8 für Gruppe-83) NACH dem Storage-Rabatt.
+**Der Aufschlag allein reicht NICHT** (live, v4.8.0: 90er-Team mit zwei FUTTIES
+statt einer): die Storage-Ersparnis ist `basis/2 + beta` und wächst mit der
+Basis — ab Bandkosten 12 (Rating 93+) ist sie *immer* größer als 8, eine
+Storage-FUTTIES also billiger als das gleichwertige Vereins-Gold. Am Aufschlag
+zu drehen verschiebt die Grenze nur. Ab v4.9.0 ist der Schutz deshalb eine
+**harte Sperre**: über die von der SBC geforderte Anzahl hinaus kommen
+geschützte Karten gar nicht in die Suche (`solve()` läuft strikt, und nur wenn
+das unlösbar ist, ein zweites Mal ohne Sperre + Warnung — dasselbe Muster wie
+bei „max. teure Spieler"). Getestet inkl. Gegenprobe: mit ausgehebelter Sperre
+zeigt der Testfall `protected=2` und wird rot.
 WICHTIG (war ein Bug): innerhalb eines Ratings konsumiert der DP in
 KOSTEN-Reihenfolge (costOf zuerst, Storage/Stapel nur als Tiebreak).
 

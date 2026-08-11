@@ -8,7 +8,8 @@ JS/Java-Engineering. Umgangssprache: Deutsch.
 ## Repo-Struktur
 
 - `ea-fc-sbc-optimizer.user.js` — DAS Produkt. Ein einziges Userscript
-  (aktuell v4.5.2). Die Handy-App lädt diese Datei von
+  (aktuell v4.9.0). Tampermonkey aktualisiert es über `@updateURL`/`@downloadURL`
+  im Header selbst; die Handy-App lädt dieselbe Datei von
   `https://raw.githubusercontent.com/Rasmus33/pittools/main/ea-fc-sbc-optimizer.user.js`
   bei jedem App-Start. **Push auf main = Deployment.**
 - `solver-test.js` — Test-Suite (Node, keine Dependencies). Extrahiert den
@@ -25,7 +26,7 @@ JS/Java-Engineering. Umgangssprache: Deutsch.
 
 1. Änderung implementieren.
 2. `node --check ea-fc-sbc-optimizer.user.js` — Syntax.
-3. `node solver-test.js` — ALLE Tests müssen grün sein (aktuell 45/45).
+3. `node solver-test.js` — ALLE Tests müssen grün sein (aktuell 51/51).
    Bei Solver-Änderungen: neuen Testfall schreiben, Erwartungswerte NIE aus
    dem Kopf — immer per Brute-Force verifizieren (Vorsicht: der Solver war
    mehrfach schlauer als die Hand-Rechnung).
@@ -55,8 +56,10 @@ JS/Java-Engineering. Umgangssprache: Deutsch.
 - Rating-Kosten-Tabelle (editierbar im Panel, seine Defaults):
   0-80:0, 81-83:2, 84:1, 85-86:5, 87-88:2, 89-90:3, 91-92:4, 93+:12.
 - Rarity-Schutz: Karten der Gruppe 83 (TOTW/TOTS/FOF/FUTTIES) sind wertvoller
-  als ihr Rating → Kosten-Aufschlag (Default +8). Ohne Vorgabe meiden, mit
-  Vorgabe GENAU die geforderte Anzahl.
+  als ihr Rating. HARTE Regel: ohne Vorgabe keine, mit Vorgabe GENAU die
+  geforderte Anzahl — lieber hohes Vereins-Gold als eine unnötige FUTTIES.
+  Nur wenn die SBC sonst unlösbar ist, wird gelockert (mit Warnung). Der
+  Kosten-Aufschlag (Default +8) wirkt zusätzlich innerhalb des Erlaubten.
 - Ein Klick = Optimieren + Eintragen. Rasmus drückt nur noch Submit im Spiel.
 - Der Pool lädt automatisch beim App-Start; nach jedem Eintragen fliegen die
   verbauten Karten aus dem Pool (nächste SBC ohne Neuladen).

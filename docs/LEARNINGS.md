@@ -306,5 +306,7 @@ trotz Erfolg).
 (Marker `// [SOLVER-BEGIN]` / `// [SOLVER-END]`).
 Brute-Force-Referenz (`bruteBest`) rechnet das V-Ziel über alle Teilmengen —
 Pflicht bei jeder Objective-Änderung. Der Karten-Kosten-Spiegel
-(`cardCostFn`) MUSS synchron zum Solver gehalten werden (inkl. Rarity-Schutz).
+(`cardCostFn`) MUSS synchron zum Solver gehalten werden (inkl. Rarity-Schutz
+und Untradeable-Rabatt) — sonst vergleichen die Brute-Force-Tests gegen ein
+anderes Kostenmodell als der Solver benutzt.
 Kein `Math.random` ohne Seed (mulberry32 vorhanden).

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.9.0
+// @version      4.10.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -58,7 +58,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.9.0';
+    const VERSION = '4.10.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -1443,11 +1443,18 @@
                 for (const g of guardGroups) if (p.groups.indexOf(g) > -1) return true;
                 return false;
             }
+            // UNTRADEABLE bevorzugen: solche Karten lassen sich nicht
+            // verkaufen, sind für SBCs aber vollwertig - sie zuerst zu
+            // verbauen spart echte Coins. Rabatt wirkt wie der Rarity-Aufschlag
+            // NACH dem Storage-Rabatt (wird also nicht halbiert).
+            const untrBonus = Math.max(0, cfg.untradeableBonus != null
+                ? Number(cfg.untradeableBonus) : 3);
             function costOf(p) {
                 const n = countByRating.get(p.rating) || 1;
                 const base = alpha / n + bandFn(p.rating);
                 return (p.isStorage ? (base / 2 - beta) : base) +
-                       (isProtectedRarity(p) ? guardCost : 0);
+                       (isProtectedRarity(p) ? guardCost : 0) -
+                       (p.untradeable ? untrBonus : 0);
             }
             // ---- Anker ----
             if (cfg.anchorId != null && cfg.anchorId !== '') {
@@ -2441,6 +2448,15 @@
                     </select>
                 </div>
                 <div class="sbc-opt-row">
+                    <label>Unverkäufliche Karten zuerst verbauen (spart Coins)</label>
+                    <select id="sbc-opt-untradeable">
+                        <option value="0">Aus</option>
+                        <option value="1">Leicht</option>
+                        <option value="3" selected>Normal</option>
+                        <option value="6">Stark</option>
+                    </select>
+                </div>
+                <div class="sbc-opt-row">
                     <label>Rarity-Karten schützen (TOTW/TOTS/FOF/FUTTIES)</label>
                     <select id="sbc-opt-rarityguard">
                         <option value="0">Aus</option>
@@ -2478,6 +2494,7 @@
             maxexpTh: panel.querySelector('#sbc-opt-maxexp-th'),
             scarcity: panel.querySelector('#sbc-opt-scarcity'),
             storagebonus: panel.querySelector('#sbc-opt-storagebonus'),
+            untradeable: panel.querySelector('#sbc-opt-untradeable'),
             rarityguard: panel.querySelector('#sbc-opt-rarityguard'),
             bands: panel.querySelector('#sbc-opt-bands'),
             bandAdd: panel.querySelector('#sbc-opt-band-add'),
@@ -3098,6 +3115,7 @@
             expensiveThreshold: parseInt(ui.maxexpTh.value, 10) || 99,
             scarcityWeight: parseFloat(ui.scarcity.value) || 0,
             storageBonus: parseFloat(ui.storagebonus.value) || 0,
+            untradeableBonus: parseFloat(ui.untradeable.value) || 0,
             rarityGuardCost: parseFloat(ui.rarityguard.value) || 0,
             ratingCostSpec: bandsToSpec(ratingBands),
             anchorId: null,

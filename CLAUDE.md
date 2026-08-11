@@ -8,7 +8,7 @@ JS/Java-Engineering. Umgangssprache: Deutsch.
 ## Repo-Struktur
 
 - `ea-fc-sbc-optimizer.user.js` — DAS Produkt. Ein einziges Userscript
-  (aktuell v4.9.0). Tampermonkey aktualisiert es über `@updateURL`/`@downloadURL`
+  (aktuell v4.10.0). Tampermonkey aktualisiert es über `@updateURL`/`@downloadURL`
   im Header selbst; die Handy-App lädt dieselbe Datei von
   `https://raw.githubusercontent.com/Rasmus33/pittools/main/ea-fc-sbc-optimizer.user.js`
   bei jedem App-Start. **Push auf main = Deployment.**
@@ -26,7 +26,7 @@ JS/Java-Engineering. Umgangssprache: Deutsch.
 
 1. Änderung implementieren.
 2. `node --check ea-fc-sbc-optimizer.user.js` — Syntax.
-3. `node solver-test.js` — ALLE Tests müssen grün sein (aktuell 51/51).
+3. `node solver-test.js` — ALLE Tests müssen grün sein (aktuell 54/54).
    Bei Solver-Änderungen: neuen Testfall schreiben, Erwartungswerte NIE aus
    dem Kopf — immer per Brute-Force verifizieren (Vorsicht: der Solver war
    mehrfach schlauer als die Hand-Rechnung).
@@ -52,6 +52,8 @@ JS/Java-Engineering. Umgangssprache: Deutsch.
   "Max. Rating-Überschuss" (Default 0.10) entscheiden die Karten-Kosten.
 - Karten-Prioritäten: Storage-Gold → Storage-Special → Verein-Gold.
   Verein-Specials NIE in SBCs — einzige Ausnahme: TOTW (rareflag 3).
+- Unverkäufliche Karten zuerst verbauen (Default-Rabatt 3, im Panel
+  einstellbar): für den Transfermarkt wertlos, für SBCs vollwertig.
 - Evolutions (Academy-Items) NIEMALS verbauen.
 - Rating-Kosten-Tabelle (editierbar im Panel, seine Defaults):
   0-80:0, 81-83:2, 84:1, 85-86:5, 87-88:2, 89-90:3, 91-92:4, 93+:12.

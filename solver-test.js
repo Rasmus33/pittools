@@ -35,7 +35,7 @@ function P(rating, opts) {
         isStorage: !!opts.storage,
         name: 'P' + rating + (opts.storage ? 'S' : '') + (opts.special ? 'X' : ''),
         groups: opts.groups || null,
-        untradeable: false
+        untradeable: !!opts.untradeable
     };
 }
 function many(n, rating, opts) {
@@ -57,12 +57,16 @@ function cfg(target, extra) {
 }
 
 // Karten-Kosten wie im Solver (Band + Scarcity, Storage halb minus Bonus,
-// Rarity-Schutz-Aufschlag für Gruppe-83-Karten NACH dem Storage-Rabatt)
+// Rarity-Schutz-Aufschlag für Gruppe-83-Karten und Untradeable-Rabatt NACH dem
+// Storage-Rabatt).
+// MUSS synchron zu costOf() im Userscript bleiben - sonst vergleichen die
+// Brute-Force-Tests gegen ein anderes Kostenmodell als der Solver benutzt.
 function cardCostFn(pool, c) {
     let alpha = c.scarcityWeight || 0, beta = c.storageBonus || 0;
     if (alpha <= 0) alpha = 1e-6;
     if (beta <= 0) beta = 1e-7;
     const guard = Math.max(0, c.rarityGuardCost != null ? c.rarityGuardCost : 8);
+    const untr = Math.max(0, c.untradeableBonus != null ? c.untradeableBonus : 3);
     const band = SolverCore.parseRatingCosts(
         c.ratingCostSpec != null ? c.ratingCostSpec : SolverCore.DEFAULT_RATING_COST_SPEC);
     const counts = new Map();
@@ -71,7 +75,8 @@ function cardCostFn(pool, c) {
         const n = counts.get(p.rating) || 1;
         const base = alpha / n + band(p.rating);
         const prot = guard > 0 && Array.isArray(p.groups) && p.groups.indexOf(83) > -1;
-        return (p.isStorage ? (base / 2 - beta) : base) + (prot ? guard : 0);
+        return (p.isStorage ? (base / 2 - beta) : base) + (prot ? guard : 0)
+               - (p.untradeable ? untr : 0);
     };
 }
 
@@ -411,6 +416,30 @@ function mulberry32(a) {
     check('Ohne Vorgabe: keine geschützte Karte, obwohl sie billiger wäre',
         res3.ok && protCount(res3) === 0,
         res3.ok ? ('protected=' + protCount(res3)) : res3.reason);
+}
+
+// ========== 8b3. Unverkäufliche Karten bevorzugen ==========
+{
+    // Untradeable-Karten lassen sich nicht verkaufen, sind für SBCs aber
+    // vollwertig - sie zuerst zu verbauen spart echte Coins.
+    const untr = many(11, 84, { untradeable: true });
+    const sellable = many(11, 84);
+    const pool = [].concat(sellable, untr);
+    const res = SolverCore.solve(pool, cfg(84, { untradeableBonus: 3 }));
+    const nUntr = res.ok ? res.players.filter(p => p.untradeable).length : -1;
+    check('Untradeable werden zuerst verbaut', res.ok && nUntr === 11,
+        res.ok ? ('untradeable=' + nUntr + '/11') : res.reason);
+    // Aus (0): keine Bevorzugung mehr - dann entscheidet die übrige Ordnung.
+    const res2 = SolverCore.solve(pool, cfg(84, { untradeableBonus: 0 }));
+    check('Untradeable-Bonus aus: keine Bevorzugung',
+        res2.ok && res2.players.filter(p => p.untradeable).length === 0,
+        res2.ok ? ('untradeable=' + res2.players.filter(p => p.untradeable).length) : res2.reason);
+    // Der Bonus darf das RATING-Ziel nicht überstimmen: hier reichen die
+    // unverkäuflichen 83er nicht für Ziel 84, die 84er müssen ran.
+    const pool3 = [].concat(many(11, 83, { untradeable: true }), many(11, 84));
+    const res3 = SolverCore.solve(pool3, cfg(84, { untradeableBonus: 6 }));
+    check('Untradeable-Bonus überstimmt das Ziel-Rating nicht',
+        res3.ok && res3.ovr >= 84, res3.ok ? ('ovr=' + res3.ovr) : res3.reason);
 }
 
 // ========== 8c. Spieler-Eindeutigkeit (EA: gleiche assetId nur 1x pro Squad) ==========

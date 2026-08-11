@@ -26,12 +26,15 @@
    links über dem WebView und macht alles darunter untippbar (LEARNINGS §9).
    Entweder verschiebbar (Position in SharedPreferences merken) oder in eine
    unkritische Ecke. Gehört ins gleiche APK wie der PaleTools-Shim (§1).
-4. **Menüpunkt vs. FAB entscheiden** (v4.7.0 prüft sich selbst): Im Hochformat
-   bricht der `.ut-tab-bar`-Eintrag um, `tabFits()` verwirft ihn dann und der
-   FAB übernimmt. Beim nächsten Diagnose-Report auf `launcher.tabRejected` und
-   `launcher.tabBarItems` schauen. Ist der Umbruch dauerhaft, lohnt der
-   DOM-Weg im Hochformat nicht mehr — Alternative wäre ein Button direkt in der
-   SBC-Ansicht (neben den Squad-Aktionen) statt in der globalen Leiste.
+4. **SBC-Button verifizieren** (v4.8.0): Erscheint „PitTools" in der
+   SBC-Aktionsleiste neben „Use Squad Builder"/„Clear Squad", und reagiert er?
+   Im Diagnose-Report zeigt `launcher.containerVisible`, ob
+   `.sbc-button-container` in dieser FC-Version existiert; wenn nicht, steht in
+   `launcher.visibleButtons` der echte Container (alle sichtbaren Buttons mit
+   Text, Klasse und Parent-Klasse) — daraus ist der Selektor direkt ablesbar.
+   `launcher.launcherClicks` trennt „Tap kommt nicht an" (0) von „Panel zeigt
+   sich nicht" (>0). Der fliegende Kreis bleibt unabhängig davon der
+   verlässliche Weg.
 5. **Count-Parsing verifizieren**: Die "Ohne-Team-Rating ⇒ Vorgabe gilt für
    alle Slots"-Regel deckt die bekannten Fälle ab. Falls eine SBC auftaucht,
    bei der das falsch ist (Min-OVR-Count < Slots ohne Team-Rating), muss die

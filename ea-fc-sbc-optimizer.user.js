@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.7.0
+// @version      4.8.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -51,7 +51,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.7.0';
+    const VERSION = '4.8.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -2170,25 +2170,19 @@
             pointer-events: none; display: block;
         }
         #sbc-opt-fab.sbc-opt-hidden { display: none; }
-        /* Menuepunkt in der EA-Navigationsleiste (.ut-tab-bar), gleiches
-           Rezept wie PaleTools: ein eigenes .ut-tab-bar-item einhaengen, damit
-           Groesse/Layout der EA-Leiste geerbt werden. */
-        #pittools-tab-item {
-            display: flex; flex-direction: column;
-            align-items: center; justify-content: center;
-            background: none; border: none; cursor: pointer;
-            color: inherit; font: inherit; gap: 2px;
+        /* Button in der SBC-Aktionsleiste (.sbc-button-container - dort stehen
+           "Use Squad Builder" / "Clear Squad"). Die Klassen eines echten
+           Nachbar-Buttons werden zur Laufzeit kopiert, hier nur das Nötige
+           fuer Icon + Beschriftung. */
+        #pittools-sbc-btn {
+            display: inline-flex; align-items: center; justify-content: center;
+            gap: 6px; cursor: pointer;
         }
-        #pittools-tab-item img {
-            height: 1.8em; width: auto; border-radius: 50%; display: block;
+        #pittools-sbc-btn img {
+            width: 1.4em; height: 1.4em; border-radius: 50%;
+            display: block; flex: 0 0 auto;
         }
-        #pittools-tab-item .pittools-tab-label {
-            font-size: 10px; line-height: 1.1; letter-spacing: .02em;
-            white-space: nowrap;
-        }
-        #pittools-tab-item.pittools-tab-active img {
-            box-shadow: 0 0 0 2px #00e0b8;
-        }
+        #pittools-sbc-btn.pittools-active { outline: 2px solid #00e0b8; }
         #sbc-opt-panel {
             position: fixed; right: 22px; bottom: 90px; z-index: 999999;
             width: 340px; max-height: 78vh; overflow-y: auto;
@@ -2449,18 +2443,17 @@
             submit: panel.querySelector('#sbc-opt-submit'),
             diagBtn: panel.querySelector('#sbc-opt-diag')
         };
-        // Nach einem Zug darf der Klick das Panel NICHT toggeln, sonst geht es
-        // bei jedem Verschieben mit auf.
-        fab.addEventListener('click', function () {
-            if (fab.__sbcDragged) { fab.__sbcDragged = false; return; }
-            togglePanel();
-        });
         panel.querySelector('#sbc-opt-close').addEventListener('click', () => panel.classList.remove('open'));
         makeDraggable(panel, panel.querySelector('.sbc-opt-header'), 'sbcOptPanelPos', {
             minVisible: 60, // Header muss greifbar bleiben
             ignore: (ev) => ev.target && ev.target.id === 'sbc-opt-close'
         });
-        makeDraggable(fab, fab, 'sbcOptFabPos');
+        // Tippen (ohne Ziehen) oeffnet das Panel - siehe onTap in makeDraggable.
+        // Bewusst KEIN zusaetzlicher click-Listener: der wuerde doppelt
+        // umschalten, das Panel ginge auf und sofort wieder zu.
+        makeDraggable(fab, fab, 'sbcOptFabPos', {
+            onTap: function () { launcherClicks++; togglePanel(); }
+        });
         ui.load.addEventListener('click', onLoadClick);
         ui.run.addEventListener('click', onRunClick);
         ui.submit.addEventListener('click', onSubmitClick);
@@ -2588,8 +2581,13 @@
      * Panel reicht der Header, sonst kann man es nicht mehr zurueckholen).
      * opts.ignore     = Predicate, um Klicks auf Bedienelemente (z.B. ✕)
      *                   nicht als Zugbeginn zu behandeln.
-     * Setzt el.__sbcDragged = true, solange die Bewegung als Ziehen zaehlt -
-     * daran erkennt der Klick-Handler, dass er das Panel nicht toggeln soll.
+     * opts.onTap      = wird bei pointerup gerufen, wenn NICHT gezogen wurde.
+     *                   Bewusst nicht per 'click': das preventDefault in
+     *                   pointerdown (gegen Textselektion/Scrollen) kann auf
+     *                   Touch-Geraeten die Kompatibilitaets-Mausevents und
+     *                   damit den Klick unterdruecken - und der Kreis ist der
+     *                   Rueckfallweg, der zuverlaessig reagieren MUSS.
+     * Setzt el.__sbcDragged = true, solange die Bewegung als Ziehen zaehlt.
      */
     function makeDraggable(el, handle, posKey, opts) {
         if (!el || !handle) return;
@@ -2649,7 +2647,10 @@
             dragging = false;
             el.classList.remove('sbc-opt-dragging');
             try { handle.releasePointerCapture(ev.pointerId); } catch (e) {}
-            if (!el.__sbcDragged) return;
+            if (!el.__sbcDragged) {
+                if (opts.onTap && ev.type === 'pointerup') opts.onTap();
+                return;
+            }
             try {
                 const rect = el.getBoundingClientRect();
                 localStorage.setItem(posKey, JSON.stringify({ left: rect.left, top: rect.top }));
@@ -2658,10 +2659,16 @@
         handle.addEventListener('pointerup', endDrag);
         handle.addEventListener('pointercancel', endDrag);
     }
-    // ---- Einstiegspunkte: Menuepunkt in der EA-Leiste + FAB als Notausgang --
-    const TAB_ID = 'pittools-tab-item';
-    let tabAttachCount = 0;
-    let tabRejected = 0;
+    // ---- Einstiegspunkte: Button in der SBC-Aktionsleiste + fliegender Kreis -
+    // Der Weg ueber die globale Navigationsleiste (.ut-tab-bar) ist wieder
+    // RAUS: im Hochformat bricht der Eintrag um, landet in der Totzone unter
+    // dem nativen ⚙ der App und reagierte auf keinen Tap (LEARNINGS §9).
+    // Jetzt: dort einhaengen, wo die SBC ihre eigenen Aktionen hat
+    // ("Use Squad Builder" / "Clear Squad") - Container .sbc-button-container,
+    // aus PaleTools' CSS als EA-Klasse verifiziert.
+    const BTN_ID = 'pittools-sbc-btn';
+    let btnAttachCount = 0;
+    let launcherClicks = 0;
     /**
      * Sind wir im SBC-Bereich? Gemessen an der View-Controller-Kette der App
      * (dieselbe Quelle, aus der auch die Challenge gelesen wird).
@@ -2679,131 +2686,131 @@
         } catch (e) { return true; }
         return false;
     }
+    /**
+     * Holt das Panel zurueck, falls eine gemerkte Position ausserhalb des
+     * Bildschirms liegt - sonst "passiert nichts", obwohl der Klick ankam.
+     */
+    function ensurePanelOnScreen() {
+        const p = ui.panel;
+        if (!p) return;
+        try {
+            const r = p.getBoundingClientRect();
+            if (!r.width && !r.height) return;
+            const off = r.right < 40 || r.left > window.innerWidth - 40 ||
+                        r.bottom < 40 || r.top > window.innerHeight - 40;
+            if (off) {
+                p.style.left = ''; p.style.top = '';
+                p.style.right = '22px'; p.style.bottom = '90px';
+                try { localStorage.removeItem('sbcOptPanelPos'); } catch (e) {}
+                warn('Panel lag ausserhalb des Bildschirms - Position zurueckgesetzt.');
+            }
+        } catch (e) {}
+    }
     function togglePanel() {
         if (!ui.panel) return;
         const open = ui.panel.classList.toggle('open');
-        const tab = document.getElementById(TAB_ID);
-        if (tab) tab.classList.toggle('pittools-tab-active', open);
+        if (open) ensurePanelOnScreen();
+        const btn = document.getElementById(BTN_ID);
+        if (btn) btn.classList.toggle('pittools-active', open);
     }
     /**
-     * Die EA-App hat je nach Ausrichtung mehrere .ut-tab-bar im DOM (eine
-     * davon unsichtbar). In eine unsichtbare zu haengen heisst: kein Menuepunkt.
+     * Die SBC-Aktionsleiste, sichtbar. Kann es mehrfach im DOM geben
+     * (Hoch-/Querformat), unsichtbare sind nutzlos.
      */
-    function visibleTabBar() {
-        const bars = document.querySelectorAll('.ut-tab-bar');
-        for (let i = 0; i < bars.length; i++) {
-            if (bars[i].offsetParent !== null || bars[i].getClientRects().length) return bars[i];
+    function sbcButtonContainer() {
+        const all = document.querySelectorAll('.sbc-button-container');
+        for (let i = 0; i < all.length; i++) {
+            if (all[i].offsetParent !== null || all[i].getClientRects().length) return all[i];
         }
-        return bars.length ? bars[0] : null;
+        return null;
     }
-    function buildTabButton() {
+    function buildSbcButton(container) {
         const btn = document.createElement('button');
-        btn.id = TAB_ID;
+        btn.id = BTN_ID;
         btn.type = 'button';
-        // Die EA-Klasse mitnehmen, damit Groesse/Abstand der Leiste geerbt
-        // werden (gleiches Rezept wie PaleTools).
-        btn.className = 'ut-tab-bar-item';
         btn.title = 'PitTools v' + VERSION;
+        // Aussehen von einem echten Nachbar-Button erben: dessen Klassen sind
+        // uns nicht bekannt (und koennen sich mit jedem EA-Update aendern),
+        // kopieren ist robuster als raten.
+        let donor = null;
+        for (let i = 0; i < container.children.length; i++) {
+            const ch = container.children[i];
+            if (ch.id !== BTN_ID && ch.tagName === 'BUTTON' && ch.className) { donor = ch; break; }
+        }
+        btn.className = (donor ? donor.className + ' ' : '') + BTN_ID;
         const img = document.createElement('img');
         img.src = ICON_URI;
         img.alt = '';
         const lbl = document.createElement('span');
-        lbl.className = 'pittools-tab-label';
         lbl.textContent = 'PitTools';
         btn.appendChild(img);
         btn.appendChild(lbl);
         // KEIN Listener am Element: die EA-App baut die Leiste neu und kopiert
         // dabei Knoten - ein Klon haette den Listener verloren (Button sichtbar,
-        // Klick tot). Stattdessen delegiert ueber document, siehe
-        // installLauncherDelegation().
+        // Klick tot). Stattdessen delegiert, siehe installLauncherDelegation().
         return btn;
     }
+    /**
+     * Klicks auf unseren Button - delegiert und in der Capture-Phase, damit
+     * sie jedes Neu-Rendern der Leiste ueberleben und die EA-App nicht
+     * zusaetzlich reagiert.
+     * touchend UND click, weil die mobile EA-Ansicht Touches teils selbst
+     * verarbeitet und dann gar kein click mehr entsteht. Die Entprellung
+     * verhindert doppeltes Umschalten (= Panel auf und sofort wieder zu, was
+     * genau wie "es passiert nichts" aussieht).
+     */
     function installLauncherDelegation() {
         if (STATE.launcherDelegated) return;
         STATE.launcherDelegated = true;
-        // capture=true: vor den EA-Handlern der Leiste, damit die App nicht
-        // zusaetzlich die View wechselt.
-        document.addEventListener('click', function (ev) {
+        let last = 0;
+        function onHit(ev) {
             try {
                 const t = ev.target;
-                const hit = t && t.closest ? t.closest('#' + TAB_ID) : null;
-                if (!hit) return;
+                if (!t || !t.closest || !t.closest('#' + BTN_ID)) return;
                 ev.preventDefault();
                 ev.stopPropagation();
+                const now = Date.now();
+                if (now - last < 400) return;
+                last = now;
+                launcherClicks++;
                 togglePanel();
             } catch (e) {}
-        }, true);
+        }
+        document.addEventListener('click', onHit, true);
+        document.addEventListener('touchend', onHit, true);
     }
     /**
-     * Sitzt der Menuepunkt wirklich brauchbar in der Leiste?
-     * Zwei Faelle, die live aufgeschlagen sind:
-     *  1. UMBRUCH: im mobilen Hochformat ist die Leiste voll (6 Items). Unser
-     *     7. Item rutscht per flex-wrap in eine zweite Zeile UNTER die Leiste.
-     *  2. Der ⚙-Knopf der Android-App ist ein NATIVER Button ueber dem WebView
-     *     (unten links). Was im DOM darunter liegt, ist nicht antippbar -
-     *     der Menuepunkt sah da, reagierte aber nicht.
-     * Beides ist per Geometrie erkennbar: gleiche Zeile wie die Geschwister?
-     * und Finger weg von der unteren linken Ecke.
-     */
-    const NATIVE_GEAR_ZONE = 72; // px, grosszuegig - nativer ⚙ ist 110 Layout-px
-    function tabFits(tab) {
-        try {
-            const r = tab.getBoundingClientRect();
-            if (!r.width || !r.height) return false;
-            // (2) Kollision mit dem nativen ⚙ unten links?
-            if (r.left < NATIVE_GEAR_ZONE && r.bottom > window.innerHeight - NATIVE_GEAR_ZONE) {
-                return false;
-            }
-            // (1) Steht es in derselben Zeile wie ein Geschwister-Item?
-            const sibs = tab.parentNode ? tab.parentNode.children : [];
-            for (let i = 0; i < sibs.length; i++) {
-                if (sibs[i] === tab) continue;
-                const s = sibs[i].getBoundingClientRect();
-                if (!s.width || !s.height) continue;
-                const overlap = Math.min(r.bottom, s.bottom) - Math.max(r.top, s.top);
-                return overlap > Math.min(r.height, s.height) * 0.5;
-            }
-            return true; // keine Geschwister zum Vergleichen -> annehmen
-        } catch (e) { return false; }
-    }
-    /**
-     * Haelt den Einstiegspunkt aktuell. Regeln:
-     *  - NUR im SBC-Bereich sichtbar (Wunsch von Rasmus - sonst ist der Knopf
-     *    ueberall im Weg).
-     *  - Menuepunkt in der EA-Leiste bevorzugt, aber nur wenn er dort auch
-     *    brauchbar sitzt (tabFits) - sonst raus und der verschiebbare FAB
-     *    uebernimmt.
-     *  - Beim Verlassen des SBC-Bereichs geht das Panel zu, damit es nicht
+     * Haelt die Einstiegspunkte aktuell. Regeln:
+     *  - Beides NUR im SBC-Bereich (Wunsch von Rasmus - sonst ist der Knopf
+     *    ueberall im Weg). Beim Verlassen geht das Panel zu, damit es nicht
      *    ueber dem Transfermarkt schwebt.
+     *  - Der fliegende Kreis ist der VERLAESSLICHE Weg und bleibt sichtbar.
+     *    Der Button in der SBC-Leiste kommt zusaetzlich dazu, wo es geht -
+     *    zweimal war ein eingehaengter Button live tot, deshalb wird der Kreis
+     *    nicht mehr automatisch dafuer weggenommen.
      */
     function syncLauncher() {
         if (!ui.fab || !ui.panel) return;
-        let tab = document.getElementById(TAB_ID);
+        let btn = document.getElementById(BTN_ID);
         if (!inSbcView()) {
-            if (tab && tab.parentNode) tab.parentNode.removeChild(tab);
+            if (btn && btn.parentNode) btn.parentNode.removeChild(btn);
             ui.fab.classList.add('sbc-opt-hidden');
             if (ui.panel.classList.contains('open')) togglePanel();
             return;
         }
-        const bar = visibleTabBar();
-        if (bar) {
-            if (!tab || tab.parentNode !== bar) {
-                if (tab && tab.parentNode) tab.parentNode.removeChild(tab);
-                tab = buildTabButton();
-                bar.appendChild(tab);
-                tabAttachCount++;
+        ui.fab.classList.remove('sbc-opt-hidden');
+        const cont = sbcButtonContainer();
+        if (cont) {
+            if (!btn || btn.parentNode !== cont) {
+                if (btn && btn.parentNode) btn.parentNode.removeChild(btn);
+                btn = buildSbcButton(cont);
+                cont.appendChild(btn);
+                btnAttachCount++;
             }
-            if (tab && !tabFits(tab)) {
-                tab.parentNode.removeChild(tab);
-                tab = null;
-                tabRejected++;
-            }
-        } else if (tab && tab.parentNode) {
-            tab.parentNode.removeChild(tab);
-            tab = null;
+            btn.classList.toggle('pittools-active', ui.panel.classList.contains('open'));
+        } else if (btn && btn.parentNode) {
+            btn.parentNode.removeChild(btn);
         }
-        ui.fab.classList.toggle('sbc-opt-hidden', !!tab);
-        if (tab) tab.classList.toggle('pittools-tab-active', ui.panel.classList.contains('open'));
     }
     function setStatus(txt) { if (ui.status) ui.status.textContent = txt; }
     function refreshSbcInfoUI() {
@@ -2874,30 +2881,32 @@
                                  w: Math.round(r.width), h: Math.round(r.height) };
                     } catch (e) { return null; }
                 }
-                let bars = 0, cls = null, barRect = null, itemRects = null;
+                // Alle sichtbaren Buttons MIT Text - daraus ist der echte
+                // Container der SBC-Aktionen ("Use Squad Builder" / "Clear
+                // Squad") ablesbar, auch wenn .sbc-button-container in dieser
+                // FC-Version anders heisst.
+                let buttonDump = null;
                 try {
-                    const all = document.querySelectorAll('.ut-tab-bar');
-                    bars = all.length;
-                    const bar = visibleTabBar();
-                    if (bar) {
-                        cls = String(bar.className).slice(0, 120);
-                        barRect = rect(bar);
-                        // Geometrie ALLER Items: daran ist zu sehen, ob unser
-                        // Eintrag in eine zweite Zeile umbricht (live passiert)
-                        // und ob die Leiste in der ⚙-Ecke der App liegt.
-                        itemRects = [];
-                        for (let i = 0; i < bar.children.length && i < 12; i++) {
-                            itemRects.push({
-                                id: bar.children[i].id || null,
-                                cls: String(bar.children[i].className || '').slice(0, 40),
-                                r: rect(bar.children[i])
-                            });
-                        }
+                    buttonDump = [];
+                    const btns = document.querySelectorAll('button');
+                    for (let i = 0; i < btns.length && buttonDump.length < 25; i++) {
+                        const b = btns[i];
+                        if (!(b.offsetParent !== null || b.getClientRects().length)) continue;
+                        const txt = (b.textContent || '').trim().slice(0, 40);
+                        if (!txt) continue;
+                        buttonDump.push({
+                            txt: txt,
+                            id: b.id || null,
+                            cls: String(b.className || '').slice(0, 60),
+                            parentCls: String((b.parentNode && b.parentNode.className) || '').slice(0, 60),
+                            r: rect(b)
+                        });
                     }
                 } catch (e) {}
                 let fabPos = null;
                 try { fabPos = localStorage.getItem('sbcOptFabPos'); } catch (e) {}
-                const tab = document.getElementById(TAB_ID);
+                const btn = document.getElementById(BTN_ID);
+                const cont = sbcButtonContainer();
                 return {
                     inSbcView: inSbcView(),
                     controllerNames: (function () {
@@ -2907,19 +2916,35 @@
                             });
                         } catch (e) { return null; }
                     })(),
-                    tabBarCount: bars,
-                    visibleTabBarClass: cls,
-                    visibleTabBarRect: barRect,
-                    tabBarItems: itemRects,
-                    tabItemAttached: !!tab,
-                    tabItemRect: tab ? rect(tab) : null,
-                    tabItemFits: tab ? tabFits(tab) : null,
-                    tabAttachCount: tabAttachCount,
-                    tabRejected: tabRejected, // >0 = Umbruch/⚙-Kollision erkannt
+                    // Container der SBC-Aktionsleiste
+                    containerSelector: '.sbc-button-container',
+                    containerCount: document.querySelectorAll('.sbc-button-container').length,
+                    containerVisible: !!cont,
+                    containerRect: cont ? rect(cont) : null,
+                    containerChildren: cont ? (function () {
+                        const out = [];
+                        for (let i = 0; i < cont.children.length && i < 12; i++) {
+                            out.push({
+                                tag: cont.children[i].tagName,
+                                id: cont.children[i].id || null,
+                                txt: (cont.children[i].textContent || '').trim().slice(0, 30),
+                                cls: String(cont.children[i].className || '').slice(0, 60)
+                            });
+                        }
+                        return out;
+                    })() : null,
+                    btnAttached: !!btn,
+                    btnRect: btn ? rect(btn) : null,
+                    btnAttachCount: btnAttachCount,
+                    // 0 = unser Klick kommt gar nicht an; >0 = Klick kam an
+                    // (dann liegt ein "es passiert nichts" am Panel, nicht am Button)
+                    launcherClicks: launcherClicks,
+                    visibleButtons: buttonDump,
                     viewport: { w: window.innerWidth, h: window.innerHeight,
                                 dpr: window.devicePixelRatio || 1 },
                     fabVisible: !!(ui.fab && !ui.fab.classList.contains('sbc-opt-hidden')),
                     fabSavedPos: fabPos,
+                    panelRect: ui.panel ? rect(ui.panel) : null,
                     panelOpen: !!(ui.panel && ui.panel.classList.contains('open'))
                 };
             })(),

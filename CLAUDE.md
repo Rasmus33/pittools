@@ -8,7 +8,7 @@ JS/Java-Engineering. Umgangssprache: Deutsch.
 ## Repo-Struktur
 
 - `ea-fc-sbc-optimizer.user.js` — DAS Produkt. Ein einziges Userscript
-  (aktuell v4.11.0). Tampermonkey aktualisiert es über `@updateURL`/`@downloadURL`
+  (aktuell v4.11.1). Tampermonkey aktualisiert es über `@updateURL`/`@downloadURL`
   im Header selbst; die Handy-App lädt dieselbe Datei von
   `https://raw.githubusercontent.com/Rasmus33/pittools/main/ea-fc-sbc-optimizer.user.js`
   bei jedem App-Start. **Push auf main = Deployment.**
@@ -26,11 +26,14 @@ JS/Java-Engineering. Umgangssprache: Deutsch.
 
 1. Änderung implementieren.
 2. `node --check ea-fc-sbc-optimizer.user.js` — Syntax.
-3. `node solver-test.js` — ALLE Tests müssen grün sein (aktuell 62/62).
+3. `node solver-test.js` — ALLE Tests müssen grün sein (aktuell 67/67).
    Bei Solver-Änderungen: neuen Testfall schreiben, Erwartungswerte NIE aus
    dem Kopf — immer per Brute-Force verifizieren (Vorsicht: der Solver war
    mehrfach schlauer als die Hand-Rechnung).
 4. Version bumpen: `@version` im Header UND `const VERSION = '...'`
+   (ein Test prüft, dass beide übereinstimmen). In den `==UserScript==`-Block
+   gehören NUR `@key value`-Zeilen — freie Kommentare darin machen die
+   folgenden Metadaten unwirksam (kostete das Auto-Update in v4.11.0).
    (wird im Panel-Header angezeigt — daran erkennt Rasmus, ob Tampermonkey/
    die App wirklich die neue Version geladen hat).
 5. Push auf `main` → beide Handys ziehen die Version automatisch.

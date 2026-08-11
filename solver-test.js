@@ -335,6 +335,37 @@ function mulberry32(a) {
         res3.players.some(p => p.groups && p.groups.indexOf(83) > -1));
 }
 
+// ========== 8b1. Userscript-Metablock (Tampermonkey-Auto-Update) ==========
+{
+    // In den ==UserScript==-Block gehören AUSSCHLIESSLICH "@key value"-Zeilen.
+    // Freie Kommentare dazwischen markiert Tampermonkey als Fehler und kann
+    // die danach folgenden Metadaten still ignorieren - passiert mit v4.11.0,
+    // wodurch @updateURL/@downloadURL unwirksam wurden und das Auto-Update auf
+    // dem PC ausblieb. Der Fehler ist von aussen nicht zu sehen, deshalb hier.
+    const lines = src.split('\n');
+    const start = lines.findIndex(l => l.trim() === '// ==UserScript==');
+    const end = lines.findIndex(l => l.trim() === '// ==/UserScript==');
+    check('Metablock: Anfang und Ende vorhanden', start === 0 && end > start,
+        'start=' + start + ' end=' + end);
+    const meta = lines.slice(start + 1, end);
+    const bad = meta.filter(l => !/^\/\/\s*@\w+/.test(l));
+    check('Metablock: nur @key-Zeilen, keine freien Kommentare', bad.length === 0,
+        bad.length ? JSON.stringify(bad.slice(0, 3)) : '');
+    const RAW = 'https://raw.githubusercontent.com/Rasmus33/pittools/main/'
+        + 'ea-fc-sbc-optimizer.user.js';
+    check('Metablock: @updateURL zeigt auf main',
+        meta.some(l => /^\/\/\s*@updateURL\s+\S/.test(l) && l.indexOf(RAW) > -1));
+    check('Metablock: @downloadURL zeigt auf main',
+        meta.some(l => /^\/\/\s*@downloadURL\s+\S/.test(l) && l.indexOf(RAW) > -1));
+    // @version im Header und VERSION im Code müssen übereinstimmen - daran
+    // erkennt Rasmus im Panel, welche Version wirklich geladen ist, und
+    // Tampermonkey entscheidet daran über das Update.
+    const vHeader = (src.match(/^\/\/\s*@version\s+(\S+)/m) || [])[1];
+    const vCode = (src.match(/const VERSION = '([^']+)'/) || [])[1];
+    check('Version: Header und VERSION im Code identisch', !!vHeader && vHeader === vCode,
+        '@version=' + vHeader + ' VERSION=' + vCode);
+}
+
 // ========== 8b2. Rarity-Schutz bei HOHEN Ratings (Live-Fall 90er-Team) ==========
 {
     // Live mit v4.8.0: 90er-Team gebaut, ZWEI FUTTIES verbaut, obwohl die SBC

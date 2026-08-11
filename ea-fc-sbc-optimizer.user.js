@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.11.0
+// @version      4.11.1
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -10,14 +10,19 @@
 // @match        https://www.ea.com/ultimate-team/web-app/*
 // @run-at       document-start
 // @grant        none
-// Auto-Update in Tampermonkey: zeigt auf main - Push = Update auf allen
-// Geräten. Tampermonkey vergleicht dazu @version, die MUSS also bei jeder
-// Änderung hoch (siehe CLAUDE.md). @name/@namespace NIE ändern: die beiden
-// bilden die Script-Identität, sonst legt Tampermonkey ein zweites Script an
-// statt dieses zu aktualisieren.
 // @updateURL    https://raw.githubusercontent.com/Rasmus33/pittools/main/ea-fc-sbc-optimizer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Rasmus33/pittools/main/ea-fc-sbc-optimizer.user.js
 // ==/UserScript==
+// ACHTUNG: In den ==UserScript==-Block gehören AUSSCHLIESSLICH "@key value"-
+// Zeilen. Freie Kommentare dazwischen markiert Tampermonkey als Fehler und
+// kann die danach folgenden Metadaten (hier @updateURL/@downloadURL) still
+// ignorieren - Erklärungen deshalb immer hierunter.
+//
+// Auto-Update: @updateURL/@downloadURL zeigen auf main, Push = Update auf allen
+// Geräten. Tampermonkey vergleicht dazu @version, die MUSS also bei jeder
+// Änderung hoch (siehe CLAUDE.md). @name/@namespace NIE ändern: die beiden
+// bilden die Script-Identität, sonst legt Tampermonkey ein ZWEITES Script an
+// statt dieses zu aktualisieren.
 /*
  * ============================================================================
  *  EA FC SBC RATING-OPTIMIZER  (v2.0.0)
@@ -58,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.11.0';
+    const VERSION = '4.11.1';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)

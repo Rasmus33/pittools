@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.5.2
+// @version      4.8.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -51,7 +51,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.5.2';
+    const VERSION = '4.8.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -2145,18 +2145,44 @@
     //  7. UI-PANEL
     // ========================================================================
     let ui = {};
+    // Pitroipa-Kopf (identisch zum App-Icon, app/res/mipmap-xhdpi) als Data-URI:
+    // wird fuer den Menuepunkt in der EA-Leiste, den FAB und den Panel-Header
+    // benutzt. Inline, weil externe Requests in der WebView-App unnoetig
+    // fehlschlagen koennen.
+    const ICON_URI = 'data:image/png;base64,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';
     function injectStyles() {
         const css = `
         #sbc-opt-fab {
             position: fixed; right: 22px; bottom: 22px; z-index: 999999;
             width: 56px; height: 56px; border-radius: 50%;
             background: linear-gradient(135deg,#00e0b8,#0077ff);
-            color: #001018; font-size: 26px; border: none; cursor: pointer;
+            color: #001018; font-size: 26px; border: none; cursor: grab;
             box-shadow: 0 4px 18px rgba(0,0,0,.5); display: flex;
             align-items: center; justify-content: center;
-            transition: transform .15s ease;
+            transition: transform .15s ease; padding: 0; overflow: hidden;
+            /* Ohne touch-action:none scrollt Android die Seite statt zu ziehen. */
+            touch-action: none;
         }
         #sbc-opt-fab:hover { transform: scale(1.08); }
+        #sbc-opt-fab.sbc-opt-dragging { cursor: grabbing; transform: scale(1.12); opacity: .9; }
+        #sbc-opt-fab img {
+            width: 38px; height: 38px; border-radius: 50%;
+            pointer-events: none; display: block;
+        }
+        #sbc-opt-fab.sbc-opt-hidden { display: none; }
+        /* Button in der SBC-Aktionsleiste (.sbc-button-container - dort stehen
+           "Use Squad Builder" / "Clear Squad"). Die Klassen eines echten
+           Nachbar-Buttons werden zur Laufzeit kopiert, hier nur das Nötige
+           fuer Icon + Beschriftung. */
+        #pittools-sbc-btn {
+            display: inline-flex; align-items: center; justify-content: center;
+            gap: 6px; cursor: pointer;
+        }
+        #pittools-sbc-btn img {
+            width: 1.4em; height: 1.4em; border-radius: 50%;
+            display: block; flex: 0 0 auto;
+        }
+        #pittools-sbc-btn.pittools-active { outline: 2px solid #00e0b8; }
         #sbc-opt-panel {
             position: fixed; right: 22px; bottom: 90px; z-index: 999999;
             width: 340px; max-height: 78vh; overflow-y: auto;
@@ -2171,7 +2197,11 @@
             color:#001018; font-weight:700; font-size:15px;
             padding:12px 16px; border-radius:14px 14px 0 0;
             display:flex; justify-content:space-between; align-items:center;
-            cursor:move; user-select:none;
+            cursor:move; user-select:none; touch-action:none;
+        }
+        .sbc-opt-header img.sbc-opt-logo {
+            width:18px; height:18px; border-radius:50%;
+            vertical-align:-4px; margin-right:6px;
         }
         .sbc-opt-body { padding: 14px 16px; }
         #sbc-opt-advanced { margin: 4px 0 10px; }
@@ -2279,14 +2309,18 @@
     function buildPanel() {
         const fab = document.createElement('button');
         fab.id = 'sbc-opt-fab';
-        fab.title = 'SBC Rating-Optimizer v' + VERSION;
-        fab.textContent = '⚡';
+        fab.type = 'button';
+        fab.title = 'PitTools v' + VERSION + ' (ziehen zum Verschieben)';
+        const fabImg = document.createElement('img');
+        fabImg.src = ICON_URI;
+        fabImg.alt = '';
+        fab.appendChild(fabImg);
         document.body.appendChild(fab);
         const panel = document.createElement('div');
         panel.id = 'sbc-opt-panel';
         panel.innerHTML = `
             <div class="sbc-opt-header">
-                <span>⚡ SBC Rating-Optimizer <span style="font-size:11px;font-weight:400;opacity:.75;">v` + VERSION + `</span></span>
+                <span><img class="sbc-opt-logo" src="` + ICON_URI + `" alt="">PitTools <span style="font-size:11px;font-weight:400;opacity:.75;">v` + VERSION + `</span></span>
                 <span id="sbc-opt-close" style="cursor:pointer;">✕</span>
             </div>
             <div class="sbc-opt-body">
@@ -2409,9 +2443,17 @@
             submit: panel.querySelector('#sbc-opt-submit'),
             diagBtn: panel.querySelector('#sbc-opt-diag')
         };
-        fab.addEventListener('click', () => panel.classList.toggle('open'));
         panel.querySelector('#sbc-opt-close').addEventListener('click', () => panel.classList.remove('open'));
-        makePanelDraggable(panel);
+        makeDraggable(panel, panel.querySelector('.sbc-opt-header'), 'sbcOptPanelPos', {
+            minVisible: 60, // Header muss greifbar bleiben
+            ignore: (ev) => ev.target && ev.target.id === 'sbc-opt-close'
+        });
+        // Tippen (ohne Ziehen) oeffnet das Panel - siehe onTap in makeDraggable.
+        // Bewusst KEIN zusaetzlicher click-Listener: der wuerde doppelt
+        // umschalten, das Panel ginge auf und sofort wieder zu.
+        makeDraggable(fab, fab, 'sbcOptFabPos', {
+            onTap: function () { launcherClicks++; togglePanel(); }
+        });
         ui.load.addEventListener('click', onLoadClick);
         ui.run.addEventListener('click', onRunClick);
         ui.submit.addEventListener('click', onSubmitClick);
@@ -2528,48 +2570,247 @@
         });
     }
     // Panel am Header verschiebbar machen; Position wird gemerkt.
-    function makePanelDraggable(panel) {
-        const header = panel.querySelector('.sbc-opt-header');
-        if (!header) return;
-        const POS_KEY = 'sbcOptPanelPos';
+    /**
+     * Macht ein Element per Handle verschiebbar - Maus UND Finger.
+     * Bewusst POINTER-Events: die alte Variante hoerte nur auf mousedown/
+     * mousemove, war am Handy also gar nicht verschiebbar (und genau da wird
+     * gearbeitet). setPointerCapture haelt den Zug fest, auch wenn der Finger
+     * das Element verlaesst.
+     *
+     * opts.minVisible = wieviel Pixel Hoehe sichtbar bleiben muessen (beim
+     * Panel reicht der Header, sonst kann man es nicht mehr zurueckholen).
+     * opts.ignore     = Predicate, um Klicks auf Bedienelemente (z.B. ✕)
+     *                   nicht als Zugbeginn zu behandeln.
+     * opts.onTap      = wird bei pointerup gerufen, wenn NICHT gezogen wurde.
+     *                   Bewusst nicht per 'click': das preventDefault in
+     *                   pointerdown (gegen Textselektion/Scrollen) kann auf
+     *                   Touch-Geraeten die Kompatibilitaets-Mausevents und
+     *                   damit den Klick unterdruecken - und der Kreis ist der
+     *                   Rueckfallweg, der zuverlaessig reagieren MUSS.
+     * Setzt el.__sbcDragged = true, solange die Bewegung als Ziehen zaehlt.
+     */
+    function makeDraggable(el, handle, posKey, opts) {
+        if (!el || !handle) return;
+        opts = opts || {};
+        const DRAG_THRESHOLD = 6; // px, darunter ist es ein Klick
         function applyPos(left, top) {
-            const w = panel.offsetWidth || 340;
-            const h = 60;
+            const w = el.offsetWidth || 56;
+            const h = opts.minVisible || el.offsetHeight || 56;
             left = Math.min(Math.max(0, left), Math.max(0, window.innerWidth - w));
             top = Math.min(Math.max(0, top), Math.max(0, window.innerHeight - h));
-            panel.style.left = left + 'px';
-            panel.style.top = top + 'px';
-            panel.style.right = 'auto';
-            panel.style.bottom = 'auto';
+            el.style.left = left + 'px';
+            el.style.top = top + 'px';
+            el.style.right = 'auto';
+            el.style.bottom = 'auto';
         }
-        // Gespeicherte Position wiederherstellen
-        try {
-            const saved = JSON.parse(localStorage.getItem(POS_KEY) || 'null');
-            if (saved && typeof saved.left === 'number' && typeof saved.top === 'number') {
-                applyPos(saved.left, saved.top);
-            }
-        } catch (e) {}
-        let dragging = false, offX = 0, offY = 0;
-        header.addEventListener('mousedown', function (ev) {
-            if (ev.target && ev.target.id === 'sbc-opt-close') return;
+        function savedPos() {
+            try {
+                const s = JSON.parse(localStorage.getItem(posKey) || 'null');
+                if (s && typeof s.left === 'number' && typeof s.top === 'number') return s;
+            } catch (e) {}
+            return null;
+        }
+        const s0 = savedPos();
+        if (s0) applyPos(s0.left, s0.top);
+        // Nach Drehen des Handys / Tastatur-Einblendung kann die gemerkte
+        // Position ausserhalb des Bildschirms liegen - dann zurueckholen.
+        window.addEventListener('resize', function () {
+            const s = savedPos();
+            if (s) applyPos(s.left, s.top);
+        });
+        let dragging = false, offX = 0, offY = 0, startX = 0, startY = 0;
+        handle.addEventListener('pointerdown', function (ev) {
+            if (opts.ignore && opts.ignore(ev)) return;
             dragging = true;
-            const rect = panel.getBoundingClientRect();
+            el.__sbcDragged = false;
+            const rect = el.getBoundingClientRect();
             offX = ev.clientX - rect.left;
             offY = ev.clientY - rect.top;
+            startX = ev.clientX;
+            startY = ev.clientY;
+            try { handle.setPointerCapture(ev.pointerId); } catch (e) {}
             ev.preventDefault();
         });
-        window.addEventListener('mousemove', function (ev) {
+        handle.addEventListener('pointermove', function (ev) {
             if (!dragging) return;
-            applyPos(ev.clientX - offX, ev.clientY - offY);
+            if (Math.abs(ev.clientX - startX) > DRAG_THRESHOLD ||
+                Math.abs(ev.clientY - startY) > DRAG_THRESHOLD) {
+                if (!el.__sbcDragged) {
+                    el.__sbcDragged = true;
+                    el.classList.add('sbc-opt-dragging');
+                }
+            }
+            if (el.__sbcDragged) applyPos(ev.clientX - offX, ev.clientY - offY);
         });
-        window.addEventListener('mouseup', function () {
+        function endDrag(ev) {
             if (!dragging) return;
             dragging = false;
+            el.classList.remove('sbc-opt-dragging');
+            try { handle.releasePointerCapture(ev.pointerId); } catch (e) {}
+            if (!el.__sbcDragged) {
+                if (opts.onTap && ev.type === 'pointerup') opts.onTap();
+                return;
+            }
             try {
-                const rect = panel.getBoundingClientRect();
-                localStorage.setItem(POS_KEY, JSON.stringify({ left: rect.left, top: rect.top }));
+                const rect = el.getBoundingClientRect();
+                localStorage.setItem(posKey, JSON.stringify({ left: rect.left, top: rect.top }));
             } catch (e) {}
-        });
+        }
+        handle.addEventListener('pointerup', endDrag);
+        handle.addEventListener('pointercancel', endDrag);
+    }
+    // ---- Einstiegspunkte: Button in der SBC-Aktionsleiste + fliegender Kreis -
+    // Der Weg ueber die globale Navigationsleiste (.ut-tab-bar) ist wieder
+    // RAUS: im Hochformat bricht der Eintrag um, landet in der Totzone unter
+    // dem nativen ⚙ der App und reagierte auf keinen Tap (LEARNINGS §9).
+    // Jetzt: dort einhaengen, wo die SBC ihre eigenen Aktionen hat
+    // ("Use Squad Builder" / "Clear Squad") - Container .sbc-button-container,
+    // aus PaleTools' CSS als EA-Klasse verifiziert.
+    const BTN_ID = 'pittools-sbc-btn';
+    let btnAttachCount = 0;
+    let launcherClicks = 0;
+    /**
+     * Sind wir im SBC-Bereich? Gemessen an der View-Controller-Kette der App
+     * (dieselbe Quelle, aus der auch die Challenge gelesen wird).
+     * WICHTIG: liefert die Kette nichts (z.B. vor dem App-Start), geben wir
+     * true zurueck - lieber ein Knopf zu viel als gar kein Einstieg.
+     */
+    function inSbcView() {
+        try {
+            const chain = getControllerChain();
+            if (!chain.length) return true;
+            for (const c of chain) {
+                const n = (c.constructor && c.constructor.name) || '';
+                if (/sbc/i.test(n)) return true;
+            }
+        } catch (e) { return true; }
+        return false;
+    }
+    /**
+     * Holt das Panel zurueck, falls eine gemerkte Position ausserhalb des
+     * Bildschirms liegt - sonst "passiert nichts", obwohl der Klick ankam.
+     */
+    function ensurePanelOnScreen() {
+        const p = ui.panel;
+        if (!p) return;
+        try {
+            const r = p.getBoundingClientRect();
+            if (!r.width && !r.height) return;
+            const off = r.right < 40 || r.left > window.innerWidth - 40 ||
+                        r.bottom < 40 || r.top > window.innerHeight - 40;
+            if (off) {
+                p.style.left = ''; p.style.top = '';
+                p.style.right = '22px'; p.style.bottom = '90px';
+                try { localStorage.removeItem('sbcOptPanelPos'); } catch (e) {}
+                warn('Panel lag ausserhalb des Bildschirms - Position zurueckgesetzt.');
+            }
+        } catch (e) {}
+    }
+    function togglePanel() {
+        if (!ui.panel) return;
+        const open = ui.panel.classList.toggle('open');
+        if (open) ensurePanelOnScreen();
+        const btn = document.getElementById(BTN_ID);
+        if (btn) btn.classList.toggle('pittools-active', open);
+    }
+    /**
+     * Die SBC-Aktionsleiste, sichtbar. Kann es mehrfach im DOM geben
+     * (Hoch-/Querformat), unsichtbare sind nutzlos.
+     */
+    function sbcButtonContainer() {
+        const all = document.querySelectorAll('.sbc-button-container');
+        for (let i = 0; i < all.length; i++) {
+            if (all[i].offsetParent !== null || all[i].getClientRects().length) return all[i];
+        }
+        return null;
+    }
+    function buildSbcButton(container) {
+        const btn = document.createElement('button');
+        btn.id = BTN_ID;
+        btn.type = 'button';
+        btn.title = 'PitTools v' + VERSION;
+        // Aussehen von einem echten Nachbar-Button erben: dessen Klassen sind
+        // uns nicht bekannt (und koennen sich mit jedem EA-Update aendern),
+        // kopieren ist robuster als raten.
+        let donor = null;
+        for (let i = 0; i < container.children.length; i++) {
+            const ch = container.children[i];
+            if (ch.id !== BTN_ID && ch.tagName === 'BUTTON' && ch.className) { donor = ch; break; }
+        }
+        btn.className = (donor ? donor.className + ' ' : '') + BTN_ID;
+        const img = document.createElement('img');
+        img.src = ICON_URI;
+        img.alt = '';
+        const lbl = document.createElement('span');
+        lbl.textContent = 'PitTools';
+        btn.appendChild(img);
+        btn.appendChild(lbl);
+        // KEIN Listener am Element: die EA-App baut die Leiste neu und kopiert
+        // dabei Knoten - ein Klon haette den Listener verloren (Button sichtbar,
+        // Klick tot). Stattdessen delegiert, siehe installLauncherDelegation().
+        return btn;
+    }
+    /**
+     * Klicks auf unseren Button - delegiert und in der Capture-Phase, damit
+     * sie jedes Neu-Rendern der Leiste ueberleben und die EA-App nicht
+     * zusaetzlich reagiert.
+     * touchend UND click, weil die mobile EA-Ansicht Touches teils selbst
+     * verarbeitet und dann gar kein click mehr entsteht. Die Entprellung
+     * verhindert doppeltes Umschalten (= Panel auf und sofort wieder zu, was
+     * genau wie "es passiert nichts" aussieht).
+     */
+    function installLauncherDelegation() {
+        if (STATE.launcherDelegated) return;
+        STATE.launcherDelegated = true;
+        let last = 0;
+        function onHit(ev) {
+            try {
+                const t = ev.target;
+                if (!t || !t.closest || !t.closest('#' + BTN_ID)) return;
+                ev.preventDefault();
+                ev.stopPropagation();
+                const now = Date.now();
+                if (now - last < 400) return;
+                last = now;
+                launcherClicks++;
+                togglePanel();
+            } catch (e) {}
+        }
+        document.addEventListener('click', onHit, true);
+        document.addEventListener('touchend', onHit, true);
+    }
+    /**
+     * Haelt die Einstiegspunkte aktuell. Regeln:
+     *  - Beides NUR im SBC-Bereich (Wunsch von Rasmus - sonst ist der Knopf
+     *    ueberall im Weg). Beim Verlassen geht das Panel zu, damit es nicht
+     *    ueber dem Transfermarkt schwebt.
+     *  - Der fliegende Kreis ist der VERLAESSLICHE Weg und bleibt sichtbar.
+     *    Der Button in der SBC-Leiste kommt zusaetzlich dazu, wo es geht -
+     *    zweimal war ein eingehaengter Button live tot, deshalb wird der Kreis
+     *    nicht mehr automatisch dafuer weggenommen.
+     */
+    function syncLauncher() {
+        if (!ui.fab || !ui.panel) return;
+        let btn = document.getElementById(BTN_ID);
+        if (!inSbcView()) {
+            if (btn && btn.parentNode) btn.parentNode.removeChild(btn);
+            ui.fab.classList.add('sbc-opt-hidden');
+            if (ui.panel.classList.contains('open')) togglePanel();
+            return;
+        }
+        ui.fab.classList.remove('sbc-opt-hidden');
+        const cont = sbcButtonContainer();
+        if (cont) {
+            if (!btn || btn.parentNode !== cont) {
+                if (btn && btn.parentNode) btn.parentNode.removeChild(btn);
+                btn = buildSbcButton(cont);
+                cont.appendChild(btn);
+                btnAttachCount++;
+            }
+            btn.classList.toggle('pittools-active', ui.panel.classList.contains('open'));
+        } else if (btn && btn.parentNode) {
+            btn.parentNode.removeChild(btn);
+        }
     }
     function setStatus(txt) { if (ui.status) ui.status.textContent = txt; }
     function refreshSbcInfoUI() {
@@ -2629,6 +2870,84 @@
             lastUtasPaths: STATE.diag.lastUtasPaths,
             lastErrors: STATE.diag.lastErrors,
             uiScan: STATE.diag.uiScan || null,
+            // Einstiegspunkt-Diagnose: sitzt der Menüpunkt in der EA-Leiste
+            // oder fällt die App auf den FAB zurück? tabBarCount zeigt, ob
+            // mehrere (auch unsichtbare) Leisten im DOM stehen.
+            launcher: (function () {
+                function rect(el) {
+                    try {
+                        const r = el.getBoundingClientRect();
+                        return { l: Math.round(r.left), t: Math.round(r.top),
+                                 w: Math.round(r.width), h: Math.round(r.height) };
+                    } catch (e) { return null; }
+                }
+                // Alle sichtbaren Buttons MIT Text - daraus ist der echte
+                // Container der SBC-Aktionen ("Use Squad Builder" / "Clear
+                // Squad") ablesbar, auch wenn .sbc-button-container in dieser
+                // FC-Version anders heisst.
+                let buttonDump = null;
+                try {
+                    buttonDump = [];
+                    const btns = document.querySelectorAll('button');
+                    for (let i = 0; i < btns.length && buttonDump.length < 25; i++) {
+                        const b = btns[i];
+                        if (!(b.offsetParent !== null || b.getClientRects().length)) continue;
+                        const txt = (b.textContent || '').trim().slice(0, 40);
+                        if (!txt) continue;
+                        buttonDump.push({
+                            txt: txt,
+                            id: b.id || null,
+                            cls: String(b.className || '').slice(0, 60),
+                            parentCls: String((b.parentNode && b.parentNode.className) || '').slice(0, 60),
+                            r: rect(b)
+                        });
+                    }
+                } catch (e) {}
+                let fabPos = null;
+                try { fabPos = localStorage.getItem('sbcOptFabPos'); } catch (e) {}
+                const btn = document.getElementById(BTN_ID);
+                const cont = sbcButtonContainer();
+                return {
+                    inSbcView: inSbcView(),
+                    controllerNames: (function () {
+                        try {
+                            return getControllerChain().map(function (c) {
+                                return (c.constructor && c.constructor.name) || '?';
+                            });
+                        } catch (e) { return null; }
+                    })(),
+                    // Container der SBC-Aktionsleiste
+                    containerSelector: '.sbc-button-container',
+                    containerCount: document.querySelectorAll('.sbc-button-container').length,
+                    containerVisible: !!cont,
+                    containerRect: cont ? rect(cont) : null,
+                    containerChildren: cont ? (function () {
+                        const out = [];
+                        for (let i = 0; i < cont.children.length && i < 12; i++) {
+                            out.push({
+                                tag: cont.children[i].tagName,
+                                id: cont.children[i].id || null,
+                                txt: (cont.children[i].textContent || '').trim().slice(0, 30),
+                                cls: String(cont.children[i].className || '').slice(0, 60)
+                            });
+                        }
+                        return out;
+                    })() : null,
+                    btnAttached: !!btn,
+                    btnRect: btn ? rect(btn) : null,
+                    btnAttachCount: btnAttachCount,
+                    // 0 = unser Klick kommt gar nicht an; >0 = Klick kam an
+                    // (dann liegt ein "es passiert nichts" am Panel, nicht am Button)
+                    launcherClicks: launcherClicks,
+                    visibleButtons: buttonDump,
+                    viewport: { w: window.innerWidth, h: window.innerHeight,
+                                dpr: window.devicePixelRatio || 1 },
+                    fabVisible: !!(ui.fab && !ui.fab.classList.contains('sbc-opt-hidden')),
+                    fabSavedPos: fabPos,
+                    panelRect: ui.panel ? rect(ui.panel) : null,
+                    panelOpen: !!(ui.panel && ui.panel.classList.contains('open'))
+                };
+            })(),
             refreshLog: STATE.diag.refreshLog || null,
             submitVia: STATE.diag.submitVia || null,
             controllerScan: controllerScan(),
@@ -2947,6 +3266,7 @@
         if (document.getElementById('sbc-opt-fab')) return;
         injectStyles();
         buildPanel();
+        installLauncherDelegation();
         log('UI initialisiert. Version', VERSION);
     }
     function waitForBody() {
@@ -2968,6 +3288,10 @@
                 refreshDiagUI();
             } catch (e) {}
         }, 2000);
+        // Menüpunkt in der EA-Leiste: häufiger als der 2s-Watchdog, damit er
+        // beim View-Wechsel praktisch sofort steht. Kostet nur zwei
+        // DOM-Lookups - deutlich billiger als ein Observer über die ganze App.
+        setInterval(function () { try { syncLauncher(); } catch (e) {} }, 500);
         // App-Services erscheinen erst nach dem App-Start.
         setInterval(installServicesHooks, 1000);
         // AUTO-LOAD: den Pool EINMAL im Hintergrund laden, sobald die Session

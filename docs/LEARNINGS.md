@@ -136,6 +136,33 @@ trotz Erfolg).
   deshalb NUR benannte Top-Level-Klassen in MainActivity.java.
 - Drittanbieter-Cookies aktiv (EA-SSO). Icon: Jonathan Pitroipa (fotmob
   38216), Kreis mit Türkis-Ring, generiert in build-Zeit via PIL.
+- **PaleTools braucht KEINEN GM_-Shim** — das war eine Fehlannahme. Der
+  Mobile-Build deklariert zwar `@grant GM_xmlhttpRequest/GM_download/
+  unsafeWindow`, hat aber im Code für beide Fälle Fallbacks:
+  `typeof unsafeWindow != 'undefined' ? unsafeWindow : window` und
+  `GM_xmlhttpRequest` → **`window.invokePaletoolsAction`** → eigenes `fetch`.
+  `invokePaletoolsAction` ist die Bridge, die PaleBrowser (deren eigene native
+  App) für Cross-Origin-Requests bereitstellt — die fehlt bei uns. Betroffen
+  sind damit nur die externen Preisabfragen (futbin/futwiz/fut.gg), nicht das
+  Laden von PaleTools selbst.
+- **Große Scripts müssen gestückelt injiziert werden** (ab App v1.4.0):
+  PaleTools ist ~910 KB, und `evaluateJavascript` schiebt den String per
+  Binder-IPC zum Renderer — Transaktionslimit ~1 MB (geteilter Puffer), also
+  je nach Gerät abgeschnitten oder Exception. Lösung: in Häppchen von 60k
+  Rohzeichen als JS-String-Literale übertragen, im Seitenkontext zusammensetzen
+  und ausführen. Beim Escaping alles außerhalb ASCII-druckbar als u-Escape
+  schreiben — das Ergebnis ist reines ASCII und damit frei von
+  Encoding-Fragen zwischen Java, Binder und JS. Verifiziert: 16 Chunks,
+  größter escapeter Chunk 64 KB, Roundtrip byte-identisch zum Original.
+- Ausgeführt wird über ein `<script>`-Tag mit `textContent` (echter globaler
+  Scope, wie ein normales Userscript — PaleTools legt Globals an). **Wenn eine
+  CSP inline Scripts blockt, passiert das STILL**, ohne Exception — deshalb
+  hängt am Code ein Sentinel (`__pt_ran`), und nur wenn der fehlt, wird
+  `new Function` als Fallback versucht. Das Ergebnis kommt als Toast zurück,
+  weil am Gerät keine Konsole hängt.
+- **Achtung javac-Falle:** u-Escape-Sequenzen werden auch in KOMMENTAREN
+  ausgewertet — `\uXXXX` als Platzhalter in einem Kommentar ist ein
+  Compile-Fehler ("invalid unicode"). Deshalb im Code nur umschrieben.
 - **Der Update-Default war ein stiller Deployment-Killer** (bis v1.2.0): die
   Optimizer-URL hatte den Default `""`, und `""` heißt "gebündeltes Asset
   verwenden". Ohne manuellen Eintrag pro Gerät zog die App also NIE von GitHub —

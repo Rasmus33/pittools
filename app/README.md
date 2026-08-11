@@ -7,13 +7,13 @@ automatisch die neuesten Userscripts und injiziert sie — kein Tampermonkey nö
 1. **EA FC SBC Rating-Optimizer** — wird bei jedem App-Start von GitHub (`main`)
    geladen, URL im ⚙-Menü änderbar. Fallback: lokaler Cache, notfalls die in der
    APK gebündelte Version.
-2. **PaleTools** (Mobile-Build von `pale.tools`) — abschaltbar. **Achtung: läuft
-   in dieser App derzeit nicht** (braucht `GM_*`-APIs, die eine nackte
-   `evaluateJavascript`-Injection nicht bereitstellt — siehe ROADMAP).
+2. **PaleTools** (Mobile-Build von `pale.tools`) — abschaltbar. Wird ab v1.4.0
+   gestückelt injiziert (~910 KB sprengen eine einzelne `evaluateJavascript`-
+   Transaktion). Ein Toast beim Start meldet, ob es geladen wurde.
 
 ## Installation (für den Kollegen)
 
-1. `pittools-v1.3.0.apk` aufs Handy schicken (z.B. WhatsApp/Mail/Drive).
+1. `pittools-v1.4.0.apk` aufs Handy schicken (z.B. WhatsApp/Mail/Drive).
 2. Antippen → Installation aus unbekannten Quellen einmalig erlauben.
    (Play Protect ggf. mit „Trotzdem installieren" bestätigen — die App ist
    selbstsigniert.)
@@ -61,7 +61,7 @@ Signatur macht Updates in-place unmöglich.
 Nach dem Build gegenprüfen, dass die Signatur zur installierten Version passt:
 
 ```bash
-apksigner verify --print-certs build/pittools-v1.3.0.apk   # SHA-256: 41f23895…1b17
+apksigner verify --print-certs build/pittools-v1.4.0.apk   # SHA-256: 41f23895…1b17
 ```
 
 ## Technik-Notizen
@@ -69,6 +69,13 @@ apksigner verify --print-certs build/pittools-v1.3.0.apk   # SHA-256: 41f23895�
 - Injection: `evaluateJavascript` in `onPageStarted` (vor dem EA-Bundle, damit
   die fetch/XHR-Interception greift) + Sicherheitsnetz in `onPageFinished`
   mit `window.__inj_*`-Guards gegen Doppel-Ausführung.
+- Der Optimizer geht direkt als Code rein (klein, muss so früh wie möglich
+  laufen). PaleTools wird gestückelt übertragen und dann über ein
+  `<script>`-Tag ausgeführt — eine einzelne `evaluateJavascript`-Transaktion
+  hält keine ~910 KB (Binder-Limit ~1 MB).
+- Der ⚙-Knopf ist verschiebbar (ziehen; Tippen öffnet die Einstellungen). Als
+  nativer Button liegt er über dem WebView und macht alles im DOM darunter
+  untippbar — unten links war er eine Totzone.
 - **Kein Desktop-UA, keine Querformat-Sperre.** Die EA-Seite erkennt Handys und
   liefert ihre mobile Hochformat-Ansicht; erzwungenes Querformat führte zum
   festhängenden „Rotate device"-Screen (LEARNINGS §8). Die App nimmt die

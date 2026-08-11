@@ -2,30 +2,24 @@
 
 ## Offen (konkret)
 
-1. **PaleTools läuft in der App nicht** (live bestätigt: unsere Funktionen ok,
-   PaleTools tot). Ursachenanalyse — noch NICHT am Gerät verifiziert:
-   - PaleTools 26.0.30 deklariert `@grant GM_xmlhttpRequest`, `GM_download`,
-     `unsafeWindow` und nutzt sie im Code. Die App injiziert nackt per
-     `evaluateJavascript`, ohne Tampermonkey und ohne `GM_*`-Shim → beim ersten
-     Zugriff ReferenceError. Unser Script braucht kein `GM_*`, deshalb läuft es.
-   - Der Mobile-Build ist **912 KB**. `evaluateJavascript` schickt den String per
-     Binder-IPC an den Renderer; das Transaktionslimit liegt bei ~1 MB
-     (geteilter Puffer) → je nach Gerät TransactionTooLargeException oder
-     stilles Abschneiden. Unser Script (154 KB) ist unkritisch.
-   - **Ein Mirror des Scripts im Repo behebt keinen der beiden Punkte.**
-   Lösungsweg: `GM_*`-Shim (`GM_xmlhttpRequest` → `fetch`/`XMLHttpRequest`,
-   `unsafeWindow` → `window`, `GM_download` → Blob-Link) vor PaleTools
-   injizieren, und das Script nicht als IPC-String übergeben, sondern über ein
-   `<script src="blob:…">`- bzw. Local-File-Tag laden. Erst dann ist zu sehen,
-   ob weitere Inkompatibilitäten dahinter liegen.
-   Der ⚙-Schalter „PaleTools mitladen" ist der saubere Workaround, bis das steht.
+1. **PaleTools in der App zum Laufen bringen** — Rasmus braucht es parallel.
+   Stand: App v1.4.0 injiziert es gestückelt (16 Chunks à 60k, IPC-Limit war
+   der wahrscheinliche Grund, warum es gar nicht lief). Am Gerät zu prüfen:
+   der Toast beim Start sagt „PaleTools: geladen (N Zeichen)" oder nennt den
+   Fehler; „still fehlgeschlagen" heißt CSP blockt das inline-Script.
+   Was danach noch fehlen kann: **`window.invokePaletoolsAction`** — die Bridge
+   für Cross-Origin-Requests, die PaleBrowser bereitstellt (LEARNINGS §8). Ohne
+   sie greifen nur die externen Preisabfragen (futbin/futwiz/fut.gg) nicht, das
+   übrige PaleTools sollte laufen. Nachbauen wäre: ein `@JavascriptInterface`,
+   das die Requests nativ ausführt und das Ergebnis zurückgibt — erst angehen,
+   wenn wirklich diese Features fehlen.
+   Ein GM_-Shim ist NICHT nötig (PaleTools hat Fallbacks, LEARNINGS §8).
 2. **APK beim Kollegen testen**: v1.3.0 (PitTools, Hochformat, Pitroipa-Icon,
    GitHub-URL als Default) ist gebaut, aber der EA-Login im WebView ist erst auf
    EINEM Gerät verifiziert. Mögliche Stolpersteine: SSO-Popups, Captcha.
-3. **⚙-Knopf der App beweglich machen** (nächstes APK): Er sitzt nativ unten
-   links über dem WebView und macht alles darunter untippbar (LEARNINGS §9).
-   Entweder verschiebbar (Position in SharedPreferences merken) oder in eine
-   unkritische Ecke. Gehört ins gleiche APK wie der PaleTools-Shim (§1).
+3. ~~⚙-Knopf der App beweglich machen~~ — erledigt in App v1.4.0 (ziehen
+   verschiebt, Position in SharedPreferences; Tippen öffnet wie bisher die
+   Einstellungen). Am Gerät noch gegenzuprüfen.
 4. **SBC-Button verifizieren** (v4.8.0): Erscheint „PitTools" in der
    SBC-Aktionsleiste neben „Use Squad Builder"/„Clear Squad", und reagiert er?
    Im Diagnose-Report zeigt `launcher.containerVisible`, ob

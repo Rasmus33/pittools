@@ -2,17 +2,24 @@
 
 ## Offen (konkret)
 
-0. **Batch-Abgabe live verifizieren** (v4.11.0, NOCH NICHT am Gerät getestet):
-   Die Planung ist durchgetestet (8 Testfälle), der ABGABE-Weg
-   `services.SBC.submitChallenge` ist aber nur aus PaleTools abgeleitet (es
-   hookt `UTSBCService.prototype.submitChallenge`) und nie live gelaufen.
-   Vor dem ersten echten Lauf: Diagnose-Report prüfen, Feld `batch.*` —
-   `submitChallengeThere` muss true sein, `submitChallengeArity` sagt, wieviele
-   Argumente EA erwartet (wir übergeben die Challenge, analog zu
-   `saveChallenge`). Erster Test mit Anzahl 2 an einer billigen SBC.
-   Offen ist außerdem, ob die App die Ansicht nach dem Abgeben selbst neu
-   aufbaut — der Lauf wartet 2,5s und prüft dann; wenn keine Challenge da ist,
-   bricht er ab (statt blind weiterzumachen).
+0. **Batch-Abgabe** — 1. Live-Versuch (v4.11.1) lief auf **HTTP 403**, nichts
+   abgegeben (Abbruch bei 0/3, Sicherheitsnetz hat gehalten). Der Report
+   lieferte zwei Erkenntnisse, beide in v4.12.0 umgesetzt:
+   - `submitChallengeArity: 0` — der Service erwartet **kein** Argument, wir
+     übergaben die Challenge.
+   - `controllerScan` zeigt, dass `UTSBCSquadSplitViewController` selbst
+     `submitChallenge`/`_submitChallenge`/`_onChallengeSubmitted` hat. Das ist
+     der Weg, den die App beim Klick auf ihren Submit-Button nimmt — analog zum
+     Eintragen (§5) geht der Aufruf jetzt über den Controller, Service ohne
+     Argument nur als Fallback.
+   - Neu vorab: `_squad.isSBCSquadEligible()` — bricht ab, BEVOR EA mit 403
+     antwortet, und nennt den Grund.
+   Offen: War der 403 der falsche Aufruf, oder war die SBC wirklich nicht
+   erfüllt? Der Report zeigte `sbc.reqDump` mit `scope: "PLAYER"` und
+   `"CLUB MEMBER"` — Vorgaben, die der Solver bewusst nicht abdeckt. Nächster
+   Test: nach dem Eintragen Diagnose schicken und `batch.squadEligible`
+   ansehen; ist das `false`, fehlt eine Vorgabe (dann ist der Batch für
+   SOLCHE SBCs grundsätzlich nicht geeignet, nicht der Aufruf schuld).
 
 1. **PaleTools in der App zum Laufen bringen** — Rasmus braucht es parallel.
    Stand: App v1.4.0 injiziert es gestückelt (16 Chunks à 60k, IPC-Limit war

@@ -8,7 +8,7 @@ JS/Java-Engineering. Umgangssprache: Deutsch.
 ## Repo-Struktur
 
 - `ea-fc-sbc-optimizer.user.js` — DAS Produkt. Ein einziges Userscript
-  (aktuell v4.11.1). Tampermonkey aktualisiert es über `@updateURL`/`@downloadURL`
+  (aktuell v4.12.0). Tampermonkey aktualisiert es über `@updateURL`/`@downloadURL`
   im Header selbst; die Handy-App lädt dieselbe Datei von
   `https://raw.githubusercontent.com/Rasmus33/pittools/main/ea-fc-sbc-optimizer.user.js`
   bei jedem App-Start. **Push auf main = Deployment.**

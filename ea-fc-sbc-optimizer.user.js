@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.11.1
+// @version      4.12.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.11.1';
+    const VERSION = '4.12.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -2340,8 +2340,20 @@
         #sbc-opt-batch-preview {
             background:#131e2b; border:1px solid #1f2b3a; border-radius:8px;
             padding:8px 10px; margin-top:8px; font-size:12px; line-height:1.5;
-            max-height:200px; overflow-y:auto;
+            max-height:340px; overflow-y:auto;
         }
+        .sbc-opt-batch-cards { margin:4px 0 2px; }
+        .sbc-opt-batch-card {
+            font-size:11px; color:#cfe0f2; padding:1px 0;
+            white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+        }
+        .sbc-opt-batch-card .r {
+            display:inline-block; min-width:22px; font-weight:700; color:#e6edf3;
+        }
+        .sbc-opt-batch-card .src { color:#7d93ab; }
+        .sbc-opt-batch-card .rar { color:#9db2c8; }
+        .sbc-opt-batch-card .untr { color:#6f8aa6; font-style:italic; }
+        .sbc-opt-batch-card.prot .rar { color:#ffb454; font-weight:700; }
         .sbc-opt-batch-round { padding:3px 0; border-bottom:1px solid #1b2735; }
         .sbc-opt-batch-round:last-child { border-bottom:none; }
         .sbc-opt-batch-round b { color:#00e0b8; }
@@ -3025,6 +3037,20 @@
                         methods = methods.slice(0, 25);
                     }
                 } catch (e) {}
+                // Der Controller-Weg ist der eigentliche (siehe
+                // submitChallengeToEa): die App ruft beim Klick auf ihren
+                // Submit-Button die Controller-Methode, nicht den Service mit
+                // Argument. Und isSBCSquadEligible sagt VOR dem Abgeben, ob EA
+                // die SBC für erfüllt hält - genau das war der 403 in v4.11.x.
+                const ctrl = findSbcController();
+                const sq = ctrl && (ctrl._squad || (ctrl.getSquad && ctrl.getSquad()));
+                let eligible = null, squadFull = null;
+                try {
+                    if (sq && typeof sq.isSBCSquadEligible === 'function') eligible = sq.isSBCSquadEligible();
+                } catch (e) { eligible = 'Fehler: ' + (e && e.message); }
+                try {
+                    if (sq && typeof sq.isSquadFull === 'function') squadFull = sq.isSquadFull();
+                } catch (e) {}
                 return {
                     sbcServiceThere: !!svc,
                     submitChallengeThere: !!(svc && typeof svc.submitChallenge === 'function'),
@@ -3033,6 +3059,11 @@
                     saveChallengeThere: !!(svc && typeof svc.saveChallenge === 'function'),
                     relevantMethods: methods,
                     liveChallengeThere: !!findLiveChallenge(),
+                    controllerSubmitThere: !!(ctrl && typeof ctrl.submitChallenge === 'function'),
+                    controllerName: (ctrl && ctrl.constructor && ctrl.constructor.name) || null,
+                    squadEligible: eligible,
+                    squadFull: squadFull,
+                    lastSubmitVia: STATE.diag.submitChallengeVia || null,
                     plannedRounds: (STATE.batch && STATE.batch.planned) || 0
                 };
             })(),
@@ -3390,27 +3421,83 @@
         }
         return STATE.sbc.entity || null;
     }
+    /** Der SBC-Controller der offenen Ansicht (mit Squad). */
+    function findSbcController() {
+        let found = null;
+        for (const c of getControllerChain()) {
+            const n = (c.constructor && c.constructor.name) || '';
+            if (/sbc/i.test(n) && (c._squad || (c.getSquad && c.getSquad()))) found = c;
+        }
+        return found;
+    }
     /**
-     * SBC endgültig abgeben. UTSBCService.prototype.submitChallenge ist der
-     * Weg, den auch PaleTools benutzt (es hookt genau diese Methode).
-     * UNWIDERRUFLICH - wird nur aus dem Batch-Lauf nach expliziter Freigabe
-     * gerufen.
+     * SBC endgültig abgeben. UNWIDERRUFLICH - nur aus dem Batch-Lauf nach
+     * expliziter Freigabe.
+     *
+     * Der erste Versuch (v4.11.x) lief über services.SBC.submitChallenge(challenge)
+     * und kam live mit HTTP 403 zurück. Der Diagnose-Report zeigte auch warum:
+     *   - submitChallenge nimmt gar kein Argument (arity 0),
+     *   - und der Live-Controller (UTSBCSquadSplitViewController) hat SELBST
+     *     submitChallenge/_submitChallenge/_onChallengeSubmitted - das ist der
+     *     Weg, den die App beim Klick auf ihren eigenen Submit-Button nimmt.
+     * Deshalb jetzt: Controller zuerst, Service ohne Argument als Fallback -
+     * dasselbe Muster wie beim Eintragen (LEARNINGS §5).
      */
     async function submitChallengeToEa() {
+        const ctrl = findSbcController();
+        const liveSquad = ctrl && (ctrl._squad || (ctrl.getSquad && ctrl.getSquad()));
+        // Vorab: hält EA die SBC überhaupt für abgabefähig? Spart einen
+        // 403-Blindflug und nennt den Grund. Nur bei EXPLIZIT false abbrechen -
+        // liefert die Methode etwas anderes, wird sie ignoriert.
+        if (liveSquad && typeof liveSquad.isSBCSquadEligible === 'function') {
+            let eligible = null;
+            try { eligible = liveSquad.isSBCSquadEligible(); } catch (e) {}
+            if (eligible === false) {
+                throw new Error('EA hält die SBC nicht für abgabefähig - ' +
+                    'wahrscheinlich eine Vorgabe offen, die wir nicht abdecken ' +
+                    '(z.B. Verein/Liga/Chemie). NICHT abgegeben.');
+            }
+        }
+        const problems = [];
+        // Weg A: Controller-Methode (der App-eigene Weg).
+        if (ctrl && typeof ctrl.submitChallenge === 'function') {
+            try {
+                const r = ctrl.submitChallenge();
+                let resp = null;
+                if (r && (typeof r.then === 'function' || typeof r.subscribe === 'function' ||
+                          typeof r.observe === 'function')) {
+                    resp = await obsPromise(r);
+                }
+                if (resp && !responseOk(resp)) {
+                    problems.push('Controller: Status ' + resp.status);
+                } else {
+                    STATE.diag.submitChallengeVia = 'controller';
+                    return { via: 'controller' };
+                }
+            } catch (e) {
+                problems.push('Controller: ' + (e && e.message || e));
+            }
+        } else {
+            problems.push('Controller hat kein submitChallenge()');
+        }
+        // Weg B: Service OHNE Argument (arity 0 laut Diagnose).
         const sbcSvc = window.services && window.services.SBC;
-        if (!sbcSvc || typeof sbcSvc.submitChallenge !== 'function') {
-            throw new Error('services.SBC.submitChallenge nicht verfügbar - ' +
-                'Abgeben geht in dieser Web-App-Version nicht (Diagnose schicken).');
+        if (sbcSvc && typeof sbcSvc.submitChallenge === 'function') {
+            try {
+                const resp = await obsPromise(sbcSvc.submitChallenge());
+                if (responseOk(resp)) {
+                    STATE.diag.submitChallengeVia = 'service';
+                    return { via: 'service' };
+                }
+                problems.push('Service: Status ' + (resp && resp.status));
+            } catch (e) {
+                problems.push('Service: ' + (e && e.message || e));
+            }
+        } else {
+            problems.push('services.SBC.submitChallenge fehlt');
         }
-        const challenge = findLiveChallenge();
-        if (!challenge) throw new Error('Keine offene Challenge gefunden.');
-        let resp;
-        try { resp = await obsPromise(sbcSvc.submitChallenge(challenge)); }
-        catch (e) { throw new Error('submitChallenge fehlgeschlagen: ' + e.message); }
-        if (!responseOk(resp)) {
-            throw new Error('submitChallenge abgelehnt (Status ' + (resp && resp.status) + ').');
-        }
-        return true;
+        throw new Error('Abgeben fehlgeschlagen (' + problems.join(' | ') + '). ' +
+            'Bei 403 ist die SBC meist nicht wirklich erfüllt.');
     }
     function batchWait(ms) { return new Promise(r => setTimeout(r, ms)); }
     async function onBatchPlanClick() {
@@ -3437,25 +3524,53 @@
             ui.batchPlan.disabled = false;
         }
     }
+    /**
+     * Kurzbezeichnung der Karten-Rarity. Die rareflag-NUMMER wird bewusst
+     * mitgezeigt: welche Zahl welches Event ist (FUTTIES, TOTS, …), weiss
+     * Rasmus besser als das Script - eine geratene Zuordnung wäre schlechter
+     * als die rohe Zahl. Gruppe 83 ist das, was Rarity-Vorgaben verlangen.
+     */
+    function rarityLabel(p) {
+        const rf = Number(p.rareflag);
+        let base;
+        if (rf === 3) base = 'TOTW';
+        else if (rf === 0 || rf === 1) base = 'Gold';
+        else base = 'Special rf' + rf;
+        const prot = !!(p.groups && p.groups.indexOf(83) > -1);
+        return base + (prot ? ' · Gruppe 83' : '');
+    }
     function renderBatchPreview(plan) {
         const box = ui.batchPreview;
         if (!box) return;
         let html = '';
         plan.rounds.forEach(function (r, i) {
-            const rats = r.players.map(p => p.rating).sort((a, b) => b - a);
             const nStore = r.players.filter(p => p.isStorage).length;
             const nUntr = r.players.filter(p => p.untradeable).length;
             const nProt = r.players.filter(p => p.groups && p.groups.indexOf(83) > -1).length;
             html += '<div class="sbc-opt-batch-round">' +
                 '<b>Team ' + (i + 1) + ':</b> OVR ' + r.ovr +
                 ' (' + r.ovrExact.toFixed(2) + ')' +
-                ' · ' + rats.join('/') +
                 '<br><span style="color:#9db2c8;">Storage ' + nStore +
                 ' · unverkäuflich ' + nUntr +
                 (nProt ? ' · <span class="sbc-opt-batch-warn">geschützt ' + nProt + '</span>' : '') +
                 '</span>';
+            // Karte für Karte: Rating, Name, Herkunft, Rarity - damit vor der
+            // Freigabe zu sehen ist, WAS genau verbraucht wird.
+            const players = r.players.slice().sort((a, b) => b.rating - a.rating);
+            html += '<div class="sbc-opt-batch-cards">';
+            for (const p of players) {
+                const prot = !!(p.groups && p.groups.indexOf(83) > -1);
+                html += '<div class="sbc-opt-batch-card' + (prot ? ' prot' : '') + '">' +
+                    '<span class="r">' + p.rating + '</span> ' +
+                    escapeHtml(p.name || ('#' + p.id)) +
+                    ' <span class="src">' + (p.isStorage ? 'Storage' : 'Verein') + '</span>' +
+                    ' <span class="rar">' + escapeHtml(rarityLabel(p)) + '</span>' +
+                    (p.untradeable ? ' <span class="untr">unverkäuflich</span>' : '') +
+                    '</div>';
+            }
+            html += '</div>';
             for (const w of (r.warnings || [])) {
-                html += '<br><span class="sbc-opt-batch-warn">⚠ ' + escapeHtml(w) + '</span>';
+                html += '<span class="sbc-opt-batch-warn">⚠ ' + escapeHtml(w) + '</span><br>';
             }
             html += '</div>';
         });

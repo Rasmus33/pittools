@@ -35,14 +35,27 @@
    das die Requests nativ ausführt und das Ergebnis zurückgibt — erst angehen,
    wenn wirklich diese Features fehlen.
    Ein GM_-Shim ist NICHT nötig (PaleTools hat Fallbacks, LEARNINGS §8).
-1b. **Batch live verifizieren** (v4.18.0, wieder eingebaut mit der richtigen
-   Mechanik): Nach jeder Runde holt der Lauf ueber
-   `requestChallengesForSet(setId)` die FRISCHE Instanz - der erste Versuch
-   scheiterte daran, dass er die verbrauchte challengeId weiterbenutzte
-   (LEARNINGS 9). Anker ist Set + Vorgaben, nicht die ID.
-   Am Geraet zu pruefen: laeuft er 3 Runden ohne Handgriff durch? Wenn nicht,
-   zeigt `batchSteps` im Report pro Sekunde, was er gesehen hat (Popup zu?
-   Controller da? passende Vorgaben? Squad leer? gefundene frische ID).
+1b. **Batch: der letzte fehlende Schritt ist die Navigation** (Stand v4.18.1).
+   Was funktioniert: planen, eintragen, abgeben, Belohnungs-Dialog wegraeumen,
+   die frische challengeId ueber `requestChallengesForSet` finden.
+   Was NICHT funktioniert: die Challenge-Ansicht zurueckbekommen. Nach dem
+   Abgeben steht die App im SBC-HUB (`UTSBCHubViewController`,
+   `containerCount: 0`, kein Squad-Controller - dreimal belegt), und
+   `services.SBC.loadChallenge(frischeId)` laedt nur Daten, ohne die Ansicht zu
+   wechseln. Ein dokumentierter Weg, eine Challenge programmatisch zu OEFFNEN,
+   ist nicht gefunden: `UTGameFlowNavigationController` hat
+   `pushViewController`, dafuer muesste man aber einen korrekt initialisierten
+   `UTSBCSquadSplitViewController` bauen.
+   Auch geprueft und verworfen: `#repeat-sbc` ("Repeat Search") ist EAs eigener
+   Button am `UTSBCSquadDetailPanelView` (`getRepeatSbcButton()`, PaleTools
+   haengt sich per addTarget nur dran) - dem Namen nach wiederholt er die
+   Squad-Builder-SUCHE, nicht die SBC. Und er existiert nur IN der
+   Challenge-Ansicht, ist im Hub also ohnehin weg.
+   **Naechster (und letzter) Ansatz:** im Hub die Kachel anklicken, so wie
+   Rasmus es von Hand macht. Dafuer liefert v4.18.1 das Diagnose-Feld
+   `hubScan` (sichtbare Kachel-Kandidaten mit Klasse, Text, Groesse). Mit
+   EINEM Report aus dem Hub ist das treffsicher baubar; klappt es dann nicht,
+   ist das Feature nicht sinnvoll umsetzbar.
 
 2. **APK beim Kollegen testen**: v1.3.0 (PitTools, Hochformat, Pitroipa-Icon,
    GitHub-URL als Default) ist gebaut, aber der EA-Login im WebView ist erst auf

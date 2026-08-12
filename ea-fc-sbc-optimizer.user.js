@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.18.0
+// @version      4.18.1
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.18.0';
+    const VERSION = '4.18.1';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -3073,8 +3073,43 @@
             lastUtasPaths: STATE.diag.lastUtasPaths,
             lastErrors: STATE.diag.lastErrors,
             uiScan: STATE.diag.uiScan || null,
-            // Submit-Diagnose (der Batch-Lauf ist ausgebaut): welcher Weg hat
-            // zuletzt gegriffen und ist ueberhaupt eine Challenge offen?
+            // Batch: was hat der Lauf pro Runde gesehen, als er die nächste
+            // Instanz öffnen wollte? (Die Abbruchmeldung verweist darauf -
+            // in v4.18.0 fehlte das Feld im Report, mein Fehler.)
+            batchSteps: STATE.diag.batchSteps || null,
+            // Der letzte fehlende Schritt: nach dem Abgeben landet die App im
+            // SBC-HUB (mehrfach belegt), und loadChallenge() bringt die Ansicht
+            // nicht zurück. Um die SBC wie von Hand anzuklicken, brauche ich die
+            // Kachel-Elemente - hier ein Abzug davon, wenn wir im Hub stehen.
+            hubScan: (function () {
+                try {
+                    const inHub = getControllerChain().some(c =>
+                        /hub/i.test((c.constructor && c.constructor.name) || ''));
+                    const out = { inHub: inHub, candidates: [] };
+                    if (!inHub) return out;
+                    // Alles, was nach SBC-Kachel/Set-Eintrag aussieht.
+                    const sel = '[class*="sbc"],[class*="tile"],[class*="set"]';
+                    const els = document.querySelectorAll(sel);
+                    for (let i = 0; i < els.length && out.candidates.length < 30; i++) {
+                        const e = els[i];
+                        if (!(e.offsetParent !== null || e.getClientRects().length)) continue;
+                        const txt = (e.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 45);
+                        if (!txt) continue;
+                        const r = e.getBoundingClientRect();
+                        if (r.width < 60 || r.height < 30) continue; // keine Mini-Elemente
+                        out.candidates.push({
+                            tag: e.tagName,
+                            cls: String(e.className || '').slice(0, 70),
+                            txt: txt,
+                            w: Math.round(r.width), h: Math.round(r.height),
+                            clickable: !!(e.onclick || e.getAttribute('role') === 'button')
+                        });
+                    }
+                    return out;
+                } catch (e) { return { error: String(e && e.message || e) }; }
+            })(),
+            // Submit-Diagnose: welcher Weg hat zuletzt gegriffen und ist
+            // ueberhaupt eine Challenge offen?
             submitInfo: (function () {
                 const svc = window.services && window.services.SBC;
                 const ctrl = findSbcController();

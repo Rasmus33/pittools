@@ -72,6 +72,16 @@
    `launcher.launcherClicks` trennt „Tap kommt nicht an" (0) von „Panel zeigt
    sich nicht" (>0). Der fliegende Kreis bleibt unabhängig davon der
    verlässliche Weg.
+4b. **Gold-Rare am Gerät gegenprüfen** (v4.25.0): Die „Rare: Min. N"-SBC muss
+   jetzt genau N Rare bis zur Panel-Grenze nehmen (Default 77) und den Rest mit
+   Common füllen. Im Report zeigt `sbc.rarityConstraints` die Gruppe 4 und die
+   Warnung „Rare-Vorgabe auf alle N Slots angewendet" den Count-Boost. Offen
+   ist nur, ob EA die 4 in `p.groups` mitschickt — falls nicht, greift der
+   rareflag-Pfad in `matchesRarity` (beide Wege getestet).
+4c. **Locks am Gerät gegenprüfen** (v4.25.0): `locks.found` muss jetzt > 0 sein.
+   Ist es das, aber eine gelockte Karte wird trotzdem verbaut, dann trifft die
+   ID eine andere Spalte — dafür vergleicht der Filter `id`, `assetId` und
+   `resourceId`.
 5. **Count-Parsing verifizieren**: Die "Ohne-Team-Rating ⇒ Vorgabe gilt für
    alle Slots"-Regel deckt die bekannten Fälle ab. Falls eine SBC auftaucht,
    bei der das falsch ist (Min-OVR-Count < Slots ohne Team-Rating), muss die

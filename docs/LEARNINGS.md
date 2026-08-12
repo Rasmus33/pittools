@@ -478,3 +478,69 @@ Pflicht bei jeder Objective-Änderung. Der Karten-Kosten-Spiegel
 und Untradeable-Rabatt) — sonst vergleichen die Brute-Force-Tests gegen ein
 anderes Kostenmodell als der Solver benutzt.
 Kein `Math.random` ohne Seed (mulberry32 vorhanden).
+
+
+## 11. Vorgaben-Parsing: Substring-Matches auf Scope-Namen sind gefährlich
+
+**v4.24.0, live:** Für „Rare: Min. 6 Players" suchte der Parser
+`scope.indexOf('RARE') > -1`. Der Report zeigte daraufhin fünf Phantom-Vorgaben:
+
+```
+rareConstraints: [ "CARRARESE CALCIO", "BRIAN FERRARES",
+                   "RAREȘ ILIE", "RAREȘ GAL", "RAREȘ POP" ]
+```
+
+Das sind **Spielernamen und ein Verein** — im `reqDump` stehen Vorgaben wie
+„dieser Spieler" oder „dieser Verein" mit dem Namen als Scope. „Ca**rrarese**",
+„Fer**rares**", „**Rareș**" enthalten alle die Buchstabenfolge RARE.
+
+**Regel:** Scope-Namen nur **exakt** oder gegen eine Whitelist prüfen, niemals
+per `indexOf` auf ein kurzes, in Namen häufiges Wort. Ein Test hält den
+Substring-Match jetzt draußen.
+
+**Die echte Vorgabe** stand daneben und war schon korrekt geparst:
+
+```
+reqDump: [ {scope:"PLAYER_COUNT", value:6},
+           {scope:"PLAYER_RARITY_GROUP", value:4},
+           {scope:"PLAYER_QUALITY", value:3} ]
+```
+
+**Gruppe 4 = „Rare"** (analog Gruppe 83 = TOTW/TOTS/FOF/FUTTIES). Zwei
+Konsequenzen:
+
+1. `count` war 1 bei 6 Slots — EAs Count-Feld ist unzuverlässig (§6). Ohne
+   Team-Rating gilt eine Gruppe-4-Vorgabe deshalb für ALLE Slots. Bewusst NUR
+   für Gruppe 4: bei 83 will Rasmus genau die geforderte Anzahl, eine Anhebung
+   wäre dort teuer falsch (ein Test hält das fest).
+2. „Rare" ist eine Karten-EIGENSCHAFT, kein Event. Ob EA die 4 überhaupt in
+   `p.groups` mitschickt, ist unbekannt — `matchesRarity` prüft für Gruppe 4
+   deshalb zusätzlich `rareflag === 1`. Damit greift es in beiden Fällen.
+
+## 12. PaleTools-Locks stehen unter kurzen IDs (assetId/resourceId)
+
+Die Lock-Erkennung fand den richtigen localStorage-Key
+(`paletools:2026:<userId>:lockedItems`), meldete aber `found: 0`. Inhalt:
+
+```
+[100664921, 190871, 225733, 231747, 50332136, 83923656, ...]
+```
+
+Das sind **keine 12-stelligen Item-IDs** (`916543482768`), sondern kürzere
+Zahlen — PaleTools sperrt über assetId/resourceId, also den **Spieler**, nicht
+die einzelne Karte. Die Plausibilitätsprüfung `n > 1e11` hat deshalb jeden
+Eintrag verworfen: Key gefunden, Werte alle weggefiltert, stiller Ausfall.
+
+Schwelle jetzt `>= 1000`; der Abgleich läuft gegen `id`, `assetId` und
+`resourceId`. Vier Tests prüfen das mit den echten Zahlen aus dem Report.
+
+**Muster:** eine Plausibilitätsprüfung, die zu streng ist, sieht genauso aus wie
+„Feature nicht vorhanden". Deshalb liefert das Diagnose-Feld `locks` neben
+`found` auch `keysScanned`, `keys` und `sample` — daran war in einem Blick zu
+sehen, dass die Daten da waren und nur meine Prüfung sie wegwarf.
+
+## 13. Warnungen deduplizieren
+
+Die gelockerte Rare-Grenze wurde einmal pro Slot gemeldet — sechs identische
+Zeilen im Panel, in denen die eine wichtige Meldung unterging. `warnings.push`
+ist jetzt gegen Dubletten gesichert (Wrapper direkt an der Array-Erzeugung).

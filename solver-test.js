@@ -694,9 +694,14 @@ function mulberry32(a) {
         res.ok && res.players.length === 9 && res.players.every(p => p.isCommon),
         res.ok ? ('rare=' + res.players.filter(p => p.isRare).length) : res.reason);
 
-    // Fall 2: 6 Rare gefordert, 6 Slots -> genau 6 Rare, alle <= 77
+    // Fall 2: 6 Rare gefordert, 6 Slots -> genau 6 Rare, alle <= 77.
+    // GENAU die Live-Form aus Rasmus' Report (setId 1351/challenge 3868):
+    // PLAYER_RARITY_GROUP mit Wert 4 und count 1 bei 6 Slots. Der count 1 ist
+    // EAs unzuverlaessiges Feld - ohne Team-Rating gilt die Vorgabe fuer ALLE
+    // Slots.
+    const RARE_G4 = [{ label: 'PLAYER_RARITY_GROUP', ids: [], count: 1, groupId: 4 }];
     const res2 = SolverCore.solve(pool, gcfg({
-        slots: 6, rareConstraints: [{ label: 'PLAYER_RARITY', count: 6 }]
+        slots: 6, rarityConstraints: RARE_G4
     }));
     const nRare = res2.ok ? res2.players.filter(p => p.isRare).length : -1;
     check('Gold mit "6x Rare": genau 6 Rare', res2.ok && nRare === 6,
@@ -711,7 +716,7 @@ function mulberry32(a) {
     // Fall 3: 3 Rare gefordert bei 9 Slots -> 3 Rare + 6 Common
     const res3 = SolverCore.solve(pool, gcfg({
         rareConstraints: [{ label: 'PLAYER_RARITY', count: 3 }]
-    }));
+    }));   // expliziter Rare-Count (Solver kann beides)
     check('Gold mit "3x Rare" bei 9 Slots: 3 Rare + 6 Common',
         res3.ok && res3.players.filter(p => p.isRare).length === 3 &&
         res3.players.filter(p => p.isCommon).length === 6,
@@ -720,11 +725,10 @@ function mulberry32(a) {
 
     // Fall 4: Grenze zu streng -> Warnung, aber kein stiller Fehlgriff
     const res4 = SolverCore.solve([].concat(rare85, common78), gcfg({
-        slots: 6, maxRareRating: 77,
-        rareConstraints: [{ label: 'PLAYER_RARITY', count: 6 }]
+        slots: 6, maxRareRating: 77, rarityConstraints: RARE_G4
     }));
     check('Gold: zu strenge Rare-Grenze wird gemeldet',
-        res4.ok && res4.warnings.some(w => /Rare-Karten bis Rating 77/.test(w)),
+        res4.ok && res4.warnings.some(w => /Rare-Karte bis Rating 77/.test(w)),
         res4.ok ? JSON.stringify(res4.warnings) : res4.reason);
 
     // Fall 5: Common-Grenze wirkt
@@ -734,7 +738,91 @@ function mulberry32(a) {
     check('Gold: Common-Grenze 76 haelt die 78er draussen',
         res5.ok && res5.players.every(p => p.rating <= 76),
         res5.ok ? res5.players.map(p => p.rating).join(',') : res5.reason);
+
+    // Fall 6: Gruppe 4 muss auch greifen, wenn EA die 4 NICHT in p.groups
+    // mitschickt - "rare" ist eine Karten-Eigenschaft (rareflag 1), kein Event.
+    const noGroups = pool.map(p => Object.assign({}, p, { groups: [] }));
+    const res6 = SolverCore.solve(noGroups, gcfg({ slots: 6, rarityConstraints: RARE_G4 }));
+    check('Gruppe 4 greift auch ohne 4 in p.groups (rareflag 1 zaehlt)',
+        res6.ok && res6.players.filter(p => p.isRare).length === 6,
+        res6.ok ? ('rare=' + res6.players.filter(p => p.isRare).length) : res6.reason);
+
+    // Fall 7: Die Anhebung auf alle Slots gilt NUR fuer Gruppe 4. Bei Gruppe 83
+    // (TOTW/TOTS/FOF/FUTTIES) will Rasmus genau die geforderte Anzahl - eine
+    // Anhebung waere dort teuer falsch.
+    const totw = many(6, 82, { rareflag: 3, groups: [83], storage: true });
+    const res7 = SolverCore.solve([].concat(totw, many(12, 80, { rareflag: 0 })), gcfg({
+        slots: 6,
+        rarityConstraints: [{ label: 'PLAYER_RARITY_GROUP', ids: [], count: 1, groupId: 83 }]
+    }));
+    check('Gruppe 83 wird NICHT auf alle Slots angehoben (genau 1)',
+        res7.ok && res7.players.filter(p => (p.groups || []).indexOf(83) > -1).length === 1,
+        res7.ok ? ('g83=' + res7.players.filter(p => (p.groups || []).indexOf(83) > -1).length) : res7.reason);
+
+    // Fall 8: Gruppe-4-Reservierung nimmt die niedrigste Rare, nicht die
+    // billigste. Sonst gewinnt ueber alpha/anzahl die HAEUFIGERE Karte.
+    const res8 = SolverCore.solve(
+        [].concat(many(1, 75, { rareflag: 1 }), many(8, 77, { rareflag: 1, storage: true }),
+                  many(12, 76, { rareflag: 0 })),
+        gcfg({ slots: 6, rarityConstraints: RARE_G4, maxCommonRating: 76 }));
+    check('Gruppe 4: die einzelne 75er Rare kommt vor den haeufigen 77ern',
+        res8.ok && res8.players.some(p => p.isRare && p.rating === 75),
+        res8.ok ? res8.players.filter(p => p.isRare).map(p => p.rating).join(',') : res8.reason);
 }
+
+// ========== 8b-3. Der Rare-Parser darf keine Spielernamen matchen ==========
+{
+    // Live-Fehler (v4.24.0): ein Substring-Match auf "RARE" im Scope-Namen hat
+    // SPIELERNAMEN getroffen - "Carrarese Calcio", "Brian Ferrares",
+    // "Rareș Ilie/Gal/Pop" - und Phantom-Rare-Vorgaben erzeugt.
+    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
+    check('Parser: kein Substring-Match auf RARE (traf Spielernamen)',
+        src.indexOf("indexOf('RARE')") === -1,
+        src.indexOf("indexOf('RARE')") > -1 ? 'indexOf(RARE) ist zurueck' : '');
+    check('Quelle warnt vor dem Namens-Treffer',
+        /Carrarese/.test(src) && /SPIELERNAMEN/.test(src));
+
+    // Und die Gegenprobe am echten Report-Ausschnitt: diese Scopes sind Namen.
+    const namey = ['CARRARESE CALCIO', 'BRIAN FERRARES', 'RAREȘ ILIE'];
+    check('Gegenprobe: Namens-Scopes wuerden mit dem alten Match anschlagen',
+        namey.every(n => n.toUpperCase().indexOf('RARE') > -1 ||
+                         n.toUpperCase().indexOf('RARES') > -1));
+}
+
+// ========== 8b-4. PaleTools-Locks: kurze IDs (assetId/resourceId) ==========
+{
+    // Live-Report: paletools:2026:...:lockedItems = [100664921, 190871, 225733,
+    // 50332136, ...] - KEINE 12-stelligen Item-IDs. Die alte Schwelle 1e11 hat
+    // alles verworfen (found: 0), obwohl der Key da war.
+    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
+    const a = src.indexOf('function looksLikeItemId');
+    const b = src.indexOf('\n    }', a) + 6;
+    check('looksLikeItemId ist vorhanden', a > -1 && b > a);
+    const looks = eval('(' + src.slice(a, b).replace('function looksLikeItemId', 'function') + ')');
+    const real = [100664921, 190871, 225733, 50332136, 83923656];
+    check('Locks: echte PaleTools-IDs werden erkannt', real.every(looks),
+        real.filter(x => !looks(x)).join(','));
+    check('Locks: 12-stellige Item-IDs weiter erkannt', looks(916543482768));
+    check('Locks: Muell wird verworfen',
+        !looks(true) && !looks('abc') && !looks(1.5) && !looks(0) && !looks(null));
+
+    // Und der Filter selbst: sperrt PaleTools per assetId oder resourceId,
+    // muss die Karte trotzdem draussen bleiben.
+    const byAsset = P(84, {}); byAsset.assetId = 190871;
+    const byRes = P(84, {}); byRes.resourceId = 50332136;
+    const r = SolverCore.solve([].concat([byAsset, byRes], many(11, 84)),
+        cfg(84, { lockedIds: [190871, 50332136] }));
+    check('Lock per assetId schliesst die Karte aus',
+        r.ok && !r.players.some(p => p.assetId === 190871),
+        r.ok ? 'drin' : r.reason);
+    check('lockedPacks wird uebersprungen (Pack-IDs sind keine Karten)',
+        /pack\/i\.test\(k\)/.test(src) || src.indexOf('/pack/i.test(k)') > -1,
+        'kein Pack-Ausschluss in readPaletoolsLocks');
+    check('Lock per resourceId schliesst die Karte aus',
+        r.ok && !r.players.some(p => p.resourceId === 50332136),
+        r.ok ? 'drin' : r.reason);
+}
+
 
 // ========== 8c. Spieler-Eindeutigkeit (EA: gleiche assetId nur 1x pro Squad) ==========
 {

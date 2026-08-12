@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.24.0
+// @version      4.25.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.24.0';
+    const VERSION = '4.25.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -419,17 +419,11 @@
                 if (isQualityScope && v != null && v >= 1 && v <= 3) {
                     out.quality.push({ label: scope, quality: Number(v), count: reqCount(o, par) });
                 }
-                // "Rare: Min. N Players" (Gold-SBCs). EA schickt das als
-                // RARITY-Vorgabe OHNE Gruppe; der Wert 1 steht fuer rare
-                // (rareflag 1), die Anzahl steckt im count. Bei
-                // PLAYER_RARITY_GROUP ist der Wert dagegen die Gruppen-ID -
-                // deshalb wird GROUP hier ausgeschlossen.
-                const isRareCount = scope.indexOf('GROUP') === -1 &&
-                    (scope.indexOf('RARE') > -1 ||
-                     (scope.indexOf('RARITY') > -1 && Number(v) === 1));
-                if (isRareCount) {
-                    out.rare.push({ label: scope, count: reqCount(o, par) });
-                }
+                // KEIN Substring-Match auf "RARE" hier! Das hat live
+                // SPIELERNAMEN getroffen ("Carrarese Calcio", "Brian Ferrares",
+                // "Rareș Ilie") und Phantom-Vorgaben erzeugt. Die echte
+                // Rare-Anforderung kommt als PLAYER_RARITY_GROUP mit Wert 4
+                // (Gruppe 4 = Rare) und wird unten regulaer erfasst.
                 if (scope.indexOf('RARITY') > -1) {
                     out.rarity.push({
                         label: scope,
@@ -748,9 +742,15 @@
     // gesucht: alle Keys mit "paletools", darin jeder Zweig, dessen Name "lock"
     // enthält, und daraus alles, was wie eine Item-ID aussieht (12-stellig).
     // Item-IDs können als Array-Werte ODER als Objekt-Keys vorliegen -> beides.
+    // PaleTools speichert in lockedItems KEINE 12-stelligen Item-IDs, sondern
+    // kuerzere Zahlen (live: [100664921, 190871, 225733, 50332136, ...]) - also
+    // assetId/resourceId, der SPIELER statt der einzelnen Karte. Die Schwelle
+    // 1e11 hat deshalb alles verworfen. Da wir nur in Zweigen mit "lock" im
+    // Namen suchen, genuegt "positive ganze Zahl ab 1000".
     function looksLikeItemId(x) {
         const n = Number(x);
-        return isFinite(n) && n > 1e11 && n < 1e14 && Math.floor(n) === n;
+        return isFinite(n) && n >= 1000 && n < 1e14 && Math.floor(n) === n &&
+               typeof x !== 'boolean';
     }
     function harvestIds(v, out, depth) {
         if (v == null || depth > 5 || out.size > 5000) return;
@@ -796,7 +796,13 @@
                 try { obj = JSON.parse(raw); } catch (e) { continue; }
                 // Steht der Key selbst schon für die Sperrliste, ist der ganze
                 // Wert die Quelle - sonst nur die "lock"-Zweige darin.
-                if (/lock/i.test(k)) harvestIds(obj, ids, 0);
+                // ACHTUNG: "lockedPacks" enthaelt PACK-IDs ([1030, 20038, ...]),
+                // keine Karten. Mit der niedrigen Schwelle in looksLikeItemId
+                // wuerden die sonst als gesperrte Karten gelten und still eine
+                // brauchbare Karte aus dem Pool nehmen.
+                if (/pack/i.test(k)) continue;
+                if (/lockeditem/i.test(k)) harvestIds(obj, ids, 0);
+                else if (/lock/i.test(k)) harvestIds(obj, ids, 0);
                 else findLockBranches(obj, ids, 0);
             }
         } catch (e) { warn('Locks lesen fehlgeschlagen:', e && e.message); }
@@ -1370,6 +1376,13 @@
             if (!c) return p.isSpecial;
             // EXAKTES Matching über Rarity-GRUPPEN (live verifiziert, fc26):
             // Vorgabe "PLAYER_RARITY_GROUP 83" <=> 83 in p.groups.
+            // Gruppe 4 = "Rare" (live: eine "Rare: Min. 6"-SBC schickt
+            // PLAYER_RARITY_GROUP mit Wert 4). Das ist eine Karten-EIGENSCHAFT,
+            // nicht ein Event - deshalb hier zusaetzlich ueber rareflag 1
+            // pruefen, falls EA die 4 nicht in p.groups mitschickt.
+            if (Number(c.groupId) === 4) {
+                return p.isRare || (Array.isArray(p.groups) && p.groups.indexOf(4) > -1);
+            }
             if (c.groupId != null && Array.isArray(p.groups)) {
                 return p.groups.indexOf(Number(c.groupId)) > -1;
             }
@@ -1501,7 +1514,15 @@
             return loose || strict;
         }
         function solveCore(poolAll, cfg, limitProtected) {
+            // Warnungen: KEINE Dubletten. Vorher stand die gelockerte
+            // Rare-Grenze sechsmal untereinander im Panel (einmal pro Slot) -
+            // die eine wichtige Meldung ging darin unter.
             const warnings = [];
+            const rawPush = warnings.push.bind(warnings);
+            warnings.push = function (w) {
+                if (warnings.indexOf(w) === -1) rawPush(w);
+                return warnings.length;
+            };
             const N = cfg.slots || 11;
             const target = cfg.targetOVR;
             // ---- Pool filtern ----
@@ -1538,7 +1559,15 @@
             if (cfg.lockedIds && cfg.lockedIds.length) {
                 const locked = new Set(cfg.lockedIds.map(String));
                 const before = poolAll.length;
-                poolAll = poolAll.filter(p => !locked.has(String(p.id)));
+                // PaleTools sperrt den SPIELER, nicht die einzelne Karte:
+                // in lockedItems stehen kurze Zahlen (assetId/resourceId), keine
+                // 12-stelligen Item-IDs. Deshalb alle drei Spalten vergleichen.
+                poolAll = poolAll.filter(p => !(
+                    locked.has(String(p.id)) ||
+                    (p.assetId != null && locked.has(String(p.assetId))) ||
+                    (p.raw && p.raw.resourceId != null && locked.has(String(p.raw.resourceId))) ||
+                    (p.resourceId != null && locked.has(String(p.resourceId)))
+                ));
                 lockedOut = before - poolAll.length;
                 if (lockedOut) {
                     warnings.push(lockedOut + ' gesperrte Karte(n) ausgeschlossen.');
@@ -1704,7 +1733,26 @@
                 }
             }
             // ---- Rarity-Vorgaben ----
-            const rcList = (cfg.applyRarity === false) ? [] : (cfg.rarityConstraints || []);
+            let rcList = (cfg.applyRarity === false) ? [] : (cfg.rarityConstraints || []);
+            // OHNE Team-Rating gilt eine RARE-Vorgabe (Gruppe 4) fuer ALLE
+            // Slots: live zeigte eine "Rare: Min. 6 Players"-SBC mit 6 Slots
+            // count 1 - EAs Count-Feld ist im Objektbaum unzuverlaessig
+            // (LEARNINGS 6). Bewusst NUR fuer Gruppe 4: bei Gruppe 83
+            // (TOTW/TOTS/FOF/FUTTIES) will Rasmus genau die geforderte Anzahl,
+            // eine Anhebung waere dort teuer falsch.
+            if (!target) {
+                let boosted = false;
+                rcList = rcList.map(function (rc) {
+                    if (Number(rc.groupId) === 4 && (rc.count || 1) < N) {
+                        boosted = true;
+                        return Object.assign({}, rc, { count: N });
+                    }
+                    return rc;
+                });
+                if (boosted) {
+                    warnings.push('Ohne Team-Rating: Rare-Vorgabe auf alle ' + N + ' Slots angewendet.');
+                }
+            }
             for (const rc of rcList) {
                 const needCount = rc.count || 1;
                 let have = reserved.filter(p => matchesRarity(p, rc) ||
@@ -1716,10 +1764,28 @@
                     //    in SBCs (wie Evolutions)
                     // Billigste passende Karte zuerst: 85er Club-TOTW schlägt
                     // 96er aus dem Storage.
-                    const cand = poolAll
-                        .filter(p => p.rating >= minRating && !used.has(p.id) && matchesRarity(p, rc) &&
-                            (!cfg.specialOnlyFromStorage || p.isStorage || !p.isSpecial || isTotw(p)))
-                        .sort((a, b) => (costOf(a) - costOf(b)) || (a.rating - b.rating) || reserveCmp(a, b))[0];
+                    // Bei einer RARE-Vorgabe (Gruppe 4) ohne Ziel-OVR gilt die
+                    // Panel-Obergrenze und das NIEDRIGSTE Rating zuerst - hohe
+                    // Rare bleibt fuer die Rating-SBCs (Rasmus).
+                    const isRareGroup = Number(rc.groupId) === 4;
+                    const rareCap = (!target && isRareGroup && cfg.maxRareRating > 0)
+                        ? cfg.maxRareRating : 99;
+                    const lowMin = (!target && isRareGroup) ? 0 : minRating;
+                    let cands = poolAll
+                        .filter(p => p.rating >= lowMin && p.rating <= rareCap && !used.has(p.id) &&
+                            matchesRarity(p, rc) &&
+                            (!cfg.specialOnlyFromStorage || p.isStorage || !p.isSpecial || isTotw(p)));
+                    if (!cands.length && rareCap < 99) {
+                        warnings.push('Keine Rare-Karte bis Rating ' + rareCap +
+                            ' mehr frei - Grenze wird fuer diese SBC gelockert.');
+                        cands = poolAll
+                            .filter(p => p.rating >= lowMin && !used.has(p.id) && matchesRarity(p, rc) &&
+                                (!cfg.specialOnlyFromStorage || p.isStorage || !p.isSpecial || isTotw(p)));
+                    }
+                    const cand = cands.sort((!target && isRareGroup)
+                        ? ((a, b) => (a.rating - b.rating) || (costOf(a) - costOf(b)) || reserveCmp(a, b))
+                        : ((a, b) => (costOf(a) - costOf(b)) || (a.rating - b.rating) || reserveCmp(a, b))
+                    )[0];
                     if (!cand) {
                         return { ok: false, reason: 'Rarity-Vorgabe "' + (rc.label || '?') + '" kann mit dem aktuellen Pool nicht erfüllt werden.', warnings: warnings };
                     }
@@ -2792,7 +2858,7 @@
                         <span style="font-size:11px;color:#7d93ab;">Rare bis</span>
                         <input type="number" id="sbc-opt-maxrare" value="77" min="0" max="99">
                         <span style="font-size:11px;color:#7d93ab;">Common bis</span>
-                        <input type="number" id="sbc-opt-maxcommon" value="99" min="0" max="99">
+                        <input type="number" id="sbc-opt-maxcommon" value="77" min="0" max="99">
                     </div>
                 </div>
                 <div class="sbc-opt-row">

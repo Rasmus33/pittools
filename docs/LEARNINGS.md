@@ -242,7 +242,36 @@ trotz Erfolg).
   installieren. `build.sh` erzeugt deshalb NIE still einen neuen Keystore,
   sondern bricht ab (`ALLOW_NEW_KEYSTORE=1` erzwingt).
 
-## 9. UI-Einstiegspunkte (Panel öffnen)
+## 9. SBC abgeben (Batch)
+
+- **Abgeben laeuft ueber den LIVE-CONTROLLER, nicht ueber den Service mit
+  Argument.** `services.SBC.submitChallenge(challenge)` kam live mit HTTP 403
+  zurueck; der Diagnose-Report zeigte `submitChallengeArity: 0` (die Methode
+  nimmt gar kein Argument) und dass `UTSBCSquadSplitViewController` selbst
+  `submitChallenge`/`_submitChallenge`/`_onChallengeSubmitted` hat - das ist der
+  Weg, den die App beim Klick auf ihren eigenen Submit-Button nimmt. Ueber den
+  Controller klappt es (live bestaetigt, `grantedSetAwards` in der Antwort).
+  Dasselbe Muster wie beim Eintragen (Paragraph 5): erst Controller, dann
+  Service als Fallback.
+- `_squad.isSBCSquadEligible()` sagt VOR dem Abgeben, ob EA die SBC fuer
+  erfuellt haelt - spart einen 403-Blindflug. Nur bei explizit `false`
+  abbrechen, damit ein unerwarteter Rueckgabewert nicht alles blockiert.
+- **Nach dem Abgeben ist die Challenge-Ansicht WEG.** Live danach:
+  `UTSBCHubViewController`, `.sbc-button-container` verschwunden - und ein
+  Belohnungs-Dialog, der weggeklickt werden muss. Ein Batch kann also nicht
+  einfach "kurz warten" und weitermachen. Ab v4.13.0 pausiert der Lauf an
+  dieser Stelle (`plan.nextIndex` merkt sich die Position), sagt was zu tun ist
+  und macht per "Weiter" da weiter. Bewusst KEIN automatisches Klicken in
+  fremden Dialogen: ein falsch getroffener Button (Quick Sell) waere nicht
+  rueckholbar. `afterSubmit` im Diagnose-Report haelt die sichtbaren Buttons
+  direkt nach der Abgabe fest - Grundlage, das spaeter zu automatisieren.
+- **Shadowing-Falle:** `const log = []` im Batch-Lauf ueberdeckte die Funktion
+  `log()` - der Lauf starb mit "log is not a function", und zwar erst NACH der
+  ersten abgegebenen SBC. Weder JS noch `node --check` melden das. solver-test.js
+  prueft jetzt statisch, dass keine Variable die Helfer (log/warn/toast/
+  setStatus/escapeHtml/diagError) ueberdeckt.
+
+## 10. UI-Einstiegspunkte (Panel öffnen)
 
 - **Die globale Navigationsleiste (`.ut-tab-bar`) ist ein Irrweg** — zweimal
   live gescheitert (v4.6.0, v4.7.0) und inzwischen ausgebaut. Gründe: im
@@ -300,7 +329,7 @@ trotz Erfolg).
 - Gemerkte Positionen nach `resize` neu einklemmen: nach Drehen des Handys
   liegt eine gespeicherte Position sonst außerhalb des Bildschirms.
 
-## 10. Test-Harness
+## 11. Test-Harness
 
 `solver-test.js` lädt den Solver-Block per `new Function` aus dem Userscript
 (Marker `// [SOLVER-BEGIN]` / `// [SOLVER-END]`).

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.12.0
+// @version      4.13.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.12.0';
+    const VERSION = '4.13.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -3021,6 +3021,11 @@
             lastUtasPaths: STATE.diag.lastUtasPaths,
             lastErrors: STATE.diag.lastErrors,
             uiScan: STATE.diag.uiScan || null,
+            // Zustand kurz NACH einer Abgabe: daraus ist der Belohnungs-Dialog
+            // ablesbar (welcher Button ihn schliesst) und wohin die App
+            // navigiert - Grundlage, um den Batch ganz ohne Handgriffe
+            // durchlaufen zu lassen.
+            afterSubmit: STATE.diag.afterSubmit || null,
             // Batch/Abgeben: ist der Abgabe-Weg in dieser Web-App-Version da?
             // Vor dem ersten echten Abgeben gegenprüfen - submitChallenge ist
             // unwiderruflich, ein Blindflug wäre teuer.
@@ -3593,17 +3598,34 @@
     async function onBatchRunClick() {
         const plan = STATE.batch;
         if (!plan || !plan.planned) { toast('Erst "Teams planen" ausführen.', 'error'); return; }
+        // Fortsetzen braucht keine zweite Bestätigung - die Freigabe gilt für
+        // den ganzen Plan.
+        if (!plan.nextIndex) {
+            if (!window.confirm(plan.planned + ' SBC(s) werden eingetragen UND endgültig ' +
+                    'abgegeben.\n\nDie verbauten Karten sind danach weg. Fortfahren?')) return;
+            plan.nextIndex = 0;
+            plan.doneLog = [];
+        }
+        await runBatchFrom(plan);
+    }
+    /**
+     * Nach dem Abgeben schliesst die App die Challenge-Ansicht (live: danach
+     * steht UTSBCHubViewController, .sbc-button-container ist weg) und zeigt
+     * einen Belohnungs-Dialog, der weggeklickt werden muss. Der Lauf kann
+     * deshalb NICHT einfach weiterlaufen: er pausiert, sagt was zu tun ist, und
+     * macht per "Weiter" da weiter, wo er war. Bewusst kein automatisches
+     * Klicken in fremden Dialogen - ein falsch getroffener Button (Quick Sell!)
+     * wäre nicht rückholbar.
+     */
+    async function runBatchFrom(plan) {
         const n = plan.planned;
-        // Letzte Sicherung vor einer unwiderruflichen Aktion.
-        if (!window.confirm(n + ' SBC(s) werden eingetragen UND endgültig abgegeben.\n\n' +
-                'Die verbauten Karten sind danach weg. Fortfahren?')) return;
         ui.batchRun.disabled = true;
         ui.batchPlan.disabled = true;
         ui.run.disabled = true;
-        let done = 0;
-        const log = [];
+        let stopped = null, paused = false;
         try {
-            for (let i = 0; i < n; i++) {
+            while (plan.nextIndex < n) {
+                const i = plan.nextIndex;
                 const round = plan.rounds[i];
                 const tag = 'Batch ' + (i + 1) + '/' + n;
                 // 1. Karten müssen noch im Pool sein (Pool kann sich geändert haben).
@@ -3613,11 +3635,14 @@
                     throw new Error(tag + ': ' + missing.length +
                         ' Karte(n) nicht mehr im Pool. Neu planen.');
                 }
-                // 2. Die richtige Challenge muss offen sein.
+                // 2. Die Challenge muss offen sein. Ist sie es nicht, ist das
+                //    nach einer Abgabe der NORMALFALL - dann pausieren statt
+                //    abbrechen, es ist ja nichts schiefgegangen.
                 setStatus(tag + ': prüfe Challenge...');
                 syncSbcWithOpenChallenge();
-                if (!findLiveChallenge()) {
-                    throw new Error(tag + ': keine offene Challenge (im Spiel erneut öffnen).');
+                if (!findLiveChallenge() || !findSbcController()) {
+                    if (i > 0) { paused = true; break; }
+                    throw new Error(tag + ': keine offene Challenge (im Spiel öffnen).');
                 }
                 // 3. Eintragen (bewährter Weg inkl. Verify).
                 setStatus(tag + ': trage ein...');
@@ -3630,35 +3655,87 @@
                 // 4. Abgeben.
                 setStatus(tag + ': gebe ab...');
                 await submitChallengeToEa();
-                done++;
-                log.push('Team ' + (i + 1) + ': OVR ' + round.ovr + ' abgegeben');
+                plan.nextIndex = i + 1;
+                plan.doneLog.push('Team ' + (i + 1) + ': OVR ' + round.ovr + ' abgegeben');
                 log('[Batch] Team ' + (i + 1) + '/' + n + ' abgegeben (OVR ' + round.ovr + ').');
-                // 5. Der App Zeit geben, die Challenge neu aufzubauen -
-                //    zu schnelles Nachfassen provoziert Rate-Limit-401er (§4).
-                if (i + 1 < n) {
-                    setStatus(tag + ': warte auf die App...');
-                    await batchWait(2500);
+                // 5. Zustand direkt nach dem Abgeben festhalten - daraus ist zu
+                //    sehen, wie der Belohnungs-Dialog aussieht (fuer eine
+                //    spaetere Automatik) ohne im richtigen Moment die Diagnose
+                //    druecken zu muessen.
+                await batchWait(1200);
+                captureAfterSubmitDom(i + 1);
+                if (plan.nextIndex < n) {
                     syncSbcWithOpenChallenge();
+                    if (!findLiveChallenge() || !findSbcController()) { paused = true; break; }
                 }
             }
-            setStatus(done + ' SBC(s) abgegeben ✓');
-            toast(done + ' von ' + n + ' SBCs eingetragen und abgegeben.', 'ok');
         } catch (e) {
-            setStatus('Batch gestoppt nach ' + done + '/' + n);
-            toast('Batch gestoppt nach ' + done + ' von ' + n + ': ' + e.message, 'error');
+            stopped = (e && e.message) || String(e);
             warn('[Batch] gestoppt:', e);
-            diagError('Batch gestoppt nach ' + done + '/' + n + ': ' + (e && e.message || e));
+            diagError('Batch gestoppt nach ' + plan.nextIndex + '/' + n + ': ' + stopped);
         } finally {
-            ui.batchRun.disabled = false;
             ui.batchPlan.disabled = false;
             ui.run.disabled = false;
-            // Der Plan ist nach dem Lauf verbraucht - erneut planen erzwingen,
-            // damit niemand versehentlich zweimal abgibt.
+            renderBatchState(plan, stopped, paused);
+        }
+    }
+    /** Merkt sich die sichtbaren Buttons kurz nach dem Abgeben (Diagnose). */
+    function captureAfterSubmitDom(roundNo) {
+        try {
+            const out = [];
+            const btns = document.querySelectorAll('button');
+            for (let i = 0; i < btns.length && out.length < 20; i++) {
+                const b = btns[i];
+                if (!(b.offsetParent !== null || b.getClientRects().length)) continue;
+                if (String(b.id).indexOf('sbc-opt') === 0) continue; // unsere eigenen
+                out.push({
+                    txt: (b.textContent || '').trim().slice(0, 40),
+                    id: b.id || null,
+                    cls: String(b.className || '').slice(0, 60),
+                    parentCls: String((b.parentNode && b.parentNode.className) || '').slice(0, 60)
+                });
+            }
+            STATE.diag.afterSubmit = {
+                round: roundNo,
+                controllers: getControllerChain().map(c =>
+                    (c.constructor && c.constructor.name) || '?'),
+                buttons: out
+            };
+        } catch (e) {}
+    }
+    function renderBatchState(plan, stopped, paused) {
+        const n = plan.planned, done = plan.nextIndex || 0;
+        let html = '';
+        if (plan.doneLog && plan.doneLog.length) {
+            html += '<div class="sbc-opt-batch-round">' +
+                plan.doneLog.map(escapeHtml).join('<br>') + '</div>';
+        }
+        if (stopped) {
+            setStatus('Batch gestoppt nach ' + done + '/' + n);
+            toast('Batch gestoppt nach ' + done + ' von ' + n + ': ' + stopped, 'error');
+            html += '<div class="sbc-opt-batch-round sbc-opt-batch-bad">Gestoppt: ' +
+                escapeHtml(stopped) + '</div>';
             STATE.batch = null;
             ui.batchRun.style.display = 'none';
-            if (log.length) ui.batchPreview.innerHTML =
-                '<div class="sbc-opt-batch-round">' + log.map(escapeHtml).join('<br>') + '</div>';
+        } else if (paused) {
+            setStatus(done + '/' + n + ' abgegeben - warte auf dich');
+            toast('Team ' + done + ' abgegeben. Belohnung wegklicken, SBC erneut öffnen, ' +
+                'dann "Weiter" drücken.', 'warn');
+            html += '<div class="sbc-opt-batch-round sbc-opt-batch-warn">' +
+                done + ' von ' + n + ' abgegeben.<br>' +
+                'Jetzt im Spiel: Belohnung wegklicken und die SBC erneut öffnen. ' +
+                'Dann unten auf "Weiter" drücken.</div>';
+            ui.batchRun.style.display = 'block';
+            ui.batchRun.disabled = false;
+            ui.batchRun.textContent = 'Weiter mit Team ' + (done + 1) + ' von ' + n;
+        } else {
+            setStatus(done + ' SBC(s) abgegeben ✓');
+            toast(done + ' von ' + n + ' SBCs eingetragen und abgegeben.', 'ok');
+            // Fertig: Plan verbraucht, damit niemand zweimal abgibt.
+            STATE.batch = null;
+            ui.batchRun.style.display = 'none';
         }
+        ui.batchPreview.innerHTML = html;
     }
     async function submitCurrentResult() {
         const res = STATE.lastResult;

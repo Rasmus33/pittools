@@ -366,6 +366,24 @@ function mulberry32(a) {
         '@version=' + vHeader + ' VERSION=' + vCode);
 }
 
+// ========== 8b1b. Kein Shadowing der Hilfsfunktionen ==========
+{
+    // Live-Fehler in v4.12.0: im Batch-Lauf stand "const log = []" - das
+    // überdeckte die Funktion log() im selben Scope, und der Aufruf starb mit
+    // "log is not a function". Erst NACH dem Abgeben der ersten SBC, also an
+    // der teuersten Stelle. JS meldet das nicht statisch, node --check auch
+    // nicht - deshalb hier.
+    // Alle diese Helfer sind als "function X()" deklariert; ein const/let/var
+    // mit demselben Namen ist damit immer ein Shadowing-Fehler.
+    const HELPERS = ['log', 'warn', 'toast', 'setStatus', 'escapeHtml', 'diagError'];
+    for (const h of HELPERS) {
+        const re = new RegExp('(?:const|let|var)\\s+' + h + '\\s*=', 'g');
+        const hits = src.match(re) || [];
+        check('Kein Shadowing von ' + h + '()', hits.length === 0,
+            hits.length ? hits.join(', ') : '');
+    }
+}
+
 // ========== 8b2. Rarity-Schutz bei HOHEN Ratings (Live-Fall 90er-Team) ==========
 {
     // Live mit v4.8.0: 90er-Team gebaut, ZWEI FUTTIES verbaut, obwohl die SBC

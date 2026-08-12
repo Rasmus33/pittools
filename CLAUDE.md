@@ -8,7 +8,7 @@ JS/Java-Engineering. Umgangssprache: Deutsch.
 ## Repo-Struktur
 
 - `ea-fc-sbc-optimizer.user.js` — DAS Produkt. Ein einziges Userscript
-  (aktuell v4.12.0). Tampermonkey aktualisiert es über `@updateURL`/`@downloadURL`
+  (aktuell v4.13.0). Tampermonkey aktualisiert es über `@updateURL`/`@downloadURL`
   im Header selbst; die Handy-App lädt dieselbe Datei von
   `https://raw.githubusercontent.com/Rasmus33/pittools/main/ea-fc-sbc-optimizer.user.js`
   bei jedem App-Start. **Push auf main = Deployment.**
@@ -26,7 +26,7 @@ JS/Java-Engineering. Umgangssprache: Deutsch.
 
 1. Änderung implementieren.
 2. `node --check ea-fc-sbc-optimizer.user.js` — Syntax.
-3. `node solver-test.js` — ALLE Tests müssen grün sein (aktuell 67/67).
+3. `node solver-test.js` — ALLE Tests müssen grün sein (aktuell 73/73).
    Bei Solver-Änderungen: neuen Testfall schreiben, Erwartungswerte NIE aus
    dem Kopf — immer per Brute-Force verifizieren (Vorsicht: der Solver war
    mehrfach schlauer als die Hand-Rechnung).
@@ -70,7 +70,10 @@ JS/Java-Engineering. Umgangssprache: Deutsch.
 - **Batch-Modus (ab v4.11.0) darf abgeben** — von Rasmus ausdrücklich
   freigegeben, aber nur in dieser Form: erst alle Teams planen, Vorschau
   ansehen, dann EINE Freigabe (Button + Rückfrage), danach läuft
-  Eintragen→Abgeben sequenziell. Bricht bei jeder Unstimmigkeit sofort ab
+  Eintragen→Abgeben sequenziell. Nach jeder Abgabe schliesst EA die
+  Challenge-Ansicht und zeigt einen Belohnungs-Dialog — der Lauf PAUSIERT dort
+  und macht per "Weiter" da weiter (LEARNINGS §9). Bricht bei jeder
+  Unstimmigkeit sofort ab
   ("2 von 5 fertig" ist besser als eine falsch abgegebene SBC). Der Plan ist
   nach dem Lauf verbraucht, damit niemand zweimal abgibt.
 - Der Pool lädt automatisch beim App-Start; nach jedem Eintragen fliegen die

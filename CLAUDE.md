@@ -30,12 +30,12 @@ JS/Java-Engineering. Umgangssprache: Deutsch.
    Bei Solver-Änderungen: neuen Testfall schreiben, Erwartungswerte NIE aus
    dem Kopf — immer per Brute-Force verifizieren (Vorsicht: der Solver war
    mehrfach schlauer als die Hand-Rechnung).
-4. Version bumpen: `@version` im Header UND `const VERSION = '...'`
-   (ein Test prüft, dass beide übereinstimmen). In den `==UserScript==`-Block
-   gehören NUR `@key value`-Zeilen — freie Kommentare darin machen die
-   folgenden Metadaten unwirksam (kostete das Auto-Update in v4.11.0).
-   (wird im Panel-Header angezeigt — daran erkennt Rasmus, ob Tampermonkey/
-   die App wirklich die neue Version geladen hat).
+4. Version bumpen: `@version` im Header UND `const VERSION = '...'` — ein Test
+   prüft, dass beide übereinstimmen. Die Version steht im Panel-Header, daran
+   erkennt Rasmus, ob Tampermonkey/die App wirklich die neue Fassung geladen
+   hat. In den `==UserScript==`-Block gehören NUR `@key value`-Zeilen; freie
+   Kommentare darin machen die folgenden Metadaten unwirksam (kostete das
+   Auto-Update in v4.11.0, wird jetzt mitgetestet).
 5. Push auf `main` → beide Handys ziehen die Version automatisch.
 6. Bei App-Änderungen: `node app/guard-test.js` (prüft den aus Java-Literalen
    zusammengesetzten PaleTools-Wächter — der fällt sonst STILL aus), dann

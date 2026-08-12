@@ -14,6 +14,8 @@ const SolverCore = new Function(m[1] + '\nreturn SolverCore;')();
 
 let failures = 0;
 let tests = 0;
+// Sammelstelle fuer asynchrone Testblöcke (der Club-Loader ist async).
+const pending = [];
 function check(name, cond, extra) {
     tests++;
     if (cond) { console.log('  ok  ' + name); }
@@ -1022,6 +1024,99 @@ function mulberry32(a) {
         /bereits abgegebenen Runden sind aber durch/.test(src));
 }
 
+// ========== 8b-2h. Club-Laden: groessere Seiten + Takt ==========
+// Rasmus: "diese 8000+ spieler dauern immer recht lang". Zwei Aenderungen -
+// Seitengroesse 175 statt 91 (adaptiv, falls EA kappt) und der Abstand wird
+// zwischen den STARTS getaktet statt nach jeder Antwort geschlafen.
+// Die Kalibrierung ist die gefaehrliche Stelle: "weniger Items als angefragt"
+// heisst normalerweise "fertig" - bei einer Kappung aber NICHT. Darum hier eine
+// echte Simulation der Funktion, nicht nur ein Textcheck.
+{
+    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
+    const a = src.indexOf('async function fetchClubViaHttp');
+    const b = src.indexOf('async function fetchUnassignedViaHttp');
+    const fnSrc = src.slice(a, b);
+
+    // Laedt die Funktion mit Attrappen. cap = was EA pro Seite maximal
+    // herausgibt, TOTAL = Kartenzahl, withTotal = schickt EA totalItemCount?
+    function runLoader(TOTAL, cap, withTotal, failPages) {
+        const calls = [];
+        const STATE = { pool: [], cancelLoad: false, diag: {}, loadIncomplete: false };
+        const sandbox = {
+            STATE: STATE,
+            calls: calls,
+            setTimeout: (f) => { f(); return 0; },   // kein echtes Warten im Test
+            Date: Date,
+            log: () => {}, warn: () => {},
+            extractItems: (j) => j.items,
+            normalizePlayer: (it) => ({ id: it.id, rating: 80, assetId: it.id }),
+            mergeIntoPool: (ps) => { STATE.pool.push.apply(STATE.pool, ps); },
+            apiGet: async (path) => {
+                const m = /count=(\d+)&start=(\d+)/.exec(path);
+                const want = Number(m[1]), start = Number(m[2]);
+                calls.push({ want: want, start: start });
+                if (failPages && failPages.indexOf(calls.length) > -1) {
+                    throw new Error('HTTP 401 (simuliert)');
+                }
+                const n = Math.max(0, Math.min(want, cap, TOTAL - start));
+                const items = [];
+                for (let i = 0; i < n; i++) items.push({ id: start + i + 1 });
+                const out = { items: items };
+                if (withTotal) out.totalItemCount = TOTAL;
+                return out;
+            }
+        };
+        const keys = Object.keys(sandbox);
+        const fn = new Function(keys.join(','),
+            fnSrc + '\nreturn fetchClubViaHttp;').apply(null, keys.map(k => sandbox[k]));
+        return fn().then(found => ({ found: found, calls: calls, STATE: STATE }));
+    }
+
+    const results = [];
+    // 1. EA gibt 175 her -> alle 8400, deutlich weniger Requests als mit 91.
+    results.push(runLoader(8400, 175, true, null).then(r => {
+        check('Club-Laden: alle 8400 Karten geholt (Seiten a 175)',
+            r.found === 8400 && r.STATE.pool.length === 8400,
+            'found=' + r.found + ' pool=' + r.STATE.pool.length);
+        check('Club-Laden: 48 Requests statt 93',
+            r.calls.length === 48, 'requests=' + r.calls.length);
+        check('Club-Laden: fragt mit 175 an', r.calls[0].want === 175);
+    }));
+    // 2. EA KAPPT auf 150 -> muss kalibrieren UND trotzdem alles laden.
+    //    Ohne die Kalibrierung waere hier nach Seite 1 Schluss ("weniger
+    //    Items als angefragt = fertig").
+    results.push(runLoader(8400, 150, true, null).then(r => {
+        check('Kappung auf 150: trotzdem alle 8400 Karten',
+            r.found === 8400, 'found=' + r.found + ' requests=' + r.calls.length);
+        check('Kappung auf 150: Seitengroesse wird uebernommen',
+            r.calls.length > 1 && r.calls[1].want === 150,
+            'zweiter Request want=' + (r.calls[1] && r.calls[1].want));
+        check('Kappung wird im Report vermerkt',
+            r.STATE.diag.clubLoad && r.STATE.diag.clubLoad.pageSize === 150,
+            JSON.stringify(r.STATE.diag.clubLoad));
+    }));
+    // 3. OHNE totalItemCount: die kurze letzte Seite beendet den Lauf.
+    results.push(runLoader(300, 175, false, null).then(r => {
+        check('Ohne totalItemCount: kurze letzte Seite beendet den Lauf',
+            r.found === 300 && r.calls.length === 2,
+            'found=' + r.found + ' requests=' + r.calls.length);
+    }));
+    // 4. Fehlversuch -> Takt wird dauerhaft groesser (Selbstbremse).
+    results.push(runLoader(1000, 175, true, [1]).then(r => {
+        check('Fehlversuch erhoeht den Takt (Selbstbremse)',
+            r.STATE.diag.clubLoad.gap > 300 && r.STATE.diag.clubLoad.retries >= 1,
+            JSON.stringify(r.STATE.diag.clubLoad));
+        check('Fehlversuch verliert keine Karten',
+            r.found === 1000, 'found=' + r.found);
+    }));
+    // 5. Kein Schlafen NACH der Antwort mehr, sondern Takt zwischen den Starts.
+    check('Takt statt Schlafen (Latenz zaehlt mit)',
+        /gap - \(Date\.now\(\) - tStart\)/.test(fnSrc) &&
+        fnSrc.indexOf('setTimeout(r, 250)') === -1);
+
+    pending.push(Promise.all(results));
+}
+
 // ========== 8b-3. Der Rare-Parser darf keine Spielernamen matchen ==========
 {
     // Live-Fehler (v4.24.0): ein Substring-Match auf "RARE" im Scope-Namen hat
@@ -1228,5 +1323,13 @@ function mulberry32(a) {
         fn(93) === 12 && fn(97) === 12);
 }
 
-console.log('\n' + (tests - failures) + '/' + tests + ' Tests bestanden.');
-process.exit(failures ? 1 : 0);
+// Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt
+// process.exit() die Loader-Tests, bevor sie laufen - sie zählten dann nicht mit
+// und ein Fehler dort wäre unbemerkt geblieben.
+Promise.all(pending).then(function () {
+    console.log('\n' + (tests - failures) + '/' + tests + ' Tests bestanden.');
+    process.exit(failures ? 1 : 0);
+}, function (e) {
+    console.error('FAIL  asynchroner Testblock geworfen: ' + (e && e.message || e));
+    process.exit(1);
+});

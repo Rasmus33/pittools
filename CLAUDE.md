@@ -123,6 +123,8 @@ Diagnose-Feld einbauen, Report anfordern, dann fixen — hat sich x-fach bewähr
 - Die Rating-Formel und das V-Maß (siehe LEARNINGS §1) — live verifiziert.
 - Der Submit-Weg 0 über `UTItemEntityFactory` + `saveChallenge`
   (LEARNINGS §5) — der EINZIGE Weg, der die Ansicht ohne F5 aktualisiert.
-- Seiten-Delay 250ms beim Club-Laden (LEARNINGS §7) — 120ms provoziert
-  Rate-Limit-401er, war ein Live-Ausfall.
+- Der Club-Lade-Takt (LEARNINGS §7 und §23): 120ms provozierte Rate-Limit-401er
+  und war ein Live-Ausfall. Ab v4.32.0 laeuft der Takt zwischen den STARTS
+  (300ms) und erhoeht sich bei jedem Fehlversuch selbst — nicht wieder auf
+  einen festen kleineren Wert setzen.
 - Die Spieler-Eindeutigkeit pro assetId (LEARNINGS §6) — sonst HTTP 460.

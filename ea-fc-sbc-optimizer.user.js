@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.31.0
+// @version      4.32.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.31.0';
+    const VERSION = '4.32.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -1137,13 +1137,31 @@
     async function fetchClubViaHttp(onProgress) {
         let page = 0;
         let found = 0;
-        const count = 91;
+        // GROESSERE SEITEN. 91 war geraten; PaleTools faehrt laut seinen
+        // Settings mit maxItemsCount 150, EA nimmt also mehr als 91. Wir fragen
+        // 175 an und lernen die echte Obergrenze aus der ERSTEN Antwort: liefert
+        // EA weniger Items als angefragt, obwohl laut totalItemCount noch welche
+        // fehlen, ist das die Kappung - dann wird mit diesem Wert weitergefahren.
+        // 8400 Karten: 92 Seiten bei 91, rund 48 bei 175.
+        let count = 175;
+        let calibrated = false;
+        // TAKT statt SCHLAFEN. Vorher wurde NACH jeder Antwort 250ms gewartet,
+        // die Periode war also Latenz + 250ms (~450ms). Jetzt wird der ABSTAND
+        // ZWISCHEN DEN STARTS getaktet, die Latenz laeuft mit. Der Takt ist mit
+        // 300ms bewusst etwas langsamer als die reine Rechnung erlaubt und
+        // wird bei JEDEM Fehlversuch groesser (Rate-Limit-401er haben schon
+        // einmal einen Ladevorgang gekostet, LEARNINGS 7) - der Lauf bremst
+        // sich also selbst ein, statt auf einen festen Wert zu wetten.
+        let gap = 300;
         let total = Infinity;
         let gotAny = false;
         STATE.loadIncomplete = false;
+        STATE.diag.clubLoad = { pageSize: count, gap: gap, pages: 0, retries: 0, ms: 0 };
+        const t0 = Date.now();
         while (page * count < total) {
             if (STATE.cancelLoad) break;
             const start = page * count;
+            const tStart = Date.now();
             const path = 'club?sort=desc&sortBy=value&type=player&count=' + count + '&start=' + start;
             let json = null;
             // Pro Seite bis zu 3 Versuche (apiGet macht bei 401 zusätzlich
@@ -1153,6 +1171,12 @@
                 try { json = await apiGet(path); }
                 catch (e) {
                     warn('Club-Fetch Fehler Seite', page, 'Versuch', attempt + 1, e.message);
+                    // Selbst einbremsen: jeder Fehlversuch erhoeht den Takt
+                    // dauerhaft. Ein Rate-Limit soll den Lauf verlangsamen,
+                    // nicht abbrechen.
+                    gap = Math.min(900, gap + 150);
+                    STATE.diag.clubLoad.retries++;
+                    STATE.diag.clubLoad.gap = gap;
                     if (attempt < 2) await new Promise(r => setTimeout(r, 1200 * (attempt + 1)));
                 }
             }
@@ -1162,14 +1186,22 @@
                 break;
             }
             gotAny = true;
-            // Kurz atmen zwischen den Seiten - zu schnelle Pagination
-            // provoziert Rate-Limit-401er (live bestätigt: 120ms war zu
-            // schnell, Abbruch bei Seite ~55). 250ms ist der bewährte Wert.
-            await new Promise(r => setTimeout(r, 250));
             const items = extractItems(json);
             if (json.totalItemCount != null) total = json.totalItemCount;
             else if (json.total != null) total = json.total;
-            else if (items.length < count) total = start + items.length;
+            // Seitengroesse kalibrieren: kamen weniger Items als angefragt,
+            // obwohl laut total noch welche fehlen, hat EA gekappt. WICHTIG:
+            // das muss VOR dem "weniger Items = fertig"-Schluss stehen, sonst
+            // bricht der Lauf nach der ersten Seite ab.
+            if (!calibrated && items.length > 0 && items.length < count &&
+                total !== Infinity && start + items.length < total) {
+                count = items.length;
+                calibrated = true;
+                STATE.diag.clubLoad.pageSize = count;
+                log('Club-Seitengroesse von EA gekappt auf ' + count + ' - damit weiter.');
+            }
+            calibrated = true;
+            if (total === Infinity && items.length < count) total = start + items.length;
             const players = [];
             for (const it of items) {
                 const p = normalizePlayer(it, false);
@@ -1181,7 +1213,15 @@
             if (items.length === 0) break;
             page++;
             if (page > 300) break;
+            // Rest des Takts abwarten - die Latenz der gerade beantworteten
+            // Seite zaehlt mit, es wird also nicht doppelt gewartet.
+            const restMs = gap - (Date.now() - tStart);
+            if (restMs > 0) await new Promise(r => setTimeout(r, restMs));
         }
+        STATE.diag.clubLoad.pages = page;
+        STATE.diag.clubLoad.ms = Date.now() - t0;
+        log('Verein geladen: ' + found + ' Spieler in ' + page + ' Seiten (' +
+            count + ' pro Seite, ' + STATE.diag.clubLoad.ms + 'ms, Takt ' + gap + 'ms).');
         return found;
     }
     async function fetchUnassignedViaHttp() {
@@ -3589,6 +3629,10 @@
             // storage)? Bei HTTP 460 ist hier direkt zu sehen, ob eine Karte
             // oder ein Spieler doppelt drin war.
             lastTeam: STATE.diag.lastTeam || null,
+            // Wie schnell war das Laden? pageSize/gap/pages/ms/retries - daran
+            // ist zu sehen, ob EA die Seitengroesse kappt und ob der Takt wegen
+            // Rate-Limits hochgegangen ist.
+            clubLoad: STATE.diag.clubLoad || null,
             // Abgeben: welche Controller/Methoden kamen in Frage und welche hat
             // gegriffen? Am Handy heisst der Controller anders als am PC.
             submitCandidates: STATE.diag.submitCandidates || null,
@@ -3703,7 +3747,10 @@
                     // 0 = unser Klick kommt gar nicht an; >0 = Klick kam an
                     // (dann liegt ein "es passiert nichts" am Panel, nicht am Button)
                     launcherClicks: launcherClicks,
-                    visibleButtons: buttonDump,
+                    // Die acht "✕" der Kosten-Tabelle sagen nichts und standen
+                    // in jedem Report - raus, damit er kopierbar bleibt.
+                    visibleButtons: buttonDump.filter(b =>
+                        String(b.txt || '').trim() !== '✕').slice(0, 20),
                     viewport: { w: window.innerWidth, h: window.innerHeight,
                                 dpr: window.devicePixelRatio || 1 },
                     fabVisible: !!(ui.fab && !ui.fab.classList.contains('sbc-opt-hidden')),
@@ -3715,7 +3762,21 @@
             refreshLog: STATE.diag.refreshLog || null,
             submitVia: STATE.diag.submitVia || null,
             controllerScan: controllerScan(),
-            appSquadPutBodySample: STATE.diag.lastSquadPutBody || null,
+            // GEKUERZT: von den 23 Slots sind die meisten leer (id 0) - die
+            // stehen jetzt nur als Anzahl drin. Wichtig ist, WELCHE Karte auf
+            // WELCHEM Slot lag (daran war das HTTP 460 zu sehen, LEARNINGS 16).
+            appSquadPutBodySample: (function () {
+                const raw = STATE.diag.lastSquadPutBody;
+                if (typeof raw !== 'string') return raw || null;
+                try {
+                    const j = JSON.parse(raw);
+                    if (!j || !Array.isArray(j.players)) return raw.slice(0, 800);
+                    const filled = j.players
+                        .filter(p => p && p.itemData && Number(p.itemData.id))
+                        .map(p => p.index + ':' + p.itemData.id);
+                    return { belegt: filled.join(' '), leer: j.players.length - filled.length };
+                } catch (e) { return raw.slice(0, 800); }
+            })(),
             sbc: {
                 setId: STATE.sbc.setId,
                 challengeId: STATE.sbc.challengeId,
@@ -3736,27 +3797,42 @@
             poolSize: STATE.pool.length,
             // Verteilung der rareflags im Pool - zum Verifizieren der
             // Gold/Special-Klassifizierung
+            // GEKUERZT (der Report muss kopierbar bleiben): das volle Histogramm
+            // waren ~80 Zeilen. Gebraucht werden Common/Rare - und von den
+            // Special-Flags die haeufigsten fuenf plus Restsumme.
             rareflagHistogram: (function () {
                 const m = {};
                 for (const p of STATE.pool) {
                     const key = String(p.rareflag);
                     m[key] = (m[key] || 0) + 1;
                 }
-                return m;
+                const out = { '0_common': m['0'] || 0, '1_rare': m['1'] || 0,
+                              '3_totw': m['3'] || 0 };
+                const rest = Object.keys(m).filter(k => ['0', '1', '3'].indexOf(k) < 0)
+                    .map(k => ({ f: k, n: m[k] }))
+                    .sort((a, b) => b.n - a.n);
+                out.topSpecials = rest.slice(0, 5).map(x => x.f + ':' + x.n).join(' ');
+                out.specialFlags = rest.length;
+                out.specialTotal = rest.reduce((a, x) => a + x.n, 0);
+                return out;
             })(),
             poolSpecialCount: STATE.pool.filter(p => p.isSpecial).length,
             evoExcluded: STATE.diag.evoExcluded,
             // Struktur-Samples hoher Karten: verrät uns die echten Feldnamen,
             // falls Evolutions/Specials noch falsch klassifiziert werden.
+            // GEKUERZT: vorher fuenf Karten mit je bis zu 60 rawKeys - der
+            // groesste Einzelposten im Report. Die Feldnamen sind bekannt
+            // (LEARNINGS 2), rawKeys braucht es nur noch an EINER Probe.
             highCardSamples: STATE.pool
                 .filter(p => p.rating >= 85)
-                .slice(0, 5)
-                .map(function (p) {
-                    return {
+                .slice(0, 3)
+                .map(function (p, i) {
+                    const o = {
                         id: p.id, rating: p.rating, rareflag: p.rareflag,
-                        isSpecial: p.isSpecial, isStorage: p.isStorage,
-                        rawKeys: p.raw ? Object.keys(p.raw).slice(0, 60) : null
+                        isSpecial: p.isSpecial, isStorage: p.isStorage
                     };
+                    if (i === 0 && p.raw) o.rawKeys = Object.keys(p.raw).join(',');
+                    return o;
                 }),
             // GEKUERZT: der Report war zu lang zum Kopieren und brach live mitten
             // in diesem Feld ab. Der Rest sind ohnehin nur leere Slots (id 0) -

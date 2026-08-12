@@ -2,9 +2,11 @@
 
 ## Offen (konkret)
 
-0. **Batch-Abgabe** — 1. Live-Versuch (v4.11.1) lief auf **HTTP 403**, nichts
-   abgegeben (Abbruch bei 0/3, Sicherheitsnetz hat gehalten). Der Report
-   lieferte zwei Erkenntnisse, beide in v4.12.0 umgesetzt:
+0. ~~Batch-Abgabe~~ — **erledigt**, live bestaetigt in v4.12.0
+   (`lastSubmitVia: controller`, `grantedSetAwards` in der Antwort).
+   Der Weg dahin, als Referenz: 1. Versuch (v4.11.1) lief auf HTTP 403,
+   nichts abgegeben (Abbruch bei 0/3, Sicherheitsnetz hat gehalten).
+   Zwei Erkenntnisse aus dem Report:
    - `submitChallengeArity: 0` — der Service erwartet **kein** Argument, wir
      übergaben die Challenge.
    - `controllerScan` zeigt, dass `UTSBCSquadSplitViewController` selbst
@@ -92,5 +94,7 @@
 ## Bewusst NICHT geplant
 
 - Chemie/Positions-Optimierung — Grundsatzentscheidung, rein Rating-basiert.
-- Automatisches Submit der SBC — Rasmus drückt immer selbst.
+- Automatisches Submit bei EINZEL-SBCs — da drückt Rasmus selbst.
+  (Der Batch-Modus darf abgeben, siehe CLAUDE.md — nach Vorschau und einer
+  ausdrücklichen Freigabe.)
 - Transfermarkt-Funktionen — dafür läuft PaleTools parallel.

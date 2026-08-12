@@ -113,6 +113,8 @@ public class MainActivity extends Activity {
                 : (scriptSbc.length() + " Zeichen")).append('\n');
         sb.append("PaleTools: ").append(scriptPale == null ? "FEHLT/aus"
                 : (scriptPale.length() + " Zeichen")).append('\n');
+        sb.append("PaleTools-Quelle: ").append(paleSource == null ? "(unbekannt)" : paleSource)
+                .append('\n');
         sb.append("PaleTools-Status: ").append(paleStatus == null ? "(noch keiner)" : paleStatus)
           .append("\n\n--- Konsole (neueste zuletzt) ---\n");
         synchronized (logLines) {
@@ -123,6 +125,7 @@ public class MainActivity extends Activity {
     }
 
     String paleStatus = null;   // letzte Rückmeldung des PaleTools-Wächters
+    String paleSource = null;   // "Cache" oder "Download" - erklärt die Startzeit
 
     String appVersion() {
         try {
@@ -381,6 +384,37 @@ public class MainActivity extends Activity {
             c.setInstanceFollowRedirects(true);
             if (c.getResponseCode() != 200) return null;
             return readStream(c.getInputStream());
+        } catch (Exception e) { return null; }
+    }
+
+    /**
+     * Bedingter GET: schickt den gemerkten ETag / Last-Modified mit. Antwortet
+     * der Server mit 304, ist der Cache aktuell und es kommt KEIN Body ueber
+     * die Leitung - das haelt die Hintergrund-Auffrischung billig.
+     * Liefert den neuen Inhalt oder null (304, Fehler, oder kein Fortschritt).
+     */
+    String fetchUrlIfChanged(String u, String etagKey, String modKey) {
+        try {
+            HttpURLConnection c = (HttpURLConnection) new URL(u).openConnection();
+            c.setConnectTimeout(8000);
+            c.setReadTimeout(15000);
+            c.setInstanceFollowRedirects(true);
+            String etag = prefs.getString(etagKey, null);
+            String mod = prefs.getString(modKey, null);
+            if (etag != null) c.setRequestProperty("If-None-Match", etag);
+            if (mod != null) c.setRequestProperty("If-Modified-Since", mod);
+            int code = c.getResponseCode();
+            if (code == 304) return null;
+            if (code != 200) return null;
+            String newEtag = c.getHeaderField("ETag");
+            String newMod = c.getHeaderField("Last-Modified");
+            String body = readStream(c.getInputStream());
+            if (body == null) return null;
+            SharedPreferences.Editor e = prefs.edit();
+            if (newEtag != null) e.putString(etagKey, newEtag);
+            if (newMod != null) e.putString(modKey, newMod);
+            e.apply();
+            return body;
         } catch (Exception e) { return null; }
     }
 
@@ -679,14 +713,25 @@ class ScriptLoader implements Runnable {
         if (sbc == null) sbc = a.readAsset("sbc-optimizer.user.js");
         a.scriptSbc = sbc;
 
-        // 2. PaleTools: URL -> Cache (kein Asset-Fallback, ist optional)
+        // 2. PaleTools: CACHE ZUERST. Es ist ~900 KB, und die WebView startete
+        // bisher erst NACH dem Download - das war die Wartezeit, bis PaleTools
+        // am Handy aktiv wurde. Die Datei aendert sich selten, also: liegt eine
+        // Kopie im Cache, wird die sofort benutzt und der Download passiert
+        // danach im Hintergrund (wirkt beim naechsten Start).
+        // Der Optimizer bleibt bewusst Download-zuerst: "Push auf main =
+        // Deployment", und Rasmus prueft die Version im Panel-Header.
         String pale = null;
+        boolean paleFromCache = false;
         if (paleOn) {
-            pale = a.fetchUrl(paleUrl);
-            if (pale != null) a.writeCache("pale.js", pale);
-            else pale = a.readCache("pale.js");
+            pale = a.readCache("pale.js");
+            if (pale != null) paleFromCache = true;
+            else {
+                pale = a.fetchUrl(paleUrl);
+                if (pale != null) a.writeCache("pale.js", pale);
+            }
         }
         a.scriptPale = pale;
+        a.paleSource = (pale == null) ? "keine" : (paleFromCache ? "Cache" : "Download");
         a.scriptsReady = true;
 
         // BEWUSST "geladen", nicht "bereit": das sagt nur, dass die Dateien
@@ -701,6 +746,19 @@ class ScriptLoader implements Runnable {
         a.addLog("Quellen: sbcUrl=" + (sbcUrl.isEmpty() ? "(Asset)" : sbcUrl)
                 + " | paleUrl=" + paleUrl);
         a.runOnUiThread(new StartWebApp(a, info));
+
+        // Auffrischen NACH dem Start - blockiert die Seite nicht mehr. Mit
+        // If-None-Match/If-Modified-Since ist das meist ein 304 ohne Body.
+        if (paleOn && paleFromCache) {
+            String fresh = a.fetchUrlIfChanged(paleUrl, "paleEtag", "paleMod");
+            if (fresh != null && fresh.length() > 100000) {
+                a.writeCache("pale.js", fresh);
+                a.addLog("PaleTools-Cache erneuert (" + fresh.length()
+                        + " Zeichen) - wirkt beim naechsten Start.");
+            } else {
+                a.addLog("PaleTools-Cache ist aktuell (" + pale.length() + " Zeichen).");
+            }
+        }
     }
 }
 

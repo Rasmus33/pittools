@@ -717,3 +717,34 @@ Frage) und `submitChallengeVia` (welche hat gegriffen).
 **Muster:** EA-Klassennamen sind layout-abhaengig. Jede Annahme der Form "der
 Controller heisst X und hat Methode Y" muss am HANDY geprueft werden, nicht nur
 am PC - das ist Rasmus' Hauptgeraet.
+
+
+## 20. PaleTools blockierte den Start (Cache war nur Notfall-Fallback)
+
+Rasmus: *"gibt es eine moeglichkeit das letzte paletools script zu cachen damit
+es nicht immer eine minute dauert, bis paletools am handy aktiv ist?"*
+
+Ein Cache war schon da - aber in der falschen Reihenfolge benutzt:
+
+
+
+Der Cache griff also nur bei Netzfehler, und die WebView startete erst nach dem
+Download. Die 900 KB lagen komplett im kritischen Pfad, VOR dem Laden der
+EA-Seite.
+
+**Jetzt cache-first (stale-while-revalidate):** liegt eine Kopie im Cache, wird
+die sofort benutzt; die Auffrischung laeuft NACH dem Start im
+Hintergrund-Thread und wirkt beim naechsten Mal. Mit
+If-None-Match/If-Modified-Since ist das meist ein 304 ohne Body.
+
+**Der Optimizer bleibt bewusst Download-zuerst.** "Push auf main =
+Deployment", und Rasmus prueft die Version im Panel-Header - eine Version
+hinterherzulaufen waere hier ein echter Nachteil. Er ist mit ~260 KB auch
+deutlich kleiner. Die Asymmetrie ist Absicht, nicht Inkonsequenz.
+
+Der Log-Kopf zeigt jetzt `PaleTools-Quelle: Cache|Download|keine` - damit ist
+eine lange Startzeit sofort erklaerbar.
+
+**Was das NICHT beschleunigt:** das Warten auf die EA-Klassen (der Waechter aus
+Abschnitt 8) und die gestueckelte Injection der 900 KB. Der Anteil, der wegfaellt,
+ist der Download vor dem Seitenaufbau.

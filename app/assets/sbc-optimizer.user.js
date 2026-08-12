@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.8.0
+// @version      4.29.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -10,7 +10,19 @@
 // @match        https://www.ea.com/ultimate-team/web-app/*
 // @run-at       document-start
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/Rasmus33/pittools/main/ea-fc-sbc-optimizer.user.js
+// @downloadURL  https://raw.githubusercontent.com/Rasmus33/pittools/main/ea-fc-sbc-optimizer.user.js
 // ==/UserScript==
+// ACHTUNG: In den ==UserScript==-Block gehören AUSSCHLIESSLICH "@key value"-
+// Zeilen. Freie Kommentare dazwischen markiert Tampermonkey als Fehler und
+// kann die danach folgenden Metadaten (hier @updateURL/@downloadURL) still
+// ignorieren - Erklärungen deshalb immer hierunter.
+//
+// Auto-Update: @updateURL/@downloadURL zeigen auf main, Push = Update auf allen
+// Geräten. Tampermonkey vergleicht dazu @version, die MUSS also bei jeder
+// Änderung hoch (siehe CLAUDE.md). @name/@namespace NIE ändern: die beiden
+// bilden die Script-Identität, sonst legt Tampermonkey ein ZWEITES Script an
+// statt dieses zu aktualisieren.
 /*
  * ============================================================================
  *  EA FC SBC RATING-OPTIMIZER  (v2.0.0)
@@ -51,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.8.0';
+    const VERSION = '4.29.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -348,7 +360,7 @@
      * Team-Rating- und Rarity-Anforderungen sowie squadId.
      */
     function deepScanChallenge(root) {
-        const out = { target: null, rarity: [], squadId: null, slots: null, playerLevel: [], quality: [], reqs: [] };
+        const out = { target: null, rarity: [], squadId: null, slots: null, playerLevel: [], quality: [], rare: [], reqs: [] };
         if (!root || typeof root !== 'object') return out;
         const seen = new Set();
         const queue = [{ o: root, d: 0, par: [] }];
@@ -394,10 +406,24 @@
                     out.playerLevel.push({ label: scope, minRating: v, count: reqCount(o, par) });
                 }
                 // Qualitäts-Vorgabe (Tausch-/Upgrade-SBCs ohne Team-Rating):
-                // PLAYER_QUALITY 1=Bronze, 2=Silber, 3=Gold.
-                if (scope.indexOf('QUALITY') > -1 && v != null && v >= 1 && v <= 3) {
+                // 1=Bronze, 2=Silber, 3=Gold.
+                // EA benutzt dafür ZWEI Scope-Namen: PLAYER_QUALITY und
+                // PLAYER_LEVEL. Bei PLAYER_LEVEL entscheidet der WERT, was
+                // gemeint ist - 1..3 ist die Qualitätsstufe, ab 40 ein
+                // Mindest-Rating (siehe isPlayerLevel oben). Live verifiziert
+                // an einer "genau 1 Bronze-Spieler"-SBC: reqDump lieferte
+                // PLAYER_LEVEL mit value 1, und ohne diesen Zweig wurde die
+                // Vorgabe komplett ignoriert.
+                const isQualityScope = scope.indexOf('QUALITY') > -1 ||
+                    (scope.indexOf('LEVEL') > -1 && scope.indexOf('CHEM') === -1);
+                if (isQualityScope && v != null && v >= 1 && v <= 3) {
                     out.quality.push({ label: scope, quality: Number(v), count: reqCount(o, par) });
                 }
+                // KEIN Substring-Match auf "RARE" hier! Das hat live
+                // SPIELERNAMEN getroffen ("Carrarese Calcio", "Brian Ferrares",
+                // "Rareș Ilie") und Phantom-Vorgaben erzeugt. Die echte
+                // Rare-Anforderung kommt als PLAYER_RARITY_GROUP mit Wert 4
+                // (Gruppe 4 = Rare) und wird unten regulaer erfasst.
                 if (scope.indexOf('RARITY') > -1) {
                     out.rarity.push({
                         label: scope,
@@ -443,6 +469,7 @@
         }
         out.rarity = dedupe(out.rarity, rc => rc.label + '|' + rc.ids.join(',') + '|' + rc.count);
         out.playerLevel = dedupe(out.playerLevel, pl => pl.label + '|' + pl.minRating + '|' + pl.count);
+        out.rare = dedupe(out.rare || [], r => r.label + '|' + r.count);
         out.quality = dedupe(out.quality, q => q.label + '|' + q.quality + '|' + q.count);
         out.reqs = dedupe(out.reqs, r => r.scope + '|' + r.value + '|' + r.count + '|' + r.ids.join(','));
         return out;
@@ -459,6 +486,7 @@
         STATE.sbc.rarityConstraints = [];
         STATE.sbc.playerLevelConstraints = [];
         STATE.sbc.qualityConstraints = [];
+        STATE.sbc.rareConstraints = [];
         STATE.sbc.reqDump = [];
         STATE.sbc.formationSlots = 11;
         STATE.sbc.squadSlotTotal = null;
@@ -588,6 +616,7 @@
         if (scan.rarity.length) { STATE.sbc.rarityConstraints = scan.rarity; changed = true; }
         if (scan.playerLevel.length) { STATE.sbc.playerLevelConstraints = scan.playerLevel; changed = true; }
         if (scan.quality && scan.quality.length) { STATE.sbc.qualityConstraints = scan.quality; changed = true; }
+        if (scan.rare && scan.rare.length) { STATE.sbc.rareConstraints = scan.rare; changed = true; }
         if (scan.reqs.length) { STATE.sbc.reqDump = scan.reqs; changed = true; }
         if (changed) {
             log('SBC erkannt (' + source + '):', JSON.stringify({
@@ -679,6 +708,11 @@
             rareflag: isNaN(rf) ? null : rf,
             isGold: isGold,
             isSpecial: !isGold,
+            // FUT-Standard: rareflag 0 = Common (non-rare), 1 = Rare.
+            // Manche Gold-SBCs verlangen "min. N Rare" - der Rest soll dann
+            // Common sein, damit keine Rare-Karte unnoetig verbraucht wird.
+            isRare: rf === 1,
+            isCommon: rf === 0,
             isStorage: !!fromStorage,
             name: resolvePlayerName(raw),
             untradeable: raw.untradeable === true || raw.tradeable === false,
@@ -696,6 +730,128 @@
                sd.commonName ||
                ((sd.firstName || raw.firstName || '') + ' ' + (sd.lastName || raw.lastName || '')).trim() ||
                ('#' + (raw.assetId || raw.definitionId || raw.id));
+    }
+    // ---- Gesperrte Karten aus PaleTools übernehmen --------------------------
+    // PaleTools hat ein "lockPlayers"-Feature (Schloss auf der Karte) und warnt
+    // sogar selbst, wenn eine gelockte Karte in eine SBC wandert
+    // (plugins.lockPlayers.messages.sbcWarning). Wer eine Karte sperrt, will
+    // sie behalten - also darf der Solver sie nicht verbauen.
+    //
+    // Der localStorage-KEY ist nicht dokumentiert und im Bundle nur dynamisch
+    // zusammengesetzt ('paletools:' + …), deshalb wird formatunabhängig
+    // gesucht: alle Keys mit "paletools", darin jeder Zweig, dessen Name "lock"
+    // enthält, und daraus alles, was wie eine Item-ID aussieht (12-stellig).
+    // Item-IDs können als Array-Werte ODER als Objekt-Keys vorliegen -> beides.
+    // PaleTools speichert in lockedItems KEINE 12-stelligen Item-IDs, sondern
+    // kuerzere Zahlen (live: [100664921, 190871, 225733, 50332136, ...]) - also
+    // assetId/resourceId, der SPIELER statt der einzelnen Karte. Die Schwelle
+    // 1e11 hat deshalb alles verworfen. Da wir nur in Zweigen mit "lock" im
+    // Namen suchen, genuegt "positive ganze Zahl ab 1000".
+    function looksLikeItemId(x) {
+        const n = Number(x);
+        return isFinite(n) && n >= 1000 && n < 1e14 && Math.floor(n) === n &&
+               typeof x !== 'boolean';
+    }
+    function harvestIds(v, out, depth) {
+        if (v == null || depth > 5 || out.size > 5000) return;
+        if (looksLikeItemId(v)) { out.add(String(Number(v))); return; }
+        if (Array.isArray(v)) { for (const x of v) harvestIds(x, out, depth + 1); return; }
+        if (typeof v === 'object') {
+            for (const k in v) {
+                // { "916543482768": true } - der KEY ist die ID
+                if (looksLikeItemId(k) && v[k]) out.add(String(Number(k)));
+                harvestIds(v[k], out, depth + 1);
+            }
+        }
+    }
+    function findLockBranches(o, out, depth) {
+        if (!o || depth > 6 || typeof o !== 'object') return;
+        if (Array.isArray(o)) { for (const x of o) findLockBranches(x, out, depth + 1); return; }
+        for (const k in o) {
+            if (/lock/i.test(k)) harvestIds(o[k], out, 0);
+            findLockBranches(o[k], out, depth + 1);
+        }
+    }
+    function readPaletoolsLocks() {
+        const ids = new Set();
+        let keysScanned = 0;
+        const keyInfo = [];
+        try {
+            for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                if (!k || k.toLowerCase().indexOf('paletools') < 0) continue;
+                keysScanned++;
+                // Key-Namen + Groesse in die Diagnose: findet die Suche unten
+                // nichts, ist hier zu sehen, WO PaleTools seine Sperrliste
+                // ablegt (der Key ist im Bundle nur dynamisch zusammengesetzt).
+                try {
+                    const val = localStorage.getItem(k) || '';
+                    keyInfo.push({ key: k, len: val.length,
+                                   head: val.slice(0, 120) });
+                } catch (e) {}
+                let raw = null;
+                try { raw = localStorage.getItem(k); } catch (e) { continue; }
+                if (!raw) continue;
+                let obj = null;
+                try { obj = JSON.parse(raw); } catch (e) { continue; }
+                // Steht der Key selbst schon für die Sperrliste, ist der ganze
+                // Wert die Quelle - sonst nur die "lock"-Zweige darin.
+                // ACHTUNG: "lockedPacks" enthaelt PACK-IDs ([1030, 20038, ...]),
+                // keine Karten. Mit der niedrigen Schwelle in looksLikeItemId
+                // wuerden die sonst als gesperrte Karten gelten und still eine
+                // brauchbare Karte aus dem Pool nehmen.
+                if (/pack/i.test(k)) continue;
+                if (/lockeditem/i.test(k)) harvestIds(obj, ids, 0);
+                else if (/lock/i.test(k)) harvestIds(obj, ids, 0);
+                else findLockBranches(obj, ids, 0);
+            }
+        } catch (e) { warn('Locks lesen fehlgeschlagen:', e && e.message); }
+        STATE.diag.locks = {
+            keysScanned: keysScanned,
+            found: ids.size,
+            sample: Array.from(ids).slice(0, 5),
+            // Nur noetig, wenn found = 0: daran ist der richtige Key ablesbar.
+            keys: keyInfo.slice(0, 12)
+        };
+        return ids;
+    }
+    // ---- Namen zur ANZEIGEZEIT auflösen -------------------------------------
+    // Die rohen Club-/Storage-Items enthalten KEINEN Namen (im Diagnose-Report
+    // an `rawKeys` zu sehen: nur assetId, rating, groups …) - deshalb landete in
+    // der Vorschau immer "#assetId". Die App löst Namen über ihre eigenen
+    // Item-Entities auf; ein solches wird hier bei Bedarf über dieselbe Factory
+    // gebaut, die auch das Eintragen benutzt.
+    // BEWUSST erst beim Anzeigen und mit Cache: für 8000 Pool-Karten wäre das
+    // viel zu teuer, für die 11-55 angezeigten ist es unkritisch.
+    const nameCache = new Map();
+    function entityName(it) {
+        if (!it) return null;
+        const cands = [];
+        try { if (typeof it.getStaticData === 'function') cands.push(it.getStaticData()); } catch (e) {}
+        cands.push(it._staticData, it.staticData, it);
+        for (const sd of cands) {
+            if (!sd || typeof sd !== 'object') continue;
+            const cn = sd.commonName || sd.name;
+            if (cn && String(cn).trim()) return String(cn).trim();
+            const full = ((sd.firstName || '') + ' ' + (sd.lastName || '')).trim();
+            if (full) return full;
+        }
+        return null;
+    }
+    function displayName(p) {
+        if (!p) return '?';
+        const key = String(p.assetId || p.id);
+        if (nameCache.has(key)) return nameCache.get(key);
+        let n = null;
+        // Falls EA den Namen doch mitliefert (dann ist er nicht "#…").
+        if (p.name && String(p.name).charAt(0) !== '#') n = p.name;
+        if (!n && p.raw && typeof window.UTItemEntityFactory === 'function') {
+            try { n = entityName(new window.UTItemEntityFactory().createItem(p.raw)); }
+            catch (e) {}
+        }
+        n = n || p.name || ('#' + key);
+        nameCache.set(key, n);
+        return n;
     }
     // Spieler in den Pool mergen. Storage-Flag gewinnt bei Duplikaten.
     function mergeIntoPool(players) {
@@ -1182,7 +1338,12 @@
         }
         // Rating-Kosten-Tabelle (Pack-Ökonomie), editierbar im Panel.
         // Standard = Rasmus' Tabelle (Stand FUTTIES-Phase FC26).
-        const DEFAULT_RATING_COST_SPEC = '0-80:0, 81-83:2, 84:1, 85-86:5, 87-88:2, 89-90:3, 91-92:4, 93+:12';
+        // Rasmus' Bewertung, Stand Aug 2026: 86er sind nicht mehr knapp und
+        // liegen jetzt auf derselben Stufe wie 87-88, 85er ebenfalls billiger
+        // (er hat davon reichlich). Die Tabelle ist im Panel editierbar und
+        // wird in localStorage gemerkt - eine Änderung hier greift nur, wenn
+        // dort noch nichts gespeichert ist oder "Zurücksetzen" gedrückt wird.
+        const DEFAULT_RATING_COST_SPEC = '0-80:0, 81-83:2, 84:1, 85-88:2, 89-90:3, 91-92:4, 93+:12';
         function parseRatingCosts(spec) {
             const costs = new Array(100).fill(0);
             if (spec) {
@@ -1215,6 +1376,13 @@
             if (!c) return p.isSpecial;
             // EXAKTES Matching über Rarity-GRUPPEN (live verifiziert, fc26):
             // Vorgabe "PLAYER_RARITY_GROUP 83" <=> 83 in p.groups.
+            // Gruppe 4 = "Rare" (live: eine "Rare: Min. 6"-SBC schickt
+            // PLAYER_RARITY_GROUP mit Wert 4). Das ist eine Karten-EIGENSCHAFT,
+            // nicht ein Event - deshalb hier zusaetzlich ueber rareflag 1
+            // pruefen, falls EA die 4 nicht in p.groups mitschickt.
+            if (Number(c.groupId) === 4) {
+                return p.isRare || (Array.isArray(p.groups) && p.groups.indexOf(4) > -1);
+            }
             if (c.groupId != null && Array.isArray(p.groups)) {
                 return p.groups.indexOf(Number(c.groupId)) > -1;
             }
@@ -1313,8 +1481,48 @@
          * optimiert im Fenster [stMin, stMin+maxWaste] die Kartenkosten.
          * Waste ist also relativ zum POOL-Minimum definiert.
          */
+        /**
+         * Rarity-Schutz als HARTE Grenze (Rasmus): Karten der geschützten
+         * Gruppen (TOTW/TOTS/FOF/FUTTIES) werden für künftige SBC-Vorgaben
+         * gebraucht. Fordert die SBC N davon, werden GENAU N reserviert und
+         * alle weiteren gesperrt - lieber eine hohe Gold-Karte aus dem Verein
+         * als unnötig eine zweite FUTTIES aus dem Storage.
+         *
+         * Warum hart und nicht über die Kosten: der Aufschlag (+8) konnte den
+         * Storage-Rabatt nicht überstimmen. costOf halbiert die Basis für
+         * Storage-Karten, und die Basis wächst mit alpha/n bei seltenen hohen
+         * Ratings - ein 92er FUTTIES aus dem Storage landete bei 12.5, das
+         * gleichwertige Vereins-Gold bei 13. Live passiert bei einem 90er-Team
+         * (zwei FUTTIES verbaut, eine gefordert). Kosten-Feintuning hätte das
+         * nur verschoben, nicht behoben.
+         *
+         * Ist die SBC so nicht lösbar, wird die Sperre aufgehoben und gewarnt -
+         * gleiches Muster wie bei "max. teure Spieler".
+         */
         function solve(poolAll, cfg) {
+            const strict = solveCore(poolAll, cfg, true);
+            if (strict && strict.ok) return strict;
+            const loose = solveCore(poolAll, cfg, false);
+            if (loose && loose.ok) {
+                loose.warnings = (loose.warnings || []).concat(
+                    'Ohne zusätzliche geschützte Karten (TOTW/TOTS/FOF/FUTTIES) ist die ' +
+                    'SBC mit diesem Pool nicht lösbar - Schutz gelockert.');
+                return loose;
+            }
+            // Beide gescheitert: die Meldung des LOCKEREN Versuchs ist die
+            // aussagekräftigere (die Sperre war dort nicht die Ursache).
+            return loose || strict;
+        }
+        function solveCore(poolAll, cfg, limitProtected) {
+            // Warnungen: KEINE Dubletten. Vorher stand die gelockerte
+            // Rare-Grenze sechsmal untereinander im Panel (einmal pro Slot) -
+            // die eine wichtige Meldung ging darin unter.
             const warnings = [];
+            const rawPush = warnings.push.bind(warnings);
+            warnings.push = function (w) {
+                if (warnings.indexOf(w) === -1) rawPush(w);
+                return warnings.length;
+            };
             const N = cfg.slots || 11;
             const target = cfg.targetOVR;
             // ---- Pool filtern ----
@@ -1322,24 +1530,126 @@
             // Qualitäts-Vorgabe (Tausch-/Upgrade-SBCs): 1=Bronze(<=64),
             // 2=Silber(65-74), 3=Gold(>=75). Gilt als Band-Filter für das
             // ganze Team; bei mehreren Vorgaben zählt die höchste Qualität.
-            let qLo = minRating, qHi = 99, qualityLabel = null;
+            let qLo = minRating, qHi = 99, qualityLabel = null, qualityLow = false;
+            // qTiers ist nur bei GEMISCHTEN Vorgaben gesetzt (Live-Fall: "Daily
+            // Common Gold Upgrade" mit Bronze Min. 5 + Silber Min. 5 auf 10
+            // Slots). Vorher gewann hier Math.max, also Silber - und der GANZE
+            // Pool wurde auf 65-74 gefiltert: 10x Silber, 0 Bronze, dazu ein
+            // "ok". Ein still falsches Team ist schlimmer als ein Abbruch.
+            let qTiers = null;
             const qcs = (cfg.applyRarity === false) ? [] : (cfg.qualityConstraints || []);
-            if (qcs.length) {
-                const QBAND = { 1: [0, 64], 2: [65, 74], 3: [75, 99] };
+            const QBAND_ALL = { 1: [0, 64], 2: [65, 74], 3: [75, 99] };
+            const QNAME_ALL = { 1: 'Bronze', 2: 'Silber', 3: 'Gold' };
+            if (qcs.length > 1) {
+                const tiers = [];
+                for (const c of qcs) {
+                    const q = Number(c.quality) || 1;
+                    const seen = tiers.filter(t => t.q === q)[0];
+                    if (seen) seen.count = Math.max(seen.count, Number(c.count) || 1);
+                    else tiers.push({ q: q, count: Number(c.count) || 1 });
+                }
+                tiers.sort((a, b) => a.q - b.q);
+                if (tiers.length > 1) {
+                    for (const t of tiers) {
+                        t.lo = QBAND_ALL[t.q][0];
+                        t.hi = QBAND_ALL[t.q][1];
+                        t.label = QNAME_ALL[t.q] || ('Stufe ' + t.q);
+                    }
+                    // EAs Count-Feld ist unzuverlaessig (LEARNINGS 6): der
+                    // Live-Report zeigt count 1 bei je 5 geforderten Karten.
+                    // Bei EINER Stufe hilft "gilt fuer alle Slots"; bei zwei
+                    // Stufen geht das nicht. Loesung: die genannten Anzahlen
+                    // sind das MINIMUM, die restlichen Slots werden gleichmaessig
+                    // verteilt - der Rest geht an die NIEDRIGSTE Stufe, die ist
+                    // billiger. Das trifft den Live-Fall (1/1 auf 10 Slots ->
+                    // 5 Bronze + 5 Silber) und bei "Min. N"-Vorgaben ist
+                    // Mehrliefern unschaedlich.
+                    const stated = tiers.reduce((a, t) => a + t.count, 0);
+                    if (stated < N) {
+                        const base = Math.floor((N - stated) / tiers.length);
+                        let rest = (N - stated) - base * tiers.length;
+                        for (const t of tiers) {
+                            t.count += base;
+                            if (rest > 0) { t.count++; rest--; }
+                        }
+                        warnings.push('Gemischte Vorgabe: EA nennt nur ' + stated +
+                            ' von ' + N + ' Spielern - Rest gleichmaessig verteilt (' +
+                            tiers.map(t => t.count + 'x ' + t.label).join(' + ') +
+                            '). Passt das nicht, bitte Diagnose schicken.');
+                    }
+                    qTiers = tiers;
+                    qualityLabel = tiers.map(t => t.count + 'x ' + t.label).join(' + ');
+                    qualityLow = tiers.some(t => t.q === 1 || t.q === 2);
+                    qLo = Math.min.apply(null, tiers.map(t => t.lo));
+                    qHi = Math.max.apply(null, tiers.map(t => t.hi));
+                    if (qualityLow && minRating > qLo) {
+                        warnings.push('Gemischte Vorgabe: Min-Rating (' + minRating +
+                            ') wird ignoriert.');
+                    }
+                }
+            }
+            if (qcs.length && !qTiers) {
+                const QBAND = QBAND_ALL;
                 const q = qcs.reduce((m, c) => Math.max(m, Number(c.quality) || 1), 1);
                 const band = QBAND[q] || [0, 99];
                 qualityLabel = (q === 3) ? 'Gold' : (q === 2) ? 'Silber' : 'Bronze';
                 qHi = band[1];
-                qLo = Math.max(minRating, band[0]);
-                if (qLo > qHi) {
-                    qLo = band[0];
-                    warnings.push('Min-Rating (' + minRating + ') kollidiert mit der Qualitäts-Vorgabe ' +
-                        qualityLabel + ' - Min-Rating wird ignoriert.');
+                // Bei BRONZE/SILBER wird das Min-Rating komplett ignoriert
+                // (Rasmus): eine "1 Bronze-Spieler"-SBC ist mit Min-Rating 75
+                // sonst nie lösbar, und der Wert ist für solche Vorgaben
+                // schlicht bedeutungslos. Bei GOLD bleibt es als Untergrenze
+                // wirksam - dort ist es der Normalfall und gewollt.
+                qualityLow = (q === 1 || q === 2);
+                qLo = qualityLow ? band[0] : Math.max(minRating, band[0]);
+                if (qualityLow && minRating > band[0]) {
+                    warnings.push('Qualitäts-Vorgabe ' + qualityLabel +
+                        ': Min-Rating (' + minRating + ') wird ignoriert.');
+                }
+                if (qLo > qHi) qLo = band[0];
+            }
+            // GESPERRTE Karten (z.B. per PaleTools-Schloss) fliegen komplett
+            // raus - wer eine Karte sperrt, will sie behalten. Bewusst VOR
+            // allem anderen, damit sie auch nicht als Vorgabe-Karte oder Anker
+            // reserviert werden kann.
+            let lockedOut = 0;
+            if (cfg.lockedIds && cfg.lockedIds.length) {
+                const locked = new Set(cfg.lockedIds.map(String));
+                const before = poolAll.length;
+                // PaleTools sperrt den SPIELER, nicht die einzelne Karte:
+                // in lockedItems stehen kurze Zahlen (assetId/resourceId), keine
+                // 12-stelligen Item-IDs. Deshalb alle drei Spalten vergleichen.
+                poolAll = poolAll.filter(p => !(
+                    locked.has(String(p.id)) ||
+                    (p.assetId != null && locked.has(String(p.assetId))) ||
+                    (p.raw && p.raw.resourceId != null && locked.has(String(p.raw.resourceId))) ||
+                    (p.resourceId != null && locked.has(String(p.resourceId)))
+                ));
+                lockedOut = before - poolAll.length;
+                if (lockedOut) {
+                    warnings.push(lockedOut + ' gesperrte Karte(n) ausgeschlossen.');
                 }
             }
-            let pool = poolAll.filter(p => p.rating >= qLo && p.rating <= qHi);
+            // Bei gemischten Vorgaben ist das erlaubte Fenster NICHT
+            // durchgehend (Bronze 0-64 + Gold 75-99 laesst Silber aus), darum
+            // ein Praedikat statt eines Bereichs.
+            const inQBand = qTiers
+                ? ((p) => qTiers.some(t => p.rating >= t.lo && p.rating <= t.hi))
+                : ((p) => p.rating >= qLo && p.rating <= qHi);
+            let pool = poolAll.filter(inQBand);
             if (cfg.specialOnlyFromStorage) {
                 pool = pool.filter(p => !(p.isSpecial && !p.isStorage));
+            }
+            // Bei Bronze/Silber-Vorgaben NUR normale Karten: ein bronzenes
+            // Special ist wertvoller als sein Rating, und für die Vorgabe
+            // zählt es genauso wie eine 0815-Bronzekarte (rare oder non-rare
+            // ist dabei egal - beides ist rareflag 0/1).
+            if (qualityLow) {
+                const plain = pool.filter(p => !p.isSpecial);
+                if (plain.length >= N) pool = plain;
+                else {
+                    warnings.push('Zu wenige normale ' + qualityLabel +
+                        '-Karten (' + plain.length + '/' + N + ') - Specials werden mitbenutzt.');
+                }
             }
             // ---- SPIELER-EINDEUTIGKEIT (Fix für HTTP 460) ----
             // EA erlaubt denselben SPIELER (assetId) nur EINMAL pro Squad.
@@ -1374,9 +1684,47 @@
                 }
                 if (byAsset.size < pool.length) pool = Array.from(byAsset.values());
             }
+            // Die Vorgaben-Reservierungen greifen bewusst auf poolAll zu (dort
+            // sind auch Vereins-TOTW und Karten unter dem Min-Rating drin, die
+            // fuer eine Vorgabe erlaubt sind). poolAll ist aber NICHT nach
+            // assetId dedupliziert - eine Vorgabe-Karte und eine Auffuell-Karte
+            // konnten so derselbe SPIELER sein, und EA lehnt das mit 460 ab.
+            // Darum dieselbe Dedupe-Regel noch einmal auf poolAll.
+            {
+                const seenAsset = new Map();
+                for (const p of poolAll) {
+                    const key = (p.assetId != null && p.assetId !== 0) ? 'a' + p.assetId : 'i' + p.id;
+                    const cur = seenAsset.get(key);
+                    if (!cur || p.rating > cur.rating ||
+                        (p.rating === cur.rating && Number(p.id) < Number(cur.id))) {
+                        seenAsset.set(key, p);
+                    }
+                }
+                // Die Karten, die im (bereits deduplizierten) Loesungs-Pool
+                // stehen, haben Vorrang - sonst zeigen die beiden Pools auf
+                // verschiedene Karten desselben Spielers.
+                for (const p of pool) {
+                    const key = (p.assetId != null && p.assetId !== 0) ? 'a' + p.assetId : 'i' + p.id;
+                    seenAsset.set(key, p);
+                }
+                if (seenAsset.size < poolAll.length) poolAll = Array.from(seenAsset.values());
+            }
             const used = new Set();
+            const usedAssets = new Set();
             const reserved = [];
             const reserveCmp = makeConsumeCmp(pool);
+            // Jede Reservierung MUSS hierueber laufen: sie fuehrt used und
+            // usedAssets zusammen nach. Zwei Karten desselben Spielers im Team
+            // sind HTTP 460 (LEARNINGS 6).
+            function reserve(p) {
+                used.add(p.id);
+                if (p.assetId != null && p.assetId !== 0) usedAssets.add(String(p.assetId));
+                reserved.push(p);
+            }
+            function freeCard(p) {
+                return !used.has(p.id) &&
+                    !(p.assetId != null && p.assetId !== 0 && usedAssets.has(String(p.assetId)));
+            }
             // ---- Kartenkosten (Band + persönliche Scarcity, Storage-Bonus) ----
             // VOR den Reservierungen definiert: auch Vorgabe-Karten werden
             // nach KOSTEN gewählt (87er TOTW mit Kosten 2 schlägt 85er mit 5).
@@ -1404,11 +1752,18 @@
                 for (const g of guardGroups) if (p.groups.indexOf(g) > -1) return true;
                 return false;
             }
+            // UNTRADEABLE bevorzugen: solche Karten lassen sich nicht
+            // verkaufen, sind für SBCs aber vollwertig - sie zuerst zu
+            // verbauen spart echte Coins. Rabatt wirkt wie der Rarity-Aufschlag
+            // NACH dem Storage-Rabatt (wird also nicht halbiert).
+            const untrBonus = Math.max(0, cfg.untradeableBonus != null
+                ? Number(cfg.untradeableBonus) : 3);
             function costOf(p) {
                 const n = countByRating.get(p.rating) || 1;
                 const base = alpha / n + bandFn(p.rating);
                 return (p.isStorage ? (base / 2 - beta) : base) +
-                       (isProtectedRarity(p) ? guardCost : 0);
+                       (isProtectedRarity(p) ? guardCost : 0) -
+                       (p.untradeable ? untrBonus : 0);
             }
             // ---- Anker ----
             if (cfg.anchorId != null && cfg.anchorId !== '') {
@@ -1444,6 +1799,40 @@
                     warnings.push('Gewählte Rarity-Karte nicht im Pool gefunden - Automatik greift.');
                 }
             }
+            // ---- Gemischte Qualitaets-Vorgaben (Bronze + Silber) ----------
+            // Pro Stufe die guenstigsten Karten reservieren, in derselben
+            // Rangfolge wie ueberall ohne Ziel-Rating: Storage vor Verein, dann
+            // das niedrigste Rating, dann die Kosten (LEARNINGS 17).
+            if (qTiers) {
+                if (qTiers.reduce((a, t) => a + t.count, 0) > N) {
+                    return { ok: false, reason: 'Gemischte Vorgabe verlangt mehr Spieler (' +
+                        qTiers.map(t => t.count + 'x ' + t.label).join(' + ') +
+                        ') als das Team Slots hat (' + N + '). Bitte Diagnose schicken.',
+                        warnings: warnings };
+                }
+                for (const t of qTiers) {
+                    let have = reserved.filter(p => p.rating >= t.lo && p.rating <= t.hi).length;
+                    const picked = [];
+                    while (have < t.count) {
+                        const cand = pool
+                            .filter(p => freeCard(p) && p.rating >= t.lo && p.rating <= t.hi)
+                            .sort((a, b) => ((b.isStorage ? 1 : 0) - (a.isStorage ? 1 : 0)) ||
+                                (a.rating - b.rating) || (costOf(a) - costOf(b)) || reserveCmp(a, b))[0];
+                        if (!cand) {
+                            return { ok: false, reason: 'Qualitaets-Vorgabe "' + t.count + 'x ' +
+                                t.label + '" nicht erfuellbar - nur ' + have +
+                                ' passende Karte(n) im Pool.', warnings: warnings };
+                        }
+                        reserve(cand);
+                        picked.push(cand.rating);
+                        have++;
+                    }
+                    if (picked.length) {
+                        warnings.push(picked.length + 'x ' + t.label + ' reserviert (' +
+                            picked.sort((a, b) => a - b).join(', ') + ').');
+                    }
+                }
+            }
             // ---- Spieler-Level-Vorgaben (z.B. "min. 10 Spieler mit 85+") ----
             // Bei SBCs OHNE Team-Rating (Tausch-/Provisions-Upgrades) gilt
             // die Min-OVR-Vorgabe praktisch immer für ALLE geforderten
@@ -1466,19 +1855,48 @@
                 let have = reserved.filter(p => p.rating >= pl.minRating).length;
                 while (have < needCount) {
                     const cand = pool
-                        .filter(p => !used.has(p.id) && p.rating >= pl.minRating)
+                        .filter(p => freeCard(p) && p.rating >= pl.minRating)
                         .sort((a, b) => (costOf(a) - costOf(b)) || (a.rating - b.rating) || reserveCmp(a, b))[0];
                     if (!cand) {
                         return { ok: false, reason: 'Spieler-Vorgabe "min. ' + needCount + 'x ' + pl.minRating + '+" kann mit dem aktuellen Pool nicht erfüllt werden.', warnings: warnings };
                     }
-                    used.add(cand.id);
-                    reserved.push(cand);
+                    reserve(cand);
                     warnings.push('Vorgabe ' + pl.minRating + '+: ' + cand.name + ' (' + cand.rating + ') reserviert.');
                     have++;
                 }
             }
             // ---- Rarity-Vorgaben ----
-            const rcList = (cfg.applyRarity === false) ? [] : (cfg.rarityConstraints || []);
+            let rcList = (cfg.applyRarity === false) ? [] : (cfg.rarityConstraints || []);
+            // OHNE Team-Rating gilt eine RARE-Vorgabe (Gruppe 4) fuer ALLE
+            // Slots: live zeigte eine "Rare: Min. 6 Players"-SBC mit 6 Slots
+            // count 1 - EAs Count-Feld ist im Objektbaum unzuverlaessig
+            // (LEARNINGS 6). Bewusst NUR fuer Gruppe 4: bei Gruppe 83
+            // (TOTW/TOTS/FOF/FUTTIES) will Rasmus genau die geforderte Anzahl,
+            // eine Anhebung waere dort teuer falsch.
+            if (!target) {
+                let boosted = false;
+                rcList = rcList.map(function (rc) {
+                    if (Number(rc.groupId) === 4 && (rc.count || 1) < N) {
+                        boosted = true;
+                        return Object.assign({}, rc, { count: N });
+                    }
+                    return rc;
+                });
+                if (boosted) {
+                    warnings.push('Ohne Team-Rating: Rare-Vorgabe auf alle ' + N + ' Slots angewendet.');
+                }
+            }
+            // Die QUALITAETS-Vorgabe gilt fuer JEDEN Spieler im Team, also auch
+            // fuer die Karten, die eine Rarity-Vorgabe erfuellen. Live
+            // (v4.25.0) reservierte "Rare: Min. 6 + Exactly Gold" sechs BRONZE-
+            // Rare, weil die Reservierung auf dem ungefilterten poolAll lief -
+            // das Qualitaets-Fenster steckte nur im Auffuell-Pool.
+            const qResLo = qualityLabel ? qLo : 0;
+            const qResHi = qualityLabel ? qHi : 99;
+            const inQualityBand = (p) => (qualityLabel ? inQBand(p)
+                    : (p.rating >= qResLo && p.rating <= qResHi)) &&
+                // Bronze/Silber: keine Specials, auch nicht als Vorgabe-Karte.
+                !(qualityLow && p.isSpecial);
             for (const rc of rcList) {
                 const needCount = rc.count || 1;
                 let have = reserved.filter(p => matchesRarity(p, rc) ||
@@ -1490,15 +1908,37 @@
                     //    in SBCs (wie Evolutions)
                     // Billigste passende Karte zuerst: 85er Club-TOTW schlägt
                     // 96er aus dem Storage.
-                    const cand = poolAll
-                        .filter(p => p.rating >= minRating && !used.has(p.id) && matchesRarity(p, rc) &&
-                            (!cfg.specialOnlyFromStorage || p.isStorage || !p.isSpecial || isTotw(p)))
-                        .sort((a, b) => (costOf(a) - costOf(b)) || (a.rating - b.rating) || reserveCmp(a, b))[0];
+                    // Bei einer RARE-Vorgabe (Gruppe 4) ohne Ziel-OVR gilt die
+                    // Panel-Obergrenze und das NIEDRIGSTE Rating zuerst - hohe
+                    // Rare bleibt fuer die Rating-SBCs (Rasmus).
+                    const isRareGroup = Number(rc.groupId) === 4;
+                    const rareCap = (!target && isRareGroup && cfg.maxRareRating > 0)
+                        ? cfg.maxRareRating : 99;
+                    const lowMin = (!target && isRareGroup) ? 0 : minRating;
+                    let cands = poolAll
+                        .filter(p => p.rating >= lowMin && p.rating <= rareCap && freeCard(p) &&
+                            inQualityBand(p) && matchesRarity(p, rc) &&
+                            (!cfg.specialOnlyFromStorage || p.isStorage || !p.isSpecial || isTotw(p)));
+                    // Die Rating-Obergrenze ist eine PRAEFERENZ (Panel) und darf
+                    // fallen; das Qualitaets-Fenster ist eine SBC-Vorgabe und
+                    // bleibt in jedem Fall stehen.
+                    if (!cands.length && rareCap < 99) {
+                        warnings.push('Keine Rare-Karte bis Rating ' + rareCap +
+                            ' mehr frei - Grenze wird fuer diese SBC gelockert.');
+                        cands = poolAll
+                            .filter(p => p.rating >= lowMin && freeCard(p) &&
+                                inQualityBand(p) && matchesRarity(p, rc) &&
+                                (!cfg.specialOnlyFromStorage || p.isStorage || !p.isSpecial || isTotw(p)));
+                    }
+                    const cand = cands.sort((!target && isRareGroup)
+                        ? ((a, b) => ((b.isStorage ? 1 : 0) - (a.isStorage ? 1 : 0)) ||
+                            (a.rating - b.rating) || (costOf(a) - costOf(b)) || reserveCmp(a, b))
+                        : ((a, b) => (costOf(a) - costOf(b)) || (a.rating - b.rating) || reserveCmp(a, b))
+                    )[0];
                     if (!cand) {
                         return { ok: false, reason: 'Rarity-Vorgabe "' + (rc.label || '?') + '" kann mit dem aktuellen Pool nicht erfüllt werden.', warnings: warnings };
                     }
-                    used.add(cand.id);
-                    reserved.push(cand);
+                    reserve(cand);
                     warnings.push('Vorgabe ' + (rc.label || 'Rarity') + ': ' + cand.name + ' (' + cand.rating + (cand.isSpecial ? ', Special' : '') + ') reserviert.');
                     have++;
                 }
@@ -1513,7 +1953,15 @@
             }
             const k = N - reserved.length;
             const reservedSum = reserved.reduce((s, p) => s + p.rating, 0);
-            const avail = pool.filter(p => !used.has(p.id));
+            let avail = pool.filter(p => !used.has(p.id));
+            // Geschützte Karten, die NICHT für eine Vorgabe reserviert wurden,
+            // aus der Suche nehmen (siehe solve()). Die reservierten sind schon
+            // über `used` draussen, also bleibt genau die geforderte Anzahl.
+            // Bleiben dadurch zu wenige Karten, scheitert dieser Durchlauf -
+            // solve() wiederholt ihn dann ohne Sperre UND mit Warnung. Bewusst
+            // kein stilles Überspringen hier: sonst würden zusätzliche
+            // geschützte Karten unbemerkt verbaut.
+            if (limitProtected) avail = avail.filter(p => !isProtectedRarity(p));
             if (avail.length < k) {
                 return { ok: false, reason: 'Nicht genug passende Spieler im Pool (' + (avail.length + reserved.length) + ' < ' + N + '). Erst "Spieler laden" ausführen oder Filter lockern.', warnings: warnings };
             }
@@ -1526,6 +1974,38 @@
                 return { count: pool.length, min: lo, max: hi };
             })();
             function finishTeam(team) {
+                // ENDKONTROLLE. Live kam ein PUT heraus, in dem dieselbe Karte
+                // auf zwei Slots stand und ein Slot leer blieb -> HTTP 460, und
+                // der Grund war im Report nicht zu sehen. Ein kaputtes Team wird
+                // ab jetzt NICHT eingetragen, sondern gemeldet - inklusive Dump,
+                // damit die Ursache im naechsten Report sichtbar ist.
+                const dump = team.map(p => ({
+                    id: p && p.id, assetId: p && p.assetId, rating: p && p.rating,
+                    storage: !!(p && p.isStorage), rareflag: p && p.rareflag
+                }));
+                const ids = new Set(), assets = new Set();
+                let bad = null;
+                for (const p of team) {
+                    if (!p || !p.id) { bad = 'Karte ohne ID im Team'; break; }
+                    if (ids.has(String(p.id))) { bad = 'Karte ' + p.id + ' doppelt im Team'; break; }
+                    ids.add(String(p.id));
+                    if (p.assetId != null && p.assetId !== 0) {
+                        if (assets.has(String(p.assetId))) {
+                            bad = 'Spieler ' + (p.name || p.assetId) + ' doppelt im Team (assetId ' +
+                                p.assetId + ') - EA lehnt das mit 460 ab';
+                            break;
+                        }
+                        assets.add(String(p.assetId));
+                    }
+                }
+                if (!bad && team.length !== N) {
+                    bad = 'Team hat ' + team.length + ' statt ' + N + ' Spieler';
+                }
+                if (bad) {
+                    return { ok: false, reason: 'Interner Fehler: ' + bad +
+                        '. Nichts eingetragen - bitte Diagnose schicken.',
+                        warnings: warnings, teamDump: dump };
+                }
                 const sum = team.reduce((s, p) => s + p.rating, 0);
                 const rats = team.map(p => p.rating);
                 const ovr = squadRating(rats);
@@ -1542,6 +2022,7 @@
                     waste: target ? Math.round((exact - target) * 100) / 100 : 0,
                     target: target || null,
                     poolInfo: poolInfo,
+                    teamDump: dump,
                     reason: (target && ovr < target) ? ('Erreichter OVR ' + ovr + ' < Ziel ' + target + '.') : null,
                     warnings: warnings
                 };
@@ -1552,8 +2033,79 @@
                     return { ok: false, reason: 'Kein Ziel-OVR und keine Vorgaben erkannt. Bitte SBC-Challenge öffnen (und ggf. Diagnose prüfen).', warnings: warnings };
                 }
                 if (qualityLabel) warnings.push('Qualitäts-Vorgabe ' + qualityLabel + ': billigste passende Karten (' + qLo + '-' + qHi + ').');
-                const fillers = avail.slice().sort((a, b) =>
-                    (costOf(a) - costOf(b)) || (a.rating - b.rating) || cmp(a, b)).slice(0, k);
+                // ---- GOLD-SBCs: Rare nur in der geforderten Anzahl ----------
+                // Rasmus: gibt es kein Ziel-OVR, verlangen Gold-SBCs oft "min. N
+                // Rare". Dann sollen GENAU N rare sein und der Rest Common -
+                // Rare-Karten werden für die Rating-SBCs gebraucht. Ohne
+                // Rare-Vorgabe darf gar keine Rare rein.
+                // Zusätzlich zwei Obergrenzen (Panel): bis wohin darf eine Rare
+                // bzw. eine Common verbraucht werden. Beispiel: Storage voll mit
+                // 75-89 Rare, aber nur bis 77 hergeben - 78+ bleibt für die
+                // Rating-SBCs.
+                let fillPool = avail;
+                if (qualityLabel === 'Gold' && !qTiers) {
+                    const maxRare = cfg.maxRareRating > 0 ? cfg.maxRareRating : 99;
+                    const maxCommon = cfg.maxCommonRating > 0 ? cfg.maxCommonRating : 99;
+                    const needRare = ((cfg.applyRarity === false) ? [] : (cfg.rareConstraints || []))
+                        .reduce((m, c) => Math.max(m, Number(c.count) || 0), 0)
+                        - reserved.filter(p => p.isRare).length;
+                    // Rare-Karten reservieren: niedrigste zuerst, Storage vor
+                    // Verein (das steckt schon in costOf/cmp).
+                    let gotRare = 0;
+                    for (let need = needRare; need > 0; need--) {
+                        const cand = avail
+                            .filter(p => freeCard(p) && p.isRare && p.rating <= maxRare)
+                            .sort((a, b) => ((b.isStorage ? 1 : 0) - (a.isStorage ? 1 : 0)) ||
+                                (a.rating - b.rating) || (costOf(a) - costOf(b)) || cmp(a, b))[0];
+                        if (!cand) break;
+                        reserve(cand);
+                        gotRare++;
+                    }
+                    if (gotRare) {
+                        warnings.push(gotRare + 'x Rare für die Vorgabe reserviert (bis Rating ' +
+                            maxRare + ').');
+                    }
+                    if (gotRare < needRare) {
+                        warnings.push('Nur ' + gotRare + ' von ' + needRare +
+                            ' Rare-Karten bis Rating ' + maxRare + ' gefunden - Grenze anheben?');
+                    }
+                    // Auffüllen NUR mit Common (bis zur Common-Grenze). Reicht
+                    // das nicht, wird gelockert statt aufzugeben.
+                    const commons = avail.filter(p =>
+                        freeCard(p) && p.isCommon && p.rating <= maxCommon);
+                    const stillNeeded = N - reserved.length;
+                    if (commons.length >= stillNeeded) fillPool = commons;
+                    else {
+                        warnings.push('Zu wenige Common-Karten bis Rating ' + maxCommon +
+                            ' (' + commons.length + '/' + stillNeeded + ') - andere Karten werden mitbenutzt.');
+                        fillPool = avail.filter(p => freeCard(p));
+                    }
+                }
+                const k2 = N - reserved.length;
+                // OHNE Ziel-Rating gilt AUSNAHMSLOS: niedrigstes Rating zuerst,
+                // Kosten nur als Gleichstand-Entscheid (dort steckt Storage-
+                // Vorrang und Untradeable-Rabatt drin).
+                // Ueber die Kosten zu gehen waehlt sonst die HAEUFIGERE Karte:
+                // 75/76/77 sind in der Kostentabelle alle Stufe "0-80: 0", also
+                // entscheidet der Scarcity-Term alpha/anzahl - und von 77ern hat
+                // Rasmus viele. Live (v4.25.0) kamen so sieben Vereins-77er in
+                // eine SBC ohne Rating-Vorgabe, wo 75er gereicht haetten.
+                // Derselbe Fehler wie bei Bronze (58 statt 48) - deshalb jetzt
+                // fuer den ganzen !target-Zweig, nicht nur fuer Bronze/Silber.
+                // Reihenfolge ohne Ziel-Rating (Rasmus, in dieser Rangfolge):
+                //   1. Storage vor Verein - Storage ist Verbrauchsmaterial.
+                //      "Wenn es 77er im Storage gibt, gehen die VOR 75ern aus
+                //      dem Verein."
+                //   2. dann das niedrigste Rating (ein 77er ist mehr wert als
+                //      ein 75er, wo kein Rating gefordert ist).
+                //   3. dann die Kosten (dort steckt der Untradeable-Rabatt).
+                // Die Kosten duerfen NICHT vor dem Rating stehen: 75-77 liegen
+                // alle in der Stufe "0-80: 0", also gewinnt sonst ueber
+                // alpha/anzahl die HAEUFIGERE Karte.
+                const fillers = fillPool.filter(freeCard).sort(
+                    (a, b) => ((b.isStorage ? 1 : 0) - (a.isStorage ? 1 : 0)) ||
+                        (a.rating - b.rating) || (costOf(a) - costOf(b)) || cmp(a, b)
+                ).slice(0, k2);
                 if (reserved.length + fillers.length < N) {
                     return { ok: false, reason: 'Zu wenige passende Karten für die Vorgabe (' + (reserved.length + fillers.length) + '/' + N + ').', warnings: warnings };
                 }
@@ -1707,8 +2259,42 @@
             }
             return finishTeam(result.team);
         }
+        /**
+         * BATCH-PLANUNG: mehrere Teams für DIESELBE SBC hintereinander.
+         * Jede Runde rechnet mit dem Pool OHNE die Karten der vorherigen
+         * Runden - genau wie im echten Ablauf, wo verbaute Karten weg sind.
+         * Wird eine Runde unlösbar, bricht die Planung ab und liefert die
+         * bis dahin geplanten Teams samt Grund; so sieht man in der Vorschau
+         * ehrlich "3 von 5 möglich" statt einer Überraschung mitten im Abgeben.
+         */
+        function planBatch(poolAll, cfg, count) {
+            const n = Math.max(1, Math.min(20, Math.floor(count) || 1));
+            const rounds = [];
+            const usedIds = new Set();
+            let stoppedReason = null;
+            for (let i = 0; i < n; i++) {
+                const pool = poolAll.filter(p => !usedIds.has(String(p.id)));
+                const res = solve(pool, cfg);
+                if (!res || !res.ok) {
+                    stoppedReason = (res && res.reason) || 'Kein Team mehr möglich.';
+                    break;
+                }
+                for (const p of res.players) usedIds.add(String(p.id));
+                rounds.push(res);
+            }
+            return {
+                rounds: rounds,
+                planned: rounds.length,
+                requested: n,
+                stoppedReason: stoppedReason,
+                // Alle verbauten IDs über alle Runden - zum Gegenprüfen, dass
+                // keine Karte doppelt eingeplant wurde.
+                usedIds: Array.from(usedIds)
+            };
+        }
         return {
             solve: solve,
+            planBatch: planBatch,
             squadRating: squadRating,
             squadRatingExact: squadRatingExact,
             squadV: squadV,
@@ -1890,7 +2476,18 @@
         catch (e) { lastErr = e; warn('Service-Eintrag meldete Fehler:', e.message); diagError('submitViaServices: ' + (e.message || e)); }
         confirmed = await verifySquadCount(result);
         if (confirmed >= need) { STATE.diag.submitVia = 'services'; return { confirmed: confirmed, via: 'services' }; }
-        // Nichts hat gegriffen.
+        // Nichts hat gegriffen. 404/475 haben eine bekannte Ursache:
+        // WIEDERHOLBARE SBCs bekommen pro Durchlauf eine NEUE challengeId.
+        // Live gesehen: dieselbe SBC lief unter 3829, dann 3800, dann 3771 -
+        // wer in die verbrauchte Instanz schreibt, bekommt 404 (weg) bzw. 475.
+        // Das passiert nach mehreren Durchläufen derselben SBC, weil die
+        // Ansicht/der Cache noch auf der alten Instanz steht.
+        const msg = String((lastErr && lastErr.message) || '');
+        if (/\b(404|475)\b/.test(msg)) {
+            throw new Error('Die SBC-Instanz ist veraltet (Status aus ' + msg + '). ' +
+                'Wiederholbare SBCs bekommen pro Durchlauf eine neue ID - bitte die ' +
+                'SBC im Spiel einmal schliessen und neu öffnen, dann erneut optimieren.');
+        }
         throw lastErr || new Error('Eintragen fehlgeschlagen (Server bestätigt ' + Math.max(0, confirmed) + '/' + need + ').');
     }
     // Spieler-Objekt in eine App-Entity umwandeln (für setPlayers).
@@ -2237,7 +2834,57 @@
         .sbc-opt-btn.primary { background:#00e0b8; color:#001018; }
         .sbc-opt-btn.blue { background:#0077ff; color:#fff; }
         .sbc-opt-btn.ghost { background:#1c2938; color:#cfe0f2; }
+        /* Fortschritt während des Batch-Laufs: mittig über allem, damit man
+           nicht im Panel nach dem Status suchen muss. */
+        #sbc-opt-progress {
+            position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%);
+            z-index: 1000000; display: none;
+            background: #0f1620; color: #e6edf3; border: 1px solid #24405f;
+            border-radius: 14px; box-shadow: 0 10px 50px rgba(0,0,0,.7);
+            padding: 18px 22px; min-width: 300px; text-align: center;
+            font-family: 'Segoe UI', Roboto, sans-serif;
+        }
+        #sbc-opt-progress.open { display: block; }
+        #sbc-opt-progress .p-title {
+            font-size: 17px; font-weight: 700; color: #00e0b8; margin-bottom: 2px;
+        }
+        #sbc-opt-progress .p-step { font-size: 13px; color: #9db2c8; margin-bottom: 12px; }
+        #sbc-opt-progress .p-bar {
+            height: 8px; background: #1c2938; border-radius: 5px; overflow: hidden;
+        }
+        #sbc-opt-progress .p-fill {
+            height: 100%; width: 0%; border-radius: 5px;
+            background: linear-gradient(90deg,#00e0b8,#0077ff);
+            transition: width .3s ease;
+        }
+        #sbc-opt-progress .p-done { font-size: 12px; color: #7d93ab; margin-top: 10px; }
+        /* Rot: gibt SBCs endgültig ab, das ist nicht rückholbar. */
+        .sbc-opt-btn.danger { background:#c0392b; color:#fff; }
         .sbc-opt-btn:disabled { opacity:.5; cursor:not-allowed; }
+        .sbc-opt-batch { margin-top:12px; padding-top:10px; border-top:1px solid #1f2b3a; }
+        #sbc-opt-batch-preview:empty { display:none; }
+        #sbc-opt-batch-preview {
+            background:#131e2b; border:1px solid #1f2b3a; border-radius:8px;
+            padding:8px 10px; margin-top:8px; font-size:12px; line-height:1.5;
+            max-height:340px; overflow-y:auto;
+        }
+        .sbc-opt-batch-round { padding:3px 0; border-bottom:1px solid #1b2735; }
+        .sbc-opt-batch-round:last-child { border-bottom:none; }
+        .sbc-opt-batch-round b { color:#00e0b8; }
+        .sbc-opt-batch-warn { color:#ffb454; }
+        .sbc-opt-batch-bad { color:#ff6b6b; }
+        .sbc-opt-batch-cards { margin:4px 0 2px; }
+        .sbc-opt-batch-card {
+            font-size:11px; color:#cfe0f2; padding:1px 0;
+            white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+        }
+        .sbc-opt-batch-card .r {
+            display:inline-block; min-width:22px; font-weight:700; color:#e6edf3;
+        }
+        .sbc-opt-batch-card .src { color:#7d93ab; }
+        .sbc-opt-batch-card .rar { color:#9db2c8; }
+        .sbc-opt-batch-card .untr { color:#6f8aa6; font-style:italic; }
+        .sbc-opt-batch-card.prot .rar { color:#ffb454; font-weight:700; }
         .sbc-opt-result {
             margin-top:12px; background:#0b1219; border:1px solid #1f2b3a;
             border-radius:8px; padding:10px; display:none;
@@ -2338,7 +2985,7 @@
                 </div>
                 <div class="sbc-opt-row">
                     <label>Max. Rating-Überschuss über Minimum (z.B. 0.10 = bis 84.10 statt 84.00)</label>
-                    <input type="number" id="sbc-opt-maxwaste" value="0.10" min="0" max="2" step="0.01">
+                    <input type="number" id="sbc-opt-maxwaste" value="0.00" min="0" max="2" step="0.01">
                 </div>
                 <details id="sbc-opt-advanced">
                     <summary>Erweiterte Einstellungen</summary>
@@ -2394,6 +3041,31 @@
                     </select>
                 </div>
                 <div class="sbc-opt-row">
+                    <label>Unverkäufliche Karten zuerst verbauen (spart Coins)</label>
+                    <select id="sbc-opt-untradeable">
+                        <option value="0">Aus</option>
+                        <option value="1">Leicht</option>
+                        <option value="3" selected>Normal</option>
+                        <option value="6">Stark</option>
+                    </select>
+                </div>
+                <div class="sbc-opt-row">
+                    <label>Gold-SBCs ohne Ziel-OVR: höchstes Rating für Rare / für Common
+                        (Rare darüber bleibt für Rating-SBCs)</label>
+                    <div class="sbc-opt-inline">
+                        <span style="font-size:11px;color:#7d93ab;">Rare bis</span>
+                        <input type="number" id="sbc-opt-maxrare" value="77" min="0" max="99">
+                        <span style="font-size:11px;color:#7d93ab;">Common bis</span>
+                        <input type="number" id="sbc-opt-maxcommon" value="77" min="0" max="99">
+                    </div>
+                </div>
+                <div class="sbc-opt-row">
+                    <label class="sbc-opt-toggle">
+                        <input type="checkbox" id="sbc-opt-uselocks" checked>
+                        Gesperrte Karten (PaleTools-Schloss) nie verbauen
+                    </label>
+                </div>
+                <div class="sbc-opt-row">
                     <label>Rarity-Karten schützen (TOTW/TOTS/FOF/FUTTIES)</label>
                     <select id="sbc-opt-rarityguard">
                         <option value="0">Aus</option>
@@ -2411,11 +3083,38 @@
                 <button class="sbc-opt-btn primary" id="sbc-opt-run">Optimieren + Eintragen</button>
                 <div class="sbc-opt-result" id="sbc-opt-result"></div>
                 <button class="sbc-opt-btn blue" id="sbc-opt-submit" style="display:none;">Erneut eintragen</button>
+                <!-- BATCH: dieselbe SBC mehrfach. Zwei Schritte - erst planen und
+                     ansehen, dann EINE Freigabe für den ganzen Lauf. -->
+                <div class="sbc-opt-batch">
+                    <div class="sbc-opt-inline" style="margin-bottom:8px;">
+                        <label style="margin:0;flex:1;">SBC mehrfach abschließen</label>
+                        <input type="number" id="sbc-opt-batch-count" value="3" min="1" max="10"
+                               style="width:64px;">
+                    </div>
+                    <button class="sbc-opt-btn ghost" id="sbc-opt-batch-plan">Teams planen (Vorschau)</button>
+                    <div id="sbc-opt-batch-preview"></div>
+                    <button class="sbc-opt-btn danger" id="sbc-opt-batch-run" style="display:none;">
+                        Alle eintragen + abgeben
+                    </button>
+                </div>
                 <button class="sbc-opt-btn ghost" id="sbc-opt-diag" style="margin-top:10px;">Diagnose in Konsole schreiben</button>
             </div>
         `;
         document.body.appendChild(panel);
+        // Fortschritts-Overlay: bewusst ausserhalb des Panels, damit es auch
+        // sichtbar ist, wenn das Panel zu ist.
+        const prog = document.createElement('div');
+        prog.id = 'sbc-opt-progress';
+        prog.innerHTML = '<div class="p-title"></div><div class="p-step"></div>' +
+            '<div class="p-bar"><div class="p-fill"></div></div>' +
+            '<div class="p-done"></div>';
+        document.body.appendChild(prog);
         ui = {
+            progress: prog,
+            progTitle: prog.querySelector('.p-title'),
+            progStep: prog.querySelector('.p-step'),
+            progFill: prog.querySelector('.p-fill'),
+            progDone: prog.querySelector('.p-done'),
             fab, panel,
             target: panel.querySelector('#sbc-opt-target'),
             rarity: panel.querySelector('#sbc-opt-rarity'),
@@ -2431,6 +3130,10 @@
             maxexpTh: panel.querySelector('#sbc-opt-maxexp-th'),
             scarcity: panel.querySelector('#sbc-opt-scarcity'),
             storagebonus: panel.querySelector('#sbc-opt-storagebonus'),
+            untradeable: panel.querySelector('#sbc-opt-untradeable'),
+            maxRare: panel.querySelector('#sbc-opt-maxrare'),
+            maxCommon: panel.querySelector('#sbc-opt-maxcommon'),
+            useLocks: panel.querySelector('#sbc-opt-uselocks'),
             rarityguard: panel.querySelector('#sbc-opt-rarityguard'),
             bands: panel.querySelector('#sbc-opt-bands'),
             bandAdd: panel.querySelector('#sbc-opt-band-add'),
@@ -2441,7 +3144,11 @@
             run: panel.querySelector('#sbc-opt-run'),
             result: panel.querySelector('#sbc-opt-result'),
             submit: panel.querySelector('#sbc-opt-submit'),
-            diagBtn: panel.querySelector('#sbc-opt-diag')
+            diagBtn: panel.querySelector('#sbc-opt-diag'),
+            batchCount: panel.querySelector('#sbc-opt-batch-count'),
+            batchPlan: panel.querySelector('#sbc-opt-batch-plan'),
+            batchPreview: panel.querySelector('#sbc-opt-batch-preview'),
+            batchRun: panel.querySelector('#sbc-opt-batch-run')
         };
         panel.querySelector('#sbc-opt-close').addEventListener('click', () => panel.classList.remove('open'));
         makeDraggable(panel, panel.querySelector('.sbc-opt-header'), 'sbcOptPanelPos', {
@@ -2458,6 +3165,8 @@
         ui.run.addEventListener('click', onRunClick);
         ui.submit.addEventListener('click', onSubmitClick);
         ui.diagBtn.addEventListener('click', onDiagClick);
+        ui.batchPlan.addEventListener('click', onBatchPlanClick);
+        ui.batchRun.addEventListener('click', onBatchRunClick);
         ui.rarityPickFilter.addEventListener('input', renderRarityPickOptions);
         // Zustand der "Erweiterte Einstellungen" merken
         const adv = panel.querySelector('#sbc-opt-advanced');
@@ -2870,6 +3579,65 @@
             lastUtasPaths: STATE.diag.lastUtasPaths,
             lastErrors: STATE.diag.lastErrors,
             uiScan: STATE.diag.uiScan || null,
+            // Gesperrte Karten: wurden PaleTools-Locks gefunden und wie viele?
+            locks: STATE.diag.locks || null,
+            // Batch: was hat der Lauf pro Runde gesehen, als er die nächste
+            // Instanz öffnen wollte? (Die Abbruchmeldung verweist darauf -
+            // in v4.18.0 fehlte das Feld im Report, mein Fehler.)
+            batchSteps: STATE.diag.batchSteps || null,
+            // Welches Team hat der Solver zuletzt geliefert (id/assetId/rating/
+            // storage)? Bei HTTP 460 ist hier direkt zu sehen, ob eine Karte
+            // oder ein Spieler doppelt drin war.
+            lastTeam: STATE.diag.lastTeam || null,
+            // Abgeben: welche Controller/Methoden kamen in Frage und welche hat
+            // gegriffen? Am Handy heisst der Controller anders als am PC.
+            submitCandidates: STATE.diag.submitCandidates || null,
+            submitChallengeVia: STATE.diag.submitChallengeVia || null,
+            // Der letzte fehlende Schritt: nach dem Abgeben landet die App im
+            // SBC-HUB (mehrfach belegt), und loadChallenge() bringt die Ansicht
+            // nicht zurück. Um die SBC wie von Hand anzuklicken, brauche ich die
+            // Kachel-Elemente - hier ein Abzug davon, wenn wir im Hub stehen.
+            hubScan: (function () {
+                try {
+                    const inHub = getControllerChain().some(c =>
+                        /hub/i.test((c.constructor && c.constructor.name) || ''));
+                    const out = { inHub: inHub, candidates: [] };
+                    if (!inHub) return out;
+                    // Alles, was nach SBC-Kachel/Set-Eintrag aussieht.
+                    const sel = '[class*="sbc"],[class*="tile"],[class*="set"]';
+                    const els = document.querySelectorAll(sel);
+                    for (let i = 0; i < els.length && out.candidates.length < 40; i++) {
+                        const e = els[i];
+                        // Unsere eigene UI interessiert hier nicht - beim letzten
+                        // Report hat sie die Liste vollgemacht.
+                        if (String(e.className || '').indexOf('sbc-opt') > -1) continue;
+                        if (!(e.offsetParent !== null || e.getClientRects().length)) continue;
+                        const txt = (e.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 45);
+                        if (!txt) continue;
+                        const r = e.getBoundingClientRect();
+                        if (r.width < 60 || r.height < 30) continue; // keine Mini-Elemente
+                        out.candidates.push({
+                            tag: e.tagName,
+                            cls: String(e.className || '').slice(0, 70),
+                            txt: txt,
+                            w: Math.round(r.width), h: Math.round(r.height),
+                            clickable: !!(e.onclick || e.getAttribute('role') === 'button')
+                        });
+                    }
+                    return out;
+                } catch (e) { return { error: String(e && e.message || e) }; }
+            })(),
+            // Submit-Diagnose: welcher Weg hat zuletzt gegriffen und ist
+            // ueberhaupt eine Challenge offen?
+            submitInfo: (function () {
+                const svc = window.services && window.services.SBC;
+                const ctrl = findSbcController();
+                return {
+                    saveChallengeThere: !!(svc && typeof svc.saveChallenge === "function"),
+                    liveChallengeThere: !!findLiveChallenge(),
+                    controllerName: (ctrl && ctrl.constructor && ctrl.constructor.name) || null
+                };
+            })(),
             // Einstiegspunkt-Diagnose: sitzt der Menüpunkt in der EA-Leiste
             // oder fällt die App auf den FAB zurück? tabBarCount zeigt, ob
             // mehrere (auch unsichtbare) Leisten im DOM stehen.
@@ -2962,6 +3730,8 @@
                 rarityConstraints: STATE.sbc.rarityConstraints,
                 playerLevelConstraints: STATE.sbc.playerLevelConstraints,
                 qualityConstraints: STATE.sbc.qualityConstraints || [],
+            rareConstraints: STATE.sbc.rareConstraints || [],
+                rareConstraints: STATE.sbc.rareConstraints || [],
                 usableSlots: STATE.sbc.usableSlots || null,
                 reqDump: STATE.sbc.reqDump,
                 entityCaptured: !!STATE.sbc.entity,
@@ -3051,12 +3821,19 @@
             expensiveThreshold: parseInt(ui.maxexpTh.value, 10) || 99,
             scarcityWeight: parseFloat(ui.scarcity.value) || 0,
             storageBonus: parseFloat(ui.storagebonus.value) || 0,
+            untradeableBonus: parseFloat(ui.untradeable.value) || 0,
+            // Gesperrte Karten (PaleTools-Schloss) beim Optimieren frisch
+            // einlesen - sie koennen sich zwischen zwei Laeufen aendern.
+            lockedIds: ui.useLocks.checked ? Array.from(readPaletoolsLocks()) : [],
+            maxRareRating: parseInt(ui.maxRare.value, 10) || 0,
+            maxCommonRating: parseInt(ui.maxCommon.value, 10) || 0,
             rarityGuardCost: parseFloat(ui.rarityguard.value) || 0,
             ratingCostSpec: bandsToSpec(ratingBands),
             anchorId: null,
             rarityPickId: ui.rarityPick.value || null,
             rarityConstraints: STATE.sbc.rarityConstraints || [],
             qualityConstraints: STATE.sbc.qualityConstraints || [],
+            rareConstraints: STATE.sbc.rareConstraints || [],
             playerLevelConstraints: STATE.sbc.playerLevelConstraints || []
         };
     }
@@ -3178,7 +3955,7 @@
         const players = res.players.slice().sort((a, b) => b.rating - a.rating);
         for (const p of players) {
             const badgeCls = 'sbc-opt-badge' + (p.isSpecial ? ' special' : '') + (p.isStorage ? ' storage' : '');
-            html += '<div class="sbc-opt-player"><span>' + escapeHtml(p.name) +
+            html += '<div class="sbc-opt-player"><span>' + escapeHtml(displayName(p)) +
                     (p.isStorage ? ' <span style="color:#0077ff;font-size:11px;">[Storage]</span>' : '') +
                     '</span><span class="' + badgeCls + '">' + p.rating + '</span></div>';
         }
@@ -3202,6 +3979,548 @@
     }
     async function onSubmitClick() {
         await submitCurrentResult();
+    }
+    // ========================================================================
+    //  BATCH: dieselbe SBC mehrfach abschliessen
+    // ========================================================================
+    // Der Knackpunkt: JEDE Wiederholung einer SBC hat eine EIGENE challengeId.
+    // Die alte ID nach dem Abgeben weiterzubenutzen laedt die verbrauchte
+    // Instanz (404/475) - deshalb ist der Anker das SET plus die Vorgaben, und
+    // die frische Instanz kommt dadurch, dass die Set-Kachel im Hub geklickt
+    // wird (siehe openNextInstance). Genau daran sind die ersten Versuche
+    // gescheitert.
+    function batchWait(ms) { return new Promise(r => setTimeout(r, ms)); }
+    // ---- Fortschrittsanzeige fuer den Batch --------------------------------
+    // Rasmus' Wunsch: "einfach ein Ladebalken und da steht SBC 1/5" - statt im
+    // Panel nach dem Status zu suchen.
+    function showProgress(cur, total, step, doneText) {
+        if (!ui.progress) return;
+        ui.progress.classList.add('open');
+        ui.progTitle.textContent = 'SBC ' + cur + ' von ' + total;
+        ui.progStep.textContent = step || '';
+        const pct = Math.max(0, Math.min(100, Math.round(((cur - 1) / total) * 100)));
+        ui.progFill.style.width = pct + '%';
+        ui.progDone.textContent = doneText || '';
+    }
+    function finishProgress(text, ok) {
+        if (!ui.progress) return;
+        ui.progTitle.textContent = ok ? 'Fertig' : 'Gestoppt';
+        ui.progTitle.style.color = ok ? '#00e0b8' : '#ff6b6b';
+        ui.progStep.textContent = text || '';
+        ui.progFill.style.width = '100%';
+        // Kurz stehen lassen, damit man das Ergebnis liest.
+        setTimeout(function () {
+            if (ui.progress) {
+                ui.progress.classList.remove('open');
+                ui.progTitle.style.color = '#00e0b8';
+            }
+        }, ok ? 2600 : 5000);
+    }
+    /** Belohnungs-Dialog wegräumen (EAs eigener Popup-Manager). */
+    function dismissRewardPopup() {
+        let closed = false;
+        try {
+            const shield = window.gPopupClickShield;
+            if (shield && typeof shield.closeActivePopup === 'function') {
+                shield.closeActivePopup();
+                closed = true;
+            }
+        } catch (e) {}
+        // Zweiter Weg: ist der oberste präsentierte Controller ein Dialog,
+        // bringt er sein eigenes Schliessen mit. Nach dem Abgeben koennen
+        // mehrere Overlays hintereinander kommen.
+        try {
+            const chain = getControllerChain();
+            const top = chain.length ? chain[chain.length - 1] : null;
+            const n = (top && top.constructor && top.constructor.name) || '';
+            if (top && /popup|dialog|reward|award/i.test(n)) {
+                for (const m of ['close', 'dismiss', 'hide', 'onClose']) {
+                    if (typeof top[m] === 'function') { top[m](); closed = true; break; }
+                }
+            }
+        } catch (e) {}
+        return closed;
+    }
+    /**
+     * SBC endgültig abgeben - über die Methode des LIVE-CONTROLLERS. Der
+     * Service-Weg mit Challenge-Argument kam live mit 403 zurück
+     * (submitChallenge nimmt gar kein Argument), der Controller-Weg ist der,
+     * den die App beim Klick auf ihren eigenen Submit-Button nimmt.
+     * UNWIDERRUFLICH - nur aus dem Batch nach expliziter Freigabe.
+     */
+    async function submitChallengeToEa() {
+        const ctrl = findSbcController();
+        const liveSquad = ctrl && (ctrl._squad || (ctrl.getSquad && ctrl.getSquad()));
+        if (liveSquad && typeof liveSquad.isSBCSquadEligible === 'function') {
+            let eligible = null;
+            try { eligible = liveSquad.isSBCSquadEligible(); } catch (e) {}
+            if (eligible === false) {
+                throw new Error('EA hält die SBC nicht für abgabefähig - wahrscheinlich ' +
+                    'eine Vorgabe offen, die wir nicht abdecken. NICHT abgegeben.');
+            }
+        }
+        const problems = [];
+        // ALLE Controller im Stack absuchen, und zwar nach submitChallenge UND
+        // _submitChallenge. Grund (live am Handy, v4.27.0): in der schmalen
+        // Ansicht ist der oberste Controller UTSBCSquadOverviewViewController
+        // und der hat NUR _submitChallenge - am PC ist es der
+        // UTSBCSquadSplitViewController mit beiden. Vorher schaute der Code nur
+        // auf den EINEN gefundenen Controller und nur auf den oeffentlichen
+        // Namen: "Controller hat kein submitChallenge()", Batch bei 0/7 gestoppt.
+        // Reihenfolge: erst die oeffentliche Methode (die macht den regulaeren
+        // Weg inkl. Ansicht-Update), dann die interne.
+        const cands = [];
+        const seenObj = [];
+        function addCand(c, where) {
+            if (!c || typeof c !== 'object' || seenObj.indexOf(c) > -1) return;
+            seenObj.push(c);
+            if (typeof c.submitChallenge === 'function') cands.push({ c: c, m: 'submitChallenge', w: where });
+            if (typeof c._submitChallenge === 'function') cands.push({ c: c, m: '_submitChallenge', w: where });
+        }
+        addCand(ctrl, 'ctrl');
+        try {
+            for (const c of getControllerChain()) {
+                addCand(c, (c.constructor && c.constructor.name) || 'chain');
+                // Unter-Controller des Split-Views (am PC haengt der Submit dort).
+                for (const k of ['leftController', 'rightController', '_overviewController',
+                                 '_challengeDetailsController']) {
+                    try { addCand(c[k], k); } catch (e) {}
+                }
+            }
+        } catch (e) {}
+        STATE.diag.submitCandidates = cands.map(x => x.w + '.' + x.m);
+        for (const cand of cands) {
+            try {
+                const r = cand.c[cand.m]();
+                let resp = null;
+                if (r && (typeof r.then === 'function' || typeof r.subscribe === 'function' ||
+                          typeof r.observe === 'function')) resp = await obsPromise(r);
+                if (resp && !responseOk(resp)) {
+                    problems.push(cand.w + '.' + cand.m + ': Status ' + resp.status);
+                    continue;
+                }
+                STATE.diag.submitChallengeVia = cand.w + '.' + cand.m;
+                return { via: 'controller' };
+            } catch (e) {
+                problems.push(cand.w + '.' + cand.m + ': ' + (e && e.message || e));
+            }
+        }
+        if (!cands.length) problems.push('Kein Controller mit submitChallenge/_submitChallenge gefunden');
+        const svc = window.services && window.services.SBC;
+        if (svc && typeof svc.submitChallenge === 'function') {
+            // Ohne Argument ist der dokumentierte Weg (arity 0). Am Handy kam
+            // dabei "Cannot read properties of undefined (reading 'squad')" -
+            // der Service zieht die Challenge aus einem Zustand, der in dieser
+            // Ansicht nicht gesetzt ist. Deshalb zweiter Versuch MIT der
+            // Challenge-Entity aus dem Controller.
+            const chal = ctrl && (ctrl._challenge || ctrl.challenge);
+            const tries = chal ? [[], [chal]] : [[]];
+            for (const args of tries) {
+                try {
+                    const resp = await obsPromise(svc.submitChallenge.apply(svc, args));
+                    if (responseOk(resp)) {
+                        STATE.diag.submitChallengeVia = 'service(' + args.length + ')';
+                        return { via: 'service' };
+                    }
+                    problems.push('Service(' + args.length + '): Status ' + (resp && resp.status));
+                } catch (e) {
+                    problems.push('Service(' + args.length + '): ' + (e && e.message || e));
+                }
+            }
+        }
+        throw new Error('Abgeben fehlgeschlagen (' + problems.join(' | ') + ').');
+    }
+    /**
+     * Nach dem Abgeben die NEUE Instanz derselben SBC oeffnen.
+     * Reihenfolge: Dialog wegraeumen -> Challenge-Liste des Sets neu holen
+     * (dort steht die frische challengeId) -> die passende laden -> warten, bis
+     * der Squad-Controller wieder da ist.
+     * Erkennung "passend": gleiche Vorgaben-Signatur wie beim Planen
+     * (Ziel-OVR + Slots), NICHT die alte ID - die aendert sich ja gerade.
+     */
+    async function openNextInstance(plan) {
+        const steps = [];
+        const t0 = Date.now();
+        let clicked = false;
+        // Alle 300ms nachsehen statt jede Sekunde, und den Set-Klick SOFORT
+        // versuchen. Aus dem Live-Log: der Controller war 4s nach dem Klick da,
+        // die 4s Vorlauf und die vier Anlaeufe fuer die Challenge-Zeile waren
+        // verschenkte Zeit - nach dem Kachel-Klick ist die Challenge direkt
+        // offen (seen.detailsView war 1, rowView 0).
+        // requestChallengesForSet ist raus: es lieferte freshId null und wird
+        // nicht gebraucht, weil der Klick-Weg die frische Instanz mitbringt.
+        for (let i = 0; i < 60; i++) {          // 60 x 300ms = max ~18s
+            dismissRewardPopup();
+            syncSbcWithOpenChallenge();
+            const ctrl = findSbcController();
+            const sq = ctrl && (ctrl._squad || (ctrl.getSquad && ctrl.getSquad()));
+            let empty = null;
+            try { if (sq && typeof sq.isSquadEmpty === 'function') empty = sq.isSquadEmpty(); }
+            catch (e) {}
+            if (ctrl && sq && matchesPlannedSbc(plan) && empty !== false) {
+                steps.push({ ms: Date.now() - t0, done: true, clicked: clicked });
+                return { ok: true, steps: steps };
+            }
+            // Im Hub: Set-Kachel anklicken. Erster Versuch sofort, danach
+            // gelegentlich nachfassen (die Kachelliste braucht manchmal einen
+            // Moment, bis sie gerendert ist).
+            if (!ctrl && (!clicked || i === 20 || i === 40)) {
+                let s1 = clickSetTile(plan);
+                // Nicht gefunden? Dann versteckt der Hub-Filter sie vielleicht
+                // (live: "Favourites" aktiv, gesuchte SBC nicht dabei).
+                if (!s1.ok && (i === 3 || i === 20)) {
+                    const f = clickAllFilter();
+                    steps.push({ ms: Date.now() - t0, filter: f });
+                    if (f.ok) { await batchWait(900); s1 = clickSetTile(plan); }
+                }
+                if (s1.ok) {
+                    clicked = true;
+                    steps.push({ ms: Date.now() - t0, setTile: s1 });
+                    await batchWait(500);
+                    continue;
+                }
+                if (i === 3 || i === 20) steps.push({ ms: Date.now() - t0, setTile: s1 });
+            }
+            // Nur falls das Set MEHRERE Challenges hat, steht eine Zeilenliste
+            // offen - dann die erste anklicken.
+            if (!ctrl && clicked && (i === 10 || i === 25)) {
+                const s2 = clickChallengeRow();
+                if (s2.ok) { steps.push({ ms: Date.now() - t0, chRow: s2 }); await batchWait(500); }
+                else if (i === 10) steps.push({ ms: Date.now() - t0, chRow: s2 });
+            }
+            await batchWait(300);
+        }
+        return { ok: false, steps: steps };
+    }
+    /**
+     * Im HUB die SBC wieder aufmachen - der Weg, den Rasmus von Hand geht.
+     * Nach dem Abgeben steht die App im SBC-Hub, und
+     * services.SBC.loadChallenge() laedt nur Daten ohne die Ansicht zu
+     * wechseln (dreimal belegt). Also: Set-Kachel anklicken, dann die
+     * Challenge-Zeile.
+     *
+     * Die Klassen sind EA-eigene (in PaleTools' Bundle verifiziert):
+     *   .ut-sbc-set-tile-view              - Set-Kachel im Hub
+     *   .ut-sbc-challenge-table-row-view   - Challenge-Zeile in der Set-Ansicht
+     * Ein Klick darauf ist harmlos (oeffnet nur eine Ansicht) - anders als ein
+     * geratener Klick in einem Belohnungs-Dialog.
+     */
+    /**
+     * Vollständige Tap-Sequenz. Ein nacktes el.click() reicht NICHT: die
+     * EA-Views hängen an ihrem eigenen Event-System (PaleTools registriert
+     * dort mit `addTarget(…, EventType.TAP)`), das auf die Pointer-/Maus-Kette
+     * hört. Live gesehen: der Set-Kachel-Klick meldete Erfolg, die Ansicht
+     * reagierte aber nicht.
+     */
+    function clickLike(el) {
+        if (!el) return false;
+        const o = { bubbles: true, cancelable: true, view: window, button: 0 };
+        let sent = 0;
+        function fire(type, Ctor) {
+            try { el.dispatchEvent(new Ctor(type, o)); sent++; } catch (e) {}
+        }
+        try {
+            if (typeof window.PointerEvent === 'function') {
+                fire('pointerdown', window.PointerEvent);
+                fire('pointerup', window.PointerEvent);
+            }
+            fire('mousedown', MouseEvent);
+            fire('mouseup', MouseEvent);
+            fire('click', MouseEvent);
+            return sent > 0;
+        } catch (e) { return false; }
+    }
+    function visibleAll(sel) {
+        const out = [];
+        try {
+            const els = document.querySelectorAll(sel);
+            for (let i = 0; i < els.length; i++) {
+                const e = els[i];
+                if (e.offsetParent !== null || e.getClientRects().length) out.push(e);
+            }
+        } catch (e) {}
+        return out;
+    }
+    /**
+     * Filter im Hub auf "All" stellen. Live-Fall: der Filter stand auf
+     * "Favourites", und die gesuchte SBC war dort gar nicht dabei - dann ist
+     * ihre Kachel nicht im DOM und kein Klick der Welt findet sie.
+     */
+    function clickAllFilter() {
+        const items = visibleAll('.ea-filter-bar-item-view');
+        for (const el of items) {
+            const t = (el.textContent || '').trim().toLowerCase();
+            if (t === 'all' || t === 'alle') {
+                if (el.className.indexOf('selected') > -1) return { ok: true, why: 'schon auf All' };
+                return { ok: clickLike(el), why: 'Filter auf All gestellt' };
+            }
+        }
+        return { ok: false, why: 'kein All-Filter gefunden' };
+    }
+    /**
+     * Set-Kachel im Hub anklicken. Der Name muss GENAU passen: ein reiner
+     * Teilstring-Vergleich trifft sonst die falsche SBC ("Upgrade" steckt in
+     * jeder zweiten Kachel) - und die Diagnose meldete "geklickt", obwohl sich
+     * nichts oeffnete. Reihenfolge: exakter Titel, dann Titel-Anfang, dann
+     * Teilstring - und immer wird mitprotokolliert, WAS getroffen wurde.
+     */
+    function clickSetTile(plan) {
+        const tiles = visibleAll('.ut-sbc-set-tile-view');
+        const want = String(plan.setName || '').trim().toLowerCase();
+        if (!want) return { ok: false, why: 'kein Set-Name gemerkt', tiles: tiles.length };
+        if (!tiles.length) return { ok: false, why: 'keine Set-Kacheln sichtbar', tiles: 0 };
+        function titleOf(t) {
+            const h = t.querySelector('.tileTitle, .tileHeader, h1');
+            return ((h && h.textContent) || t.textContent || '')
+                .replace(/\s+/g, ' ').trim().toLowerCase();
+        }
+        let hit = null, how = null;
+        for (const t of tiles) { if (titleOf(t) === want) { hit = t; how = 'exakt'; break; } }
+        if (!hit) {
+            for (const t of tiles) {
+                const ti = titleOf(t);
+                if (ti.indexOf(want) === 0 || want.indexOf(ti) === 0) { hit = t; how = 'Anfang'; break; }
+            }
+        }
+        if (!hit) {
+            for (const t of tiles) {
+                if (titleOf(t).indexOf(want) > -1) { hit = t; how = 'enthalten'; break; }
+            }
+        }
+        if (!hit) {
+            return { ok: false, why: 'Set nicht gefunden', want: want, tiles: tiles.length,
+                     titles: tiles.slice(0, 8).map(titleOf) };
+        }
+        // Erst die Kachel, dann ihr Titel-Element - manche Views haengen ihren
+        // Tap-Handler am Kind, nicht am Container.
+        clickLike(hit);
+        const inner = hit.querySelector('.tileHeader, .tileTitle, h1');
+        if (inner) clickLike(inner);
+        return { ok: true, why: 'Set-Kachel geklickt (' + how + ')',
+                 want: want, hitTitle: titleOf(hit) };
+    }
+    /** Challenge-Zeile in der geoeffneten Set-Ansicht anklicken. */
+    function clickChallengeRow() {
+        let rows = visibleAll('.ut-sbc-challenge-table-row-view');
+        if (!rows.length) rows = visibleAll('.ut-sbc-challenge-tile-view');
+        if (!rows.length) rows = visibleAll('.ut-sbc-challenges-view--challenges > *');
+        if (!rows.length) {
+            return { ok: false, why: 'keine Challenge-Zeilen sichtbar', seen: {
+                rowView: document.querySelectorAll('.ut-sbc-challenge-table-row-view').length,
+                tileView: document.querySelectorAll('.ut-sbc-challenge-tile-view').length,
+                container: document.querySelectorAll('.ut-sbc-challenges-view--challenges').length,
+                detailsView: document.querySelectorAll('.ut-sbc-challenge-details-view').length
+            } };
+        }
+        // Die erste Zeile ist die noch offene Wiederholung.
+        return { ok: clickLike(rows[0]), why: rows.length + ' Zeile(n), erste geklickt' };
+    }
+    /** Passt die offene SBC zu dem, wofuer geplant wurde? (Vorgaben, nicht ID) */
+    function matchesPlannedSbc(plan) {
+        if (String(STATE.sbc.targetOVR || '') !== String(plan.targetOVR || '')) return false;
+        if (Number(STATE.sbc.slots || 0) !== Number(plan.slots || 0)) return false;
+        return true;
+    }
+    async function onBatchPlanClick() {
+        syncSbcWithOpenChallenge();
+        if (!STATE.sbc.targetOVR && !(STATE.sbc.playerLevelConstraints || []).length &&
+            !(STATE.sbc.rarityConstraints || []).length &&
+            !(STATE.sbc.qualityConstraints || []).length) {
+            toast('Keine SBC-Vorgaben erkannt. Bitte Challenge im Spiel öffnen.', 'error');
+            return;
+        }
+        if (!STATE.pool.length) { toast('Pool leer. Bitte zuerst "Spieler laden".', 'error'); return; }
+        const want = Math.max(1, Math.min(10, parseInt(ui.batchCount.value, 10) || 1));
+        ui.batchPlan.disabled = true;
+        setStatus('plane ' + want + ' Teams...');
+        try {
+            const plan = SolverCore.planBatch(STATE.pool, readConfig(), want);
+            // Anker ist das SET plus die Vorgaben - die challengeId aendert
+            // sich pro Wiederholung und taugt nicht als Vergleich.
+            plan.setId = STATE.sbc.setId;
+            plan.targetOVR = STATE.sbc.targetOVR;
+            plan.slots = STATE.sbc.slots;
+            plan.usedChallengeIds = [];
+            // Set-NAME: damit die richtige Kachel im Hub wiedergefunden wird
+            // (der Controller haelt das Set als UTSBCSetEntity).
+            plan.setEntity = (function () {
+                try {
+                    const c = findSbcController();
+                    return (c && (c._set || c.set)) || null;
+                } catch (e) { return null; }
+            })();
+            plan.setName = (plan.setEntity &&
+                (plan.setEntity.name || plan.setEntity.setName)) || null;
+            STATE.batch = plan;
+            renderBatchPreview(plan);
+            setStatus(plan.planned + ' von ' + want + ' Teams geplant');
+        } catch (e) {
+            toast('Batch-Planung fehlgeschlagen: ' + e.message, 'error');
+            warn(e);
+        } finally { ui.batchPlan.disabled = false; }
+    }
+    /** Kurzbezeichnung der Rarity. Die rareflag-NUMMER bleibt sichtbar -
+     *  welche Zahl welches Event ist, weiss Rasmus besser als das Script. */
+    function rarityLabel(p) {
+        const rf = Number(p.rareflag);
+        let base;
+        if (rf === 3) base = 'TOTW';
+        else if (rf === 0 || rf === 1) base = 'Gold';
+        else base = 'Special rf' + rf;
+        return base + ((p.groups && p.groups.indexOf(83) > -1) ? ' · Gruppe 83' : '');
+    }
+    function renderBatchPreview(plan) {
+        const box = ui.batchPreview;
+        if (!box) return;
+        let html = '';
+        plan.rounds.forEach(function (r, i) {
+            const nStore = r.players.filter(p => p.isStorage).length;
+            const nUntr = r.players.filter(p => p.untradeable).length;
+            const nProt = r.players.filter(p => p.groups && p.groups.indexOf(83) > -1).length;
+            html += '<div class="sbc-opt-batch-round"><b>Team ' + (i + 1) + ':</b> OVR ' +
+                r.ovr + ' (' + r.ovrExact.toFixed(2) + ')' +
+                '<br><span style="color:#9db2c8;">Storage ' + nStore +
+                ' · unverkäuflich ' + nUntr +
+                (nProt ? ' · <span class="sbc-opt-batch-warn">geschützt ' + nProt + '</span>' : '') +
+                '</span><div class="sbc-opt-batch-cards">';
+            for (const p of r.players.slice().sort((a, b) => b.rating - a.rating)) {
+                const prot = !!(p.groups && p.groups.indexOf(83) > -1);
+                html += '<div class="sbc-opt-batch-card' + (prot ? ' prot' : '') + '">' +
+                    '<span class="r">' + p.rating + '</span> ' + escapeHtml(displayName(p)) +
+                    ' <span class="src">' + (p.isStorage ? 'Storage' : 'Verein') + '</span>' +
+                    ' <span class="rar">' + escapeHtml(rarityLabel(p)) + '</span>' +
+                    (p.untradeable ? ' <span class="untr">unverkäuflich</span>' : '') + '</div>';
+            }
+            html += '</div>';
+            for (const w of (r.warnings || [])) {
+                html += '<span class="sbc-opt-batch-warn">⚠ ' + escapeHtml(w) + '</span><br>';
+            }
+            html += '</div>';
+        });
+        if (plan.stoppedReason) {
+            html += '<div class="sbc-opt-batch-round sbc-opt-batch-bad">Nur ' + plan.planned +
+                ' von ' + plan.requested + ' möglich: ' + escapeHtml(plan.stoppedReason) + '</div>';
+        }
+        box.innerHTML = html;
+        ui.batchRun.style.display = plan.planned ? 'block' : 'none';
+        ui.batchRun.disabled = false;
+        ui.batchRun.textContent = 'Alle ' + plan.planned + ' eintragen + abgeben';
+    }
+    /**
+     * Arbeitet den Plan ab: eintragen -> abgeben -> naechste Instanz oeffnen.
+     * Bricht bei jeder Unstimmigkeit ab - "2 von 5 fertig" ist besser als eine
+     * falsch abgegebene SBC.
+     */
+    async function onBatchRunClick() {
+        const plan = STATE.batch;
+        if (!plan || !plan.planned) { toast('Erst "Teams planen" ausführen.', 'error'); return; }
+        const n = plan.planned;
+        if (!window.confirm(n + ' SBC(s) werden eingetragen UND endgültig abgegeben.\n\n' +
+                'Die verbauten Karten sind danach weg. Fortfahren?')) return;
+        ui.batchRun.disabled = true;
+        ui.batchPlan.disabled = true;
+        ui.run.disabled = true;
+        let done = 0, stopped = null;
+        const doneLog = [];
+        try {
+            for (let i = 0; i < n; i++) {
+                const round = plan.rounds[i];
+                const tag = 'Batch ' + (i + 1) + '/' + n;
+                const missing = round.players.filter(p =>
+                    !STATE.pool.some(q => String(q.id) === String(p.id)));
+                if (missing.length) {
+                    throw new Error(tag + ': ' + missing.length + ' Karte(n) nicht mehr im Pool.');
+                }
+                showProgress(i + 1, n, 'prüfe SBC...', (doneLog.length ? doneLog.length + ' fertig' : ''));
+                setStatus(tag + ': prüfe Challenge...');
+                syncSbcWithOpenChallenge();
+                if (!findSbcController() || !findLiveChallenge()) {
+                    throw new Error(tag + ': keine offene SBC-Ansicht.');
+                }
+                if (!matchesPlannedSbc(plan)) {
+                    throw new Error(tag + ': die offene SBC passt nicht zum Plan ' +
+                        '(Ziel ' + STATE.sbc.targetOVR + '/' + STATE.sbc.slots + ' statt ' +
+                        plan.targetOVR + '/' + plan.slots + '). Nichts eingetragen.');
+                }
+                // Die JETZT offene Instanz merken - sie ist nach dem Abgeben
+                // verbraucht und darf beim Suchen der neuen nicht wieder kommen.
+                if (STATE.sbc.challengeId != null) {
+                    plan.usedChallengeIds.push(String(STATE.sbc.challengeId));
+                }
+                showProgress(i + 1, n, 'trage Team ein (OVR ' + round.ovr + ')...',
+                    (doneLog.length ? doneLog.length + ' fertig' : ''));
+                setStatus(tag + ': trage ein...');
+                const sub = await submitToSbc(round);
+                if (sub && sub.via !== 'app') { await refreshChallengeCache(); refreshOpenSbcView(); }
+                removeFromPool(round.players);
+                showProgress(i + 1, n, 'gebe ab...', (doneLog.length ? doneLog.length + ' fertig' : ''));
+                setStatus(tag + ': gebe ab...');
+                await submitChallengeToEa();
+                done++;
+                doneLog.push('Team ' + (i + 1) + ': OVR ' + round.ovr + ' abgegeben');
+                log('[Batch] Team ' + (i + 1) + '/' + n + ' abgegeben (OVR ' + round.ovr + ').');
+                if (i + 1 < n) {
+                    showProgress(i + 2, n, 'öffne die nächste SBC...', (doneLog.length ? doneLog.length + ' fertig' : ''));
+                    setStatus(tag + ': öffne die nächste Runde...');
+                    const next = await openNextInstance(plan);
+                    STATE.diag.batchSteps = (STATE.diag.batchSteps || []).concat([{
+                        round: i + 1, ok: next.ok, steps: next.steps
+                    }]).slice(-6);
+                    if (!next.ok) {
+                        throw new Error('Die nächste Runde liess sich nicht öffnen ' +
+                            '(Diagnose schicken: batchSteps).');
+                    }
+                }
+            }
+        } catch (e) {
+            stopped = (e && e.message) || String(e);
+            warn('[Batch] gestoppt:', e);
+            diagError('Batch gestoppt nach ' + done + '/' + n + ': ' + stopped);
+        } finally {
+            ui.batchPlan.disabled = false;
+            ui.run.disabled = false;
+            ui.batchRun.style.display = 'none';
+            STATE.batch = null;   // Plan verbraucht - kein zweites Abgeben
+            let html = doneLog.length
+                ? '<div class="sbc-opt-batch-round">' + doneLog.map(escapeHtml).join('<br>') + '</div>' : '';
+            if (stopped) {
+                finishProgress(done + ' von ' + n + ' abgegeben · ' + stopped, false);
+                setStatus('Batch gestoppt nach ' + done + '/' + n);
+                toast('Batch gestoppt nach ' + done + ' von ' + n + ': ' + stopped, 'error');
+                html += '<div class="sbc-opt-batch-round sbc-opt-batch-bad">Gestoppt: ' +
+                    escapeHtml(stopped) + '</div>';
+            } else {
+                finishProgress(done + ' SBC(s) eingetragen und abgegeben', true);
+                setStatus(done + ' SBC(s) abgegeben ✓');
+                toast(done + ' von ' + n + ' SBCs eingetragen und abgegeben.', 'ok');
+            }
+            ui.batchPreview.innerHTML = html;
+        }
+    }
+    // ---- Helfer, die auch die Diagnose nutzt -------------------------------
+    // Der Lauf "mehrere SBCs automatisch abgeben" ist ausgebaut (siehe
+    // LEARNINGS 9 und ROADMAP). Diese zwei Helfer bleiben, weil der
+    // Diagnose-Report mit ihnen zeigt, ob eine Challenge offen ist.
+    function findLiveChallenge() {
+        for (const c of getControllerChain()) {
+            const n = (c.constructor && c.constructor.name) || '';
+            if (!/sbc/i.test(n)) continue;
+            for (const key of ['_overviewController', 'leftController', '_leftController']) {
+                const oc = c[key];
+                if (oc && oc._challenge) return oc._challenge;
+            }
+            if (c._challenge) return c._challenge;
+        }
+        return STATE.sbc.entity || null;
+    }
+    /** Der SBC-Controller der offenen Ansicht (mit Squad). */
+    function findSbcController() {
+        let found = null;
+        for (const c of getControllerChain()) {
+            const n = (c.constructor && c.constructor.name) || '';
+            if (/sbc/i.test(n) && (c._squad || (c.getSquad && c.getSquad()))) found = c;
+        }
+        return found;
     }
     async function submitCurrentResult() {
         const res = STATE.lastResult;
@@ -3327,6 +4646,15 @@
     SolverCore.solve = function (pool, cfg) {
         const res = _origSolve(pool, cfg);
         STATE.lastResult = res;
+        // Der Team-Dump gehoert in den Diagnose-Report: bei einem 460 war live
+        // nicht zu sehen, WELCHE Karten der Solver geliefert hat.
+        try {
+            STATE.diag.lastTeam = {
+                ok: !!res.ok,
+                reason: res.ok ? null : res.reason,
+                cards: res.teamDump || null
+            };
+        } catch (e) {}
         return res;
     };
     // Debug-Zugriff für die Konsole

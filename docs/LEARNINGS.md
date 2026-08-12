@@ -47,6 +47,16 @@ KOSTEN-Reihenfolge (costOf zuerst, Storage/Stapel nur als Tiebreak).
   beide nie in den Pool.
 - Duplikate desselben Spielers haben verschiedene Item-IDs, aber dieselbe
   `assetId`.
+- **PaleTools-Sperren (Schloss auf der Karte)** sollen respektiert werden — wer
+  sperrt, will behalten. PaleTools hat dafür `lockPlayers` und warnt selbst bei
+  SBCs (`plugins.lockPlayers.messages.sbcWarning`), setzt am DOM
+  `dataset.locked` + Klasse `locked`. Der localStorage-KEY ist im Bundle nur
+  dynamisch zusammengesetzt (`'paletools:' + …`) und nicht ablesbar; deshalb
+  wird formatunabhängig gesucht: alle Keys mit „paletools", darin jeder Zweig
+  mit „lock" im Namen, und daraus alles, was wie eine Item-ID aussieht
+  (12-stellig). IDs können Array-Werte ODER Objekt-Keys sein — beides wird
+  abgedeckt. `locks.keys` im Diagnose-Report zeigt die gefundenen Keys, falls
+  `found: 0` bleibt.
 
 ## 3. API-Zugriff
 

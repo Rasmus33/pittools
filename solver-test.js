@@ -626,6 +626,45 @@ function mulberry32(a) {
         res4.ok ? ('rating=' + res4.players[0].rating) : res4.reason);
 }
 
+// ========== 8b5. Gesperrte Karten (PaleTools-Schloss) ==========
+{
+    // Wer eine Karte sperrt, will sie behalten - sie darf NICHT verbaut werden,
+    // auch nicht als Vorgabe-Karte oder Anker (live gesehen: ein gesperrter
+    // 91er Mbappé stand trotzdem im Team).
+    const keep = P(91, { groups: [19] });
+    const others = many(12, 84, { groups: [19] });
+    const pool = [].concat([keep], others);
+
+    const res = SolverCore.solve(pool, cfg(84, { lockedIds: [keep.id] }));
+    check('Locks: gesperrte Karte wird nicht verbaut',
+        res.ok && !res.players.some(p => p.id === keep.id),
+        res.ok ? '' : res.reason);
+    check('Locks: Ausschluss wird gemeldet',
+        res.ok && res.warnings.some(w => /gesperrte Karte/i.test(w)),
+        JSON.stringify(res.warnings));
+    // Ohne Sperre darf sie verwendet werden (sonst prüft der Test nichts).
+    const res2 = SolverCore.solve([].concat([keep], many(10, 84)), cfg(84, { maxOvershoot: 2 }));
+    check('Locks: ohne Sperre ist dieselbe Karte erlaubt',
+        res2.ok && res2.players.some(p => p.id === keep.id),
+        res2.ok ? '' : res2.reason);
+    // Auch als ANKER darf eine gesperrte Karte nicht reinkommen.
+    const res3 = SolverCore.solve(pool, cfg(84, { lockedIds: [keep.id], anchorId: keep.id }));
+    check('Locks: gesperrte Karte kommt auch nicht als Anker rein',
+        res3.ok && !res3.players.some(p => p.id === keep.id),
+        res3.ok ? '' : res3.reason);
+    // Und nicht als Karte für eine Rarity-Vorgabe.
+    const lockedTotw = P(88, { special: true, rareflag: 3, groups: [83] });
+    const freeTotw = P(84, { special: true, rareflag: 3, groups: [83] });
+    const res4 = SolverCore.solve([].concat([lockedTotw, freeTotw], many(11, 84)), cfg(84, {
+        lockedIds: [lockedTotw.id], maxOvershoot: 2,
+        rarityConstraints: [{ label: 'PLAYER_RARITY_GROUP', ids: [], count: 1, groupId: 83 }]
+    }));
+    check('Locks: Rarity-Vorgabe nimmt die freie, nicht die gesperrte Karte',
+        res4.ok && !res4.players.some(p => p.id === lockedTotw.id) &&
+        res4.players.some(p => p.id === freeTotw.id),
+        res4.ok ? '' : res4.reason);
+}
+
 // ========== 8c. Spieler-Eindeutigkeit (EA: gleiche assetId nur 1x pro Squad) ==========
 {
     // 4 Kopien desselben Spielers (gleiche assetId, verschiedene Item-IDs,

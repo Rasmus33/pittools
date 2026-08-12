@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.21.0
+// @version      4.22.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.21.0';
+    const VERSION = '4.22.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -717,6 +717,78 @@
                sd.commonName ||
                ((sd.firstName || raw.firstName || '') + ' ' + (sd.lastName || raw.lastName || '')).trim() ||
                ('#' + (raw.assetId || raw.definitionId || raw.id));
+    }
+    // ---- Gesperrte Karten aus PaleTools übernehmen --------------------------
+    // PaleTools hat ein "lockPlayers"-Feature (Schloss auf der Karte) und warnt
+    // sogar selbst, wenn eine gelockte Karte in eine SBC wandert
+    // (plugins.lockPlayers.messages.sbcWarning). Wer eine Karte sperrt, will
+    // sie behalten - also darf der Solver sie nicht verbauen.
+    //
+    // Der localStorage-KEY ist nicht dokumentiert und im Bundle nur dynamisch
+    // zusammengesetzt ('paletools:' + …), deshalb wird formatunabhängig
+    // gesucht: alle Keys mit "paletools", darin jeder Zweig, dessen Name "lock"
+    // enthält, und daraus alles, was wie eine Item-ID aussieht (12-stellig).
+    // Item-IDs können als Array-Werte ODER als Objekt-Keys vorliegen -> beides.
+    function looksLikeItemId(x) {
+        const n = Number(x);
+        return isFinite(n) && n > 1e11 && n < 1e14 && Math.floor(n) === n;
+    }
+    function harvestIds(v, out, depth) {
+        if (v == null || depth > 5 || out.size > 5000) return;
+        if (looksLikeItemId(v)) { out.add(String(Number(v))); return; }
+        if (Array.isArray(v)) { for (const x of v) harvestIds(x, out, depth + 1); return; }
+        if (typeof v === 'object') {
+            for (const k in v) {
+                // { "916543482768": true } - der KEY ist die ID
+                if (looksLikeItemId(k) && v[k]) out.add(String(Number(k)));
+                harvestIds(v[k], out, depth + 1);
+            }
+        }
+    }
+    function findLockBranches(o, out, depth) {
+        if (!o || depth > 6 || typeof o !== 'object') return;
+        if (Array.isArray(o)) { for (const x of o) findLockBranches(x, out, depth + 1); return; }
+        for (const k in o) {
+            if (/lock/i.test(k)) harvestIds(o[k], out, 0);
+            findLockBranches(o[k], out, depth + 1);
+        }
+    }
+    function readPaletoolsLocks() {
+        const ids = new Set();
+        let keysScanned = 0;
+        const keyInfo = [];
+        try {
+            for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                if (!k || k.toLowerCase().indexOf('paletools') < 0) continue;
+                keysScanned++;
+                // Key-Namen + Groesse in die Diagnose: findet die Suche unten
+                // nichts, ist hier zu sehen, WO PaleTools seine Sperrliste
+                // ablegt (der Key ist im Bundle nur dynamisch zusammengesetzt).
+                try {
+                    const val = localStorage.getItem(k) || '';
+                    keyInfo.push({ key: k, len: val.length,
+                                   head: val.slice(0, 120) });
+                } catch (e) {}
+                let raw = null;
+                try { raw = localStorage.getItem(k); } catch (e) { continue; }
+                if (!raw) continue;
+                let obj = null;
+                try { obj = JSON.parse(raw); } catch (e) { continue; }
+                // Steht der Key selbst schon für die Sperrliste, ist der ganze
+                // Wert die Quelle - sonst nur die "lock"-Zweige darin.
+                if (/lock/i.test(k)) harvestIds(obj, ids, 0);
+                else findLockBranches(obj, ids, 0);
+            }
+        } catch (e) { warn('Locks lesen fehlgeschlagen:', e && e.message); }
+        STATE.diag.locks = {
+            keysScanned: keysScanned,
+            found: ids.size,
+            sample: Array.from(ids).slice(0, 5),
+            // Nur noetig, wenn found = 0: daran ist der richtige Key ablesbar.
+            keys: keyInfo.slice(0, 12)
+        };
+        return ids;
     }
     // ---- Namen zur ANZEIGEZEIT auflösen -------------------------------------
     // Die rohen Club-/Storage-Items enthalten KEINEN Namen (im Diagnose-Report
@@ -1438,6 +1510,20 @@
                         ': Min-Rating (' + minRating + ') wird ignoriert.');
                 }
                 if (qLo > qHi) qLo = band[0];
+            }
+            // GESPERRTE Karten (z.B. per PaleTools-Schloss) fliegen komplett
+            // raus - wer eine Karte sperrt, will sie behalten. Bewusst VOR
+            // allem anderen, damit sie auch nicht als Vorgabe-Karte oder Anker
+            // reserviert werden kann.
+            let lockedOut = 0;
+            if (cfg.lockedIds && cfg.lockedIds.length) {
+                const locked = new Set(cfg.lockedIds.map(String));
+                const before = poolAll.length;
+                poolAll = poolAll.filter(p => !locked.has(String(p.id)));
+                lockedOut = before - poolAll.length;
+                if (lockedOut) {
+                    warnings.push(lockedOut + ' gesperrte Karte(n) ausgeschlossen.');
+                }
             }
             let pool = poolAll.filter(p => p.rating >= qLo && p.rating <= qHi);
             if (cfg.specialOnlyFromStorage) {
@@ -2632,6 +2718,12 @@
                     </select>
                 </div>
                 <div class="sbc-opt-row">
+                    <label class="sbc-opt-toggle">
+                        <input type="checkbox" id="sbc-opt-uselocks" checked>
+                        Gesperrte Karten (PaleTools-Schloss) nie verbauen
+                    </label>
+                </div>
+                <div class="sbc-opt-row">
                     <label>Rarity-Karten schützen (TOTW/TOTS/FOF/FUTTIES)</label>
                     <select id="sbc-opt-rarityguard">
                         <option value="0">Aus</option>
@@ -2697,6 +2789,7 @@
             scarcity: panel.querySelector('#sbc-opt-scarcity'),
             storagebonus: panel.querySelector('#sbc-opt-storagebonus'),
             untradeable: panel.querySelector('#sbc-opt-untradeable'),
+            useLocks: panel.querySelector('#sbc-opt-uselocks'),
             rarityguard: panel.querySelector('#sbc-opt-rarityguard'),
             bands: panel.querySelector('#sbc-opt-bands'),
             bandAdd: panel.querySelector('#sbc-opt-band-add'),
@@ -3142,6 +3235,8 @@
             lastUtasPaths: STATE.diag.lastUtasPaths,
             lastErrors: STATE.diag.lastErrors,
             uiScan: STATE.diag.uiScan || null,
+            // Gesperrte Karten: wurden PaleTools-Locks gefunden und wie viele?
+            locks: STATE.diag.locks || null,
             // Batch: was hat der Lauf pro Runde gesehen, als er die nächste
             // Instanz öffnen wollte? (Die Abbruchmeldung verweist darauf -
             // in v4.18.0 fehlte das Feld im Report, mein Fehler.)
@@ -3373,6 +3468,9 @@
             scarcityWeight: parseFloat(ui.scarcity.value) || 0,
             storageBonus: parseFloat(ui.storagebonus.value) || 0,
             untradeableBonus: parseFloat(ui.untradeable.value) || 0,
+            // Gesperrte Karten (PaleTools-Schloss) beim Optimieren frisch
+            // einlesen - sie koennen sich zwischen zwei Laeufen aendern.
+            lockedIds: ui.useLocks.checked ? Array.from(readPaletoolsLocks()) : [],
             rarityGuardCost: parseFloat(ui.rarityguard.value) || 0,
             ratingCostSpec: bandsToSpec(ratingBands),
             anchorId: null,

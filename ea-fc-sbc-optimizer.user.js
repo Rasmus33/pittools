@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.14.0
+// @version      4.15.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.14.0';
+    const VERSION = '4.15.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -3069,6 +3069,42 @@
             // navigiert - Grundlage, um den Batch ganz ohne Handgriffe
             // durchlaufen zu lassen.
             afterSubmit: STATE.diag.afterSubmit || null,
+            // Pro Batch-Runde: hat das Wegräumen des Dialogs und das
+            // Neu-Öffnen der Challenge geklappt? (afterSubmit wurde vorher
+            // jede Runde überschrieben - genau die Felder fehlten dann.)
+            batchSteps: STATE.diag.batchSteps || null,
+            // Womit öffnet die App eine Challenge? Für die Vollautomatik
+            // brauche ich den Navigationsweg: loadChallenge lädt offenbar nur
+            // Daten, ohne die Ansicht zu wechseln.
+            navScan: (function () {
+                function methodsOf(o, max) {
+                    const out = [];
+                    try {
+                        for (const k in o) {
+                            if (typeof o[k] === 'function') out.push(k);
+                            if (out.length >= (max || 40)) break;
+                        }
+                    } catch (e) {}
+                    return out;
+                }
+                const out = { chain: [] };
+                try {
+                    for (const c of getControllerChain()) {
+                        const n = (c.constructor && c.constructor.name) || '?';
+                        if (!/navigation|tabbar|root|hub|flow/i.test(n)) continue;
+                        out.chain.push({ name: n, methods: methodsOf(c, 40) });
+                    }
+                    const svc = window.services && window.services.SBC;
+                    out.sbcServiceAll = methodsOf(svc, 40);
+                    out.hasGlobals = {
+                        popupShield: !!(window.gPopupClickShield),
+                        popupShieldMethods: methodsOf(window.gPopupClickShield, 12),
+                        sbcHubView: !!document.querySelector('.ut-sbc-hub-view, .sbc-hub'),
+                        sbcTiles: document.querySelectorAll('.ut-sbc-set-tile-view, .sbc-set-tile').length
+                    };
+                } catch (e) { out.error = String(e && e.message || e); }
+                return out;
+            })(),
             // Batch/Abgeben: ist der Abgabe-Weg in dieser Web-App-Version da?
             // Vor dem ersten echten Abgeben gegenprüfen - submitChallenge ist
             // unwiderruflich, ein Blindflug wäre teuer.
@@ -3562,6 +3598,13 @@
         setStatus('plane ' + want + ' Teams...');
         try {
             const plan = SolverCore.planBatch(STATE.pool, readConfig(), want);
+            // Für WELCHE Challenge wurde geplant? Beim Fortsetzen wird das
+            // gegengeprüft - Rasmus hat beim Testen versehentlich eine andere
+            // SBC geöffnet, und ohne diese Prüfung würde ein Team dort
+            // eingetragen UND abgegeben. Das ist nicht rückholbar.
+            plan.challengeId = STATE.sbc.challengeId;
+            plan.setId = STATE.sbc.setId;
+            plan.targetOVR = STATE.sbc.targetOVR;
             STATE.batch = plan;
             renderBatchPreview(plan);
             setStatus(plan.planned + ' von ' + want + ' Teams geplant');
@@ -3687,9 +3730,18 @@
                     if (i > 0) { paused = true; break; }
                     throw new Error(tag + ': keine offene Challenge (im Spiel öffnen).');
                 }
+                // SICHERHEIT: Ist das noch DIESELBE SBC, für die geplant wurde?
+                // Beim Fortsetzen kann versehentlich eine andere offen sein -
+                // dann würde hier ein fremdes Team eingetragen und abgegeben.
+                if (plan.challengeId != null && STATE.sbc.challengeId != null &&
+                    String(STATE.sbc.challengeId) !== String(plan.challengeId)) {
+                    throw new Error(tag + ': es ist eine ANDERE SBC offen (geplant war ' +
+                        plan.challengeId + ', offen ist ' + STATE.sbc.challengeId +
+                        '). Nichts eingetragen - richtige SBC öffnen und neu planen.');
+                }
                 // ID JETZT festhalten - nach dem Abgeben kann STATE.sbc schon
                 // auf etwas anderes zeigen, wir brauchen sie zum Neu-Öffnen.
-                const chId = STATE.sbc.challengeId;
+                const chId = plan.challengeId != null ? plan.challengeId : STATE.sbc.challengeId;
                 // 3. Eintragen (bewährter Weg inkl. Verify).
                 setStatus(tag + ': trage ein...');
                 const sub = await submitToSbc(round);
@@ -3715,10 +3767,21 @@
                     const closed = dismissRewardPopup();
                     await batchWait(1200);
                     const back = await reopenChallengeForBatch(chId);
+                    // Pro Runde festhalten (nicht überschreiben) - sonst steht
+                    // im Report nur die letzte Runde und genau die Felder
+                    // fehlen, um die es geht.
                     if (STATE.diag.afterSubmit) {
                         STATE.diag.afterSubmit.popupClosed = closed;
                         STATE.diag.afterSubmit.challengeBack = back;
+                        STATE.diag.afterSubmit.sameChallenge =
+                            String(STATE.sbc.challengeId) === String(chId);
                     }
+                    STATE.diag.batchSteps = (STATE.diag.batchSteps || []).concat([{
+                        round: i + 1, popupClosed: closed, challengeBack: back,
+                        challengeIdNow: STATE.sbc.challengeId, wanted: chId,
+                        controller: (findSbcController() && findSbcController().constructor &&
+                                     findSbcController().constructor.name) || null
+                    }]).slice(-10);
                     // Klappt es nicht automatisch, wird pausiert statt
                     // abgebrochen - abgegeben ist abgegeben, das ist kein Fehler.
                     if (!back) { paused = true; break; }
@@ -3816,8 +3879,12 @@
                 'dann "Weiter" drücken.', 'warn');
             html += '<div class="sbc-opt-batch-round sbc-opt-batch-warn">' +
                 done + ' von ' + n + ' abgegeben.<br>' +
-                'Jetzt im Spiel: Belohnung wegklicken und die SBC erneut öffnen. ' +
-                'Dann unten auf "Weiter" drücken.</div>';
+                'Jetzt im Spiel: Belohnung wegklicken und <b>genau diese SBC</b> ' +
+                'erneut öffnen' +
+                (plan.challengeId != null ? ' (Challenge ' + plan.challengeId + ')' : '') +
+                '. Dann unten auf "Weiter" drücken.<br>' +
+                '<span style="color:#7d93ab;">Ist eine andere SBC offen, bricht der ' +
+                'Lauf ab statt dort einzutragen.</span></div>';
             ui.batchRun.style.display = 'block';
             ui.batchRun.disabled = false;
             ui.batchRun.textContent = 'Weiter mit Team ' + (done + 1) + ' von ' + n;

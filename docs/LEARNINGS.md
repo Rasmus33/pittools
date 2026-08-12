@@ -276,18 +276,32 @@ wechselt die Ansicht nicht - und mit der ALTEN ID ohnehin die falsche Instanz.
 Ein Weg, eine Challenge programmatisch zu OEFFNEN, wurde nicht gefunden;
 `UTGameFlowNavigationController` hat `pushViewController`, aber dafuer muesste
 man einen korrekt initialisierten Controller bauen.
-Konsequenz (Rasmus' Ansage: "entweder funktioniert das automatisch oder wir
-koennen es wieder ausbauen"): der Lauf ist in v4.17.0 ausgebaut. Ein
-halbautomatischer Batch ist wertlos - "Weiter druecken ist ja quasi so als wenn
-ich einfach selbst noch mal auf Optimieren druecke".
-`planBatch()` im Solver bleibt samt 8 Testfaellen stehen; die Planung war nie
-das Problem.
+**Die Loesung (v4.18.0):** nach dem Abgeben nicht die alte ID weiterbenutzen,
+sondern `requestChallengesForSet(setId)` aufrufen und die FRISCHE Instanz
+laden. Anker fuer "ist das noch dieselbe SBC?" sind Set + Vorgaben
+(Ziel-OVR/Slots), NICHT die challengeId. Der Lauf probiert das ueber ~25s,
+raeumt dabei jede Sekunde einen Dialog weg und bricht ab, wenn es nicht klappt
+(`batchSteps` im Report zeigt dann sekundengenau, woran es lag).
 
-**Falls wir es nochmal angehen:** ueber `requestChallengesForSet(setId)` die
-neue Instanz holen und die noch offene Frage klaeren, wie man sie oeffnet.
-Kandidat, den Rasmus pruefen muesste: der Button `#repeat-sbc`
-("Repeat Search") in `.sbc-button-container` - ungeklaert, ob das PaleTools'
-repeatSbc oder EAs Suche-wiederholen ist. Bewusst nicht geraten.
+Zwischenzeitlich war der Batch in v4.17.0 ausgebaut - das war eine
+Fehlentscheidung: Rasmus wollte das Feature, sobald es einen Weg gibt, und den
+gab es zu dem Zeitpunkt schon (die Erkenntnis oben stammt aus demselben
+Report). Ein halbautomatischer Batch waere dagegen wertlos gewesen: "Weiter
+druecken ist ja quasi so als wenn ich einfach selbst noch mal auf Optimieren
+druecke".
+
+Noch ungeklaert, waere die naechste Option: der Button `#repeat-sbc`
+("Repeat Search") in `.sbc-button-container` - PaleTools' repeatSbc oder EAs
+Suche-wiederholen? Bewusst nicht geraten.
+
+**Beim Ausbauen kaputtgemacht (v4.17.0, Lehre fuer sich):** mein Skript hat mit
+dem Batch-HTML auch den Diagnose-Button und ein schliessendes `</div>` aus dem
+Panel gerissen. `ui.diagBtn` war dann null, und
+`ui.diagBtn.addEventListener(...)` brach den GANZEN Panel-Aufbau ab - das
+Script hatte keine Oberflaeche mehr, und `node --check` sah nichts davon.
+solver-test.js prueft seit v4.18.0 statisch, dass jede
+`panel.querySelector('#…')`-Referenz ein Element im HTML hat und jeder
+Listener an einem gesetzten ui-Feld haengt.
 
 - `_squad.isSBCSquadEligible()` sagt VOR dem Abgeben, ob EA die SBC fuer
   erfuellt haelt - spart einen 403-Blindflug. Nur bei explizit `false`

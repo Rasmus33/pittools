@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.17.0
+// @version      4.18.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.17.0';
+    const VERSION = '4.18.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -1810,15 +1810,7 @@
             return finishTeam(result.team);
         }
         /**
-         * BATCH-PLANUNG. Aktuell NICHT in der UI verdrahtet: der Lauf
-         * "mehrere SBCs automatisch abgeben" ist ausgebaut, weil das Abgeben
-         * zwar klappte, das Zurückkommen in die nächste Runde aber nicht
-         * (Details in LEARNINGS §9 - jede Wiederholung einer SBC hat eine
-         * eigene challengeId). Die Funktion bleibt samt ihrer 8 Testfälle
-         * stehen, weil sie der erprobte Teil ist: wenn wir es mit dieser
-         * Erkenntnis nochmal angehen, ist die Planung fertig.
-         *
-         * Plant mehrere Teams für DIESELBE SBC hintereinander.
+         * BATCH-PLANUNG: mehrere Teams für DIESELBE SBC hintereinander.
          * Jede Runde rechnet mit dem Pool OHNE die Karten der vorherigen
          * Runden - genau wie im echten Ablauf, wo verbaute Karten weg sind.
          * Wird eine Runde unlösbar, bricht die Planung ab und liefert die
@@ -2392,7 +2384,33 @@
         .sbc-opt-btn.primary { background:#00e0b8; color:#001018; }
         .sbc-opt-btn.blue { background:#0077ff; color:#fff; }
         .sbc-opt-btn.ghost { background:#1c2938; color:#cfe0f2; }
+        /* Rot: gibt SBCs endgültig ab, das ist nicht rückholbar. */
+        .sbc-opt-btn.danger { background:#c0392b; color:#fff; }
         .sbc-opt-btn:disabled { opacity:.5; cursor:not-allowed; }
+        .sbc-opt-batch { margin-top:12px; padding-top:10px; border-top:1px solid #1f2b3a; }
+        #sbc-opt-batch-preview:empty { display:none; }
+        #sbc-opt-batch-preview {
+            background:#131e2b; border:1px solid #1f2b3a; border-radius:8px;
+            padding:8px 10px; margin-top:8px; font-size:12px; line-height:1.5;
+            max-height:340px; overflow-y:auto;
+        }
+        .sbc-opt-batch-round { padding:3px 0; border-bottom:1px solid #1b2735; }
+        .sbc-opt-batch-round:last-child { border-bottom:none; }
+        .sbc-opt-batch-round b { color:#00e0b8; }
+        .sbc-opt-batch-warn { color:#ffb454; }
+        .sbc-opt-batch-bad { color:#ff6b6b; }
+        .sbc-opt-batch-cards { margin:4px 0 2px; }
+        .sbc-opt-batch-card {
+            font-size:11px; color:#cfe0f2; padding:1px 0;
+            white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+        }
+        .sbc-opt-batch-card .r {
+            display:inline-block; min-width:22px; font-weight:700; color:#e6edf3;
+        }
+        .sbc-opt-batch-card .src { color:#7d93ab; }
+        .sbc-opt-batch-card .rar { color:#9db2c8; }
+        .sbc-opt-batch-card .untr { color:#6f8aa6; font-style:italic; }
+        .sbc-opt-batch-card.prot .rar { color:#ffb454; font-weight:700; }
         .sbc-opt-result {
             margin-top:12px; background:#0b1219; border:1px solid #1f2b3a;
             border-radius:8px; padding:10px; display:none;
@@ -2575,6 +2593,22 @@
                 <button class="sbc-opt-btn primary" id="sbc-opt-run">Optimieren + Eintragen</button>
                 <div class="sbc-opt-result" id="sbc-opt-result"></div>
                 <button class="sbc-opt-btn blue" id="sbc-opt-submit" style="display:none;">Erneut eintragen</button>
+                <!-- BATCH: dieselbe SBC mehrfach. Zwei Schritte - erst planen und
+                     ansehen, dann EINE Freigabe für den ganzen Lauf. -->
+                <div class="sbc-opt-batch">
+                    <div class="sbc-opt-inline" style="margin-bottom:8px;">
+                        <label style="margin:0;flex:1;">SBC mehrfach abschließen</label>
+                        <input type="number" id="sbc-opt-batch-count" value="3" min="1" max="10"
+                               style="width:64px;">
+                    </div>
+                    <button class="sbc-opt-btn ghost" id="sbc-opt-batch-plan">Teams planen (Vorschau)</button>
+                    <div id="sbc-opt-batch-preview"></div>
+                    <button class="sbc-opt-btn danger" id="sbc-opt-batch-run" style="display:none;">
+                        Alle eintragen + abgeben
+                    </button>
+                </div>
+                <button class="sbc-opt-btn ghost" id="sbc-opt-diag" style="margin-top:10px;">Diagnose in Konsole schreiben</button>
+            </div>
         `;
         document.body.appendChild(panel);
         ui = {
@@ -2605,6 +2639,10 @@
             result: panel.querySelector('#sbc-opt-result'),
             submit: panel.querySelector('#sbc-opt-submit'),
             diagBtn: panel.querySelector('#sbc-opt-diag'),
+            batchCount: panel.querySelector('#sbc-opt-batch-count'),
+            batchPlan: panel.querySelector('#sbc-opt-batch-plan'),
+            batchPreview: panel.querySelector('#sbc-opt-batch-preview'),
+            batchRun: panel.querySelector('#sbc-opt-batch-run')
         };
         panel.querySelector('#sbc-opt-close').addEventListener('click', () => panel.classList.remove('open'));
         makeDraggable(panel, panel.querySelector('.sbc-opt-header'), 'sbcOptPanelPos', {
@@ -2621,6 +2659,8 @@
         ui.run.addEventListener('click', onRunClick);
         ui.submit.addEventListener('click', onSubmitClick);
         ui.diagBtn.addEventListener('click', onDiagClick);
+        ui.batchPlan.addEventListener('click', onBatchPlanClick);
+        ui.batchRun.addEventListener('click', onBatchRunClick);
         ui.rarityPickFilter.addEventListener('input', renderRarityPickOptions);
         // Zustand der "Erweiterte Einstellungen" merken
         const adv = panel.querySelector('#sbc-opt-advanced');
@@ -3378,7 +3418,326 @@
     async function onSubmitClick() {
         await submitCurrentResult();
     }
-    // ---- Reste des ausgebauten Batch-Modus ---------------------------------
+    // ========================================================================
+    //  BATCH: dieselbe SBC mehrfach abschliessen
+    // ========================================================================
+    // Der Knackpunkt (v4.17 gelernt): JEDE Wiederholung einer SBC hat eine
+    // EIGENE challengeId. Die alte ID nach dem Abgeben weiterzubenutzen laedt
+    // die verbrauchte Instanz (404/475) - deshalb ist der Anker das SET, und
+    // nach jeder Runde wird die neue Instanz ueber requestChallengesForSet
+    // geholt. Genau daran ist der erste Versuch gescheitert.
+    function batchWait(ms) { return new Promise(r => setTimeout(r, ms)); }
+    /** Belohnungs-Dialog wegräumen (EAs eigener Popup-Manager). */
+    function dismissRewardPopup() {
+        let closed = false;
+        try {
+            const shield = window.gPopupClickShield;
+            if (shield && typeof shield.closeActivePopup === 'function') {
+                shield.closeActivePopup();
+                closed = true;
+            }
+        } catch (e) {}
+        // Zweiter Weg: ist der oberste präsentierte Controller ein Dialog,
+        // bringt er sein eigenes Schliessen mit. Nach dem Abgeben koennen
+        // mehrere Overlays hintereinander kommen.
+        try {
+            const chain = getControllerChain();
+            const top = chain.length ? chain[chain.length - 1] : null;
+            const n = (top && top.constructor && top.constructor.name) || '';
+            if (top && /popup|dialog|reward|award/i.test(n)) {
+                for (const m of ['close', 'dismiss', 'hide', 'onClose']) {
+                    if (typeof top[m] === 'function') { top[m](); closed = true; break; }
+                }
+            }
+        } catch (e) {}
+        return closed;
+    }
+    /**
+     * SBC endgültig abgeben - über die Methode des LIVE-CONTROLLERS. Der
+     * Service-Weg mit Challenge-Argument kam live mit 403 zurück
+     * (submitChallenge nimmt gar kein Argument), der Controller-Weg ist der,
+     * den die App beim Klick auf ihren eigenen Submit-Button nimmt.
+     * UNWIDERRUFLICH - nur aus dem Batch nach expliziter Freigabe.
+     */
+    async function submitChallengeToEa() {
+        const ctrl = findSbcController();
+        const liveSquad = ctrl && (ctrl._squad || (ctrl.getSquad && ctrl.getSquad()));
+        if (liveSquad && typeof liveSquad.isSBCSquadEligible === 'function') {
+            let eligible = null;
+            try { eligible = liveSquad.isSBCSquadEligible(); } catch (e) {}
+            if (eligible === false) {
+                throw new Error('EA hält die SBC nicht für abgabefähig - wahrscheinlich ' +
+                    'eine Vorgabe offen, die wir nicht abdecken. NICHT abgegeben.');
+            }
+        }
+        const problems = [];
+        if (ctrl && typeof ctrl.submitChallenge === 'function') {
+            try {
+                const r = ctrl.submitChallenge();
+                let resp = null;
+                if (r && (typeof r.then === 'function' || typeof r.subscribe === 'function' ||
+                          typeof r.observe === 'function')) resp = await obsPromise(r);
+                if (resp && !responseOk(resp)) problems.push('Controller: Status ' + resp.status);
+                else { STATE.diag.submitChallengeVia = 'controller'; return { via: 'controller' }; }
+            } catch (e) { problems.push('Controller: ' + (e && e.message || e)); }
+        } else problems.push('Controller hat kein submitChallenge()');
+        const svc = window.services && window.services.SBC;
+        if (svc && typeof svc.submitChallenge === 'function') {
+            try {
+                const resp = await obsPromise(svc.submitChallenge());
+                if (responseOk(resp)) { STATE.diag.submitChallengeVia = 'service'; return { via: 'service' }; }
+                problems.push('Service: Status ' + (resp && resp.status));
+            } catch (e) { problems.push('Service: ' + (e && e.message || e)); }
+        }
+        throw new Error('Abgeben fehlgeschlagen (' + problems.join(' | ') + ').');
+    }
+    /**
+     * Nach dem Abgeben die NEUE Instanz derselben SBC oeffnen.
+     * Reihenfolge: Dialog wegraeumen -> Challenge-Liste des Sets neu holen
+     * (dort steht die frische challengeId) -> die passende laden -> warten, bis
+     * der Squad-Controller wieder da ist.
+     * Erkennung "passend": gleiche Vorgaben-Signatur wie beim Planen
+     * (Ziel-OVR + Slots), NICHT die alte ID - die aendert sich ja gerade.
+     */
+    async function openNextInstance(plan) {
+        const svc = window.services && window.services.SBC;
+        const steps = [];
+        for (let t = 0; t < 25; t++) {
+            const closed = dismissRewardPopup();
+            await batchWait(1000);
+            // Bei t=2 und t=10 die Challenge-Liste des Sets neu anfordern und
+            // die frische Instanz laden.
+            if ((t === 2 || t === 10) && svc && plan.setId != null) {
+                try {
+                    if (typeof svc.requestChallengesForSet === 'function') {
+                        await obsPromise(svc.requestChallengesForSet(plan.setId));
+                    }
+                    const fresh = findFreshChallengeId(plan);
+                    steps.push({ t: t, requested: true, freshId: fresh });
+                    if (fresh != null && typeof svc.loadChallenge === 'function') {
+                        await obsPromise(svc.loadChallenge(fresh));
+                        await batchWait(1200);
+                    }
+                } catch (e) { steps.push({ t: t, err: String(e && e.message || e) }); }
+            }
+            syncSbcWithOpenChallenge();
+            const ctrl = findSbcController();
+            const sq = ctrl && (ctrl._squad || (ctrl.getSquad && ctrl.getSquad()));
+            let empty = null;
+            try { if (sq && typeof sq.isSquadEmpty === 'function') empty = sq.isSquadEmpty(); }
+            catch (e) {}
+            const fits = matchesPlannedSbc(plan);
+            if (t < 5 || t % 5 === 0) {
+                steps.push({ t: t, popup: closed, ctrl: !!ctrl, empty: empty,
+                             chId: STATE.sbc.challengeId, fits: fits });
+            }
+            if (ctrl && sq && fits && empty !== false) return { ok: true, steps: steps };
+        }
+        return { ok: false, steps: steps };
+    }
+    /**
+     * Die frische challengeId derselben SBC aus dem App-Cache fischen. Die
+     * Challenge-Liste haengt je nach Version an unterschiedlichen Stellen,
+     * deshalb wird breit gesucht und ueber die Vorgaben-Signatur gefiltert.
+     */
+    function findFreshChallengeId(plan) {
+        const seen = [];
+        function look(obj, depth) {
+            if (!obj || depth > 3 || seen.length > 400) return;
+            if (Array.isArray(obj)) {
+                for (const o of obj) look(o, depth + 1);
+                return;
+            }
+            if (typeof obj !== 'object') return;
+            const id = obj.challengeId != null ? obj.challengeId : obj.id;
+            if (id != null && (obj.challengeId != null || obj.setId != null)) seen.push(obj);
+            for (const k of ['challenges', '_challenges', 'items', '_items', 'list']) {
+                if (obj[k]) look(obj[k], depth + 1);
+            }
+        }
+        try {
+            const svc = window.services && window.services.SBC;
+            look(svc && svc._challengesBySet, 0);
+            look(svc && svc._challenges, 0);
+            look(STATE.sbc.setChallenges, 0);
+        } catch (e) {}
+        // Neueste (hoechste) ID, die NICHT die gerade verbrauchte ist.
+        let best = null;
+        for (const c of seen) {
+            const id = Number(c.challengeId != null ? c.challengeId : c.id);
+            if (!isFinite(id)) continue;
+            if (plan.usedChallengeIds.indexOf(String(id)) > -1) continue;
+            if (plan.setId != null && c.setId != null && String(c.setId) !== String(plan.setId)) continue;
+            if (best == null || id > best) best = id;
+        }
+        return best;
+    }
+    /** Passt die offene SBC zu dem, wofuer geplant wurde? (Vorgaben, nicht ID) */
+    function matchesPlannedSbc(plan) {
+        if (String(STATE.sbc.targetOVR || '') !== String(plan.targetOVR || '')) return false;
+        if (Number(STATE.sbc.slots || 0) !== Number(plan.slots || 0)) return false;
+        return true;
+    }
+    async function onBatchPlanClick() {
+        syncSbcWithOpenChallenge();
+        if (!STATE.sbc.targetOVR && !(STATE.sbc.playerLevelConstraints || []).length &&
+            !(STATE.sbc.rarityConstraints || []).length &&
+            !(STATE.sbc.qualityConstraints || []).length) {
+            toast('Keine SBC-Vorgaben erkannt. Bitte Challenge im Spiel öffnen.', 'error');
+            return;
+        }
+        if (!STATE.pool.length) { toast('Pool leer. Bitte zuerst "Spieler laden".', 'error'); return; }
+        const want = Math.max(1, Math.min(10, parseInt(ui.batchCount.value, 10) || 1));
+        ui.batchPlan.disabled = true;
+        setStatus('plane ' + want + ' Teams...');
+        try {
+            const plan = SolverCore.planBatch(STATE.pool, readConfig(), want);
+            // Anker ist das SET plus die Vorgaben - die challengeId aendert
+            // sich pro Wiederholung und taugt nicht als Vergleich.
+            plan.setId = STATE.sbc.setId;
+            plan.targetOVR = STATE.sbc.targetOVR;
+            plan.slots = STATE.sbc.slots;
+            plan.usedChallengeIds = [];
+            STATE.batch = plan;
+            renderBatchPreview(plan);
+            setStatus(plan.planned + ' von ' + want + ' Teams geplant');
+        } catch (e) {
+            toast('Batch-Planung fehlgeschlagen: ' + e.message, 'error');
+            warn(e);
+        } finally { ui.batchPlan.disabled = false; }
+    }
+    /** Kurzbezeichnung der Rarity. Die rareflag-NUMMER bleibt sichtbar -
+     *  welche Zahl welches Event ist, weiss Rasmus besser als das Script. */
+    function rarityLabel(p) {
+        const rf = Number(p.rareflag);
+        let base;
+        if (rf === 3) base = 'TOTW';
+        else if (rf === 0 || rf === 1) base = 'Gold';
+        else base = 'Special rf' + rf;
+        return base + ((p.groups && p.groups.indexOf(83) > -1) ? ' · Gruppe 83' : '');
+    }
+    function renderBatchPreview(plan) {
+        const box = ui.batchPreview;
+        if (!box) return;
+        let html = '';
+        plan.rounds.forEach(function (r, i) {
+            const nStore = r.players.filter(p => p.isStorage).length;
+            const nUntr = r.players.filter(p => p.untradeable).length;
+            const nProt = r.players.filter(p => p.groups && p.groups.indexOf(83) > -1).length;
+            html += '<div class="sbc-opt-batch-round"><b>Team ' + (i + 1) + ':</b> OVR ' +
+                r.ovr + ' (' + r.ovrExact.toFixed(2) + ')' +
+                '<br><span style="color:#9db2c8;">Storage ' + nStore +
+                ' · unverkäuflich ' + nUntr +
+                (nProt ? ' · <span class="sbc-opt-batch-warn">geschützt ' + nProt + '</span>' : '') +
+                '</span><div class="sbc-opt-batch-cards">';
+            for (const p of r.players.slice().sort((a, b) => b.rating - a.rating)) {
+                const prot = !!(p.groups && p.groups.indexOf(83) > -1);
+                html += '<div class="sbc-opt-batch-card' + (prot ? ' prot' : '') + '">' +
+                    '<span class="r">' + p.rating + '</span> ' + escapeHtml(displayName(p)) +
+                    ' <span class="src">' + (p.isStorage ? 'Storage' : 'Verein') + '</span>' +
+                    ' <span class="rar">' + escapeHtml(rarityLabel(p)) + '</span>' +
+                    (p.untradeable ? ' <span class="untr">unverkäuflich</span>' : '') + '</div>';
+            }
+            html += '</div>';
+            for (const w of (r.warnings || [])) {
+                html += '<span class="sbc-opt-batch-warn">⚠ ' + escapeHtml(w) + '</span><br>';
+            }
+            html += '</div>';
+        });
+        if (plan.stoppedReason) {
+            html += '<div class="sbc-opt-batch-round sbc-opt-batch-bad">Nur ' + plan.planned +
+                ' von ' + plan.requested + ' möglich: ' + escapeHtml(plan.stoppedReason) + '</div>';
+        }
+        box.innerHTML = html;
+        ui.batchRun.style.display = plan.planned ? 'block' : 'none';
+        ui.batchRun.disabled = false;
+        ui.batchRun.textContent = 'Alle ' + plan.planned + ' eintragen + abgeben';
+    }
+    /**
+     * Arbeitet den Plan ab: eintragen -> abgeben -> naechste Instanz oeffnen.
+     * Bricht bei jeder Unstimmigkeit ab - "2 von 5 fertig" ist besser als eine
+     * falsch abgegebene SBC.
+     */
+    async function onBatchRunClick() {
+        const plan = STATE.batch;
+        if (!plan || !plan.planned) { toast('Erst "Teams planen" ausführen.', 'error'); return; }
+        const n = plan.planned;
+        if (!window.confirm(n + ' SBC(s) werden eingetragen UND endgültig abgegeben.\n\n' +
+                'Die verbauten Karten sind danach weg. Fortfahren?')) return;
+        ui.batchRun.disabled = true;
+        ui.batchPlan.disabled = true;
+        ui.run.disabled = true;
+        let done = 0, stopped = null;
+        const doneLog = [];
+        try {
+            for (let i = 0; i < n; i++) {
+                const round = plan.rounds[i];
+                const tag = 'Batch ' + (i + 1) + '/' + n;
+                const missing = round.players.filter(p =>
+                    !STATE.pool.some(q => String(q.id) === String(p.id)));
+                if (missing.length) {
+                    throw new Error(tag + ': ' + missing.length + ' Karte(n) nicht mehr im Pool.');
+                }
+                setStatus(tag + ': prüfe Challenge...');
+                syncSbcWithOpenChallenge();
+                if (!findSbcController() || !findLiveChallenge()) {
+                    throw new Error(tag + ': keine offene SBC-Ansicht.');
+                }
+                if (!matchesPlannedSbc(plan)) {
+                    throw new Error(tag + ': die offene SBC passt nicht zum Plan ' +
+                        '(Ziel ' + STATE.sbc.targetOVR + '/' + STATE.sbc.slots + ' statt ' +
+                        plan.targetOVR + '/' + plan.slots + '). Nichts eingetragen.');
+                }
+                // Die JETZT offene Instanz merken - sie ist nach dem Abgeben
+                // verbraucht und darf beim Suchen der neuen nicht wieder kommen.
+                if (STATE.sbc.challengeId != null) {
+                    plan.usedChallengeIds.push(String(STATE.sbc.challengeId));
+                }
+                setStatus(tag + ': trage ein...');
+                const sub = await submitToSbc(round);
+                if (sub && sub.via !== 'app') { await refreshChallengeCache(); refreshOpenSbcView(); }
+                removeFromPool(round.players);
+                setStatus(tag + ': gebe ab...');
+                await submitChallengeToEa();
+                done++;
+                doneLog.push('Team ' + (i + 1) + ': OVR ' + round.ovr + ' abgegeben');
+                log('[Batch] Team ' + (i + 1) + '/' + n + ' abgegeben (OVR ' + round.ovr + ').');
+                if (i + 1 < n) {
+                    setStatus(tag + ': öffne die nächste Runde...');
+                    const next = await openNextInstance(plan);
+                    STATE.diag.batchSteps = (STATE.diag.batchSteps || []).concat([{
+                        round: i + 1, ok: next.ok, steps: next.steps
+                    }]).slice(-6);
+                    if (!next.ok) {
+                        throw new Error('Die nächste Runde liess sich nicht öffnen ' +
+                            '(Diagnose schicken: batchSteps).');
+                    }
+                }
+            }
+        } catch (e) {
+            stopped = (e && e.message) || String(e);
+            warn('[Batch] gestoppt:', e);
+            diagError('Batch gestoppt nach ' + done + '/' + n + ': ' + stopped);
+        } finally {
+            ui.batchPlan.disabled = false;
+            ui.run.disabled = false;
+            ui.batchRun.style.display = 'none';
+            STATE.batch = null;   // Plan verbraucht - kein zweites Abgeben
+            let html = doneLog.length
+                ? '<div class="sbc-opt-batch-round">' + doneLog.map(escapeHtml).join('<br>') + '</div>' : '';
+            if (stopped) {
+                setStatus('Batch gestoppt nach ' + done + '/' + n);
+                toast('Batch gestoppt nach ' + done + ' von ' + n + ': ' + stopped, 'error');
+                html += '<div class="sbc-opt-batch-round sbc-opt-batch-bad">Gestoppt: ' +
+                    escapeHtml(stopped) + '</div>';
+            } else {
+                setStatus(done + ' SBC(s) abgegeben ✓');
+                toast(done + ' von ' + n + ' SBCs eingetragen und abgegeben.', 'ok');
+            }
+            ui.batchPreview.innerHTML = html;
+        }
+    }
+    // ---- Helfer, die auch die Diagnose nutzt -------------------------------
     // Der Lauf "mehrere SBCs automatisch abgeben" ist ausgebaut (siehe
     // LEARNINGS 9 und ROADMAP). Diese zwei Helfer bleiben, weil der
     // Diagnose-Report mit ihnen zeigt, ob eine Challenge offen ist.

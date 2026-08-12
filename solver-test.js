@@ -370,6 +370,38 @@ function mulberry32(a) {
         '@version=' + vHeader + ' VERSION=' + vCode);
 }
 
+// ========== 8b1a. Panel-UI: jede ui-Referenz hat ihr Element ==========
+{
+    // Live-Fehler in v4.17.0: beim Ausbauen des Batch-Modus flog der
+    // Diagnose-Button aus dem Panel-HTML, `ui.diagBtn` war dadurch null und
+    // ui.diagBtn.addEventListener(...) hat den GANZEN Panel-Aufbau abgebrochen -
+    // das Script hatte gar keine Oberfläche mehr. node --check sieht das nicht
+    // (syntaktisch einwandfrei), und der Solver-Test auch nicht.
+    const ids = new Set();
+    const re = /id="(sbc-opt-[a-z-]+)"/g;
+    let m;
+    while ((m = re.exec(src)) !== null) ids.add(m[1]);
+    const refs = new Set();
+    const re2 = /panel\.querySelector\('#(sbc-opt-[a-z-]+)'\)/g;
+    while ((m = re2.exec(src)) !== null) refs.add(m[1]);
+    const missing = Array.from(refs).filter(r => !ids.has(r));
+    check('Panel: jede querySelector-Referenz existiert im HTML',
+        missing.length === 0,
+        missing.length ? ('fehlt: ' + missing.join(', ')) : (refs.size + ' Referenzen geprüft'));
+    // Und die Listener dürfen nur auf ui-Felder gehen, die auch gesetzt werden.
+    const uiFields = new Set();
+    const uiBlock = src.slice(src.indexOf('        ui = {'), src.indexOf('        panel.querySelector(\'#sbc-opt-close\')'));
+    const re3 = /^\s*([a-zA-Z]+):/gm;
+    while ((m = re3.exec(uiBlock)) !== null) uiFields.add(m[1]);
+    const used = new Set();
+    const re4 = /\bui\.([a-zA-Z]+)\.addEventListener/g;
+    while ((m = re4.exec(src)) !== null) used.add(m[1]);
+    const noField = Array.from(used).filter(u => !uiFields.has(u));
+    check('Panel: alle Listener hängen an gesetzten ui-Feldern',
+        noField.length === 0,
+        noField.length ? ('nicht gesetzt: ' + noField.join(', ')) : (used.size + ' Listener geprüft'));
+}
+
 // ========== 8b1b. Kein Shadowing der Hilfsfunktionen ==========
 {
     // Live-Fehler in v4.12.0: im Batch-Lauf stand "const log = []" - das

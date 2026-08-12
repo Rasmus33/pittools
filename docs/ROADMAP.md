@@ -35,15 +35,14 @@
    das die Requests nativ ausführt und das Ergebnis zurückgibt — erst angehen,
    wenn wirklich diese Features fehlen.
    Ein GM_-Shim ist NICHT nötig (PaleTools hat Fallbacks, LEARNINGS §8).
-1b. ~~Batch: mehrere SBCs automatisch abgeben~~ — **ausgebaut in v4.17.0**.
-   Abgeben und Dialog-Wegraeumen funktionierten; gescheitert ist das Zurueckkommen
-   in die naechste Runde. Grund (jetzt bekannt): jede Wiederholung einer SBC hat
-   eine EIGENE `challengeId` — `loadChallenge(alteId)` laedt die verbrauchte
-   Instanz, und ein Weg, eine Challenge programmatisch zu OEFFNEN, wurde nicht
-   gefunden. Details in LEARNINGS §9.
-   Wieder aufgreifen nur mit: `requestChallengesForSet(setId)` fuer die neue
-   Instanz + geklaerter Frage, was `#repeat-sbc` ("Repeat Search") tut.
-   `planBatch()` + 8 Testfaelle bleiben im Code.
+1b. **Batch live verifizieren** (v4.18.0, wieder eingebaut mit der richtigen
+   Mechanik): Nach jeder Runde holt der Lauf ueber
+   `requestChallengesForSet(setId)` die FRISCHE Instanz - der erste Versuch
+   scheiterte daran, dass er die verbrauchte challengeId weiterbenutzte
+   (LEARNINGS 9). Anker ist Set + Vorgaben, nicht die ID.
+   Am Geraet zu pruefen: laeuft er 3 Runden ohne Handgriff durch? Wenn nicht,
+   zeigt `batchSteps` im Report pro Sekunde, was er gesehen hat (Popup zu?
+   Controller da? passende Vorgaben? Squad leer? gefundene frische ID).
 
 2. **APK beim Kollegen testen**: v1.3.0 (PitTools, Hochformat, Pitroipa-Icon,
    GitHub-URL als Default) ist gebaut, aber der EA-Login im WebView ist erst auf

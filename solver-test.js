@@ -868,6 +868,79 @@ function mulberry32(a) {
         /teamDump/.test(srcJs));
 }
 
+// ========== 8b-2d. Gemischte Qualitaets-Vorgaben (Bronze + Silber) ==========
+{
+    // Live: "Daily Common Gold Upgrade", setId 1037 / challenge 3070.
+    //   Bronze: Min. 5 Players | Silber: Min. 5 Players | Squad: 10
+    // EA schickt das als ZWEI PLAYER_LEVEL-Vorgaben mit Wert 1 und 2 - und
+    // beide mit count 1 statt 5. Vor v4.28.0 gewann Math.max ueber die Stufen,
+    // also Silber, und der GANZE Pool wurde auf 65-74 gefiltert: 10x Silber,
+    // 0 Bronze, dazu ein "ok".
+    const MIXED = [{ label: 'PLAYER_LEVEL', quality: 1, count: 1 },
+                   { label: 'PLAYER_LEVEL', quality: 2, count: 1 }];
+    const pool = [].concat(many(6, 47, { rareflag: 0 }), many(6, 52, { rareflag: 0 }),
+                           many(6, 65, { rareflag: 0 }),
+                           many(8, 71, { rareflag: 0, storage: true }),
+                           many(12, 78, { rareflag: 0 }));
+    // Min-Rating 75 wie in Rasmus' Panel - muss bei Bronze/Silber ignoriert
+    // werden, sonst ist die SBC nie loesbar.
+    const res = SolverCore.solve(pool, cfg(null, {
+        targetOVR: null, slots: 10, minRating: 75, qualityConstraints: MIXED,
+        ratingCostSpec: SolverCore.DEFAULT_RATING_COST_SPEC
+    }));
+    const rs = res.ok ? res.players.map(p => p.rating) : [];
+    check('Gemischt: loesbar', res.ok, res.ok ? '' : res.reason);
+    check('Gemischt: genau 5 Bronze', res.ok && rs.filter(r => r <= 64).length === 5,
+        rs.sort((a, b) => a - b).join(','));
+    check('Gemischt: genau 5 Silber',
+        res.ok && rs.filter(r => r >= 65 && r <= 74).length === 5,
+        rs.sort((a, b) => a - b).join(','));
+    check('Gemischt: kein Gold trotz Min-Rating 75',
+        res.ok && !rs.some(r => r >= 75), rs.sort((a, b) => a - b).join(','));
+    check('Gemischt: die NIEDRIGSTEN Bronze (47er, nicht 52er)',
+        res.ok && rs.filter(r => r === 47).length === 5, rs.join(','));
+    check('Gemischt: Silber aus dem Storage bevorzugt (71er statt 65er)',
+        res.ok && res.players.filter(p => p.rating >= 65 && p.rating <= 74)
+            .every(p => p.isStorage),
+        res.ok ? res.players.filter(p => p.rating >= 65 && p.rating <= 74)
+            .map(p => p.rating + (p.isStorage ? 'S' : 'V')).join(',') : '');
+    check('Gemischt: die Verteilung wird gemeldet',
+        res.ok && res.warnings.some(w => /5x Bronze \+ 5x Silber/.test(w)),
+        res.ok ? JSON.stringify(res.warnings) : '');
+
+    // Keine Specials als Vorgabe-Karte (Rasmus: kein Evo, kein Special).
+    const withSpecial = [].concat(many(6, 40, { rareflag: 24, special: true }),
+                                  many(6, 47, { rareflag: 0 }),
+                                  many(8, 71, { rareflag: 0 }));
+    const res2 = SolverCore.solve(withSpecial, cfg(null, {
+        targetOVR: null, slots: 10, minRating: 0, qualityConstraints: MIXED,
+        ratingCostSpec: SolverCore.DEFAULT_RATING_COST_SPEC
+    }));
+    check('Gemischt: keine Special-Karte im Team',
+        res2.ok && !res2.players.some(p => p.isSpecial),
+        res2.ok ? res2.players.map(p => p.rating + (p.isSpecial ? 'X' : '')).join(',') : res2.reason);
+
+    // Unerfuellbar -> klare Meldung statt eines still falschen Teams.
+    const res3 = SolverCore.solve(many(20, 71, { rareflag: 0 }), cfg(null, {
+        targetOVR: null, slots: 10, minRating: 0, qualityConstraints: MIXED,
+        ratingCostSpec: SolverCore.DEFAULT_RATING_COST_SPEC
+    }));
+    check('Gemischt: fehlende Bronze wird gemeldet, kein stilles Silber-Team',
+        !res3.ok && /Bronze/.test(res3.reason || ''),
+        res3.ok ? res3.players.map(p => p.rating).join(',') : res3.reason);
+
+    // Eine einzelne Stufe darf sich NICHT wie gemischt verhalten (Regression:
+    // "Exactly Gold" ist der haeufige Fall und muss weiter alle Slots binden).
+    const res4 = SolverCore.solve(
+        [].concat(many(12, 76, { rareflag: 0 }), many(6, 60, { rareflag: 0 })),
+        cfg(null, { targetOVR: null, slots: 9, minRating: 0,
+            qualityConstraints: [{ label: 'PLAYER_QUALITY', quality: 3, count: 1 }],
+            ratingCostSpec: SolverCore.DEFAULT_RATING_COST_SPEC }));
+    check('Eine Stufe bleibt eine Stufe: "Exactly Gold" -> alle 9 Gold',
+        res4.ok && res4.players.every(p => p.rating >= 75),
+        res4.ok ? res4.players.map(p => p.rating).join(',') : res4.reason);
+}
+
 // ========== 8b-3. Der Rare-Parser darf keine Spielernamen matchen ==========
 {
     // Live-Fehler (v4.24.0): ein Substring-Match auf "RARE" im Scope-Namen hat

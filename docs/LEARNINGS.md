@@ -630,3 +630,53 @@ Die Rangfolge ohne Ziel-Rating ist also:
 Der Storage-Rabatt im Kostenmodell reicht dafuer NICHT, weil die Kosten erst an
 dritter Stelle greifen -- Storage muss ein eigener, erster Sortier-Schluessel
 sein. Gilt fuer das Auffuellen und fuer die Rare-Reservierung.
+
+
+## 18. Gemischte Qualitaets-Vorgaben (Bronze + Silber in einer SBC)
+
+**Live-Fall:** "Daily Common Gold Upgrade", setId 1037 / challenge 3070 —
+*Bronze: Min. 5 Players*, *Silber: Min. 5 Players*, *Squad: 10*.
+
+So kommt es an:
+
+```
+qualityConstraints: [ {PLAYER_LEVEL, quality:1, count:1},
+                      {PLAYER_LEVEL, quality:2, count:1} ]
+reqDump:            [ {PLAYER_COUNT, value:5}, {PLAYER_LEVEL, value:1},
+                      {PLAYER_LEVEL, value:2} ]
+slots: 10
+```
+
+Drei Dinge daran:
+
+1. Die Stufen kommen als **PLAYER_LEVEL mit Wert 1/2**, nicht als
+   PLAYER_QUALITY. Der Parser deckt beides schon ab (PLAYER_LEVEL ist
+   doppeldeutig: 1-3 = Stufe, >= 40 = Min-Rating).
+2. `count` ist wieder **1 statt 5** — EAs Count-Feld ist unbrauchbar (§6).
+3. `PLAYER_COUNT: 5` ist hier **nicht** die Squad-Groesse (die ist 10), sondern
+   die Anzahl pro Vorgabe: 2 Stufen x 5 = 10. Bei der 6er-Rare-SBC fielen beide
+   zusammen (PLAYER_COUNT 6, Squad 6), deshalb war das vorher nicht zu sehen.
+
+**Der Fehler vorher:** `Math.max` ueber alle Stufen gewann, also Silber, und der
+GANZE Pool wurde auf 65-74 gefiltert. Ergebnis: 10x Silber, 0 Bronze — und ein
+`ok`. Die Gegenprobe liefert genau das (`65,65,71,71,...`).
+
+**Die Loesung:** Quoten pro Stufe statt eines Bandes.
+
+- Ein Praedikat `inQBand` statt eines Bereichs `qLo..qHi` — bei Bronze + Gold
+  ist das erlaubte Fenster nicht durchgehend (Silber muss aussen bleiben).
+- Anzahl pro Stufe: die genannten Zahlen sind das MINIMUM, die restlichen Slots
+  werden gleichmaessig verteilt, der Rest geht an die niedrigste (billigste)
+  Stufe. Das trifft den Live-Fall (1/1 auf 10 Slots -> 5 Bronze + 5 Silber) und
+  ist bei "Min. N"-Vorgaben unschaedlich — Mehrliefern erfuellt sie auch.
+  Die Verteilung steht als Warnung im Panel, damit ein Fehlgriff sichtbar ist.
+- Reservierung pro Stufe in derselben Rangfolge wie ueberall ohne Ziel-Rating:
+  Storage vor Verein, dann niedrigstes Rating, dann Kosten (§17).
+- Min-Rating wird ignoriert, sobald eine Bronze-/Silber-Stufe dabei ist, und
+  Specials bleiben draussen — beides wie bei einer einzelnen Bronze-Vorgabe.
+- Ist eine Stufe nicht erfuellbar, gibt es einen **Abbruch mit Grund** statt
+  eines Teams, das nur die andere Stufe erfuellt.
+
+**Wichtig:** eine EINZELNE Stufe darf sich nicht wie gemischt verhalten —
+"Exactly Gold" ist der haeufige Fall und muss weiter alle Slots binden. Dafuer
+gibt es einen eigenen Regressionstest.

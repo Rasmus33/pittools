@@ -51,6 +51,11 @@ JS/Java-Engineering. Umgangssprache: Deutsch.
 - Gold-SBCs ohne Ziel-OVR: GENAU so viele Rare wie gefordert, Rest Common —
   ohne Rare-Vorgabe gar keine Rare. Obergrenzen im Panel (Default Rare bis 77):
   hohe Rare bleibt für die Rating-SBCs.
+- GEMISCHTE Vorgaben (z.B. Upgrade-SBC mit "Bronze Min. 5 + Silber Min. 5" auf
+  10 Slots): Quote pro Stufe erfüllen, je Stufe die günstigsten Karten. EAs
+  Anzahl ist unbrauchbar (kommt als 1) — die genannten Anzahlen gelten als
+  Minimum, die restlichen Slots werden gleichmäßig verteilt, der Rest an die
+  niedrigste Stufe. Bei "Min. N" ist Mehrliefern unschädlich.
 - Bronze-/Silber-Vorgaben: einfach die NIEDRIGSTEN normalen Karten nehmen
   (kein Evo, kein Special; rare/non-rare egal). Das Min-Rating wird dabei
   komplett ignoriert — bei Gold gilt es weiter.

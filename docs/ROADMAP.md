@@ -82,18 +82,10 @@
    Ist es das, aber eine gelockte Karte wird trotzdem verbaut, dann trifft die
    ID eine andere Spalte — dafür vergleicht der Filter `id`, `assetId` und
    `resourceId`.
-4d. **Gemischte Qualitaets-Vorgaben (5 Bronze + 5 Silber)** -- NOCH OFFEN.
-   Nachgerechnet mit einem Probelauf: aktuell gewinnt in der Qualitaets-Auswahl
-   `Math.max` ueber alle Stufen, also Silber, und der GANZE Pool wird auf 65-74
-   gefiltert -> 11x Silber, 0 Bronze, dazu ein "ok". Ein still falsches Team.
-   Was gebraucht wird: (a) Quoten pro Stufe statt eines Bandes, (b) die Anzahl
-   pro Stufe -- EAs count ist unzuverlaessig (live: 1 statt 6), und die
-   "gilt-fuer-alle-Slots"-Notloesung funktioniert bei zwei Stufen nicht.
-   Plan: die genannten Anzahlen als Minimum nehmen und die restlichen Slots
-   gleichmaessig verteilen (trifft 5+5 bei 11 Slots sowohl mit den echten
-   Anzahlen 5/5 als auch mit EAs kaputten 1/1 -> 6 Bronze + 5 Silber; bei
-   "Min. N" ist Mehrliefern unschaedlich). Braucht einen reqDump von so einer
-   SBC, um die Stufen-Werte zu bestaetigen.
+4d. ~~Gemischte Qualitaets-Vorgaben (5 Bronze + 5 Silber)~~ — **erledigt** in
+   v4.28.0 (LEARNINGS 18). Am Gerät noch gegenzuprüfen: die Warnung nennt die
+   Verteilung ("5x Bronze + 5x Silber"), und im Spiel müssen beide
+   Requirement-Punkte grün werden.
 5. **Count-Parsing verifizieren**: Die "Ohne-Team-Rating ⇒ Vorgabe gilt für
    alle Slots"-Regel deckt die bekannten Fälle ab. Falls eine SBC auftaucht,
    bei der das falsch ist (Min-OVR-Count < Slots ohne Team-Rating), muss die

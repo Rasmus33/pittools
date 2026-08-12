@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.27.0
+// @version      4.28.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.27.0';
+    const VERSION = '4.28.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -1531,9 +1531,65 @@
             // 2=Silber(65-74), 3=Gold(>=75). Gilt als Band-Filter für das
             // ganze Team; bei mehreren Vorgaben zählt die höchste Qualität.
             let qLo = minRating, qHi = 99, qualityLabel = null, qualityLow = false;
+            // qTiers ist nur bei GEMISCHTEN Vorgaben gesetzt (Live-Fall: "Daily
+            // Common Gold Upgrade" mit Bronze Min. 5 + Silber Min. 5 auf 10
+            // Slots). Vorher gewann hier Math.max, also Silber - und der GANZE
+            // Pool wurde auf 65-74 gefiltert: 10x Silber, 0 Bronze, dazu ein
+            // "ok". Ein still falsches Team ist schlimmer als ein Abbruch.
+            let qTiers = null;
             const qcs = (cfg.applyRarity === false) ? [] : (cfg.qualityConstraints || []);
-            if (qcs.length) {
-                const QBAND = { 1: [0, 64], 2: [65, 74], 3: [75, 99] };
+            const QBAND_ALL = { 1: [0, 64], 2: [65, 74], 3: [75, 99] };
+            const QNAME_ALL = { 1: 'Bronze', 2: 'Silber', 3: 'Gold' };
+            if (qcs.length > 1) {
+                const tiers = [];
+                for (const c of qcs) {
+                    const q = Number(c.quality) || 1;
+                    const seen = tiers.filter(t => t.q === q)[0];
+                    if (seen) seen.count = Math.max(seen.count, Number(c.count) || 1);
+                    else tiers.push({ q: q, count: Number(c.count) || 1 });
+                }
+                tiers.sort((a, b) => a.q - b.q);
+                if (tiers.length > 1) {
+                    for (const t of tiers) {
+                        t.lo = QBAND_ALL[t.q][0];
+                        t.hi = QBAND_ALL[t.q][1];
+                        t.label = QNAME_ALL[t.q] || ('Stufe ' + t.q);
+                    }
+                    // EAs Count-Feld ist unzuverlaessig (LEARNINGS 6): der
+                    // Live-Report zeigt count 1 bei je 5 geforderten Karten.
+                    // Bei EINER Stufe hilft "gilt fuer alle Slots"; bei zwei
+                    // Stufen geht das nicht. Loesung: die genannten Anzahlen
+                    // sind das MINIMUM, die restlichen Slots werden gleichmaessig
+                    // verteilt - der Rest geht an die NIEDRIGSTE Stufe, die ist
+                    // billiger. Das trifft den Live-Fall (1/1 auf 10 Slots ->
+                    // 5 Bronze + 5 Silber) und bei "Min. N"-Vorgaben ist
+                    // Mehrliefern unschaedlich.
+                    const stated = tiers.reduce((a, t) => a + t.count, 0);
+                    if (stated < N) {
+                        const base = Math.floor((N - stated) / tiers.length);
+                        let rest = (N - stated) - base * tiers.length;
+                        for (const t of tiers) {
+                            t.count += base;
+                            if (rest > 0) { t.count++; rest--; }
+                        }
+                        warnings.push('Gemischte Vorgabe: EA nennt nur ' + stated +
+                            ' von ' + N + ' Spielern - Rest gleichmaessig verteilt (' +
+                            tiers.map(t => t.count + 'x ' + t.label).join(' + ') +
+                            '). Passt das nicht, bitte Diagnose schicken.');
+                    }
+                    qTiers = tiers;
+                    qualityLabel = tiers.map(t => t.count + 'x ' + t.label).join(' + ');
+                    qualityLow = tiers.some(t => t.q === 1 || t.q === 2);
+                    qLo = Math.min.apply(null, tiers.map(t => t.lo));
+                    qHi = Math.max.apply(null, tiers.map(t => t.hi));
+                    if (qualityLow && minRating > qLo) {
+                        warnings.push('Gemischte Vorgabe: Min-Rating (' + minRating +
+                            ') wird ignoriert.');
+                    }
+                }
+            }
+            if (qcs.length && !qTiers) {
+                const QBAND = QBAND_ALL;
                 const q = qcs.reduce((m, c) => Math.max(m, Number(c.quality) || 1), 1);
                 const band = QBAND[q] || [0, 99];
                 qualityLabel = (q === 3) ? 'Gold' : (q === 2) ? 'Silber' : 'Bronze';
@@ -1573,7 +1629,13 @@
                     warnings.push(lockedOut + ' gesperrte Karte(n) ausgeschlossen.');
                 }
             }
-            let pool = poolAll.filter(p => p.rating >= qLo && p.rating <= qHi);
+            // Bei gemischten Vorgaben ist das erlaubte Fenster NICHT
+            // durchgehend (Bronze 0-64 + Gold 75-99 laesst Silber aus), darum
+            // ein Praedikat statt eines Bereichs.
+            const inQBand = qTiers
+                ? ((p) => qTiers.some(t => p.rating >= t.lo && p.rating <= t.hi))
+                : ((p) => p.rating >= qLo && p.rating <= qHi);
+            let pool = poolAll.filter(inQBand);
             if (cfg.specialOnlyFromStorage) {
                 pool = pool.filter(p => !(p.isSpecial && !p.isStorage));
             }
@@ -1737,6 +1799,40 @@
                     warnings.push('Gewählte Rarity-Karte nicht im Pool gefunden - Automatik greift.');
                 }
             }
+            // ---- Gemischte Qualitaets-Vorgaben (Bronze + Silber) ----------
+            // Pro Stufe die guenstigsten Karten reservieren, in derselben
+            // Rangfolge wie ueberall ohne Ziel-Rating: Storage vor Verein, dann
+            // das niedrigste Rating, dann die Kosten (LEARNINGS 17).
+            if (qTiers) {
+                if (qTiers.reduce((a, t) => a + t.count, 0) > N) {
+                    return { ok: false, reason: 'Gemischte Vorgabe verlangt mehr Spieler (' +
+                        qTiers.map(t => t.count + 'x ' + t.label).join(' + ') +
+                        ') als das Team Slots hat (' + N + '). Bitte Diagnose schicken.',
+                        warnings: warnings };
+                }
+                for (const t of qTiers) {
+                    let have = reserved.filter(p => p.rating >= t.lo && p.rating <= t.hi).length;
+                    const picked = [];
+                    while (have < t.count) {
+                        const cand = pool
+                            .filter(p => freeCard(p) && p.rating >= t.lo && p.rating <= t.hi)
+                            .sort((a, b) => ((b.isStorage ? 1 : 0) - (a.isStorage ? 1 : 0)) ||
+                                (a.rating - b.rating) || (costOf(a) - costOf(b)) || reserveCmp(a, b))[0];
+                        if (!cand) {
+                            return { ok: false, reason: 'Qualitaets-Vorgabe "' + t.count + 'x ' +
+                                t.label + '" nicht erfuellbar - nur ' + have +
+                                ' passende Karte(n) im Pool.', warnings: warnings };
+                        }
+                        reserve(cand);
+                        picked.push(cand.rating);
+                        have++;
+                    }
+                    if (picked.length) {
+                        warnings.push(picked.length + 'x ' + t.label + ' reserviert (' +
+                            picked.sort((a, b) => a - b).join(', ') + ').');
+                    }
+                }
+            }
             // ---- Spieler-Level-Vorgaben (z.B. "min. 10 Spieler mit 85+") ----
             // Bei SBCs OHNE Team-Rating (Tausch-/Provisions-Upgrades) gilt
             // die Min-OVR-Vorgabe praktisch immer für ALLE geforderten
@@ -1797,7 +1893,8 @@
             // das Qualitaets-Fenster steckte nur im Auffuell-Pool.
             const qResLo = qualityLabel ? qLo : 0;
             const qResHi = qualityLabel ? qHi : 99;
-            const inQualityBand = (p) => p.rating >= qResLo && p.rating <= qResHi &&
+            const inQualityBand = (p) => (qualityLabel ? inQBand(p)
+                    : (p.rating >= qResLo && p.rating <= qResHi)) &&
                 // Bronze/Silber: keine Specials, auch nicht als Vorgabe-Karte.
                 !(qualityLow && p.isSpecial);
             for (const rc of rcList) {
@@ -1946,7 +2043,7 @@
                 // 75-89 Rare, aber nur bis 77 hergeben - 78+ bleibt für die
                 // Rating-SBCs.
                 let fillPool = avail;
-                if (qualityLabel === 'Gold') {
+                if (qualityLabel === 'Gold' && !qTiers) {
                     const maxRare = cfg.maxRareRating > 0 ? cfg.maxRareRating : 99;
                     const maxCommon = cfg.maxCommonRating > 0 ? cfg.maxCommonRating : 99;
                     const needRare = ((cfg.applyRarity === false) ? [] : (cfg.rareConstraints || []))

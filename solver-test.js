@@ -990,6 +990,38 @@ function mulberry32(a) {
         /STATE.diag.lastTap/.test(fn) && /tap: tap/.test(src));
 }
 
+// ========== 8b-2g. Report-Groesse und Set-Status ==========
+{
+    const src = require("fs").readFileSync(__dirname + "/ea-fc-sbc-optimizer.user.js", "utf8");
+    // Rasmus konnte den Report nicht mehr komplett kopieren - er brach mitten
+    // in challengeResponseSample ab (zig KB, fast nur leere Slots id 0).
+    check("challengeResponseSample wird gekuerzt",
+        /leere Slots weggelassen/.test(src) && /indexOf\(."players".\)/.test(src));
+    // hubScan lieferte 40 Zeilen (pro Set sechs: Kachel, Header, Titel, Content,
+    // Rewards, Status). Jetzt eine Zeile pro Set - mit Status, denn der sagt,
+    // ob sich das Set noch wiederholen laesst.
+    const hub = src.slice(src.indexOf("hubScan: (function"), src.indexOf("submitInfo: (function"));
+    check("hubScan liefert eine Zeile pro Set",
+        /out.sets.push/.test(hub) && /ut-sbc-set-tile-view/.test(hub));
+    check("hubScan nimmt den Status-Text mit", /sbc-status-container/.test(hub));
+    // Nur der SELEKTOR zaehlt - das Wort tileContent steht noch im Kommentar,
+    // der erklaert, was rausgeflogen ist.
+    check("hubScan sammelt keine Unter-Elemente mehr",
+        hub.indexOf("[class*=") === -1 && hub.indexOf("querySelector('.tileContent") === -1);
+
+    // Set nicht mehr wiederholbar -> klarer Abbruch statt "Diagnose schicken".
+    const fn = src.slice(src.indexOf("function setLooksRepeatable"),
+                         src.indexOf("function matchesPlannedSbc"));
+    check("Set-Status wird gelesen", /repeatable/.test(fn) && /complete/.test(fn));
+    check("Nicht ablesbarer Status bricht NICHT ab (null)",
+        /repeatable: null/.test(fn));
+    check("Explizite 0 gilt als erschoepft",
+        fn.indexOf("Repeatable:") > -1 && /Number\(m\[1\]\) === 0/.test(fn));
+    check("Erschoepft wird als Auskunft gemeldet, nicht als Fehler",
+        /laesst sich nicht/.test(src.replace(/ä/g, "ae")) &&
+        /bereits abgegebenen Runden sind aber durch/.test(src));
+}
+
 // ========== 8b-3. Der Rare-Parser darf keine Spielernamen matchen ==========
 {
     // Live-Fehler (v4.24.0): ein Substring-Match auf "RARE" im Scope-Namen hat

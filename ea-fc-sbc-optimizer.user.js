@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.30.0
+// @version      4.31.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.30.0';
+    const VERSION = '4.31.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -3601,27 +3601,23 @@
                 try {
                     const inHub = getControllerChain().some(c =>
                         /hub/i.test((c.constructor && c.constructor.name) || ''));
-                    const out = { inHub: inHub, candidates: [] };
+                    const out = { inHub: inHub, sets: [] };
                     if (!inHub) return out;
-                    // Alles, was nach SBC-Kachel/Set-Eintrag aussieht.
-                    const sel = '[class*="sbc"],[class*="tile"],[class*="set"]';
-                    const els = document.querySelectorAll(sel);
-                    for (let i = 0; i < els.length && out.candidates.length < 40; i++) {
-                        const e = els[i];
-                        // Unsere eigene UI interessiert hier nicht - beim letzten
-                        // Report hat sie die Liste vollgemacht.
-                        if (String(e.className || '').indexOf('sbc-opt') > -1) continue;
+                    // NUR echte Set-Kacheln, eine Zeile pro Set. Vorher standen
+                    // hier auch tileHeader/tileTitle/tileContent/Reward-Liste
+                    // jedes Sets - 40 Eintraege, und der Report wurde zu lang
+                    // zum Kopieren.
+                    const tiles = document.querySelectorAll('.ut-sbc-set-tile-view');
+                    for (let i = 0; i < tiles.length && out.sets.length < 25; i++) {
+                        const e = tiles[i];
                         if (!(e.offsetParent !== null || e.getClientRects().length)) continue;
-                        const txt = (e.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 45);
-                        if (!txt) continue;
-                        const r = e.getBoundingClientRect();
-                        if (r.width < 60 || r.height < 30) continue; // keine Mini-Elemente
-                        out.candidates.push({
-                            tag: e.tagName,
-                            cls: String(e.className || '').slice(0, 70),
-                            txt: txt,
-                            w: Math.round(r.width), h: Math.round(r.height),
-                            clickable: !!(e.onclick || e.getAttribute('role') === 'button')
+                        const t = e.querySelector('.tileTitle, .tileHeader, h1');
+                        // Der Status verraet, ob das Set noch wiederholbar ist
+                        // ("Repeatable: 5 …") oder fuer heute durch ist.
+                        const st = e.querySelector('.sbc-status-container');
+                        out.sets.push({
+                            title: ((t && t.textContent) || '').trim().replace(/\s+/g, ' ').slice(0, 60),
+                            status: ((st && st.textContent) || '').trim().replace(/\s+/g, ' ').slice(0, 60)
                         });
                     }
                     return out;
@@ -3762,7 +3758,17 @@
                         rawKeys: p.raw ? Object.keys(p.raw).slice(0, 60) : null
                     };
                 }),
-            challengeResponseSample: challengeSample
+            // GEKUERZT: der Report war zu lang zum Kopieren und brach live mitten
+            // in diesem Feld ab. Der Rest sind ohnehin nur leere Slots (id 0) -
+            // gebraucht werden der Kopf und playerRequirements.
+            challengeResponseSample: (function () {
+                const t = challengeSample;
+                if (typeof t !== 'string') return t;
+                const cut = t.indexOf('"players"');
+                const head = (cut > 0 ? t.slice(0, cut) : t).slice(0, 1500);
+                return head + (t.length > head.length
+                    ? ' …[' + (t.length - head.length) + ' Zeichen leere Slots weggelassen]' : '');
+            })()
         };
     }
     function onDiagClick() {
@@ -4140,6 +4146,16 @@
      */
     async function openNextInstance(plan) {
         const steps = [];
+        // Bevor mehrfach auf eine Kachel getippt wird, die gar nicht mehr
+        // aufgeht: sagt der Hub, dass das Set fuer heute durch ist, wird sofort
+        // und mit KLARER Begruendung aufgehoert. Live lief die Silber-SBC 5/5,
+        // die Gold-SBC brach nach der ersten Runde ab - drei Taps kamen an und
+        // die App blieb im Hub.
+        const rep0 = setLooksRepeatable(plan.setName || '');
+        if (rep0.repeatable === false) {
+            steps.push({ ms: 0, setState: rep0, why: 'Set laut Hub nicht mehr wiederholbar' });
+            return { ok: false, exhausted: true, status: rep0.status, steps: steps };
+        }
         const t0 = Date.now();
         let clicked = false;
         // Alle 300ms nachsehen statt jede Sekunde, und den Set-Klick SOFORT
@@ -4190,7 +4206,10 @@
             }
             await batchWait(300);
         }
-        return { ok: false, steps: steps };
+        const repEnd = setLooksRepeatable(plan.setName || '');
+        steps.push({ setState: repEnd, why: 'Status der Kachel nach den Versuchen' });
+        return { ok: false, exhausted: repEnd.repeatable === false,
+                 status: repEnd.status, steps: steps };
     }
     /**
      * Im HUB die SBC wieder aufmachen - der Weg, den Rasmus von Hand geht.
@@ -4372,6 +4391,42 @@
         // Die erste Zeile ist die noch offene Wiederholung.
         return { ok: clickLike(rows[0]), why: rows.length + ' Zeile(n), erste geklickt' };
     }
+    /**
+     * Laesst sich das Set ueberhaupt noch wiederholen? Gelesen wird der
+     * Status-Text der Kachel im Hub ("Repeatable", "Repeatable: 5 …",
+     * "Complete"/"Completed"). Rueckgabe:
+     *   { repeatable: true|false|null, status: '<Text>' }
+     * null heisst "nicht ablesbar" - dann wird NICHT abgebrochen, sondern wie
+     * bisher weiter versucht. Eine Fehldiagnose darf keinen laufenden Batch
+     * abwuergen.
+     */
+    function setLooksRepeatable(want) {
+        try {
+            const tiles = visibleAll('.ut-sbc-set-tile-view');
+            const norm = (x) => String(x || '').toLowerCase().replace(/\s+/g, ' ').trim();
+            const target = norm(want);
+            for (const e of tiles) {
+                const t = e.querySelector('.tileTitle, .tileHeader, h1');
+                const title = norm(t && t.textContent);
+                if (!title || (title !== target && title.indexOf(target) < 0)) continue;
+                const st = e.querySelector('.sbc-status-container');
+                const raw = ((st && st.textContent) || '').trim().replace(/\s+/g, ' ');
+                if (!raw) return { repeatable: null, status: '' };
+                const low = raw.toLowerCase();
+                // "Repeatable: 5 …" / "Repeatable …" -> geht noch.
+                if (low.indexOf('repeatable') > -1) {
+                    // Explizite 0 kommt vor - dann ist Schluss.
+                    const m = raw.match(/Repeatable:\s*(\d+)/i);
+                    if (m && Number(m[1]) === 0) return { repeatable: false, status: raw };
+                    return { repeatable: true, status: raw };
+                }
+                // Kein "Repeatable", aber "Complete(d)" -> fuer heute durch.
+                if (low.indexOf('complete') > -1) return { repeatable: false, status: raw };
+                return { repeatable: null, status: raw };
+            }
+        } catch (e) {}
+        return { repeatable: null, status: '' };
+    }
     /** Passt die offene SBC zu dem, wofuer geplant wurde? (Vorgaben, nicht ID) */
     function matchesPlannedSbc(plan) {
         if (String(STATE.sbc.targetOVR || '') !== String(plan.targetOVR || '')) return false;
@@ -4524,6 +4579,14 @@
                         round: i + 1, ok: next.ok, steps: next.steps
                     }]).slice(-6);
                     if (!next.ok) {
+                        if (next.exhausted) {
+                            // Kein Fehler, sondern eine Auskunft: EA laesst das
+                            // Set gerade nicht mehr wiederholen. Der Rest des
+                            // Plans ist damit gegenstandslos.
+                            throw new Error('"' + (plan.setName || 'Das Set') + '" lässt sich nicht ' +
+                                'mehr wiederholen' + (next.status ? ' (' + next.status + ')' : '') +
+                                ' - die bereits abgegebenen Runden sind aber durch.');
+                        }
                         throw new Error('Die nächste Runde liess sich nicht öffnen ' +
                             '(Diagnose schicken: batchSteps).');
                     }

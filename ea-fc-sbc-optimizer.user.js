@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.13.0
+// @version      4.14.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.13.0';
+    const VERSION = '4.14.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -709,6 +709,44 @@
                ((sd.firstName || raw.firstName || '') + ' ' + (sd.lastName || raw.lastName || '')).trim() ||
                ('#' + (raw.assetId || raw.definitionId || raw.id));
     }
+    // ---- Namen zur ANZEIGEZEIT auflösen -------------------------------------
+    // Die rohen Club-/Storage-Items enthalten KEINEN Namen (im Diagnose-Report
+    // an `rawKeys` zu sehen: nur assetId, rating, groups …) - deshalb landete in
+    // der Vorschau immer "#assetId". Die App löst Namen über ihre eigenen
+    // Item-Entities auf; ein solches wird hier bei Bedarf über dieselbe Factory
+    // gebaut, die auch das Eintragen benutzt.
+    // BEWUSST erst beim Anzeigen und mit Cache: für 8000 Pool-Karten wäre das
+    // viel zu teuer, für die 11-55 angezeigten ist es unkritisch.
+    const nameCache = new Map();
+    function entityName(it) {
+        if (!it) return null;
+        const cands = [];
+        try { if (typeof it.getStaticData === 'function') cands.push(it.getStaticData()); } catch (e) {}
+        cands.push(it._staticData, it.staticData, it);
+        for (const sd of cands) {
+            if (!sd || typeof sd !== 'object') continue;
+            const cn = sd.commonName || sd.name;
+            if (cn && String(cn).trim()) return String(cn).trim();
+            const full = ((sd.firstName || '') + ' ' + (sd.lastName || '')).trim();
+            if (full) return full;
+        }
+        return null;
+    }
+    function displayName(p) {
+        if (!p) return '?';
+        const key = String(p.assetId || p.id);
+        if (nameCache.has(key)) return nameCache.get(key);
+        let n = null;
+        // Falls EA den Namen doch mitliefert (dann ist er nicht "#…").
+        if (p.name && String(p.name).charAt(0) !== '#') n = p.name;
+        if (!n && p.raw && typeof window.UTItemEntityFactory === 'function') {
+            try { n = entityName(new window.UTItemEntityFactory().createItem(p.raw)); }
+            catch (e) {}
+        }
+        n = n || p.name || ('#' + key);
+        nameCache.set(key, n);
+        return n;
+    }
     // Spieler in den Pool mergen. Storage-Flag gewinnt bei Duplikaten.
     function mergeIntoPool(players) {
         let added = 0;
@@ -1194,7 +1232,12 @@
         }
         // Rating-Kosten-Tabelle (Pack-Ökonomie), editierbar im Panel.
         // Standard = Rasmus' Tabelle (Stand FUTTIES-Phase FC26).
-        const DEFAULT_RATING_COST_SPEC = '0-80:0, 81-83:2, 84:1, 85-86:5, 87-88:2, 89-90:3, 91-92:4, 93+:12';
+        // Rasmus' Bewertung, Stand Aug 2026: 86er sind nicht mehr knapp und
+        // liegen jetzt auf derselben Stufe wie 87-88, 85er ebenfalls billiger
+        // (er hat davon reichlich). Die Tabelle ist im Panel editierbar und
+        // wird in localStorage gemerkt - eine Änderung hier greift nur, wenn
+        // dort noch nichts gespeichert ist oder "Zurücksetzen" gedrückt wird.
+        const DEFAULT_RATING_COST_SPEC = '0-80:0, 81-83:2, 84:1, 85-88:2, 89-90:3, 91-92:4, 93+:12';
         function parseRatingCosts(spec) {
             const costs = new Array(100).fill(0);
             if (spec) {
@@ -2459,7 +2502,7 @@
                 </div>
                 <div class="sbc-opt-row">
                     <label>Max. Rating-Überschuss über Minimum (z.B. 0.10 = bis 84.10 statt 84.00)</label>
-                    <input type="number" id="sbc-opt-maxwaste" value="0.10" min="0" max="2" step="0.01">
+                    <input type="number" id="sbc-opt-maxwaste" value="0.00" min="0" max="2" step="0.01">
                 </div>
                 <details id="sbc-opt-advanced">
                     <summary>Erweiterte Einstellungen</summary>
@@ -3381,7 +3424,7 @@
         const players = res.players.slice().sort((a, b) => b.rating - a.rating);
         for (const p of players) {
             const badgeCls = 'sbc-opt-badge' + (p.isSpecial ? ' special' : '') + (p.isStorage ? ' storage' : '');
-            html += '<div class="sbc-opt-player"><span>' + escapeHtml(p.name) +
+            html += '<div class="sbc-opt-player"><span>' + escapeHtml(displayName(p)) +
                     (p.isStorage ? ' <span style="color:#0077ff;font-size:11px;">[Storage]</span>' : '') +
                     '</span><span class="' + badgeCls + '">' + p.rating + '</span></div>';
         }
@@ -3567,7 +3610,7 @@
                 const prot = !!(p.groups && p.groups.indexOf(83) > -1);
                 html += '<div class="sbc-opt-batch-card' + (prot ? ' prot' : '') + '">' +
                     '<span class="r">' + p.rating + '</span> ' +
-                    escapeHtml(p.name || ('#' + p.id)) +
+                    escapeHtml(displayName(p)) +
                     ' <span class="src">' + (p.isStorage ? 'Storage' : 'Verein') + '</span>' +
                     ' <span class="rar">' + escapeHtml(rarityLabel(p)) + '</span>' +
                     (p.untradeable ? ' <span class="untr">unverkäuflich</span>' : '') +
@@ -3644,6 +3687,9 @@
                     if (i > 0) { paused = true; break; }
                     throw new Error(tag + ': keine offene Challenge (im Spiel öffnen).');
                 }
+                // ID JETZT festhalten - nach dem Abgeben kann STATE.sbc schon
+                // auf etwas anderes zeigen, wir brauchen sie zum Neu-Öffnen.
+                const chId = STATE.sbc.challengeId;
                 // 3. Eintragen (bewährter Weg inkl. Verify).
                 setStatus(tag + ': trage ein...');
                 const sub = await submitToSbc(round);
@@ -3658,15 +3704,24 @@
                 plan.nextIndex = i + 1;
                 plan.doneLog.push('Team ' + (i + 1) + ': OVR ' + round.ovr + ' abgegeben');
                 log('[Batch] Team ' + (i + 1) + '/' + n + ' abgegeben (OVR ' + round.ovr + ').');
-                // 5. Zustand direkt nach dem Abgeben festhalten - daraus ist zu
-                //    sehen, wie der Belohnungs-Dialog aussieht (fuer eine
-                //    spaetere Automatik) ohne im richtigen Moment die Diagnose
-                //    druecken zu muessen.
+                // 5. Belohnungs-Dialog wegräumen und die Challenge wieder
+                //    benutzbar machen, damit der Lauf OHNE Handgriffe
+                //    weiterkommt - sonst wäre der Batch nicht mehr wert als
+                //    einmal "Optimieren" pro SBC zu drücken.
                 await batchWait(1200);
                 captureAfterSubmitDom(i + 1);
                 if (plan.nextIndex < n) {
-                    syncSbcWithOpenChallenge();
-                    if (!findLiveChallenge() || !findSbcController()) { paused = true; break; }
+                    setStatus(tag + ': Belohnung wegräumen...');
+                    const closed = dismissRewardPopup();
+                    await batchWait(1200);
+                    const back = await reopenChallengeForBatch(chId);
+                    if (STATE.diag.afterSubmit) {
+                        STATE.diag.afterSubmit.popupClosed = closed;
+                        STATE.diag.afterSubmit.challengeBack = back;
+                    }
+                    // Klappt es nicht automatisch, wird pausiert statt
+                    // abgebrochen - abgegeben ist abgegeben, das ist kein Fehler.
+                    if (!back) { paused = true; break; }
                 }
             }
         } catch (e) {
@@ -3678,6 +3733,44 @@
             ui.run.disabled = false;
             renderBatchState(plan, stopped, paused);
         }
+    }
+    /**
+     * Belohnungs-Dialog nach dem Abgeben wegräumen. `gPopupClickShield` ist der
+     * Popup-Manager der EA-App; PaleTools benutzt genau dieses
+     * closeActivePopup() für sein "claim-sbc-rewards"-Plugin - also der von EA
+     * selbst vorgesehene Weg und KEIN Klick auf einen geratenen Button (ein
+     * Fehlklick auf "Quick Sell" wäre nicht rückholbar).
+     */
+    function dismissRewardPopup() {
+        let closed = false;
+        try {
+            const shield = window.gPopupClickShield;
+            if (shield && typeof shield.closeActivePopup === 'function') {
+                shield.closeActivePopup();
+                closed = true;
+            }
+        } catch (e) { warn('[Batch] closeActivePopup:', e && e.message); }
+        return closed;
+    }
+    /**
+     * Nach dem Abgeben die Challenge wieder benutzbar machen. Erst schauen, ob
+     * sie ohnehin noch offen ist (der Dialog kann alles blockiert haben), sonst
+     * über den App-eigenen Ladeweg neu anstossen.
+     * Gibt true zurück, wenn danach wieder ein SBC-Squad-Controller da ist.
+     */
+    async function reopenChallengeForBatch(challengeId) {
+        syncSbcWithOpenChallenge();
+        if (findSbcController() && findLiveChallenge()) return true;
+        const sbcSvc = window.services && window.services.SBC;
+        if (sbcSvc && typeof sbcSvc.loadChallenge === 'function' && challengeId != null) {
+            try {
+                // Die App lädt die Challenge und baut ihre Ansicht dazu auf.
+                await obsPromise(sbcSvc.loadChallenge(challengeId));
+            } catch (e) { warn('[Batch] loadChallenge:', e && e.message); }
+            await batchWait(1500);
+            syncSbcWithOpenChallenge();
+        }
+        return !!(findSbcController() && findLiveChallenge());
     }
     /** Merkt sich die sichtbaren Buttons kurz nach dem Abgeben (Diagnose). */
     function captureAfterSubmitDom(roundNo) {

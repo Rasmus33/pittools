@@ -8,7 +8,7 @@ JS/Java-Engineering. Umgangssprache: Deutsch.
 ## Repo-Struktur
 
 - `ea-fc-sbc-optimizer.user.js` — DAS Produkt. Ein einziges Userscript
-  (aktuell v4.13.0). Tampermonkey aktualisiert es über `@updateURL`/`@downloadURL`
+  (aktuell v4.14.0). Tampermonkey aktualisiert es über `@updateURL`/`@downloadURL`
   im Header selbst; die Handy-App lädt dieselbe Datei von
   `https://raw.githubusercontent.com/Rasmus33/pittools/main/ea-fc-sbc-optimizer.user.js`
   bei jedem App-Start. **Push auf main = Deployment.**
@@ -52,14 +52,17 @@ JS/Java-Engineering. Umgangssprache: Deutsch.
   bewusst ignoriert. Rarity-/Level-/Qualitäts-VORGABEN werden erfüllt.
 - Ziel: minimales exaktes Dezimal-Rating über dem Ziel (84er-SBC → 84.00,
   84.03 …). Die Ratingsumme ist EGAL. Innerhalb des Fensters
-  "Max. Rating-Überschuss" (Default 0.10) entscheiden die Karten-Kosten.
+  "Max. Rating-Überschuss" (Default 0.00 ab v4.14.0 — kein Rating verschenken)
+  entscheiden die Karten-Kosten.
 - Karten-Prioritäten: Storage-Gold → Storage-Special → Verein-Gold.
   Verein-Specials NIE in SBCs — einzige Ausnahme: TOTW (rareflag 3).
 - Unverkäufliche Karten zuerst verbauen (Default-Rabatt 3, im Panel
   einstellbar): für den Transfermarkt wertlos, für SBCs vollwertig.
 - Evolutions (Academy-Items) NIEMALS verbauen.
 - Rating-Kosten-Tabelle (editierbar im Panel, seine Defaults):
-  0-80:0, 81-83:2, 84:1, 85-86:5, 87-88:2, 89-90:3, 91-92:4, 93+:12.
+  0-80:0, 81-83:2, 84:1, 85-88:2, 89-90:3, 91-92:4, 93+:12 (Stand Aug 2026 —
+  86er nicht mehr knapp, 85er reichlich). Tabelle UND Max-Überschuss liegen in
+  localStorage: neue Defaults greifen erst nach "Zurücksetzen".
 - Rarity-Schutz: Karten der Gruppe 83 (TOTW/TOTS/FOF/FUTTIES) sind wertvoller
   als ihr Rating. HARTE Regel: ohne Vorgabe keine, mit Vorgabe GENAU die
   geforderte Anzahl — lieber hohes Vereins-Gold als eine unnötige FUTTIES.
@@ -70,12 +73,14 @@ JS/Java-Engineering. Umgangssprache: Deutsch.
 - **Batch-Modus (ab v4.11.0) darf abgeben** — von Rasmus ausdrücklich
   freigegeben, aber nur in dieser Form: erst alle Teams planen, Vorschau
   ansehen, dann EINE Freigabe (Button + Rückfrage), danach läuft
-  Eintragen→Abgeben sequenziell. Nach jeder Abgabe schliesst EA die
-  Challenge-Ansicht und zeigt einen Belohnungs-Dialog — der Lauf PAUSIERT dort
-  und macht per "Weiter" da weiter (LEARNINGS §9). Bricht bei jeder
-  Unstimmigkeit sofort ab
-  ("2 von 5 fertig" ist besser als eine falsch abgegebene SBC). Der Plan ist
-  nach dem Lauf verbraucht, damit niemand zweimal abgibt.
+  Eintragen→Abgeben sequenziell. Nach jeder Abgabe kommt ein Belohnungs-Dialog;
+  der wird über `gPopupClickShield.closeActivePopup()` weggeräumt und die
+  Challenge neu geladen, damit der Lauf OHNE Handgriffe durchläuft — der Batch
+  wäre sonst nicht mehr wert als einmal "Optimieren" pro SBC (Rasmus' Einwand).
+  Klappt das nicht, PAUSIERT der Lauf und macht per "Weiter" da weiter
+  (LEARNINGS §9). Bricht bei jeder Unstimmigkeit sofort ab ("2 von 5 fertig"
+  ist besser als eine falsch abgegebene SBC). Der Plan ist nach dem Lauf
+  verbraucht, damit niemand zweimal abgibt.
 - Der Pool lädt automatisch beim App-Start; nach jedem Eintragen fliegen die
   verbauten Karten aus dem Pool (nächste SBC ohne Neuladen).
 - Panel-UI: "Spieler laden" oben, Min-Rating + Max-Überschuss prominent,

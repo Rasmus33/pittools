@@ -265,6 +265,29 @@ trotz Erfolg).
   fremden Dialogen: ein falsch getroffener Button (Quick Sell) waere nicht
   rueckholbar. `afterSubmit` im Diagnose-Report haelt die sichtbaren Buttons
   direkt nach der Abgabe fest - Grundlage, das spaeter zu automatisieren.
+- **Belohnungs-Dialog nach dem Abgeben:** `gPopupClickShield.closeActivePopup()`
+  raeumt ihn weg - das ist der Popup-Manager der EA-App selbst, PaleTools nutzt
+  genau diesen Aufruf fuer sein Plugin "claim-sbc-rewards". Bewusst kein Klick
+  auf einen per Text geratenen Button: daneben liegen Dinge wie "Quick Sell",
+  ein Fehlklick waere nicht rueckholbar. Danach `services.SBC.loadChallenge(id)`
+  und pruefen, ob wieder ein SBC-Squad-Controller da ist; nur wenn nicht, wird
+  pausiert. Die Challenge-ID VOR dem Abgeben festhalten - danach zeigt
+  `STATE.sbc` womoeglich schon woanders hin.
+  Wichtig zur Interpretation des ersten Reports: dass danach
+  `UTSBCHubViewController` stand, war KEIN Beweis fuer automatisches
+  Wegnavigieren - der Report entstand, nachdem Rasmus den Dialog weggeklickt und
+  selbst navigiert hatte.
+- **Ein halbautomatischer Batch ist wertlos.** Rasmus' Einwand: "Weiter druecken
+  ist ja quasi so als wenn ich einfach selbst noch mal auf Optimieren druecke".
+  Wenn pro Runde Handgriffe noetig sind, spart der Batch nichts - er MUSS
+  durchlaufen, sonst ist das Feature seinen Aufwand nicht wert.
+- **Spielernamen stehen NICHT in den Items.** `rawKeys` im Diagnose-Report
+  zeigt nur `assetId`, `rating`, `groups` & Co. - deshalb erschien in der
+  Vorschau immer `#assetId`. Namen loest die App ueber ihre eigenen
+  Item-Entities auf (`UTItemEntityFactory` -> `getStaticData()`/`_staticData`
+  -> `commonName`/`firstName`+`lastName`). Nur zur ANZEIGEZEIT aufloesen und
+  cachen: fuer 8000 Pool-Karten waere das viel zu teuer, fuer die 11-55
+  angezeigten ist es unkritisch.
 - **Shadowing-Falle:** `const log = []` im Batch-Lauf ueberdeckte die Funktion
   `log()` - der Lauf starb mit "log is not a function", und zwar erst NACH der
   ersten abgegebenen SBC. Weder JS noch `node --check` melden das. solver-test.js

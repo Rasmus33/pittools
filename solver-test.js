@@ -260,14 +260,18 @@ function mulberry32(a) {
 
 // ========== 8. Rarity-Vorgaben: Gruppen-Matching + Quellen-Regel + Kosten ==========
 {
-    // Kosten-basierte Wahl der Vorgabe-Karte: 88er TOTW (Band 2) schlägt
-    // 85er TOTW (Band 5) - trotz höheren Ratings.
+    // Kosten-basierte Wahl der Vorgabe-Karte: die BILLIGERE gewinnt, auch wenn
+    // sie das höhere Rating hat. Die Bänder werden hier EXPLIZIT gesetzt statt
+    // die Default-Tabelle zu nehmen - sonst hängt der Test daran, wie Rasmus
+    // seine Ratings gerade bewertet (mit '85-88:2' waren 85er und 88er gleich
+    // teuer und der Test prüfte nichts mehr).
+    const BANDS = '0-84:0, 85-86:5, 87-88:2, 89+:12';
     const totw85 = P(85, { special: true, rareflag: 3, groups: [83] });
     const totw88 = P(88, { special: true, rareflag: 3, groups: [83] });
     const pool = [].concat([totw85, totw88], many(20, 80, { groups: [19] }));
     const res = SolverCore.solve(pool, cfg(80, {
         maxOvershoot: 2, scarcityWeight: 0, storageBonus: 0,
-        ratingCostSpec: SolverCore.DEFAULT_RATING_COST_SPEC,
+        ratingCostSpec: BANDS,
         rarityConstraints: [{ label: 'PLAYER_RARITY_GROUP', ids: [], count: 1, groupId: 83 }]
     }));
     check('Vorgabe-Karte nach KOSTEN: 88er TOTW (2) statt 85er (5)', res.ok &&
@@ -676,9 +680,11 @@ function mulberry32(a) {
 // ========== 15. RatingCosts-Parser ==========
 {
     const fn = SolverCore.parseRatingCosts(SolverCore.DEFAULT_RATING_COST_SPEC);
+    // Stand Aug 2026: 85-88 liegen alle auf 2 (86er nicht mehr knapp, 85er
+    // reichlich vorhanden). Vorher war 85-86:5.
     check('RatingCosts-Parser: Default-Tabelle (Rasmus) korrekt',
         fn(78) === 0 && fn(80) === 0 && fn(81) === 2 && fn(83) === 2 && fn(84) === 1 &&
-        fn(85) === 5 && fn(86) === 5 && fn(87) === 2 && fn(88) === 2 &&
+        fn(85) === 2 && fn(86) === 2 && fn(87) === 2 && fn(88) === 2 &&
         fn(89) === 3 && fn(90) === 3 && fn(91) === 4 && fn(92) === 4 &&
         fn(93) === 12 && fn(97) === 12);
 }

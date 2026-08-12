@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.19.1
+// @version      4.20.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.19.1';
+    const VERSION = '4.20.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -2384,6 +2384,30 @@
         .sbc-opt-btn.primary { background:#00e0b8; color:#001018; }
         .sbc-opt-btn.blue { background:#0077ff; color:#fff; }
         .sbc-opt-btn.ghost { background:#1c2938; color:#cfe0f2; }
+        /* Fortschritt während des Batch-Laufs: mittig über allem, damit man
+           nicht im Panel nach dem Status suchen muss. */
+        #sbc-opt-progress {
+            position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%);
+            z-index: 1000000; display: none;
+            background: #0f1620; color: #e6edf3; border: 1px solid #24405f;
+            border-radius: 14px; box-shadow: 0 10px 50px rgba(0,0,0,.7);
+            padding: 18px 22px; min-width: 300px; text-align: center;
+            font-family: 'Segoe UI', Roboto, sans-serif;
+        }
+        #sbc-opt-progress.open { display: block; }
+        #sbc-opt-progress .p-title {
+            font-size: 17px; font-weight: 700; color: #00e0b8; margin-bottom: 2px;
+        }
+        #sbc-opt-progress .p-step { font-size: 13px; color: #9db2c8; margin-bottom: 12px; }
+        #sbc-opt-progress .p-bar {
+            height: 8px; background: #1c2938; border-radius: 5px; overflow: hidden;
+        }
+        #sbc-opt-progress .p-fill {
+            height: 100%; width: 0%; border-radius: 5px;
+            background: linear-gradient(90deg,#00e0b8,#0077ff);
+            transition: width .3s ease;
+        }
+        #sbc-opt-progress .p-done { font-size: 12px; color: #7d93ab; margin-top: 10px; }
         /* Rot: gibt SBCs endgültig ab, das ist nicht rückholbar. */
         .sbc-opt-btn.danger { background:#c0392b; color:#fff; }
         .sbc-opt-btn:disabled { opacity:.5; cursor:not-allowed; }
@@ -2611,7 +2635,20 @@
             </div>
         `;
         document.body.appendChild(panel);
+        // Fortschritts-Overlay: bewusst ausserhalb des Panels, damit es auch
+        // sichtbar ist, wenn das Panel zu ist.
+        const prog = document.createElement('div');
+        prog.id = 'sbc-opt-progress';
+        prog.innerHTML = '<div class="p-title"></div><div class="p-step"></div>' +
+            '<div class="p-bar"><div class="p-fill"></div></div>' +
+            '<div class="p-done"></div>';
+        document.body.appendChild(prog);
         ui = {
+            progress: prog,
+            progTitle: prog.querySelector('.p-title'),
+            progStep: prog.querySelector('.p-step'),
+            progFill: prog.querySelector('.p-fill'),
+            progDone: prog.querySelector('.p-done'),
             fab, panel,
             target: panel.querySelector('#sbc-opt-target'),
             rarity: panel.querySelector('#sbc-opt-rarity'),
@@ -3459,12 +3496,39 @@
     // ========================================================================
     //  BATCH: dieselbe SBC mehrfach abschliessen
     // ========================================================================
-    // Der Knackpunkt (v4.17 gelernt): JEDE Wiederholung einer SBC hat eine
-    // EIGENE challengeId. Die alte ID nach dem Abgeben weiterzubenutzen laedt
-    // die verbrauchte Instanz (404/475) - deshalb ist der Anker das SET, und
-    // nach jeder Runde wird die neue Instanz ueber requestChallengesForSet
-    // geholt. Genau daran ist der erste Versuch gescheitert.
+    // Der Knackpunkt: JEDE Wiederholung einer SBC hat eine EIGENE challengeId.
+    // Die alte ID nach dem Abgeben weiterzubenutzen laedt die verbrauchte
+    // Instanz (404/475) - deshalb ist der Anker das SET plus die Vorgaben, und
+    // die frische Instanz kommt dadurch, dass die Set-Kachel im Hub geklickt
+    // wird (siehe openNextInstance). Genau daran sind die ersten Versuche
+    // gescheitert.
     function batchWait(ms) { return new Promise(r => setTimeout(r, ms)); }
+    // ---- Fortschrittsanzeige fuer den Batch --------------------------------
+    // Rasmus' Wunsch: "einfach ein Ladebalken und da steht SBC 1/5" - statt im
+    // Panel nach dem Status zu suchen.
+    function showProgress(cur, total, step, doneText) {
+        if (!ui.progress) return;
+        ui.progress.classList.add('open');
+        ui.progTitle.textContent = 'SBC ' + cur + ' von ' + total;
+        ui.progStep.textContent = step || '';
+        const pct = Math.max(0, Math.min(100, Math.round(((cur - 1) / total) * 100)));
+        ui.progFill.style.width = pct + '%';
+        ui.progDone.textContent = doneText || '';
+    }
+    function finishProgress(text, ok) {
+        if (!ui.progress) return;
+        ui.progTitle.textContent = ok ? 'Fertig' : 'Gestoppt';
+        ui.progTitle.style.color = ok ? '#00e0b8' : '#ff6b6b';
+        ui.progStep.textContent = text || '';
+        ui.progFill.style.width = '100%';
+        // Kurz stehen lassen, damit man das Ergebnis liest.
+        setTimeout(function () {
+            if (ui.progress) {
+                ui.progress.classList.remove('open');
+                ui.progTitle.style.color = '#00e0b8';
+            }
+        }, ok ? 2600 : 5000);
+    }
     /** Belohnungs-Dialog wegräumen (EAs eigener Popup-Manager). */
     function dismissRewardPopup() {
         let closed = false;
@@ -3538,62 +3602,49 @@
      * (Ziel-OVR + Slots), NICHT die alte ID - die aendert sich ja gerade.
      */
     async function openNextInstance(plan) {
-        const svc = window.services && window.services.SBC;
         const steps = [];
-        for (let t = 0; t < 25; t++) {
-            const closed = dismissRewardPopup();
-            await batchWait(1000);
-            // Bei t=2 und t=10 die Challenge-Liste des Sets neu anfordern und
-            // die frische Instanz laden.
-            if ((t === 2 || t === 10) && svc && plan.setId != null) {
-                try {
-                    // WICHTIG: requestChallengesForSet erwartet das SET-OBJEKT,
-                    // nicht die setId - mit einer Zahl stirbt es an
-                    // "i.getChallenges is not a function" (live gesehen).
-                    // Das Set-Entity wird beim Planen mitgespeichert.
-                    if (typeof svc.requestChallengesForSet === 'function' && plan.setEntity) {
-                        await obsPromise(svc.requestChallengesForSet(plan.setEntity));
-                    }
-                    const fresh = findFreshChallengeId(plan);
-                    steps.push({ t: t, requested: true, freshId: fresh });
-                    if (fresh != null && typeof svc.loadChallenge === 'function') {
-                        await obsPromise(svc.loadChallenge(fresh));
-                        await batchWait(1200);
-                    }
-                } catch (e) { steps.push({ t: t, err: String(e && e.message || e) }); }
-            }
+        const t0 = Date.now();
+        let clicked = false;
+        // Alle 300ms nachsehen statt jede Sekunde, und den Set-Klick SOFORT
+        // versuchen. Aus dem Live-Log: der Controller war 4s nach dem Klick da,
+        // die 4s Vorlauf und die vier Anlaeufe fuer die Challenge-Zeile waren
+        // verschenkte Zeit - nach dem Kachel-Klick ist die Challenge direkt
+        // offen (seen.detailsView war 1, rowView 0).
+        // requestChallengesForSet ist raus: es lieferte freshId null und wird
+        // nicht gebraucht, weil der Klick-Weg die frische Instanz mitbringt.
+        for (let i = 0; i < 60; i++) {          // 60 x 300ms = max ~18s
+            dismissRewardPopup();
             syncSbcWithOpenChallenge();
-            let ctrl = findSbcController();
-            // Kein Squad-Controller = wir stehen im Hub. Dann den Weg gehen,
-            // den Rasmus von Hand geht: Set-Kachel klicken, dann die
-            // Challenge-Zeile. Zwei Anlaeufe (die Ansicht braucht Zeit).
-            if (!ctrl && (t === 4 || t === 12)) {
-                const s1 = clickSetTile(plan);
-                steps.push({ t: t, setTile: s1 });
-                if (s1.ok) {
-                    // Die Set-Ansicht braucht Zeit; die Zeile mehrfach
-                    // probieren statt nach einem Versuch aufzugeben.
-                    let s2 = null;
-                    for (let k = 0; k < 4 && (!s2 || !s2.ok); k++) {
-                        await batchWait(1200);
-                        s2 = clickChallengeRow();
-                    }
-                    steps.push({ t: t, chRow: s2 });
-                    await batchWait(2000);
-                    syncSbcWithOpenChallenge();
-                    ctrl = findSbcController();
-                }
-            }
+            const ctrl = findSbcController();
             const sq = ctrl && (ctrl._squad || (ctrl.getSquad && ctrl.getSquad()));
             let empty = null;
             try { if (sq && typeof sq.isSquadEmpty === 'function') empty = sq.isSquadEmpty(); }
             catch (e) {}
-            const fits = matchesPlannedSbc(plan);
-            if (t < 5 || t % 5 === 0) {
-                steps.push({ t: t, popup: closed, ctrl: !!ctrl, empty: empty,
-                             chId: STATE.sbc.challengeId, fits: fits });
+            if (ctrl && sq && matchesPlannedSbc(plan) && empty !== false) {
+                steps.push({ ms: Date.now() - t0, done: true, clicked: clicked });
+                return { ok: true, steps: steps };
             }
-            if (ctrl && sq && fits && empty !== false) return { ok: true, steps: steps };
+            // Im Hub: Set-Kachel anklicken. Erster Versuch sofort, danach
+            // gelegentlich nachfassen (die Kachelliste braucht manchmal einen
+            // Moment, bis sie gerendert ist).
+            if (!ctrl && (!clicked || i === 20 || i === 40)) {
+                const s1 = clickSetTile(plan);
+                if (s1.ok) {
+                    clicked = true;
+                    steps.push({ ms: Date.now() - t0, setTile: s1 });
+                    await batchWait(500);
+                    continue;
+                }
+                if (i === 6 || i === 20) steps.push({ ms: Date.now() - t0, setTile: s1 });
+            }
+            // Nur falls das Set MEHRERE Challenges hat, steht eine Zeilenliste
+            // offen - dann die erste anklicken.
+            if (!ctrl && clicked && (i === 10 || i === 25)) {
+                const s2 = clickChallengeRow();
+                if (s2.ok) { steps.push({ ms: Date.now() - t0, chRow: s2 }); await batchWait(500); }
+                else if (i === 10) steps.push({ ms: Date.now() - t0, chRow: s2 });
+            }
+            await batchWait(300);
         }
         return { ok: false, steps: steps };
     }
@@ -3676,43 +3727,6 @@
         }
         // Die erste Zeile ist die noch offene Wiederholung.
         return { ok: clickLike(rows[0]), why: rows.length + ' Zeile(n), erste geklickt' };
-    }
-    /**
-     * Die frische challengeId derselben SBC aus dem App-Cache fischen. Die
-     * Challenge-Liste haengt je nach Version an unterschiedlichen Stellen,
-     * deshalb wird breit gesucht und ueber die Vorgaben-Signatur gefiltert.
-     */
-    function findFreshChallengeId(plan) {
-        const seen = [];
-        function look(obj, depth) {
-            if (!obj || depth > 3 || seen.length > 400) return;
-            if (Array.isArray(obj)) {
-                for (const o of obj) look(o, depth + 1);
-                return;
-            }
-            if (typeof obj !== 'object') return;
-            const id = obj.challengeId != null ? obj.challengeId : obj.id;
-            if (id != null && (obj.challengeId != null || obj.setId != null)) seen.push(obj);
-            for (const k of ['challenges', '_challenges', 'items', '_items', 'list']) {
-                if (obj[k]) look(obj[k], depth + 1);
-            }
-        }
-        try {
-            const svc = window.services && window.services.SBC;
-            look(svc && svc._challengesBySet, 0);
-            look(svc && svc._challenges, 0);
-            look(STATE.sbc.setChallenges, 0);
-        } catch (e) {}
-        // Neueste (hoechste) ID, die NICHT die gerade verbrauchte ist.
-        let best = null;
-        for (const c of seen) {
-            const id = Number(c.challengeId != null ? c.challengeId : c.id);
-            if (!isFinite(id)) continue;
-            if (plan.usedChallengeIds.indexOf(String(id)) > -1) continue;
-            if (plan.setId != null && c.setId != null && String(c.setId) !== String(plan.setId)) continue;
-            if (best == null || id > best) best = id;
-        }
-        return best;
     }
     /** Passt die offene SBC zu dem, wofuer geplant wurde? (Vorgaben, nicht ID) */
     function matchesPlannedSbc(plan) {
@@ -3830,6 +3844,7 @@
                 if (missing.length) {
                     throw new Error(tag + ': ' + missing.length + ' Karte(n) nicht mehr im Pool.');
                 }
+                showProgress(i + 1, n, 'prüfe SBC...', (doneLog.length ? doneLog.length + ' fertig' : ''));
                 setStatus(tag + ': prüfe Challenge...');
                 syncSbcWithOpenChallenge();
                 if (!findSbcController() || !findLiveChallenge()) {
@@ -3845,16 +3860,20 @@
                 if (STATE.sbc.challengeId != null) {
                     plan.usedChallengeIds.push(String(STATE.sbc.challengeId));
                 }
+                showProgress(i + 1, n, 'trage Team ein (OVR ' + round.ovr + ')...',
+                    (doneLog.length ? doneLog.length + ' fertig' : ''));
                 setStatus(tag + ': trage ein...');
                 const sub = await submitToSbc(round);
                 if (sub && sub.via !== 'app') { await refreshChallengeCache(); refreshOpenSbcView(); }
                 removeFromPool(round.players);
+                showProgress(i + 1, n, 'gebe ab...', (doneLog.length ? doneLog.length + ' fertig' : ''));
                 setStatus(tag + ': gebe ab...');
                 await submitChallengeToEa();
                 done++;
                 doneLog.push('Team ' + (i + 1) + ': OVR ' + round.ovr + ' abgegeben');
                 log('[Batch] Team ' + (i + 1) + '/' + n + ' abgegeben (OVR ' + round.ovr + ').');
                 if (i + 1 < n) {
+                    showProgress(i + 2, n, 'öffne die nächste SBC...', (doneLog.length ? doneLog.length + ' fertig' : ''));
                     setStatus(tag + ': öffne die nächste Runde...');
                     const next = await openNextInstance(plan);
                     STATE.diag.batchSteps = (STATE.diag.batchSteps || []).concat([{
@@ -3878,11 +3897,13 @@
             let html = doneLog.length
                 ? '<div class="sbc-opt-batch-round">' + doneLog.map(escapeHtml).join('<br>') + '</div>' : '';
             if (stopped) {
+                finishProgress(done + ' von ' + n + ' abgegeben · ' + stopped, false);
                 setStatus('Batch gestoppt nach ' + done + '/' + n);
                 toast('Batch gestoppt nach ' + done + ' von ' + n + ': ' + stopped, 'error');
                 html += '<div class="sbc-opt-batch-round sbc-opt-batch-bad">Gestoppt: ' +
                     escapeHtml(stopped) + '</div>';
             } else {
+                finishProgress(done + ' SBC(s) eingetragen und abgegeben', true);
                 setStatus(done + ' SBC(s) abgegeben ✓');
                 toast(done + ' von ' + n + ' SBCs eingetragen und abgegeben.', 'ok');
             }

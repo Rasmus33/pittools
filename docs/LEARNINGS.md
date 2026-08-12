@@ -295,6 +295,17 @@ Beide Klassennamen sind aus PaleTools' Bundle verifiziert, ebenso
 `.ut-sbc-hub-view`, `.ut-sbc-challenges-view--challenges`,
 `.ut-sbc-challenge-details-view`. Den Set-NAMEN liefert `ctrl._set.name`
 (UTSBCSetEntity) und wird beim Planen mitgespeichert.
+**LAEUFT (v4.19.1 live bestaetigt), und wo die Zeit hinging (v4.20.0):**
+Der Log der ersten erfolgreichen Runde zeigte `detailsView: 1` bei `rowView: 0` -
+**nach dem Klick auf die Set-Kachel ist die Challenge direkt offen**, eine
+Challenge-Zeile gibt es nur, wenn das Set mehrere hat. Verschenkt waren damit:
+4s Vorlauf, bevor ueberhaupt geklickt wurde, 4 Anlaeufe a 1,2s fuer die
+nicht existierende Zeile und 1,2s fuer einen DOM-Abzug. Ausserdem lieferte
+`requestChallengesForSet` `freshId: null` und ist ueberfluessig - die frische
+Instanz kommt durch den Kachel-Klick.
+Jetzt: Pruefschleife alle 300ms, Set-Klick sofort, Zeilen-Klick nur als
+Sonderfall (i=10/25). Aus ~13s pro Runde werden ~2-4s.
+
 **Zwei Fallen dabei (v4.19.1, live aus `batchSteps`):**
 - `requestChallengesForSet` erwartet das **SET-OBJEKT**, nicht die `setId`.
   Mit einer Zahl stirbt es an `i.getChallenges is not a function`. Das Set-Entity

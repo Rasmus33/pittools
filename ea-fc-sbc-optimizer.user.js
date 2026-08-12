@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.15.0
+// @version      4.16.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.15.0';
+    const VERSION = '4.16.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -3763,22 +3763,19 @@
                 await batchWait(1200);
                 captureAfterSubmitDom(i + 1);
                 if (plan.nextIndex < n) {
-                    setStatus(tag + ': Belohnung wegräumen...');
-                    const closed = dismissRewardPopup();
-                    await batchWait(1200);
-                    const back = await reopenChallengeForBatch(chId);
+                    setStatus(tag + ': Belohnung wegräumen, warte auf die SBC...');
+                    const prep = await prepareNextRound(chId);
+                    const back = prep.ok;
+                    if (STATE.diag.afterSubmit) {
+                        STATE.diag.afterSubmit.challengeBack = back;
+                    }
                     // Pro Runde festhalten (nicht überschreiben) - sonst steht
                     // im Report nur die letzte Runde und genau die Felder
                     // fehlen, um die es geht.
-                    if (STATE.diag.afterSubmit) {
-                        STATE.diag.afterSubmit.popupClosed = closed;
-                        STATE.diag.afterSubmit.challengeBack = back;
-                        STATE.diag.afterSubmit.sameChallenge =
-                            String(STATE.sbc.challengeId) === String(chId);
-                    }
                     STATE.diag.batchSteps = (STATE.diag.batchSteps || []).concat([{
-                        round: i + 1, popupClosed: closed, challengeBack: back,
+                        round: i + 1, challengeBack: back,
                         challengeIdNow: STATE.sbc.challengeId, wanted: chId,
+                        waitSteps: prep.steps,
                         controller: (findSbcController() && findSbcController().constructor &&
                                      findSbcController().constructor.name) || null
                     }]).slice(-10);
@@ -3813,27 +3810,60 @@
                 closed = true;
             }
         } catch (e) { warn('[Batch] closeActivePopup:', e && e.message); }
+        // Zweiter Weg: der oberste PRÄSENTIERTE Controller ist bei offenem
+        // Dialog der Dialog selbst - er bringt sein eigenes Schliessen mit.
+        // Nach dem Abgeben kommen teils mehrere Overlays hintereinander
+        // (Belohnung, Pack-Hinweis), deshalb wird das wiederholt aufgerufen.
+        try {
+            const chain = getControllerChain();
+            const top = chain.length ? chain[chain.length - 1] : null;
+            const n = (top && top.constructor && top.constructor.name) || '';
+            if (top && /popup|dialog|reward|award/i.test(n)) {
+                for (const m of ['close', 'dismiss', 'hide', 'onClose']) {
+                    if (typeof top[m] === 'function') { top[m](); closed = true; break; }
+                }
+            }
+        } catch (e) {}
         return closed;
     }
     /**
-     * Nach dem Abgeben die Challenge wieder benutzbar machen. Erst schauen, ob
-     * sie ohnehin noch offen ist (der Dialog kann alles blockiert haben), sonst
-     * über den App-eigenen Ladeweg neu anstossen.
-     * Gibt true zurück, wenn danach wieder ein SBC-Squad-Controller da ist.
+     * Nächste Runde vorbereiten: warten, bis die SBC-Ansicht wieder benutzbar
+     * ist. Die App braucht nach dem Abgeben Zeit für Belohnungs-Animation und
+     * Neuaufbau - der erste Versuch (v4.14.0) gab nach 1,2s auf und pausierte
+     * deshalb, obwohl die Ansicht laut Diagnose erhalten bleibt
+     * (afterSubmit.controllers endete auf UTSBCSquadSplitViewController).
+     * Bis zu ~25s geduldig, jede Sekunde Dialog wegräumen und nachsehen.
      */
-    async function reopenChallengeForBatch(challengeId) {
-        syncSbcWithOpenChallenge();
-        if (findSbcController() && findLiveChallenge()) return true;
-        const sbcSvc = window.services && window.services.SBC;
-        if (sbcSvc && typeof sbcSvc.loadChallenge === 'function' && challengeId != null) {
-            try {
-                // Die App lädt die Challenge und baut ihre Ansicht dazu auf.
-                await obsPromise(sbcSvc.loadChallenge(challengeId));
-            } catch (e) { warn('[Batch] loadChallenge:', e && e.message); }
-            await batchWait(1500);
+    async function prepareNextRound(chId) {
+        const steps = [];
+        for (let t = 0; t < 25; t++) {
+            const closed = dismissRewardPopup();
+            await batchWait(1000);
             syncSbcWithOpenChallenge();
+            const ctrl = findSbcController();
+            const sameCh = STATE.sbc.challengeId == null ||
+                String(STATE.sbc.challengeId) === String(chId);
+            const sq = ctrl && (ctrl._squad || (ctrl.getSquad && ctrl.getSquad()));
+            let empty = null;
+            try { if (sq && typeof sq.isSquadEmpty === 'function') empty = sq.isSquadEmpty(); }
+            catch (e) {}
+            if (t < 6 || t % 5 === 0) {
+                steps.push({ t: t, popup: closed, ctrl: !!ctrl, same: sameCh, empty: empty });
+            }
+            // Brauchbar, sobald der Squad-Controller der RICHTIGEN Challenge da
+            // ist und der Squad nicht mehr voll ist.
+            if (ctrl && sq && sameCh && empty !== false) return { ok: true, steps: steps };
+            // Nach 6s die Challenge einmal aktiv nachladen (falls die App den
+            // Squad-Stand nicht selbst auffrischt).
+            if (t === 6) {
+                const svc = window.services && window.services.SBC;
+                if (svc && typeof svc.loadChallenge === 'function' && chId != null) {
+                    try { await obsPromise(svc.loadChallenge(chId)); }
+                    catch (e) { warn('[Batch] loadChallenge:', e && e.message); }
+                }
+            }
         }
-        return !!(findSbcController() && findLiveChallenge());
+        return { ok: false, steps: steps };
     }
     /** Merkt sich die sichtbaren Buttons kurz nach dem Abgeben (Diagnose). */
     function captureAfterSubmitDom(roundNo) {

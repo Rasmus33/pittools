@@ -276,19 +276,28 @@ wechselt die Ansicht nicht - und mit der ALTEN ID ohnehin die falsche Instanz.
 Ein Weg, eine Challenge programmatisch zu OEFFNEN, wurde nicht gefunden;
 `UTGameFlowNavigationController` hat `pushViewController`, aber dafuer muesste
 man einen korrekt initialisierten Controller bauen.
-**Die Loesung (v4.18.0):** nach dem Abgeben nicht die alte ID weiterbenutzen,
-sondern `requestChallengesForSet(setId)` aufrufen und die FRISCHE Instanz
-laden. Anker fuer "ist das noch dieselbe SBC?" sind Set + Vorgaben
-(Ziel-OVR/Slots), NICHT die challengeId. Der Lauf probiert das ueber ~25s,
-raeumt dabei jede Sekunde einen Dialog weg und bricht ab, wenn es nicht klappt
-(`batchSteps` im Report zeigt dann sekundengenau, woran es lag).
+**Die Loesung, Teil 1 (v4.18.0):** nach dem Abgeben nicht die alte ID
+weiterbenutzen, sondern `requestChallengesForSet(setId)` aufrufen und die
+FRISCHE Instanz laden. Anker fuer "ist das noch dieselbe SBC?" sind Set +
+Vorgaben (Ziel-OVR/Slots), NICHT die challengeId.
 
-Zwischenzeitlich war der Batch in v4.17.0 ausgebaut - das war eine
-Fehlentscheidung: Rasmus wollte das Feature, sobald es einen Weg gibt, und den
-gab es zu dem Zeitpunkt schon (die Erkenntnis oben stammt aus demselben
-Report). Ein halbautomatischer Batch waere dagegen wertlos gewesen: "Weiter
-druecken ist ja quasi so als wenn ich einfach selbst noch mal auf Optimieren
-druecke".
+**Die Loesung, Teil 2 (v4.19.0):** das reichte nicht -
+`services.SBC.loadChallenge(id)` laedt nur DATEN und wechselt die Ansicht
+nicht. Nach dem Abgeben steht die App im SBC-Hub (dreimal belegt:
+`UTSBCHubViewController`, `containerCount: 0`, kein Squad-Controller). Es gibt
+keinen gefundenen Weg, eine Challenge programmatisch zu OEFFNEN. Also wird der
+Weg gegangen, den man von Hand geht - per DOM-Klick auf EAs eigene Elemente:
+```
+.ut-sbc-set-tile-view              Set-Kachel im Hub  (Auswahl per Set-NAME)
+.ut-sbc-challenge-table-row-view   Challenge-Zeile in der Set-Ansicht
+```
+Beide Klassennamen sind aus PaleTools' Bundle verifiziert, ebenso
+`.ut-sbc-hub-view`, `.ut-sbc-challenges-view--challenges`,
+`.ut-sbc-challenge-details-view`. Den Set-NAMEN liefert `ctrl._set.name`
+(UTSBCSetEntity) und wird beim Planen mitgespeichert.
+Ein Klick auf eine Kachel ist harmlos - sie oeffnet nur eine Ansicht. Das ist
+der Unterschied zu einem geratenen Klick in einem Belohnungs-Dialog, wo
+"Quick Sell" danebenliegt; solche Klicks bleiben tabu.
 
 Noch ungeklaert, waere die naechste Option: der Button `#repeat-sbc`
 ("Repeat Search") in `.sbc-button-container` - PaleTools' repeatSbc oder EAs

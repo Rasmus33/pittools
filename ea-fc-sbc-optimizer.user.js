@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.18.1
+// @version      4.19.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.18.1';
+    const VERSION = '4.19.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -3556,7 +3556,22 @@
                 } catch (e) { steps.push({ t: t, err: String(e && e.message || e) }); }
             }
             syncSbcWithOpenChallenge();
-            const ctrl = findSbcController();
+            let ctrl = findSbcController();
+            // Kein Squad-Controller = wir stehen im Hub. Dann den Weg gehen,
+            // den Rasmus von Hand geht: Set-Kachel klicken, dann die
+            // Challenge-Zeile. Zwei Anlaeufe (die Ansicht braucht Zeit).
+            if (!ctrl && (t === 4 || t === 12)) {
+                const s1 = clickSetTile(plan);
+                steps.push({ t: t, setTile: s1 });
+                if (s1.ok) {
+                    await batchWait(1800);
+                    const s2 = clickChallengeRow();
+                    steps.push({ t: t, chRow: s2 });
+                    await batchWait(1800);
+                    syncSbcWithOpenChallenge();
+                    ctrl = findSbcController();
+                }
+            }
             const sq = ctrl && (ctrl._squad || (ctrl.getSquad && ctrl.getSquad()));
             let empty = null;
             try { if (sq && typeof sq.isSquadEmpty === 'function') empty = sq.isSquadEmpty(); }
@@ -3569,6 +3584,62 @@
             if (ctrl && sq && fits && empty !== false) return { ok: true, steps: steps };
         }
         return { ok: false, steps: steps };
+    }
+    /**
+     * Im HUB die SBC wieder aufmachen - der Weg, den Rasmus von Hand geht.
+     * Nach dem Abgeben steht die App im SBC-Hub, und
+     * services.SBC.loadChallenge() laedt nur Daten ohne die Ansicht zu
+     * wechseln (dreimal belegt). Also: Set-Kachel anklicken, dann die
+     * Challenge-Zeile.
+     *
+     * Die Klassen sind EA-eigene (in PaleTools' Bundle verifiziert):
+     *   .ut-sbc-set-tile-view              - Set-Kachel im Hub
+     *   .ut-sbc-challenge-table-row-view   - Challenge-Zeile in der Set-Ansicht
+     * Ein Klick darauf ist harmlos (oeffnet nur eine Ansicht) - anders als ein
+     * geratener Klick in einem Belohnungs-Dialog.
+     */
+    function clickLike(el) {
+        if (!el) return false;
+        try {
+            // Erst der echte Weg, dann ein Maus-Ereignis als Rueckfall.
+            if (typeof el.click === 'function') { el.click(); return true; }
+            el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+            return true;
+        } catch (e) { return false; }
+    }
+    function visibleAll(sel) {
+        const out = [];
+        try {
+            const els = document.querySelectorAll(sel);
+            for (let i = 0; i < els.length; i++) {
+                const e = els[i];
+                if (e.offsetParent !== null || e.getClientRects().length) out.push(e);
+            }
+        } catch (e) {}
+        return out;
+    }
+    /** Set-Kachel im Hub anklicken (per Set-Name). */
+    function clickSetTile(plan) {
+        const tiles = visibleAll('.ut-sbc-set-tile-view');
+        if (!tiles.length) return { ok: false, why: 'keine Set-Kacheln sichtbar' };
+        const want = String(plan.setName || '').trim().toLowerCase();
+        let hit = null;
+        if (want) {
+            for (const t of tiles) {
+                const txt = (t.textContent || '').replace(/\s+/g, ' ').toLowerCase();
+                if (txt.indexOf(want) > -1) { hit = t; break; }
+            }
+        }
+        if (!hit) return { ok: false, why: 'Set "' + (plan.setName || '?') + '" nicht gefunden (' + tiles.length + ' Kacheln)' };
+        return { ok: clickLike(hit), why: 'Set-Kachel geklickt' };
+    }
+    /** Challenge-Zeile in der geoeffneten Set-Ansicht anklicken. */
+    function clickChallengeRow() {
+        let rows = visibleAll('.ut-sbc-challenge-table-row-view');
+        if (!rows.length) rows = visibleAll('.ut-sbc-challenge-tile-view');
+        if (!rows.length) return { ok: false, why: 'keine Challenge-Zeilen sichtbar' };
+        // Die erste Zeile ist die noch offene Wiederholung.
+        return { ok: clickLike(rows[0]), why: rows.length + ' Zeile(n), erste geklickt' };
     }
     /**
      * Die frische challengeId derselben SBC aus dem App-Cache fischen. Die
@@ -3633,6 +3704,15 @@
             plan.targetOVR = STATE.sbc.targetOVR;
             plan.slots = STATE.sbc.slots;
             plan.usedChallengeIds = [];
+            // Set-NAME: damit die richtige Kachel im Hub wiedergefunden wird
+            // (der Controller haelt das Set als UTSBCSetEntity).
+            plan.setName = (function () {
+                try {
+                    const c = findSbcController();
+                    const set = c && (c._set || c.set);
+                    return (set && (set.name || set.setName)) || null;
+                } catch (e) { return null; }
+            })();
             STATE.batch = plan;
             renderBatchPreview(plan);
             setStatus(plan.planned + ' von ' + want + ' Teams geplant');

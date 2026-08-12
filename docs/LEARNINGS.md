@@ -295,6 +295,18 @@ Beide Klassennamen sind aus PaleTools' Bundle verifiziert, ebenso
 `.ut-sbc-hub-view`, `.ut-sbc-challenges-view--challenges`,
 `.ut-sbc-challenge-details-view`. Den Set-NAMEN liefert `ctrl._set.name`
 (UTSBCSetEntity) und wird beim Planen mitgespeichert.
+**Zwei Fallen dabei (v4.19.1, live aus `batchSteps`):**
+- `requestChallengesForSet` erwartet das **SET-OBJEKT**, nicht die `setId`.
+  Mit einer Zahl stirbt es an `i.getChallenges is not a function`. Das Set-Entity
+  liegt am Controller (`ctrl._set`, UTSBCSetEntity) und wird beim Planen
+  mitgespeichert.
+- **`element.click()` reicht bei EA-Views NICHT.** Der Set-Kachel-Klick meldete
+  Erfolg, die Ansicht reagierte aber nicht. EA-Views haengen an ihrem eigenen
+  Event-System (PaleTools registriert dort per `addTarget(…, EventType.TAP)`),
+  das auf die Pointer-/Maus-Kette hoert. Es braucht die ganze Sequenz:
+  `pointerdown` -> `pointerup` -> `mousedown` -> `mouseup` -> `click`, alle mit
+  `bubbles: true`.
+
 Ein Klick auf eine Kachel ist harmlos - sie oeffnet nur eine Ansicht. Das ist
 der Unterschied zu einem geratenen Klick in einem Belohnungs-Dialog, wo
 "Quick Sell" danebenliegt; solche Klicks bleiben tabu.

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.19.0
+// @version      4.19.1
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.19.0';
+    const VERSION = '4.19.1';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -3090,8 +3090,11 @@
                     // Alles, was nach SBC-Kachel/Set-Eintrag aussieht.
                     const sel = '[class*="sbc"],[class*="tile"],[class*="set"]';
                     const els = document.querySelectorAll(sel);
-                    for (let i = 0; i < els.length && out.candidates.length < 30; i++) {
+                    for (let i = 0; i < els.length && out.candidates.length < 40; i++) {
                         const e = els[i];
+                        // Unsere eigene UI interessiert hier nicht - beim letzten
+                        // Report hat sie die Liste vollgemacht.
+                        if (String(e.className || '').indexOf('sbc-opt') > -1) continue;
                         if (!(e.offsetParent !== null || e.getClientRects().length)) continue;
                         const txt = (e.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 45);
                         if (!txt) continue;
@@ -3544,8 +3547,12 @@
             // die frische Instanz laden.
             if ((t === 2 || t === 10) && svc && plan.setId != null) {
                 try {
-                    if (typeof svc.requestChallengesForSet === 'function') {
-                        await obsPromise(svc.requestChallengesForSet(plan.setId));
+                    // WICHTIG: requestChallengesForSet erwartet das SET-OBJEKT,
+                    // nicht die setId - mit einer Zahl stirbt es an
+                    // "i.getChallenges is not a function" (live gesehen).
+                    // Das Set-Entity wird beim Planen mitgespeichert.
+                    if (typeof svc.requestChallengesForSet === 'function' && plan.setEntity) {
+                        await obsPromise(svc.requestChallengesForSet(plan.setEntity));
                     }
                     const fresh = findFreshChallengeId(plan);
                     steps.push({ t: t, requested: true, freshId: fresh });
@@ -3564,10 +3571,15 @@
                 const s1 = clickSetTile(plan);
                 steps.push({ t: t, setTile: s1 });
                 if (s1.ok) {
-                    await batchWait(1800);
-                    const s2 = clickChallengeRow();
+                    // Die Set-Ansicht braucht Zeit; die Zeile mehrfach
+                    // probieren statt nach einem Versuch aufzugeben.
+                    let s2 = null;
+                    for (let k = 0; k < 4 && (!s2 || !s2.ok); k++) {
+                        await batchWait(1200);
+                        s2 = clickChallengeRow();
+                    }
                     steps.push({ t: t, chRow: s2 });
-                    await batchWait(1800);
+                    await batchWait(2000);
                     syncSbcWithOpenChallenge();
                     ctrl = findSbcController();
                 }
@@ -3598,13 +3610,29 @@
      * Ein Klick darauf ist harmlos (oeffnet nur eine Ansicht) - anders als ein
      * geratener Klick in einem Belohnungs-Dialog.
      */
+    /**
+     * Vollständige Tap-Sequenz. Ein nacktes el.click() reicht NICHT: die
+     * EA-Views hängen an ihrem eigenen Event-System (PaleTools registriert
+     * dort mit `addTarget(…, EventType.TAP)`), das auf die Pointer-/Maus-Kette
+     * hört. Live gesehen: der Set-Kachel-Klick meldete Erfolg, die Ansicht
+     * reagierte aber nicht.
+     */
     function clickLike(el) {
         if (!el) return false;
+        const o = { bubbles: true, cancelable: true, view: window, button: 0 };
+        let sent = 0;
+        function fire(type, Ctor) {
+            try { el.dispatchEvent(new Ctor(type, o)); sent++; } catch (e) {}
+        }
         try {
-            // Erst der echte Weg, dann ein Maus-Ereignis als Rueckfall.
-            if (typeof el.click === 'function') { el.click(); return true; }
-            el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-            return true;
+            if (typeof window.PointerEvent === 'function') {
+                fire('pointerdown', window.PointerEvent);
+                fire('pointerup', window.PointerEvent);
+            }
+            fire('mousedown', MouseEvent);
+            fire('mouseup', MouseEvent);
+            fire('click', MouseEvent);
+            return sent > 0;
         } catch (e) { return false; }
     }
     function visibleAll(sel) {
@@ -3637,7 +3665,15 @@
     function clickChallengeRow() {
         let rows = visibleAll('.ut-sbc-challenge-table-row-view');
         if (!rows.length) rows = visibleAll('.ut-sbc-challenge-tile-view');
-        if (!rows.length) return { ok: false, why: 'keine Challenge-Zeilen sichtbar' };
+        if (!rows.length) rows = visibleAll('.ut-sbc-challenges-view--challenges > *');
+        if (!rows.length) {
+            return { ok: false, why: 'keine Challenge-Zeilen sichtbar', seen: {
+                rowView: document.querySelectorAll('.ut-sbc-challenge-table-row-view').length,
+                tileView: document.querySelectorAll('.ut-sbc-challenge-tile-view').length,
+                container: document.querySelectorAll('.ut-sbc-challenges-view--challenges').length,
+                detailsView: document.querySelectorAll('.ut-sbc-challenge-details-view').length
+            } };
+        }
         // Die erste Zeile ist die noch offene Wiederholung.
         return { ok: clickLike(rows[0]), why: rows.length + ' Zeile(n), erste geklickt' };
     }
@@ -3706,13 +3742,14 @@
             plan.usedChallengeIds = [];
             // Set-NAME: damit die richtige Kachel im Hub wiedergefunden wird
             // (der Controller haelt das Set als UTSBCSetEntity).
-            plan.setName = (function () {
+            plan.setEntity = (function () {
                 try {
                     const c = findSbcController();
-                    const set = c && (c._set || c.set);
-                    return (set && (set.name || set.setName)) || null;
+                    return (c && (c._set || c.set)) || null;
                 } catch (e) { return null; }
             })();
+            plan.setName = (plan.setEntity &&
+                (plan.setEntity.name || plan.setEntity.setName)) || null;
             STATE.batch = plan;
             renderBatchPreview(plan);
             setStatus(plan.planned + ' von ' + want + ' Teams geplant');

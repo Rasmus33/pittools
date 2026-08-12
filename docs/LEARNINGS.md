@@ -726,7 +726,13 @@ es nicht immer eine minute dauert, bis paletools am handy aktiv ist?"*
 
 Ein Cache war schon da - aber in der falschen Reihenfolge benutzt:
 
-
+```java
+pale = fetchUrl(paleUrl);              // ~900 KB, bei JEDEM Start
+if (pale != null) writeCache("pale.js", pale);
+else pale = readCache("pale.js");      // nur wenn der Download SCHEITERT
+...
+runOnUiThread(new StartWebApp(...));   // erst JETZT laedt die EA-Seite
+```
 
 Der Cache griff also nur bei Netzfehler, und die WebView startete erst nach dem
 Download. Die 900 KB lagen komplett im kritischen Pfad, VOR dem Laden der

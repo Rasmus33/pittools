@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.22.0
+// @version      4.23.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.22.0';
+    const VERSION = '4.23.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -3758,14 +3758,21 @@
             // gelegentlich nachfassen (die Kachelliste braucht manchmal einen
             // Moment, bis sie gerendert ist).
             if (!ctrl && (!clicked || i === 20 || i === 40)) {
-                const s1 = clickSetTile(plan);
+                let s1 = clickSetTile(plan);
+                // Nicht gefunden? Dann versteckt der Hub-Filter sie vielleicht
+                // (live: "Favourites" aktiv, gesuchte SBC nicht dabei).
+                if (!s1.ok && (i === 3 || i === 20)) {
+                    const f = clickAllFilter();
+                    steps.push({ ms: Date.now() - t0, filter: f });
+                    if (f.ok) { await batchWait(900); s1 = clickSetTile(plan); }
+                }
                 if (s1.ok) {
                     clicked = true;
                     steps.push({ ms: Date.now() - t0, setTile: s1 });
                     await batchWait(500);
                     continue;
                 }
-                if (i === 6 || i === 20) steps.push({ ms: Date.now() - t0, setTile: s1 });
+                if (i === 3 || i === 20) steps.push({ ms: Date.now() - t0, setTile: s1 });
             }
             // Nur falls das Set MEHRERE Challenges hat, steht eine Zeilenliste
             // offen - dann die erste anklicken.
@@ -3827,20 +3834,63 @@
         } catch (e) {}
         return out;
     }
-    /** Set-Kachel im Hub anklicken (per Set-Name). */
-    function clickSetTile(plan) {
-        const tiles = visibleAll('.ut-sbc-set-tile-view');
-        if (!tiles.length) return { ok: false, why: 'keine Set-Kacheln sichtbar' };
-        const want = String(plan.setName || '').trim().toLowerCase();
-        let hit = null;
-        if (want) {
-            for (const t of tiles) {
-                const txt = (t.textContent || '').replace(/\s+/g, ' ').toLowerCase();
-                if (txt.indexOf(want) > -1) { hit = t; break; }
+    /**
+     * Filter im Hub auf "All" stellen. Live-Fall: der Filter stand auf
+     * "Favourites", und die gesuchte SBC war dort gar nicht dabei - dann ist
+     * ihre Kachel nicht im DOM und kein Klick der Welt findet sie.
+     */
+    function clickAllFilter() {
+        const items = visibleAll('.ea-filter-bar-item-view');
+        for (const el of items) {
+            const t = (el.textContent || '').trim().toLowerCase();
+            if (t === 'all' || t === 'alle') {
+                if (el.className.indexOf('selected') > -1) return { ok: true, why: 'schon auf All' };
+                return { ok: clickLike(el), why: 'Filter auf All gestellt' };
             }
         }
-        if (!hit) return { ok: false, why: 'Set "' + (plan.setName || '?') + '" nicht gefunden (' + tiles.length + ' Kacheln)' };
-        return { ok: clickLike(hit), why: 'Set-Kachel geklickt' };
+        return { ok: false, why: 'kein All-Filter gefunden' };
+    }
+    /**
+     * Set-Kachel im Hub anklicken. Der Name muss GENAU passen: ein reiner
+     * Teilstring-Vergleich trifft sonst die falsche SBC ("Upgrade" steckt in
+     * jeder zweiten Kachel) - und die Diagnose meldete "geklickt", obwohl sich
+     * nichts oeffnete. Reihenfolge: exakter Titel, dann Titel-Anfang, dann
+     * Teilstring - und immer wird mitprotokolliert, WAS getroffen wurde.
+     */
+    function clickSetTile(plan) {
+        const tiles = visibleAll('.ut-sbc-set-tile-view');
+        const want = String(plan.setName || '').trim().toLowerCase();
+        if (!want) return { ok: false, why: 'kein Set-Name gemerkt', tiles: tiles.length };
+        if (!tiles.length) return { ok: false, why: 'keine Set-Kacheln sichtbar', tiles: 0 };
+        function titleOf(t) {
+            const h = t.querySelector('.tileTitle, .tileHeader, h1');
+            return ((h && h.textContent) || t.textContent || '')
+                .replace(/\s+/g, ' ').trim().toLowerCase();
+        }
+        let hit = null, how = null;
+        for (const t of tiles) { if (titleOf(t) === want) { hit = t; how = 'exakt'; break; } }
+        if (!hit) {
+            for (const t of tiles) {
+                const ti = titleOf(t);
+                if (ti.indexOf(want) === 0 || want.indexOf(ti) === 0) { hit = t; how = 'Anfang'; break; }
+            }
+        }
+        if (!hit) {
+            for (const t of tiles) {
+                if (titleOf(t).indexOf(want) > -1) { hit = t; how = 'enthalten'; break; }
+            }
+        }
+        if (!hit) {
+            return { ok: false, why: 'Set nicht gefunden', want: want, tiles: tiles.length,
+                     titles: tiles.slice(0, 8).map(titleOf) };
+        }
+        // Erst die Kachel, dann ihr Titel-Element - manche Views haengen ihren
+        // Tap-Handler am Kind, nicht am Container.
+        clickLike(hit);
+        const inner = hit.querySelector('.tileHeader, .tileTitle, h1');
+        if (inner) clickLike(inner);
+        return { ok: true, why: 'Set-Kachel geklickt (' + how + ')',
+                 want: want, hitTitle: titleOf(hit) };
     }
     /** Challenge-Zeile in der geoeffneten Set-Ansicht anklicken. */
     function clickChallengeRow() {

@@ -333,6 +333,23 @@ Instanz kommt durch den Kachel-Klick.
 Jetzt: Pruefschleife alle 300ms, Set-Klick sofort, Zeilen-Klick nur als
 Sonderfall (i=10/25). Aus ~13s pro Runde werden ~2-4s.
 
+**Zwei weitere Fallen beim Kachel-Klick (v4.23.0, live):** Bronze lief 5 Runden
+durch, Silber brach in Runde 1 ab. Unterschied im Log: `detailsView: 1` (Bronze,
+Challenge direkt offen) gegen `detailsView: 0` (Silber, nichts geöffnet) — bei
+dreimal gemeldetem „Set-Kachel geklickt".
+- **Der Hub-FILTER versteckt Kacheln.** Er stand auf „Favourites", und die
+  gesuchte SBC war dort nicht dabei — ihre Kachel ist dann gar nicht im DOM.
+  Fix: bei Misserfolg `.ea-filter-bar-item-view` mit Text „All" klicken und
+  erneut suchen.
+- **Teilstring-Matching trifft die falsche SBC.** „Upgrade" steckt in jeder
+  zweiten Kachel; der Klick meldete Erfolg auf einer fremden Kachel. Fix:
+  Reihenfolge exakter Titel → Titel-Anfang → Teilstring, und der Vergleich läuft
+  über `.tileTitle`/`.tileHeader` statt über den ganzen Kachel-Text (der enthält
+  auch Beschreibung und Belohnungen). Ausserdem wird nach der Kachel noch ihr
+  Titel-Element geklickt — manche Views hängen den Tap-Handler am Kind.
+Beides protokolliert jetzt mit, WAS gesucht und WAS getroffen wurde
+(`want`, `hitTitle`, `titles`), damit ein Fehlgriff sofort sichtbar ist.
+
 **Zwei Fallen dabei (v4.19.1, live aus `batchSteps`):**
 - `requestChallengesForSet` erwartet das **SET-OBJEKT**, nicht die `setId`.
   Mit einer Zahl stirbt es an `i.getChallenges is not a function`. Das Set-Entity

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.23.0
+// @version      4.24.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.23.0';
+    const VERSION = '4.24.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -360,7 +360,7 @@
      * Team-Rating- und Rarity-Anforderungen sowie squadId.
      */
     function deepScanChallenge(root) {
-        const out = { target: null, rarity: [], squadId: null, slots: null, playerLevel: [], quality: [], reqs: [] };
+        const out = { target: null, rarity: [], squadId: null, slots: null, playerLevel: [], quality: [], rare: [], reqs: [] };
         if (!root || typeof root !== 'object') return out;
         const seen = new Set();
         const queue = [{ o: root, d: 0, par: [] }];
@@ -419,6 +419,17 @@
                 if (isQualityScope && v != null && v >= 1 && v <= 3) {
                     out.quality.push({ label: scope, quality: Number(v), count: reqCount(o, par) });
                 }
+                // "Rare: Min. N Players" (Gold-SBCs). EA schickt das als
+                // RARITY-Vorgabe OHNE Gruppe; der Wert 1 steht fuer rare
+                // (rareflag 1), die Anzahl steckt im count. Bei
+                // PLAYER_RARITY_GROUP ist der Wert dagegen die Gruppen-ID -
+                // deshalb wird GROUP hier ausgeschlossen.
+                const isRareCount = scope.indexOf('GROUP') === -1 &&
+                    (scope.indexOf('RARE') > -1 ||
+                     (scope.indexOf('RARITY') > -1 && Number(v) === 1));
+                if (isRareCount) {
+                    out.rare.push({ label: scope, count: reqCount(o, par) });
+                }
                 if (scope.indexOf('RARITY') > -1) {
                     out.rarity.push({
                         label: scope,
@@ -464,6 +475,7 @@
         }
         out.rarity = dedupe(out.rarity, rc => rc.label + '|' + rc.ids.join(',') + '|' + rc.count);
         out.playerLevel = dedupe(out.playerLevel, pl => pl.label + '|' + pl.minRating + '|' + pl.count);
+        out.rare = dedupe(out.rare || [], r => r.label + '|' + r.count);
         out.quality = dedupe(out.quality, q => q.label + '|' + q.quality + '|' + q.count);
         out.reqs = dedupe(out.reqs, r => r.scope + '|' + r.value + '|' + r.count + '|' + r.ids.join(','));
         return out;
@@ -480,6 +492,7 @@
         STATE.sbc.rarityConstraints = [];
         STATE.sbc.playerLevelConstraints = [];
         STATE.sbc.qualityConstraints = [];
+        STATE.sbc.rareConstraints = [];
         STATE.sbc.reqDump = [];
         STATE.sbc.formationSlots = 11;
         STATE.sbc.squadSlotTotal = null;
@@ -609,6 +622,7 @@
         if (scan.rarity.length) { STATE.sbc.rarityConstraints = scan.rarity; changed = true; }
         if (scan.playerLevel.length) { STATE.sbc.playerLevelConstraints = scan.playerLevel; changed = true; }
         if (scan.quality && scan.quality.length) { STATE.sbc.qualityConstraints = scan.quality; changed = true; }
+        if (scan.rare && scan.rare.length) { STATE.sbc.rareConstraints = scan.rare; changed = true; }
         if (scan.reqs.length) { STATE.sbc.reqDump = scan.reqs; changed = true; }
         if (changed) {
             log('SBC erkannt (' + source + '):', JSON.stringify({
@@ -700,6 +714,11 @@
             rareflag: isNaN(rf) ? null : rf,
             isGold: isGold,
             isSpecial: !isGold,
+            // FUT-Standard: rareflag 0 = Common (non-rare), 1 = Rare.
+            // Manche Gold-SBCs verlangen "min. N Rare" - der Rest soll dann
+            // Common sein, damit keine Rare-Karte unnoetig verbraucht wird.
+            isRare: rf === 1,
+            isCommon: rf === 0,
             isStorage: !!fromStorage,
             name: resolvePlayerName(raw),
             untradeable: raw.untradeable === true || raw.tradeable === false,
@@ -1767,13 +1786,62 @@
                     return { ok: false, reason: 'Kein Ziel-OVR und keine Vorgaben erkannt. Bitte SBC-Challenge öffnen (und ggf. Diagnose prüfen).', warnings: warnings };
                 }
                 if (qualityLabel) warnings.push('Qualitäts-Vorgabe ' + qualityLabel + ': billigste passende Karten (' + qLo + '-' + qHi + ').');
-                const fillers = avail.slice().sort(qualityLow
+                // ---- GOLD-SBCs: Rare nur in der geforderten Anzahl ----------
+                // Rasmus: gibt es kein Ziel-OVR, verlangen Gold-SBCs oft "min. N
+                // Rare". Dann sollen GENAU N rare sein und der Rest Common -
+                // Rare-Karten werden für die Rating-SBCs gebraucht. Ohne
+                // Rare-Vorgabe darf gar keine Rare rein.
+                // Zusätzlich zwei Obergrenzen (Panel): bis wohin darf eine Rare
+                // bzw. eine Common verbraucht werden. Beispiel: Storage voll mit
+                // 75-89 Rare, aber nur bis 77 hergeben - 78+ bleibt für die
+                // Rating-SBCs.
+                let fillPool = avail;
+                if (qualityLabel === 'Gold') {
+                    const maxRare = cfg.maxRareRating > 0 ? cfg.maxRareRating : 99;
+                    const maxCommon = cfg.maxCommonRating > 0 ? cfg.maxCommonRating : 99;
+                    const needRare = ((cfg.applyRarity === false) ? [] : (cfg.rareConstraints || []))
+                        .reduce((m, c) => Math.max(m, Number(c.count) || 0), 0)
+                        - reserved.filter(p => p.isRare).length;
+                    // Rare-Karten reservieren: niedrigste zuerst, Storage vor
+                    // Verein (das steckt schon in costOf/cmp).
+                    let gotRare = 0;
+                    for (let need = needRare; need > 0; need--) {
+                        const cand = avail
+                            .filter(p => !used.has(p.id) && p.isRare && p.rating <= maxRare)
+                            .sort((a, b) => (a.rating - b.rating) || (costOf(a) - costOf(b)) || cmp(a, b))[0];
+                        if (!cand) break;
+                        used.add(cand.id);
+                        reserved.push(cand);
+                        gotRare++;
+                    }
+                    if (gotRare) {
+                        warnings.push(gotRare + 'x Rare für die Vorgabe reserviert (bis Rating ' +
+                            maxRare + ').');
+                    }
+                    if (gotRare < needRare) {
+                        warnings.push('Nur ' + gotRare + ' von ' + needRare +
+                            ' Rare-Karten bis Rating ' + maxRare + ' gefunden - Grenze anheben?');
+                    }
+                    // Auffüllen NUR mit Common (bis zur Common-Grenze). Reicht
+                    // das nicht, wird gelockert statt aufzugeben.
+                    const commons = avail.filter(p =>
+                        !used.has(p.id) && p.isCommon && p.rating <= maxCommon);
+                    const stillNeeded = N - reserved.length;
+                    if (commons.length >= stillNeeded) fillPool = commons;
+                    else {
+                        warnings.push('Zu wenige Common-Karten bis Rating ' + maxCommon +
+                            ' (' + commons.length + '/' + stillNeeded + ') - andere Karten werden mitbenutzt.');
+                        fillPool = avail.filter(p => !used.has(p.id));
+                    }
+                }
+                const k2 = N - reserved.length;
+                const fillers = fillPool.filter(p => !used.has(p.id)).sort(qualityLow
                     // Bronze/Silber: NIEDRIGSTES Rating zuerst. Ueber die Kosten
                     // zu gehen waehlt sonst die HAEUFIGERE Karte (Scarcity-Term
                     // alpha/anzahl), nicht die niedrigste.
                     ? ((a, b) => (a.rating - b.rating) || (costOf(a) - costOf(b)) || cmp(a, b))
                     : ((a, b) => (costOf(a) - costOf(b)) || (a.rating - b.rating) || cmp(a, b))
-                ).slice(0, k);
+                ).slice(0, k2);
                 if (reserved.length + fillers.length < N) {
                     return { ok: false, reason: 'Zu wenige passende Karten für die Vorgabe (' + (reserved.length + fillers.length) + '/' + N + ').', warnings: warnings };
                 }
@@ -2718,6 +2786,16 @@
                     </select>
                 </div>
                 <div class="sbc-opt-row">
+                    <label>Gold-SBCs ohne Ziel-OVR: höchstes Rating für Rare / für Common
+                        (Rare darüber bleibt für Rating-SBCs)</label>
+                    <div class="sbc-opt-inline">
+                        <span style="font-size:11px;color:#7d93ab;">Rare bis</span>
+                        <input type="number" id="sbc-opt-maxrare" value="77" min="0" max="99">
+                        <span style="font-size:11px;color:#7d93ab;">Common bis</span>
+                        <input type="number" id="sbc-opt-maxcommon" value="99" min="0" max="99">
+                    </div>
+                </div>
+                <div class="sbc-opt-row">
                     <label class="sbc-opt-toggle">
                         <input type="checkbox" id="sbc-opt-uselocks" checked>
                         Gesperrte Karten (PaleTools-Schloss) nie verbauen
@@ -2789,6 +2867,8 @@
             scarcity: panel.querySelector('#sbc-opt-scarcity'),
             storagebonus: panel.querySelector('#sbc-opt-storagebonus'),
             untradeable: panel.querySelector('#sbc-opt-untradeable'),
+            maxRare: panel.querySelector('#sbc-opt-maxrare'),
+            maxCommon: panel.querySelector('#sbc-opt-maxcommon'),
             useLocks: panel.querySelector('#sbc-opt-uselocks'),
             rarityguard: panel.querySelector('#sbc-opt-rarityguard'),
             bands: panel.querySelector('#sbc-opt-bands'),
@@ -3378,6 +3458,8 @@
                 rarityConstraints: STATE.sbc.rarityConstraints,
                 playerLevelConstraints: STATE.sbc.playerLevelConstraints,
                 qualityConstraints: STATE.sbc.qualityConstraints || [],
+            rareConstraints: STATE.sbc.rareConstraints || [],
+                rareConstraints: STATE.sbc.rareConstraints || [],
                 usableSlots: STATE.sbc.usableSlots || null,
                 reqDump: STATE.sbc.reqDump,
                 entityCaptured: !!STATE.sbc.entity,
@@ -3471,12 +3553,15 @@
             // Gesperrte Karten (PaleTools-Schloss) beim Optimieren frisch
             // einlesen - sie koennen sich zwischen zwei Laeufen aendern.
             lockedIds: ui.useLocks.checked ? Array.from(readPaletoolsLocks()) : [],
+            maxRareRating: parseInt(ui.maxRare.value, 10) || 0,
+            maxCommonRating: parseInt(ui.maxCommon.value, 10) || 0,
             rarityGuardCost: parseFloat(ui.rarityguard.value) || 0,
             ratingCostSpec: bandsToSpec(ratingBands),
             anchorId: null,
             rarityPickId: ui.rarityPick.value || null,
             rarityConstraints: STATE.sbc.rarityConstraints || [],
             qualityConstraints: STATE.sbc.qualityConstraints || [],
+            rareConstraints: STATE.sbc.rareConstraints || [],
             playerLevelConstraints: STATE.sbc.playerLevelConstraints || []
         };
     }

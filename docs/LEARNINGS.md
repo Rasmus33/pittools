@@ -125,6 +125,17 @@ trotz Erfolg).
   in `value`!), PLAYER_OVERALL_RATING_MIN (Spieler-Level),
   PLAYER_QUALITY (1=Bronze ≤64, 2=Silber 65-74, 3=Gold ≥75 — als
   Band-Filter für das ganze Team).
+- **Gold-SBCs ohne Ziel-OVR: Rare ist knapp, Common nicht.** Solche SBCs
+  verlangen oft „Rare: Min. N Players". Regel (Rasmus): dann GENAU N Rare, Rest
+  Common — und ohne Rare-Vorgabe gar keine Rare, weil die für die Rating-SBCs
+  gebraucht wird. Dazu zwei Obergrenzen im Panel (Default Rare bis 77, Common
+  bis 99): eine 85er Rare aus dem Storage soll hier nicht verheizt werden.
+  Technisch ist „rare" der `rareflag`: **0 = Common, 1 = Rare**, ab 2 Special —
+  passt zum Pool-Histogramm (rund 4200 Common gegen 2500 Rare). `isRare`/
+  `isCommon` liegen deshalb am normalisierten Spieler.
+  ACHTUNG beim Testen: `P()` in solver-test.js muss diese beiden Felder
+  mitsetzen, sonst greifen die Filter nicht und der Test prüft nichts (genau das
+  ist passiert — 5 Fälle waren rot, obwohl der Solver stimmte).
 - **`PLAYER_LEVEL` ist doppelt belegt** — der WERT entscheidet: `1..3` ist die
   QUALITÄTSSTUFE (Bronze/Silber/Gold), ab `40` ein Mindest-Rating. Live an einer
   „genau 1 Bronze-Spieler"-SBC verifiziert: `reqDump` lieferte

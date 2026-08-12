@@ -32,6 +32,11 @@ function P(rating, opts) {
         rareflag: opts.rareflag != null ? opts.rareflag : (opts.special ? 24 : 1),
         isGold: !opts.special,
         isSpecial: !!opts.special,
+        // Muss dem Datenmodell des Scripts entsprechen (normalizePlayer):
+        // rareflag 0 = Common, 1 = Rare. Fehlte das hier, greifen die
+        // Rare/Common-Filter im Solver nicht und der Test prüft nichts.
+        isRare: (opts.rareflag != null ? opts.rareflag : (opts.special ? 24 : 1)) === 1,
+        isCommon: (opts.rareflag != null ? opts.rareflag : (opts.special ? 24 : 1)) === 0,
         isStorage: !!opts.storage,
         name: 'P' + rating + (opts.storage ? 'S' : '') + (opts.special ? 'X' : ''),
         groups: opts.groups || null,
@@ -663,6 +668,72 @@ function mulberry32(a) {
         res4.ok && !res4.players.some(p => p.id === lockedTotw.id) &&
         res4.players.some(p => p.id === freeTotw.id),
         res4.ok ? '' : res4.reason);
+}
+
+// ========== 8d3. Gold-SBCs: Rare nur in geforderter Anzahl ==========
+{
+    // Rasmus' zwei Live-Fälle:
+    //  Bild 1: "Exactly Gold" + 9 Spieler, KEINE Rare-Vorgabe -> nur Common.
+    //  Bild 2: "Exactly Gold" + 6 Spieler + "Rare: Min. 6" -> 6 niedrige Rare.
+    // Dazu die Obergrenzen: Rare nur bis 77 hergeben, 78+ bleibt für die
+    // Rating-SBCs.
+    const rare75 = many(4, 75, { rareflag: 1, storage: true });
+    const rare77 = many(4, 77, { rareflag: 1, storage: true });
+    const rare85 = many(6, 85, { rareflag: 1, storage: true });   // zu wertvoll
+    const common78 = many(12, 78, { rareflag: 0 });
+    const pool = [].concat(rare75, rare77, rare85, common78);
+    const gcfg = (extra) => cfg(null, Object.assign({
+        targetOVR: null, slots: 9, minRating: 0,
+        maxRareRating: 77, maxCommonRating: 99,
+        qualityConstraints: [{ label: 'PLAYER_QUALITY', quality: 3, count: 1 }]
+    }, extra || {}));
+
+    // Fall 1: keine Rare-Vorgabe -> ausschliesslich Common
+    const res = SolverCore.solve(pool, gcfg());
+    check('Gold ohne Rare-Vorgabe: nur Common im Team',
+        res.ok && res.players.length === 9 && res.players.every(p => p.isCommon),
+        res.ok ? ('rare=' + res.players.filter(p => p.isRare).length) : res.reason);
+
+    // Fall 2: 6 Rare gefordert, 6 Slots -> genau 6 Rare, alle <= 77
+    const res2 = SolverCore.solve(pool, gcfg({
+        slots: 6, rareConstraints: [{ label: 'PLAYER_RARITY', count: 6 }]
+    }));
+    const nRare = res2.ok ? res2.players.filter(p => p.isRare).length : -1;
+    check('Gold mit "6x Rare": genau 6 Rare', res2.ok && nRare === 6,
+        res2.ok ? ('rare=' + nRare) : res2.reason);
+    check('Gold mit "6x Rare": keine Rare über der Grenze 77',
+        res2.ok && res2.players.filter(p => p.isRare).every(p => p.rating <= 77),
+        res2.ok ? res2.players.filter(p => p.isRare).map(p => p.rating).join(',') : '');
+    check('Gold mit "6x Rare": die NIEDRIGSTEN Rare zuerst (75er vor 77er)',
+        res2.ok && res2.players.filter(p => p.isRare).filter(p => p.rating === 75).length === 4,
+        res2.ok ? res2.players.filter(p => p.isRare).map(p => p.rating).sort().join(',') : '');
+
+    // Fall 3: 3 Rare gefordert bei 9 Slots -> 3 Rare + 6 Common
+    const res3 = SolverCore.solve(pool, gcfg({
+        rareConstraints: [{ label: 'PLAYER_RARITY', count: 3 }]
+    }));
+    check('Gold mit "3x Rare" bei 9 Slots: 3 Rare + 6 Common',
+        res3.ok && res3.players.filter(p => p.isRare).length === 3 &&
+        res3.players.filter(p => p.isCommon).length === 6,
+        res3.ok ? ('rare=' + res3.players.filter(p => p.isRare).length +
+                   ' common=' + res3.players.filter(p => p.isCommon).length) : res3.reason);
+
+    // Fall 4: Grenze zu streng -> Warnung, aber kein stiller Fehlgriff
+    const res4 = SolverCore.solve([].concat(rare85, common78), gcfg({
+        slots: 6, maxRareRating: 77,
+        rareConstraints: [{ label: 'PLAYER_RARITY', count: 6 }]
+    }));
+    check('Gold: zu strenge Rare-Grenze wird gemeldet',
+        res4.ok && res4.warnings.some(w => /Rare-Karten bis Rating 77/.test(w)),
+        res4.ok ? JSON.stringify(res4.warnings) : res4.reason);
+
+    // Fall 5: Common-Grenze wirkt
+    const res5 = SolverCore.solve([].concat(many(9, 76, { rareflag: 0 }), common78), gcfg({
+        maxCommonRating: 76
+    }));
+    check('Gold: Common-Grenze 76 haelt die 78er draussen',
+        res5.ok && res5.players.every(p => p.rating <= 76),
+        res5.ok ? res5.players.map(p => p.rating).join(',') : res5.reason);
 }
 
 // ========== 8c. Spieler-Eindeutigkeit (EA: gleiche assetId nur 1x pro Squad) ==========

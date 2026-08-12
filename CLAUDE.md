@@ -8,7 +8,7 @@ JS/Java-Engineering. Umgangssprache: Deutsch.
 ## Repo-Struktur
 
 - `ea-fc-sbc-optimizer.user.js` — DAS Produkt. Ein einziges Userscript
-  (aktuell v4.20.0). Tampermonkey aktualisiert es über `@updateURL`/`@downloadURL`
+  (aktuell v4.21.0). Tampermonkey aktualisiert es über `@updateURL`/`@downloadURL`
   im Header selbst; die Handy-App lädt dieselbe Datei von
   `https://raw.githubusercontent.com/Rasmus33/pittools/main/ea-fc-sbc-optimizer.user.js`
   bei jedem App-Start. **Push auf main = Deployment.**
@@ -26,7 +26,7 @@ JS/Java-Engineering. Umgangssprache: Deutsch.
 
 1. Änderung implementieren.
 2. `node --check ea-fc-sbc-optimizer.user.js` — Syntax.
-3. `node solver-test.js` — ALLE Tests müssen grün sein (aktuell 75/75).
+3. `node solver-test.js` — ALLE Tests müssen grün sein (aktuell 83/83).
    Bei Solver-Änderungen: neuen Testfall schreiben, Erwartungswerte NIE aus
    dem Kopf — immer per Brute-Force verifizieren (Vorsicht: der Solver war
    mehrfach schlauer als die Hand-Rechnung).
@@ -48,6 +48,9 @@ JS/Java-Engineering. Umgangssprache: Deutsch.
 
 ## Produkt-Regeln (von Rasmus, gelten immer)
 
+- Bronze-/Silber-Vorgaben: einfach die NIEDRIGSTEN normalen Karten nehmen
+  (kein Evo, kein Special; rare/non-rare egal). Das Min-Rating wird dabei
+  komplett ignoriert — bei Gold gilt es weiter.
 - Es zählt NUR das Team-Rating. Chemie, Positionen, SBC-Belohnungslogik:
   bewusst ignoriert. Rarity-/Level-/Qualitäts-VORGABEN werden erfüllt.
 - Ziel: minimales exaktes Dezimal-Rating über dem Ziel (84er-SBC → 84.00,

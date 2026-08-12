@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.20.0
+// @version      4.21.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.20.0';
+    const VERSION = '4.21.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -406,8 +406,17 @@
                     out.playerLevel.push({ label: scope, minRating: v, count: reqCount(o, par) });
                 }
                 // Qualitäts-Vorgabe (Tausch-/Upgrade-SBCs ohne Team-Rating):
-                // PLAYER_QUALITY 1=Bronze, 2=Silber, 3=Gold.
-                if (scope.indexOf('QUALITY') > -1 && v != null && v >= 1 && v <= 3) {
+                // 1=Bronze, 2=Silber, 3=Gold.
+                // EA benutzt dafür ZWEI Scope-Namen: PLAYER_QUALITY und
+                // PLAYER_LEVEL. Bei PLAYER_LEVEL entscheidet der WERT, was
+                // gemeint ist - 1..3 ist die Qualitätsstufe, ab 40 ein
+                // Mindest-Rating (siehe isPlayerLevel oben). Live verifiziert
+                // an einer "genau 1 Bronze-Spieler"-SBC: reqDump lieferte
+                // PLAYER_LEVEL mit value 1, und ohne diesen Zweig wurde die
+                // Vorgabe komplett ignoriert.
+                const isQualityScope = scope.indexOf('QUALITY') > -1 ||
+                    (scope.indexOf('LEVEL') > -1 && scope.indexOf('CHEM') === -1);
+                if (isQualityScope && v != null && v >= 1 && v <= 3) {
                     out.quality.push({ label: scope, quality: Number(v), count: reqCount(o, par) });
                 }
                 if (scope.indexOf('RARITY') > -1) {
@@ -1409,7 +1418,7 @@
             // Qualitäts-Vorgabe (Tausch-/Upgrade-SBCs): 1=Bronze(<=64),
             // 2=Silber(65-74), 3=Gold(>=75). Gilt als Band-Filter für das
             // ganze Team; bei mehreren Vorgaben zählt die höchste Qualität.
-            let qLo = minRating, qHi = 99, qualityLabel = null;
+            let qLo = minRating, qHi = 99, qualityLabel = null, qualityLow = false;
             const qcs = (cfg.applyRarity === false) ? [] : (cfg.qualityConstraints || []);
             if (qcs.length) {
                 const QBAND = { 1: [0, 64], 2: [65, 74], 3: [75, 99] };
@@ -1417,16 +1426,34 @@
                 const band = QBAND[q] || [0, 99];
                 qualityLabel = (q === 3) ? 'Gold' : (q === 2) ? 'Silber' : 'Bronze';
                 qHi = band[1];
-                qLo = Math.max(minRating, band[0]);
-                if (qLo > qHi) {
-                    qLo = band[0];
-                    warnings.push('Min-Rating (' + minRating + ') kollidiert mit der Qualitäts-Vorgabe ' +
-                        qualityLabel + ' - Min-Rating wird ignoriert.');
+                // Bei BRONZE/SILBER wird das Min-Rating komplett ignoriert
+                // (Rasmus): eine "1 Bronze-Spieler"-SBC ist mit Min-Rating 75
+                // sonst nie lösbar, und der Wert ist für solche Vorgaben
+                // schlicht bedeutungslos. Bei GOLD bleibt es als Untergrenze
+                // wirksam - dort ist es der Normalfall und gewollt.
+                qualityLow = (q === 1 || q === 2);
+                qLo = qualityLow ? band[0] : Math.max(minRating, band[0]);
+                if (qualityLow && minRating > band[0]) {
+                    warnings.push('Qualitäts-Vorgabe ' + qualityLabel +
+                        ': Min-Rating (' + minRating + ') wird ignoriert.');
                 }
+                if (qLo > qHi) qLo = band[0];
             }
             let pool = poolAll.filter(p => p.rating >= qLo && p.rating <= qHi);
             if (cfg.specialOnlyFromStorage) {
                 pool = pool.filter(p => !(p.isSpecial && !p.isStorage));
+            }
+            // Bei Bronze/Silber-Vorgaben NUR normale Karten: ein bronzenes
+            // Special ist wertvoller als sein Rating, und für die Vorgabe
+            // zählt es genauso wie eine 0815-Bronzekarte (rare oder non-rare
+            // ist dabei egal - beides ist rareflag 0/1).
+            if (qualityLow) {
+                const plain = pool.filter(p => !p.isSpecial);
+                if (plain.length >= N) pool = plain;
+                else {
+                    warnings.push('Zu wenige normale ' + qualityLabel +
+                        '-Karten (' + plain.length + '/' + N + ') - Specials werden mitbenutzt.');
+                }
             }
             // ---- SPIELER-EINDEUTIGKEIT (Fix für HTTP 460) ----
             // EA erlaubt denselben SPIELER (assetId) nur EINMAL pro Squad.
@@ -1654,8 +1681,13 @@
                     return { ok: false, reason: 'Kein Ziel-OVR und keine Vorgaben erkannt. Bitte SBC-Challenge öffnen (und ggf. Diagnose prüfen).', warnings: warnings };
                 }
                 if (qualityLabel) warnings.push('Qualitäts-Vorgabe ' + qualityLabel + ': billigste passende Karten (' + qLo + '-' + qHi + ').');
-                const fillers = avail.slice().sort((a, b) =>
-                    (costOf(a) - costOf(b)) || (a.rating - b.rating) || cmp(a, b)).slice(0, k);
+                const fillers = avail.slice().sort(qualityLow
+                    // Bronze/Silber: NIEDRIGSTES Rating zuerst. Ueber die Kosten
+                    // zu gehen waehlt sonst die HAEUFIGERE Karte (Scarcity-Term
+                    // alpha/anzahl), nicht die niedrigste.
+                    ? ((a, b) => (a.rating - b.rating) || (costOf(a) - costOf(b)) || cmp(a, b))
+                    : ((a, b) => (costOf(a) - costOf(b)) || (a.rating - b.rating) || cmp(a, b))
+                ).slice(0, k);
                 if (reserved.length + fillers.length < N) {
                     return { ok: false, reason: 'Zu wenige passende Karten für die Vorgabe (' + (reserved.length + fillers.length) + '/' + N + ').', warnings: warnings };
                 }

@@ -570,6 +570,62 @@ function mulberry32(a) {
         'planned=' + b4.planned + ' reason=' + b4.stoppedReason);
 }
 
+// ========== 8d2. Bronze/Silber-Vorgaben (Live-Fall "genau 1 Bronze") ==========
+{
+    // Live: eine SBC mit 1 Slot und reqDump PLAYER_LEVEL value 1 (= Bronze).
+    // Erwartung von Rasmus: der NIEDRIGSTE normale Bronze-Spieler, kein Evo,
+    // kein Special, rare/non-rare egal - und das Min-Rating wird komplett
+    // ignoriert (sonst ist die SBC mit Min-Rating 75 nie lösbar).
+    const bronzeLow = P(48, { groups: [19] });          // der billigste
+    const bronzeMid = many(3, 58, { groups: [19] });
+    const bronzeSpecial = P(45, { special: true, rareflag: 12, groups: [19] });
+    const golds = many(5, 84, { groups: [19] });
+    const pool = [].concat([bronzeLow], bronzeMid, [bronzeSpecial], golds);
+    const qcfg = (extra) => cfg(null, Object.assign({
+        targetOVR: null, slots: 1, minRating: 75,
+        qualityConstraints: [{ label: 'PLAYER_LEVEL', quality: 1, count: 1 }]
+    }, extra || {}));
+
+    const res = SolverCore.solve(pool, qcfg());
+    check('Bronze-Vorgabe: lösbar trotz Min-Rating 75', res.ok, res.ok ? '' : res.reason);
+    check('Bronze-Vorgabe: Min-Rating wird ignoriert (Warnung)',
+        res.ok && res.warnings.some(w => /Min-Rating .* ignoriert/i.test(w)),
+        JSON.stringify(res.warnings));
+    check('Bronze-Vorgabe: genau 1 Spieler', res.ok && res.players.length === 1,
+        res.ok ? ('n=' + res.players.length) : '');
+    check('Bronze-Vorgabe: nimmt den NIEDRIGSTEN normalen Bronze',
+        res.ok && res.players.length === 1 && res.players[0].id === bronzeLow.id,
+        res.ok ? ('gewählt: ' + res.players[0].rating + (res.players[0].isSpecial ? ' Special' : '')) : '');
+    check('Bronze-Vorgabe: kein Special',
+        res.ok && !res.players.some(p => p.isSpecial));
+
+    // Gibt es NUR Specials in Bronze, muss es trotzdem lösbar sein (mit Warnung).
+    const res2 = SolverCore.solve([].concat([bronzeSpecial], golds), qcfg());
+    check('Bronze-Vorgabe: nur Specials vorhanden -> gelockert mit Warnung',
+        res2.ok && res2.players.length === 1 && res2.players[0].isSpecial &&
+        res2.warnings.some(w => /Specials werden mitbenutzt/.test(w)),
+        res2.ok ? JSON.stringify(res2.warnings) : res2.reason);
+
+    // SILBER: Band 65-74, Min-Rating ebenfalls egal.
+    const silver = many(3, 68, { groups: [19] });
+    const res3 = SolverCore.solve([].concat(silver, golds, [bronzeLow]), qcfg({
+        qualityConstraints: [{ label: 'PLAYER_LEVEL', quality: 2, count: 1 }]
+    }));
+    check('Silber-Vorgabe: nimmt eine 65-74er Karte',
+        res3.ok && res3.players.length === 1 &&
+        res3.players[0].rating >= 65 && res3.players[0].rating <= 74,
+        res3.ok ? ('rating=' + res3.players[0].rating) : res3.reason);
+
+    // GOLD: hier bleibt das Min-Rating wirksam (Normalfall, gewollt).
+    const res4 = SolverCore.solve([].concat(golds, many(3, 78, { groups: [19] })), qcfg({
+        minRating: 84,
+        qualityConstraints: [{ label: 'PLAYER_LEVEL', quality: 3, count: 1 }]
+    }));
+    check('Gold-Vorgabe: Min-Rating bleibt wirksam',
+        res4.ok && res4.players[0].rating >= 84,
+        res4.ok ? ('rating=' + res4.players[0].rating) : res4.reason);
+}
+
 // ========== 8c. Spieler-Eindeutigkeit (EA: gleiche assetId nur 1x pro Squad) ==========
 {
     // 4 Kopien desselben Spielers (gleiche assetId, verschiedene Item-IDs,
@@ -614,7 +670,8 @@ function mulberry32(a) {
     }));
     check('Qualität Silber: nur 65-74er trotz Min-Rating 75', res2.ok &&
         res2.players.every(p => p.rating >= 65 && p.rating <= 74) &&
-        res2.warnings.some(w => /kollidiert/.test(w)));
+        res2.warnings.some(w => /Min-Rating .* ignoriert/i.test(w)),
+        JSON.stringify(res2.warnings));
     // Zu wenige passende Karten -> sauberer Fehler
     const res3 = SolverCore.solve([].concat(many(5, 70), golds), cfg(null, {
         targetOVR: null, minRating: 0,

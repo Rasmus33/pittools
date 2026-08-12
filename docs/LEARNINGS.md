@@ -115,6 +115,23 @@ trotz Erfolg).
   in `value`!), PLAYER_OVERALL_RATING_MIN (Spieler-Level),
   PLAYER_QUALITY (1=Bronze ≤64, 2=Silber 65-74, 3=Gold ≥75 — als
   Band-Filter für das ganze Team).
+- **`PLAYER_LEVEL` ist doppelt belegt** — der WERT entscheidet: `1..3` ist die
+  QUALITÄTSSTUFE (Bronze/Silber/Gold), ab `40` ein Mindest-Rating. Live an einer
+  „genau 1 Bronze-Spieler"-SBC verifiziert: `reqDump` lieferte
+  `PLAYER_LEVEL value 1`, und weil der Parser nur `v >= 40` als Level und nur
+  `QUALITY` im Namen als Qualität akzeptierte, wurde die Vorgabe komplett
+  ignoriert (beide Constraint-Listen leer).
+- Bei **Bronze/Silber** wird das Min-Rating komplett ignoriert (Rasmus): mit
+  Min-Rating 75 wäre so eine SBC nie lösbar, und der Wert ist dort
+  bedeutungslos. Bei Gold bleibt es als Untergrenze wirksam.
+  Ausserdem werden dort nur NORMALE Karten genommen (rareflag 0/1, rare oder
+  non-rare egal) — ein bronzenes Special ist wertvoller als sein Rating, zählt
+  für die Vorgabe aber gleich. Gibt es zu wenige, wird mit Warnung gelockert.
+- **Bei Bronze/Silber entscheidet das RATING, nicht die Kosten.** Der
+  Scarcity-Term (`alpha/anzahl`) machte einen häufigen 58er billiger als den
+  einzelnen 48er — gewählt wurde 58 statt des niedrigsten. Im Füll-Pfad ohne
+  Ziel-OVR wird deshalb bei Bronze/Silber zuerst nach Rating aufsteigend
+  sortiert.
 - EAs Count-Feld ("Min. 4") ist im Objektbaum unzuverlässig zu finden
   (liegt am Eltern-Objekt der KV-Paare, parst oft als 1). Robuste Regel:
   **ohne Team-Rating gilt eine Min-OVR-Vorgabe für ALLE Slots** (bei

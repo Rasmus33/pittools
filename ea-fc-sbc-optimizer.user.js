@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.28.0
+// @version      4.29.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.28.0';
+    const VERSION = '4.29.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -3589,6 +3589,10 @@
             // storage)? Bei HTTP 460 ist hier direkt zu sehen, ob eine Karte
             // oder ein Spieler doppelt drin war.
             lastTeam: STATE.diag.lastTeam || null,
+            // Abgeben: welche Controller/Methoden kamen in Frage und welche hat
+            // gegriffen? Am Handy heisst der Controller anders als am PC.
+            submitCandidates: STATE.diag.submitCandidates || null,
+            submitChallengeVia: STATE.diag.submitChallengeVia || null,
             // Der letzte fehlende Schritt: nach dem Abgeben landet die App im
             // SBC-HUB (mehrfach belegt), und loadChallenge() bringt die Ansicht
             // nicht zurück. Um die SBC wie von Hand anzuklicken, brauche ich die
@@ -4056,23 +4060,73 @@
             }
         }
         const problems = [];
-        if (ctrl && typeof ctrl.submitChallenge === 'function') {
+        // ALLE Controller im Stack absuchen, und zwar nach submitChallenge UND
+        // _submitChallenge. Grund (live am Handy, v4.27.0): in der schmalen
+        // Ansicht ist der oberste Controller UTSBCSquadOverviewViewController
+        // und der hat NUR _submitChallenge - am PC ist es der
+        // UTSBCSquadSplitViewController mit beiden. Vorher schaute der Code nur
+        // auf den EINEN gefundenen Controller und nur auf den oeffentlichen
+        // Namen: "Controller hat kein submitChallenge()", Batch bei 0/7 gestoppt.
+        // Reihenfolge: erst die oeffentliche Methode (die macht den regulaeren
+        // Weg inkl. Ansicht-Update), dann die interne.
+        const cands = [];
+        const seenObj = [];
+        function addCand(c, where) {
+            if (!c || typeof c !== 'object' || seenObj.indexOf(c) > -1) return;
+            seenObj.push(c);
+            if (typeof c.submitChallenge === 'function') cands.push({ c: c, m: 'submitChallenge', w: where });
+            if (typeof c._submitChallenge === 'function') cands.push({ c: c, m: '_submitChallenge', w: where });
+        }
+        addCand(ctrl, 'ctrl');
+        try {
+            for (const c of getControllerChain()) {
+                addCand(c, (c.constructor && c.constructor.name) || 'chain');
+                // Unter-Controller des Split-Views (am PC haengt der Submit dort).
+                for (const k of ['leftController', 'rightController', '_overviewController',
+                                 '_challengeDetailsController']) {
+                    try { addCand(c[k], k); } catch (e) {}
+                }
+            }
+        } catch (e) {}
+        STATE.diag.submitCandidates = cands.map(x => x.w + '.' + x.m);
+        for (const cand of cands) {
             try {
-                const r = ctrl.submitChallenge();
+                const r = cand.c[cand.m]();
                 let resp = null;
                 if (r && (typeof r.then === 'function' || typeof r.subscribe === 'function' ||
                           typeof r.observe === 'function')) resp = await obsPromise(r);
-                if (resp && !responseOk(resp)) problems.push('Controller: Status ' + resp.status);
-                else { STATE.diag.submitChallengeVia = 'controller'; return { via: 'controller' }; }
-            } catch (e) { problems.push('Controller: ' + (e && e.message || e)); }
-        } else problems.push('Controller hat kein submitChallenge()');
+                if (resp && !responseOk(resp)) {
+                    problems.push(cand.w + '.' + cand.m + ': Status ' + resp.status);
+                    continue;
+                }
+                STATE.diag.submitChallengeVia = cand.w + '.' + cand.m;
+                return { via: 'controller' };
+            } catch (e) {
+                problems.push(cand.w + '.' + cand.m + ': ' + (e && e.message || e));
+            }
+        }
+        if (!cands.length) problems.push('Kein Controller mit submitChallenge/_submitChallenge gefunden');
         const svc = window.services && window.services.SBC;
         if (svc && typeof svc.submitChallenge === 'function') {
-            try {
-                const resp = await obsPromise(svc.submitChallenge());
-                if (responseOk(resp)) { STATE.diag.submitChallengeVia = 'service'; return { via: 'service' }; }
-                problems.push('Service: Status ' + (resp && resp.status));
-            } catch (e) { problems.push('Service: ' + (e && e.message || e)); }
+            // Ohne Argument ist der dokumentierte Weg (arity 0). Am Handy kam
+            // dabei "Cannot read properties of undefined (reading 'squad')" -
+            // der Service zieht die Challenge aus einem Zustand, der in dieser
+            // Ansicht nicht gesetzt ist. Deshalb zweiter Versuch MIT der
+            // Challenge-Entity aus dem Controller.
+            const chal = ctrl && (ctrl._challenge || ctrl.challenge);
+            const tries = chal ? [[], [chal]] : [[]];
+            for (const args of tries) {
+                try {
+                    const resp = await obsPromise(svc.submitChallenge.apply(svc, args));
+                    if (responseOk(resp)) {
+                        STATE.diag.submitChallengeVia = 'service(' + args.length + ')';
+                        return { via: 'service' };
+                    }
+                    problems.push('Service(' + args.length + '): Status ' + (resp && resp.status));
+                } catch (e) {
+                    problems.push('Service(' + args.length + '): ' + (e && e.message || e));
+                }
+            }
         }
         throw new Error('Abgeben fehlgeschlagen (' + problems.join(' | ') + ').');
     }

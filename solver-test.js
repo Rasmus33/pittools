@@ -941,6 +941,32 @@ function mulberry32(a) {
         res4.ok ? res4.players.map(p => p.rating).join(',') : res4.reason);
 }
 
+// ========== 8b-2e. Abgeben muss den ganzen Controller-Stack absuchen ==========
+{
+    // Live am Handy (v4.27.0): "Batch gestoppt nach 0/7: Controller hat kein
+    // submitChallenge()". In der schmalen Ansicht ist der oberste Controller
+    // UTSBCSquadOverviewViewController, und der hat laut controllerScan NUR
+    // _submitChallenge - am PC ist es der UTSBCSquadSplitViewController mit
+    // beiden. Der Code schaute nur auf EINEN Controller und nur auf den
+    // oeffentlichen Namen.
+    const src = require("fs").readFileSync(__dirname + "/ea-fc-sbc-optimizer.user.js", "utf8");
+    const fn = src.slice(src.indexOf("async function submitChallengeToEa"),
+                         src.indexOf("async function openNextInstance"));
+    check("Submit sucht auch _submitChallenge", fn.indexOf("_submitChallenge") > -1);
+    check("Submit laeuft ueber den ganzen Controller-Stack",
+        fn.indexOf("getControllerChain") > -1);
+    check("Submit prueft auch die Split-View-Unter-Controller",
+        fn.indexOf("leftController") > -1 && fn.indexOf("_overviewController") > -1);
+    check("Submit probiert den Service auch MIT Challenge",
+        fn.indexOf("_challenge") > -1 && fn.indexOf("tries") > -1);
+    check("Die Kandidaten landen im Diagnose-Report",
+        /submitCandidates/.test(fn) && /submitCandidates: STATE.diag.submitCandidates/.test(src));
+    // Die oeffentliche Methode muss VOR der internen probiert werden: sie macht
+    // den regulaeren Weg inklusive Ansicht-Update.
+    check("Oeffentliche Methode vor der internen",
+        fn.indexOf("c.submitChallenge === ") < fn.indexOf("c._submitChallenge === "));
+}
+
 // ========== 8b-3. Der Rare-Parser darf keine Spielernamen matchen ==========
 {
     // Live-Fehler (v4.24.0): ein Substring-Match auf "RARE" im Scope-Namen hat

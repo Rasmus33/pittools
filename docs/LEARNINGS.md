@@ -680,3 +680,40 @@ GANZE Pool wurde auf 65-74 gefiltert. Ergebnis: 10x Silber, 0 Bronze — und ein
 **Wichtig:** eine EINZELNE Stufe darf sich nicht wie gemischt verhalten —
 "Exactly Gold" ist der haeufige Fall und muss weiter alle Slots binden. Dafuer
 gibt es einen eigenen Regressionstest.
+
+
+## 19. Am Handy heisst der SBC-Controller anders (Batch-Abbruch bei 0/7)
+
+**v4.27.0, live am Handy:** `Batch gestoppt nach 0/7: Abgeben fehlgeschlagen
+(Controller hat kein submitChallenge() | Service: Cannot read properties of
+undefined (reading squad))`. Dieselbe SBC lief vorher.
+
+Der `controllerScan` zeigt den Unterschied:
+
+| | oberster Controller | hat |
+|---|---|---|
+| PC (1920x911) | `UTSBCSquadSplitViewController` | `submitChallenge` + `_submitChallenge` |
+| Handy (448x997) | `UTSBCSquadOverviewViewController` | NUR `_submitChallenge` |
+
+Am Handy fehlt der Split-View komplett (`.sbc-button-container` ist gar nicht
+da, `containerCount: 0`) - die schmale Ansicht hat eine eigene Hierarchie. Der
+Code schaute aber nur auf EINEN gefundenen Controller und nur auf den
+oeffentlichen Methodennamen.
+
+Jetzt werden ALLE Controller im Stack abgesucht, jeder auf `submitChallenge`
+UND `_submitChallenge`, dazu die Split-View-Unter-Controller
+(`leftController`/`rightController`/`_overviewController`/
+`_challengeDetailsController`). Reihenfolge: die oeffentliche Methode zuerst -
+sie macht den regulaeren Weg inklusive Ansicht-Update.
+
+Der Service-Fallback wird zusaetzlich MIT der Challenge-Entity probiert
+(`ctrl._challenge`): ohne Argument ist der dokumentierte Weg (arity 0), aber am
+Handy zieht der Service die Challenge aus einem Zustand, der in dieser Ansicht
+nicht gesetzt ist.
+
+Neue Diagnose-Felder: `submitCandidates` (welche Controller/Methoden kamen in
+Frage) und `submitChallengeVia` (welche hat gegriffen).
+
+**Muster:** EA-Klassennamen sind layout-abhaengig. Jede Annahme der Form "der
+Controller heisst X und hat Methode Y" muss am HANDY geprueft werden, nicht nur
+am PC - das ist Rasmus' Hauptgeraet.

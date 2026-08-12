@@ -770,6 +770,50 @@ function mulberry32(a) {
         res8.ok ? res8.players.filter(p => p.isRare).map(p => p.rating).join(',') : res8.reason);
 }
 
+// ========== 8b-2b. Zwei Live-Fehler aus v4.25.0 ==========
+{
+    // (a) "Rare: Min. 6" + "Player Quality: Exactly Gold" reservierte sechs
+    //     BRONZE-Rare (54-62). Die Qualitaets-Vorgabe filterte nur den
+    //     Auffuell-Pool, nicht die Vorgaben-Reservierung.
+    const bronzeRare = [].concat(many(6, 62, { rareflag: 1 }), many(4, 54, { rareflag: 1 }));
+    const goldRare = [].concat(many(3, 75, { rareflag: 1 }), many(5, 77, { rareflag: 1 }));
+    const goldCommon = many(10, 76, { rareflag: 0 });
+    const G4 = [{ label: 'PLAYER_RARITY_GROUP', ids: [], count: 1, groupId: 4 }];
+    const gold = { targetOVR: null, minRating: 0, maxRareRating: 77, maxCommonRating: 77,
+                   qualityConstraints: [{ label: 'PLAYER_QUALITY', quality: 3, count: 1 }] };
+    const res = SolverCore.solve([].concat(bronzeRare, goldRare, goldCommon),
+        cfg(null, Object.assign({ slots: 6, rarityConstraints: G4 }, gold)));
+    check('Rare-Vorgabe + "Exactly Gold": keine Bronze-Karte im Team',
+        res.ok && res.players.every(p => p.rating >= 75),
+        res.ok ? res.players.map(p => p.rating).join(',') : res.reason);
+    check('Rare-Vorgabe + "Exactly Gold": 6 Rare, die niedrigsten Gold zuerst',
+        res.ok && res.players.filter(p => p.isRare).length === 6 &&
+        res.players.filter(p => p.rating === 75).length === 3,
+        res.ok ? res.players.map(p => p.rating).join(',') : res.reason);
+
+    // Auch wenn die Panel-Grenze fallen muss, bleibt Gold Pflicht: nur Bronze-
+    // Rare und Gold-Rare ueber der Grenze vorhanden -> Grenze lockern, NICHT
+    // die Qualitaets-Vorgabe.
+    const res2 = SolverCore.solve(
+        [].concat(bronzeRare, many(6, 85, { rareflag: 1 }), goldCommon),
+        cfg(null, Object.assign({ slots: 6, rarityConstraints: G4 }, gold)));
+    check('Gelockerte Rare-Grenze bricht die Qualitaets-Vorgabe nicht',
+        res2.ok && res2.players.every(p => p.rating >= 75),
+        res2.ok ? res2.players.map(p => p.rating).join(',') : res2.reason);
+
+    // (b) Ohne Ziel-Rating kamen sieben Vereins-77er, obwohl 75er da waren:
+    //     75/76/77 sind in der Kostentabelle alle Stufe "0-80: 0", also
+    //     entschied der Scarcity-Term - und 77er gibt es viele.
+    const res3 = SolverCore.solve(
+        [].concat(many(20, 77, { rareflag: 0 }), many(9, 75, { rareflag: 0 }),
+                  many(2, 76, { rareflag: 0, storage: true })),
+        cfg(null, Object.assign({ slots: 9 }, gold,
+            { ratingCostSpec: SolverCore.DEFAULT_RATING_COST_SPEC })));
+    check('Ohne Ziel-Rating: die 75er statt der haeufigen 77er',
+        res3.ok && res3.players.every(p => p.rating === 75),
+        res3.ok ? res3.players.map(p => p.rating).sort().join(',') : res3.reason);
+}
+
 // ========== 8b-3. Der Rare-Parser darf keine Spielernamen matchen ==========
 {
     // Live-Fehler (v4.24.0): ein Substring-Match auf "RARE" im Scope-Namen hat

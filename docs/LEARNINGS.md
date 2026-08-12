@@ -544,3 +544,42 @@ sehen, dass die Daten da waren und nur meine Prüfung sie wegwarf.
 Die gelockerte Rare-Grenze wurde einmal pro Slot gemeldet — sechs identische
 Zeilen im Panel, in denen die eine wichtige Meldung unterging. `warnings.push`
 ist jetzt gegen Dubletten gesichert (Wrapper direkt an der Array-Erzeugung).
+
+
+## 14. Vorgaben gelten für JEDEN Spieler — auch für reservierte Karten
+
+**v4.25.0, live:** „Rare: Min. 6 Players" + „Player Quality: Exactly Gold"
+ergab sechs **Bronze**-Rare (54-62). Grund: das Qualitäts-Fenster steckte nur
+im Auffüll-Pool (`pool = poolAll.filter(qLo..qHi)`), die Vorgaben-Reservierung
+lief weiter auf dem ungefilterten `poolAll`.
+
+Die Reservierung prüft jetzt `inQualityBand(p)` — inklusive „bei Bronze/Silber
+keine Specials, auch nicht als Vorgabe-Karte".
+
+**Dabei wichtig:** die Panel-Grenze „Rare bis 77" ist eine PRÄFERENZ und darf
+fallen; das Qualitäts-Fenster ist eine SBC-VORGABE und bleibt stehen. Ein
+eigener Test hält das fest (nur Bronze-Rare und 85er Gold-Rare im Pool →
+Grenze lockern, nicht die Qualität brechen).
+
+**Muster:** jeder neue Filter muss an ALLEN Stellen greifen, an denen Karten ins
+Team kommen — Auffüllen, Rarity-Reservierung, Anker, Rarity-Pick. Der
+Locked-Cards-Filter sitzt aus genau diesem Grund vor allem anderen (`poolAll`
+wird gefiltert, nicht `pool`).
+
+## 15. Ohne Ziel-Rating gilt IMMER: niedrigstes Rating zuerst
+
+**v4.25.0, live:** eine SBC ohne Rating-Vorgabe bekam sieben Vereins-**77er**,
+obwohl 75er im Verein lagen. Der Auffüll-Sort ging nach Kosten — und 75, 76, 77
+liegen in der Kostentabelle alle in derselben Stufe („0-80: 0"). Also entschied
+der Rest der Formel, und dort gewinnt über den Scarcity-Term `alpha/anzahl` die
+**häufigere** Karte. Von 77ern hat Rasmus viele.
+
+Das ist DERSELBE Fehler wie bei Bronze (58 statt 48, §Bronze/Silber) — dort war
+er nur für `qualityLow` gefixt. Die Regel ist allgemeiner: **ohne Ziel-Rating
+ist die niedrigste Karte immer die richtige**, Kosten nur als
+Gleichstand-Entscheid (dort steckt Storage-Vorrang und Untradeable-Rabatt).
+Gilt jetzt für den ganzen `!target`-Zweig.
+
+**Merksatz:** wo kein Rating gefordert ist, ist ein höheres Rating reine
+Verschwendung — Kosten dürfen darüber nicht entscheiden, weil die Kostentabelle
+im unteren Bereich flach ist.

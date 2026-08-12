@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.25.0
+// @version      4.26.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.25.0';
+    const VERSION = '4.26.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -1753,6 +1753,16 @@
                     warnings.push('Ohne Team-Rating: Rare-Vorgabe auf alle ' + N + ' Slots angewendet.');
                 }
             }
+            // Die QUALITAETS-Vorgabe gilt fuer JEDEN Spieler im Team, also auch
+            // fuer die Karten, die eine Rarity-Vorgabe erfuellen. Live
+            // (v4.25.0) reservierte "Rare: Min. 6 + Exactly Gold" sechs BRONZE-
+            // Rare, weil die Reservierung auf dem ungefilterten poolAll lief -
+            // das Qualitaets-Fenster steckte nur im Auffuell-Pool.
+            const qResLo = qualityLabel ? qLo : 0;
+            const qResHi = qualityLabel ? qHi : 99;
+            const inQualityBand = (p) => p.rating >= qResLo && p.rating <= qResHi &&
+                // Bronze/Silber: keine Specials, auch nicht als Vorgabe-Karte.
+                !(qualityLow && p.isSpecial);
             for (const rc of rcList) {
                 const needCount = rc.count || 1;
                 let have = reserved.filter(p => matchesRarity(p, rc) ||
@@ -1773,13 +1783,17 @@
                     const lowMin = (!target && isRareGroup) ? 0 : minRating;
                     let cands = poolAll
                         .filter(p => p.rating >= lowMin && p.rating <= rareCap && !used.has(p.id) &&
-                            matchesRarity(p, rc) &&
+                            inQualityBand(p) && matchesRarity(p, rc) &&
                             (!cfg.specialOnlyFromStorage || p.isStorage || !p.isSpecial || isTotw(p)));
+                    // Die Rating-Obergrenze ist eine PRAEFERENZ (Panel) und darf
+                    // fallen; das Qualitaets-Fenster ist eine SBC-Vorgabe und
+                    // bleibt in jedem Fall stehen.
                     if (!cands.length && rareCap < 99) {
                         warnings.push('Keine Rare-Karte bis Rating ' + rareCap +
                             ' mehr frei - Grenze wird fuer diese SBC gelockert.');
                         cands = poolAll
-                            .filter(p => p.rating >= lowMin && !used.has(p.id) && matchesRarity(p, rc) &&
+                            .filter(p => p.rating >= lowMin && !used.has(p.id) &&
+                                inQualityBand(p) && matchesRarity(p, rc) &&
                                 (!cfg.specialOnlyFromStorage || p.isStorage || !p.isSpecial || isTotw(p)));
                     }
                     const cand = cands.sort((!target && isRareGroup)
@@ -1901,12 +1915,18 @@
                     }
                 }
                 const k2 = N - reserved.length;
-                const fillers = fillPool.filter(p => !used.has(p.id)).sort(qualityLow
-                    // Bronze/Silber: NIEDRIGSTES Rating zuerst. Ueber die Kosten
-                    // zu gehen waehlt sonst die HAEUFIGERE Karte (Scarcity-Term
-                    // alpha/anzahl), nicht die niedrigste.
-                    ? ((a, b) => (a.rating - b.rating) || (costOf(a) - costOf(b)) || cmp(a, b))
-                    : ((a, b) => (costOf(a) - costOf(b)) || (a.rating - b.rating) || cmp(a, b))
+                // OHNE Ziel-Rating gilt AUSNAHMSLOS: niedrigstes Rating zuerst,
+                // Kosten nur als Gleichstand-Entscheid (dort steckt Storage-
+                // Vorrang und Untradeable-Rabatt drin).
+                // Ueber die Kosten zu gehen waehlt sonst die HAEUFIGERE Karte:
+                // 75/76/77 sind in der Kostentabelle alle Stufe "0-80: 0", also
+                // entscheidet der Scarcity-Term alpha/anzahl - und von 77ern hat
+                // Rasmus viele. Live (v4.25.0) kamen so sieben Vereins-77er in
+                // eine SBC ohne Rating-Vorgabe, wo 75er gereicht haetten.
+                // Derselbe Fehler wie bei Bronze (58 statt 48) - deshalb jetzt
+                // fuer den ganzen !target-Zweig, nicht nur fuer Bronze/Silber.
+                const fillers = fillPool.filter(p => !used.has(p.id)).sort(
+                    (a, b) => (a.rating - b.rating) || (costOf(a) - costOf(b)) || cmp(a, b)
                 ).slice(0, k2);
                 if (reserved.length + fillers.length < N) {
                     return { ok: false, reason: 'Zu wenige passende Karten für die Vorgabe (' + (reserved.length + fillers.length) + '/' + N + ').', warnings: warnings };

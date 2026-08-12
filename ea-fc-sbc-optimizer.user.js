@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.26.0
+// @version      4.27.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.26.0';
+    const VERSION = '4.27.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -1622,9 +1622,47 @@
                 }
                 if (byAsset.size < pool.length) pool = Array.from(byAsset.values());
             }
+            // Die Vorgaben-Reservierungen greifen bewusst auf poolAll zu (dort
+            // sind auch Vereins-TOTW und Karten unter dem Min-Rating drin, die
+            // fuer eine Vorgabe erlaubt sind). poolAll ist aber NICHT nach
+            // assetId dedupliziert - eine Vorgabe-Karte und eine Auffuell-Karte
+            // konnten so derselbe SPIELER sein, und EA lehnt das mit 460 ab.
+            // Darum dieselbe Dedupe-Regel noch einmal auf poolAll.
+            {
+                const seenAsset = new Map();
+                for (const p of poolAll) {
+                    const key = (p.assetId != null && p.assetId !== 0) ? 'a' + p.assetId : 'i' + p.id;
+                    const cur = seenAsset.get(key);
+                    if (!cur || p.rating > cur.rating ||
+                        (p.rating === cur.rating && Number(p.id) < Number(cur.id))) {
+                        seenAsset.set(key, p);
+                    }
+                }
+                // Die Karten, die im (bereits deduplizierten) Loesungs-Pool
+                // stehen, haben Vorrang - sonst zeigen die beiden Pools auf
+                // verschiedene Karten desselben Spielers.
+                for (const p of pool) {
+                    const key = (p.assetId != null && p.assetId !== 0) ? 'a' + p.assetId : 'i' + p.id;
+                    seenAsset.set(key, p);
+                }
+                if (seenAsset.size < poolAll.length) poolAll = Array.from(seenAsset.values());
+            }
             const used = new Set();
+            const usedAssets = new Set();
             const reserved = [];
             const reserveCmp = makeConsumeCmp(pool);
+            // Jede Reservierung MUSS hierueber laufen: sie fuehrt used und
+            // usedAssets zusammen nach. Zwei Karten desselben Spielers im Team
+            // sind HTTP 460 (LEARNINGS 6).
+            function reserve(p) {
+                used.add(p.id);
+                if (p.assetId != null && p.assetId !== 0) usedAssets.add(String(p.assetId));
+                reserved.push(p);
+            }
+            function freeCard(p) {
+                return !used.has(p.id) &&
+                    !(p.assetId != null && p.assetId !== 0 && usedAssets.has(String(p.assetId)));
+            }
             // ---- Kartenkosten (Band + persönliche Scarcity, Storage-Bonus) ----
             // VOR den Reservierungen definiert: auch Vorgabe-Karten werden
             // nach KOSTEN gewählt (87er TOTW mit Kosten 2 schlägt 85er mit 5).
@@ -1721,13 +1759,12 @@
                 let have = reserved.filter(p => p.rating >= pl.minRating).length;
                 while (have < needCount) {
                     const cand = pool
-                        .filter(p => !used.has(p.id) && p.rating >= pl.minRating)
+                        .filter(p => freeCard(p) && p.rating >= pl.minRating)
                         .sort((a, b) => (costOf(a) - costOf(b)) || (a.rating - b.rating) || reserveCmp(a, b))[0];
                     if (!cand) {
                         return { ok: false, reason: 'Spieler-Vorgabe "min. ' + needCount + 'x ' + pl.minRating + '+" kann mit dem aktuellen Pool nicht erfüllt werden.', warnings: warnings };
                     }
-                    used.add(cand.id);
-                    reserved.push(cand);
+                    reserve(cand);
                     warnings.push('Vorgabe ' + pl.minRating + '+: ' + cand.name + ' (' + cand.rating + ') reserviert.');
                     have++;
                 }
@@ -1782,7 +1819,7 @@
                         ? cfg.maxRareRating : 99;
                     const lowMin = (!target && isRareGroup) ? 0 : minRating;
                     let cands = poolAll
-                        .filter(p => p.rating >= lowMin && p.rating <= rareCap && !used.has(p.id) &&
+                        .filter(p => p.rating >= lowMin && p.rating <= rareCap && freeCard(p) &&
                             inQualityBand(p) && matchesRarity(p, rc) &&
                             (!cfg.specialOnlyFromStorage || p.isStorage || !p.isSpecial || isTotw(p)));
                     // Die Rating-Obergrenze ist eine PRAEFERENZ (Panel) und darf
@@ -1792,19 +1829,19 @@
                         warnings.push('Keine Rare-Karte bis Rating ' + rareCap +
                             ' mehr frei - Grenze wird fuer diese SBC gelockert.');
                         cands = poolAll
-                            .filter(p => p.rating >= lowMin && !used.has(p.id) &&
+                            .filter(p => p.rating >= lowMin && freeCard(p) &&
                                 inQualityBand(p) && matchesRarity(p, rc) &&
                                 (!cfg.specialOnlyFromStorage || p.isStorage || !p.isSpecial || isTotw(p)));
                     }
                     const cand = cands.sort((!target && isRareGroup)
-                        ? ((a, b) => (a.rating - b.rating) || (costOf(a) - costOf(b)) || reserveCmp(a, b))
+                        ? ((a, b) => ((b.isStorage ? 1 : 0) - (a.isStorage ? 1 : 0)) ||
+                            (a.rating - b.rating) || (costOf(a) - costOf(b)) || reserveCmp(a, b))
                         : ((a, b) => (costOf(a) - costOf(b)) || (a.rating - b.rating) || reserveCmp(a, b))
                     )[0];
                     if (!cand) {
                         return { ok: false, reason: 'Rarity-Vorgabe "' + (rc.label || '?') + '" kann mit dem aktuellen Pool nicht erfüllt werden.', warnings: warnings };
                     }
-                    used.add(cand.id);
-                    reserved.push(cand);
+                    reserve(cand);
                     warnings.push('Vorgabe ' + (rc.label || 'Rarity') + ': ' + cand.name + ' (' + cand.rating + (cand.isSpecial ? ', Special' : '') + ') reserviert.');
                     have++;
                 }
@@ -1840,6 +1877,38 @@
                 return { count: pool.length, min: lo, max: hi };
             })();
             function finishTeam(team) {
+                // ENDKONTROLLE. Live kam ein PUT heraus, in dem dieselbe Karte
+                // auf zwei Slots stand und ein Slot leer blieb -> HTTP 460, und
+                // der Grund war im Report nicht zu sehen. Ein kaputtes Team wird
+                // ab jetzt NICHT eingetragen, sondern gemeldet - inklusive Dump,
+                // damit die Ursache im naechsten Report sichtbar ist.
+                const dump = team.map(p => ({
+                    id: p && p.id, assetId: p && p.assetId, rating: p && p.rating,
+                    storage: !!(p && p.isStorage), rareflag: p && p.rareflag
+                }));
+                const ids = new Set(), assets = new Set();
+                let bad = null;
+                for (const p of team) {
+                    if (!p || !p.id) { bad = 'Karte ohne ID im Team'; break; }
+                    if (ids.has(String(p.id))) { bad = 'Karte ' + p.id + ' doppelt im Team'; break; }
+                    ids.add(String(p.id));
+                    if (p.assetId != null && p.assetId !== 0) {
+                        if (assets.has(String(p.assetId))) {
+                            bad = 'Spieler ' + (p.name || p.assetId) + ' doppelt im Team (assetId ' +
+                                p.assetId + ') - EA lehnt das mit 460 ab';
+                            break;
+                        }
+                        assets.add(String(p.assetId));
+                    }
+                }
+                if (!bad && team.length !== N) {
+                    bad = 'Team hat ' + team.length + ' statt ' + N + ' Spieler';
+                }
+                if (bad) {
+                    return { ok: false, reason: 'Interner Fehler: ' + bad +
+                        '. Nichts eingetragen - bitte Diagnose schicken.',
+                        warnings: warnings, teamDump: dump };
+                }
                 const sum = team.reduce((s, p) => s + p.rating, 0);
                 const rats = team.map(p => p.rating);
                 const ovr = squadRating(rats);
@@ -1856,6 +1925,7 @@
                     waste: target ? Math.round((exact - target) * 100) / 100 : 0,
                     target: target || null,
                     poolInfo: poolInfo,
+                    teamDump: dump,
                     reason: (target && ovr < target) ? ('Erreichter OVR ' + ovr + ' < Ziel ' + target + '.') : null,
                     warnings: warnings
                 };
@@ -1887,11 +1957,11 @@
                     let gotRare = 0;
                     for (let need = needRare; need > 0; need--) {
                         const cand = avail
-                            .filter(p => !used.has(p.id) && p.isRare && p.rating <= maxRare)
-                            .sort((a, b) => (a.rating - b.rating) || (costOf(a) - costOf(b)) || cmp(a, b))[0];
+                            .filter(p => freeCard(p) && p.isRare && p.rating <= maxRare)
+                            .sort((a, b) => ((b.isStorage ? 1 : 0) - (a.isStorage ? 1 : 0)) ||
+                                (a.rating - b.rating) || (costOf(a) - costOf(b)) || cmp(a, b))[0];
                         if (!cand) break;
-                        used.add(cand.id);
-                        reserved.push(cand);
+                        reserve(cand);
                         gotRare++;
                     }
                     if (gotRare) {
@@ -1905,13 +1975,13 @@
                     // Auffüllen NUR mit Common (bis zur Common-Grenze). Reicht
                     // das nicht, wird gelockert statt aufzugeben.
                     const commons = avail.filter(p =>
-                        !used.has(p.id) && p.isCommon && p.rating <= maxCommon);
+                        freeCard(p) && p.isCommon && p.rating <= maxCommon);
                     const stillNeeded = N - reserved.length;
                     if (commons.length >= stillNeeded) fillPool = commons;
                     else {
                         warnings.push('Zu wenige Common-Karten bis Rating ' + maxCommon +
                             ' (' + commons.length + '/' + stillNeeded + ') - andere Karten werden mitbenutzt.');
-                        fillPool = avail.filter(p => !used.has(p.id));
+                        fillPool = avail.filter(p => freeCard(p));
                     }
                 }
                 const k2 = N - reserved.length;
@@ -1925,8 +1995,19 @@
                 // eine SBC ohne Rating-Vorgabe, wo 75er gereicht haetten.
                 // Derselbe Fehler wie bei Bronze (58 statt 48) - deshalb jetzt
                 // fuer den ganzen !target-Zweig, nicht nur fuer Bronze/Silber.
-                const fillers = fillPool.filter(p => !used.has(p.id)).sort(
-                    (a, b) => (a.rating - b.rating) || (costOf(a) - costOf(b)) || cmp(a, b)
+                // Reihenfolge ohne Ziel-Rating (Rasmus, in dieser Rangfolge):
+                //   1. Storage vor Verein - Storage ist Verbrauchsmaterial.
+                //      "Wenn es 77er im Storage gibt, gehen die VOR 75ern aus
+                //      dem Verein."
+                //   2. dann das niedrigste Rating (ein 77er ist mehr wert als
+                //      ein 75er, wo kein Rating gefordert ist).
+                //   3. dann die Kosten (dort steckt der Untradeable-Rabatt).
+                // Die Kosten duerfen NICHT vor dem Rating stehen: 75-77 liegen
+                // alle in der Stufe "0-80: 0", also gewinnt sonst ueber
+                // alpha/anzahl die HAEUFIGERE Karte.
+                const fillers = fillPool.filter(freeCard).sort(
+                    (a, b) => ((b.isStorage ? 1 : 0) - (a.isStorage ? 1 : 0)) ||
+                        (a.rating - b.rating) || (costOf(a) - costOf(b)) || cmp(a, b)
                 ).slice(0, k2);
                 if (reserved.length + fillers.length < N) {
                     return { ok: false, reason: 'Zu wenige passende Karten für die Vorgabe (' + (reserved.length + fillers.length) + '/' + N + ').', warnings: warnings };
@@ -3407,6 +3488,10 @@
             // Instanz öffnen wollte? (Die Abbruchmeldung verweist darauf -
             // in v4.18.0 fehlte das Feld im Report, mein Fehler.)
             batchSteps: STATE.diag.batchSteps || null,
+            // Welches Team hat der Solver zuletzt geliefert (id/assetId/rating/
+            // storage)? Bei HTTP 460 ist hier direkt zu sehen, ob eine Karte
+            // oder ein Spieler doppelt drin war.
+            lastTeam: STATE.diag.lastTeam || null,
             // Der letzte fehlende Schritt: nach dem Abgeben landet die App im
             // SBC-HUB (mehrfach belegt), und loadChallenge() bringt die Ansicht
             // nicht zurück. Um die SBC wie von Hand anzuklicken, brauche ich die
@@ -4410,6 +4495,15 @@
     SolverCore.solve = function (pool, cfg) {
         const res = _origSolve(pool, cfg);
         STATE.lastResult = res;
+        // Der Team-Dump gehoert in den Diagnose-Report: bei einem 460 war live
+        // nicht zu sehen, WELCHE Karten der Solver geliefert hat.
+        try {
+            STATE.diag.lastTeam = {
+                ok: !!res.ok,
+                reason: res.ok ? null : res.reason,
+                cards: res.teamDump || null
+            };
+        } catch (e) {}
         return res;
     };
     // Debug-Zugriff für die Konsole

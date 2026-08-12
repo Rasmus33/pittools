@@ -583,3 +583,50 @@ Gilt jetzt für den ganzen `!target`-Zweig.
 **Merksatz:** wo kein Rating gefordert ist, ist ein höheres Rating reine
 Verschwendung — Kosten dürfen darüber nicht entscheiden, weil die Kostentabelle
 im unteren Bereich flach ist.
+
+
+## 16. Reservierungen liefen auf dem NICHT deduplizierten Pool (HTTP 460)
+
+**v4.26.0, live:** der PUT hatte dieselbe Karte auf zwei Slots und liess einen
+Slot leer -> HTTP 460, danach 400 auf allen Fallback-Wegen.
+
+Die assetId-Deduplizierung (Abschnitt 6) lief auf `pool`. Die
+Vorgaben-Reservierungen greifen aber bewusst auf `poolAll` zu -- dort stehen
+auch Vereins-TOTW und Karten unter dem Min-Rating, die fuer eine Vorgabe
+erlaubt sind. `poolAll` ist NICHT dedupliziert, also konnten eine Vorgabe-Karte
+und eine Auffuell-Karte derselbe Spieler sein.
+
+Drei Aenderungen:
+
+1. Alle Reservierungen laufen jetzt ueber `reserve(p)` / `freeCard(p)`, die
+   `used` (Karten-ID) UND `usedAssets` (Spieler) zusammen nachfuehren. Das ist
+   die eigentliche Absicherung -- mit der Gegenprobe belegt: ohne `freeCard`
+   reserviert der Solver denselben Spieler zweimal.
+2. `poolAll` wird zusaetzlich dedupliziert, wobei die Karten aus `pool` Vorrang
+   haben (sonst zeigen die beiden Pools auf verschiedene Karten desselben
+   Spielers).
+3. **Endkontrolle in `finishTeam`:** doppelte Karten-ID, doppelte assetId, Karte
+   ohne ID oder falsche Teamgroesse fuehren zu `ok: false` mit klarer Meldung --
+   nichts wird eingetragen. Der Diagnose-Report hat dafuer das neue Feld
+   `lastTeam` (id/assetId/rating/storage pro Karte).
+
+**Muster:** wenn zwei Pools nebeneinander existieren (einer streng gefiltert,
+einer bewusst weiter), muss JEDE Invariante an beiden haengen -- oder besser an
+der Stelle, an der Karten ins Team wandern. Ein Guard am Ende ist billig und
+verhindert, dass so etwas ueberhaupt an den Server geht.
+
+## 17. Storage vor Rating (Rasmus, live nachgeschaerft)
+
+Nach dem Fix aus Abschnitt 15 nahm der Solver konsequent die niedrigsten Karten
+-- und damit Vereins-75er statt der 77er aus dem Storage. Rasmus: *"wenn es 77er
+im storage gibt sollten die vor 75ern aus dem verein bevorzugt werden."*
+
+Die Rangfolge ohne Ziel-Rating ist also:
+
+1. **Storage vor Verein** (Storage ist Verbrauchsmaterial)
+2. dann das **niedrigste Rating**
+3. dann die **Kosten** (dort steckt der Untradeable-Rabatt)
+
+Der Storage-Rabatt im Kostenmodell reicht dafuer NICHT, weil die Kosten erst an
+dritter Stelle greifen -- Storage muss ein eigener, erster Sortier-Schluessel
+sein. Gilt fuer das Auffuellen und fuer die Rare-Reservierung.

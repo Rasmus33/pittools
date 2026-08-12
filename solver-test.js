@@ -759,15 +759,26 @@ function mulberry32(a) {
         res7.ok && res7.players.filter(p => (p.groups || []).indexOf(83) > -1).length === 1,
         res7.ok ? ('g83=' + res7.players.filter(p => (p.groups || []).indexOf(83) > -1).length) : res7.reason);
 
-    // Fall 8: Gruppe-4-Reservierung nimmt die niedrigste Rare, nicht die
-    // billigste. Sonst gewinnt ueber alpha/anzahl die HAEUFIGERE Karte.
+    // Fall 8: Rangfolge OHNE Ziel-Rating (Rasmus, live nachgeschaerft):
+    //   1. Storage vor Verein  2. niedrigstes Rating  3. Kosten
+    // "Wenn es 77er im Storage gibt, gehen die VOR 75ern aus dem Verein."
     const res8 = SolverCore.solve(
         [].concat(many(1, 75, { rareflag: 1 }), many(8, 77, { rareflag: 1, storage: true }),
                   many(12, 76, { rareflag: 0 })),
         gcfg({ slots: 6, rarityConstraints: RARE_G4, maxCommonRating: 76 }));
-    check('Gruppe 4: die einzelne 75er Rare kommt vor den haeufigen 77ern',
-        res8.ok && res8.players.some(p => p.isRare && p.rating === 75),
-        res8.ok ? res8.players.filter(p => p.isRare).map(p => p.rating).join(',') : res8.reason);
+    check('Gruppe 4: Storage-77er gehen vor der Vereins-75er',
+        res8.ok && res8.players.every(p => p.isStorage && p.rating === 77),
+        res8.ok ? res8.players.map(p => p.rating + (p.isStorage ? 'S' : 'V')).join(',') : res8.reason);
+
+    // Innerhalb des Storage gilt weiter das niedrigste Rating.
+    const res8b = SolverCore.solve(
+        [].concat(many(3, 75, { rareflag: 1, storage: true }),
+                  many(8, 77, { rareflag: 1, storage: true }),
+                  many(12, 76, { rareflag: 0 })),
+        gcfg({ slots: 6, rarityConstraints: RARE_G4, maxCommonRating: 76 }));
+    check('Innerhalb des Storage: die 75er vor den 77ern',
+        res8b.ok && res8b.players.filter(p => p.rating === 75).length === 3,
+        res8b.ok ? res8b.players.map(p => p.rating).sort().join(',') : res8b.reason);
 }
 
 // ========== 8b-2b. Zwei Live-Fehler aus v4.25.0 ==========
@@ -809,9 +820,52 @@ function mulberry32(a) {
                   many(2, 76, { rareflag: 0, storage: true })),
         cfg(null, Object.assign({ slots: 9 }, gold,
             { ratingCostSpec: SolverCore.DEFAULT_RATING_COST_SPEC })));
-    check('Ohne Ziel-Rating: die 75er statt der haeufigen 77er',
-        res3.ok && res3.players.every(p => p.rating === 75),
+    // Storage zuerst (die beiden 76er), der Rest die NIEDRIGSTEN aus dem
+    // Verein - nicht die haeufigen 77er.
+    check('Ohne Ziel-Rating: Storage zuerst, dann die 75er aus dem Verein',
+        res3.ok && res3.players.filter(p => p.isStorage).length === 2 &&
+        res3.players.filter(p => !p.isStorage).every(p => p.rating === 75),
+        res3.ok ? res3.players.map(p => p.rating + (p.isStorage ? 'S' : 'V')).sort().join(',') : res3.reason);
+    check('Ohne Ziel-Rating: kein einziger 77er aus dem Verein',
+        res3.ok && !res3.players.some(p => !p.isStorage && p.rating === 77),
         res3.ok ? res3.players.map(p => p.rating).sort().join(',') : res3.reason);
+}
+
+// ========== 8b-2c. Kein Spieler zweimal im Team (HTTP 460) ==========
+{
+    // Live (v4.26.0): der PUT hatte dieselbe Karte auf zwei Slots und einen
+    // leeren Slot -> HTTP 460. Ursache: die Vorgaben-Reservierung lief auf
+    // poolAll, das NICHT nach assetId dedupliziert ist - eine Vorgabe-Karte und
+    // eine Auffuell-Karte konnten derselbe Spieler sein.
+    const G4 = [{ label: 'PLAYER_RARITY_GROUP', ids: [], count: 1, groupId: 4 }];
+    const gold = { targetOVR: null, minRating: 0, maxRareRating: 77, maxCommonRating: 77,
+                   qualityConstraints: [{ label: 'PLAYER_QUALITY', quality: 3, count: 1 }] };
+    // Sechs Rare, aber nur DREI verschiedene Spieler (je zwei Kopien) - dazu
+    // genug Common. Ohne Dedupe wuerden Kopien desselben Spielers reserviert.
+    const rare = [];
+    for (const asset of [11111, 22222, 33333]) {
+        for (let k = 0; k < 2; k++) {
+            const p = P(76, { rareflag: 1, storage: true });
+            p.assetId = asset;
+            rare.push(p);
+        }
+    }
+    const res = SolverCore.solve([].concat(rare, many(12, 77, { rareflag: 1, storage: true }),
+                                           many(12, 75, { rareflag: 0 })),
+        cfg(null, Object.assign({ slots: 6, rarityConstraints: G4 }, gold)));
+    check('Vorgaben-Reservierung: kein Spieler doppelt (assetId)',
+        res.ok && new Set(res.players.map(p => String(p.assetId))).size === res.players.length,
+        res.ok ? res.players.map(p => p.assetId).join(',') : res.reason);
+    check('Vorgaben-Reservierung: keine Karte doppelt (id)',
+        res.ok && new Set(res.players.map(p => String(p.id))).size === res.players.length,
+        res.ok ? res.players.map(p => p.id).join(',') : res.reason);
+
+    // Die Endkontrolle muss ein kaputtes Team melden statt es einzutragen.
+    const srcJs = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
+    check('Endkontrolle gegen doppelte Karten ist im Code',
+        /doppelt im Team/.test(srcJs) && /Nichts eingetragen/.test(srcJs));
+    check('Endkontrolle liefert einen teamDump fuer die Diagnose',
+        /teamDump/.test(srcJs));
 }
 
 // ========== 8b-3. Der Rare-Parser darf keine Spielernamen matchen ==========

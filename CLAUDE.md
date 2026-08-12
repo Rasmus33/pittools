@@ -62,6 +62,9 @@ JS/Java-Engineering. Umgangssprache: Deutsch.
   entscheiden die Karten-Kosten.
 - Karten-Prioritäten: Storage-Gold → Storage-Special → Verein-Gold.
   Verein-Specials NIE in SBCs — einzige Ausnahme: TOTW (rareflag 3).
+- Ohne Ziel-Rating gilt diese Rangfolge: Storage vor Verein, dann das
+  NIEDRIGSTE Rating, dann die Kosten. Ein 77er aus dem Storage geht also vor
+  einem 75er aus dem Verein — Storage ist Verbrauchsmaterial.
 - Unverkäufliche Karten zuerst verbauen (Default-Rabatt 3, im Panel
   einstellbar): für den Transfermarkt wertlos, für SBCs vollwertig.
 - Evolutions (Academy-Items) NIEMALS verbauen.

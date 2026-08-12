@@ -754,3 +754,82 @@ eine lange Startzeit sofort erklaerbar.
 **Was das NICHT beschleunigt:** das Warten auf die EA-Klassen (der Waechter aus
 Abschnitt 8) und die gestueckelte Injection der 900 KB. Der Anteil, der wegfaellt,
 ist der Download vor dem Seitenaufbau.
+
+
+## 21. Am Handy braucht ein Tap TOUCH-Events (Batch-Navigation)
+
+**v4.29.0, live am Handy:** das Abgeben lief endlich (`submitChallengeVia:
+ctrl._submitChallenge`, siehe Abschnitt 19), aber Runde 2 kam nicht auf:
+
+```
+batchSteps: round 1
+  ms 1475  setTile ok  "Set-Kachel geklickt (exakt)"  hitTitle: daily silver upgrade
+  ms 3501  chRow  FAIL "keine Challenge-Zeilen sichtbar"  rowView 0, detailsView 0
+  ms 6539  setTile ok  (nochmal)
+  ms 12792 setTile ok  (nochmal)
+hubScan.inHub: true   controllerNames: [..., UTSBCHubViewController]
+```
+
+Die Kachel wurde gefunden und "geklickt" - und die App blieb im Hub. Drei
+Fehler in `clickLike` auf einmal:
+
+1. **Keine Touch-Events.** Die schmale EA-Ansicht haengt ihre Tap-Handler an
+   `touchstart`/`touchend`. Am PC (Maus) genuegten pointer+mouse, deshalb fiel
+   das dort nie auf. Das ist dieselbe Fehlerklasse wie damals bei
+   `element.click()` - nur eine Schicht tiefer.
+2. **Keine Koordinaten.** Die Events gingen mit `clientX/clientY = 0` raus,
+   also aus der linken oberen Ecke. Wer per Hit-Test prueft, verwirft das.
+3. **Kein `scrollIntoView`.** Im Live-Report war "Daily Silver Upgrade" die
+   achte Kachel von vielen, bei ~320-400 px Hoehe pro Kachel also weit
+   unterhalb des 997 px hohen Viewports. Ein Tap ausserhalb des Bildes ist
+   keiner.
+
+Der Tap schickt jetzt: `scrollIntoView` -> Mittelpunkt der Kachel berechnen ->
+`touchstart`/`touchend` mit echten `Touch`-Objekten -> und **nur wenn kein
+Touch-Handler `preventDefault` gerufen hat** zusaetzlich pointer+mouse. Genau
+so verhaelt sich ein echter Browser; ohne diese Bedingung kaeme die Navigation
+womoeglich zweimal.
+
+Neues Diagnose-Feld `lastTap` (`events`, `touchHandled`, `x`/`y`,
+`inViewport`), und der `setTile`-Schritt in `batchSteps` fuehrt es mit.
+
+**Muster:** Rasmus' Hauptgeraet ist das Handy. Jede Interaktion, die am PC
+funktioniert, muss dort eigens geprueft werden - Controller-Namen (Abschnitt 19)
+UND Event-Typen.
+
+## 22. Die 2-Minuten-Nachfrist des PaleTools-Waechters war verschenkte Zeit
+
+Nach dem Cache-Fix (Abschnitt 20) dauerte der Start weiter lang. Der Log zeigte,
+warum:
+
+```
+PaleTools-Quelle: Cache
+PaleTools wartet: t=5   fehlt: UIItemActionEvent
+PaleTools wartet: t=243 fehlt: UIItemActionEvent
+PaleTools-Status: geladen (910647 Zeichen, ohne UIItemActionEvent)
+```
+
+`t` zaehlt 250ms-Ticks, die SOFT-Schwelle stand bei 480 - **zwei Minuten**. Und
+zwar jedes Mal: `UIItemActionEvent` ist das EINZIGE fehlende Symbol
+(services/getAppMain/UTStandardButtonControl/body sind bei t=5 schon da) und es
+erscheint in FC26 offenbar nie. Zwei Live-Logs (App 1.5.0 und 1.6.0) zeigen
+dasselbe Bild, und PaleTools laeuft ohne das Symbol.
+
+Jetzt: Nachfrist 40 Ticks (10s) statt 480. Und die App **merkt** sich pro Geraet,
+dass es ohne das Symbol geklappt hat - dann wird gar nicht mehr gewartet. Der
+Beleg dafuer ist die Nachkontrolle (`LS-Keys >= 1`, PaleTools hat seine
+localStorage-Keys geschrieben); ohne diesen Beleg wird nichts gemerkt, sonst
+wuerde ein kaputter Zustand festgeschrieben.
+
+Die 30-Minuten-Geduld fuer die ECHTEN Blocker bleibt unveraendert - der
+EA-Login kann dauern, und vorzeitig auszufuehren war schon einmal ein Ausfall
+(Abschnitt 8).
+
+Nebenbefund aus demselben Log: `PaleTools-Cache erneuert (910627 Zeichen)`,
+obwohl die Datei unveraendert war - der erste Download-Weg merkte sich ETag und
+Last-Modified nicht, also war die erste Auffrischung ein voller GET. Laeuft
+jetzt auch ueber `fetchUrlIfChanged`.
+
+**Zur Log-Lesehilfe:** `Optimizer: 259968 Zeichen` sind **Java-Zeichen
+(UTF-16)**, nicht Bytes. Die Datei hat 260424 Bytes - die Differenz sind die
+Umlaute und Sonderzeichen. 259968 ist also genau v4.29.0, kein alter Stand.

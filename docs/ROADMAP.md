@@ -57,6 +57,13 @@
    EINEM Report aus dem Hub ist das treffsicher baubar; klappt es dann nicht,
    ist das Feature nicht sinnvoll umsetzbar.
 
+1c. **Batch am Handy: Runde 2 gegenpruefen** (v4.30.0). Das Abgeben laeuft
+   (`submitChallengeVia: ctrl._submitChallenge`), offen ist der Kachel-Tap.
+   Im Report zeigt `batchSteps[].setTile.tap`, ob `touchstart,touchend`
+   rausgingen, ob ein Handler sie verarbeitet hat (`touchHandled`) und ob die
+   Kachel im Bild war (`inViewport`). Bleibt `hubScan.inHub` true, greift EA
+   den Tap anders ab - dann bleibt nur, die Tap-Handler der View-Instanz
+   direkt zu rufen.
 2. **APK beim Kollegen testen**: v1.3.0 (PitTools, Hochformat, Pitroipa-Icon,
    GitHub-URL als Default) ist gebaut, aber der EA-Login im WebView ist erst auf
    EINEM Gerät verifiziert. Mögliche Stolpersteine: SSO-Popups, Captcha.

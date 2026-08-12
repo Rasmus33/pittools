@@ -272,6 +272,11 @@ public class MainActivity extends Activity {
      */
     void injectPaleChunked() {
         final String code = scriptPale;
+        // Hat PaleTools auf diesem Geraet schon einmal OHNE UIItemActionEvent
+        // funktioniert (Nachkontrolle sah paletools-localStorage-Keys), dann
+        // ist die Nachfrist ueberfluessig - sofort starten.
+        final int softAfter = prefs.getBoolean("paleSoftOk", false) ? 0 : 40;
+        web.evaluateJavascript("window.__pt_soft_after=" + softAfter + ";", null);
         web.evaluateJavascript(
             "if(!window.__inj_pale){window.__inj_pale=1;window.__pt_buf=[];}", null);
         for (int i = 0; i < code.length(); i += PALE_CHUNK) {
@@ -330,10 +335,18 @@ public class MainActivity extends Activity {
             "  if(typeof UIItemActionEvent==='undefined')m.push('UIItemActionEvent');" +
             "  if(!document.body)m.push('body');return m;}" +
             // Schwellen in Ticks (250ms): SOFT = ab wann ohne
-            // UIItemActionEvent gestartet wird (2 Min), HARD = endgueltiges
-            // Aufgeben (30 Min). Ueberschreibbar, damit guard-test.js beide
-            // Pfade pruefen kann, ohne Minuten zu warten.
-            "var SOFT=window.__pt_soft_after||480,HARD=window.__pt_hard_after||7200;" +
+            // UIItemActionEvent gestartet wird, HARD = endgueltiges Aufgeben
+            // (30 Min). Ueberschreibbar, damit guard-test.js beide Pfade
+            // pruefen kann, ohne Minuten zu warten.
+            // SOFT war 480 (2 Min) - zu lang. Zwei Live-Logs (App 1.5.0 und
+            // 1.6.0) zeigen: UIItemActionEvent erscheint in FC26 NIE, waehrend
+            // services/getAppMain/UTStandardButtonControl/body laengst da sind
+            // (blockers leer bei t=243). Die 2 Minuten waren jeden Start
+            // verschenkt. 40 Ticks = 10s reichen als Nachfrist; hat ein
+            // frueherer Start auf diesem Geraet nachweislich OHNE das Symbol
+            // funktioniert, wird gar nicht mehr gewartet (siehe paleSoftNow).
+            "var SOFT=(window.__pt_soft_after!=null?window.__pt_soft_after:40)," +
+            "    HARD=window.__pt_hard_after||7200;" +
             "var t=0;(function w(){" +
             "  var m=miss();" +
             "  window.__pt_wait='t='+t+(m.length?(' fehlt: '+m.join(',')):' bereit');" +
@@ -613,6 +626,25 @@ class PalePoll implements Runnable, ValueCallback<String> {
         if (i >= 0) { status = s.substring(0, i); wait = s.substring(i + SEP.length()); }
 
         boolean have = status.length() > 0 && !"null".equals(status);
+        // Beleg fuer "laeuft auch ohne UIItemActionEvent": die Nachkontrolle
+        // hat paletools-localStorage-Keys gezaehlt (>=1 heisst, PaleTools hat
+        // sich eingerichtet). Ohne diesen Beleg wird NICHTS gemerkt - sonst
+        // wuerde ein kaputter Zustand festgeschrieben.
+        if (have && status.indexOf("ohne UIItemActionEvent") >= 0) {
+            int k = status.indexOf("LS-Keys:");
+            if (k >= 0) {
+                int n = 0, j = k + 8;
+                while (j < status.length() && status.charAt(j) >= '0' && status.charAt(j) <= '9') {
+                    n = n * 10 + (status.charAt(j) - '0');
+                    j++;
+                }
+                if (n >= 1 && !a.prefs.getBoolean("paleSoftOk", false)) {
+                    a.prefs.edit().putBoolean("paleSoftOk", true).apply();
+                    a.addLog("Gemerkt: PaleTools laeuft ohne UIItemActionEvent (LS-Keys=" + n
+                            + ") - kuenftig ohne Nachfrist starten.");
+                }
+            }
+        }
         boolean didToast = toasted;
         if (have && !status.equals(a.paleStatus)) {
             a.paleStatus = status;
@@ -726,7 +758,12 @@ class ScriptLoader implements Runnable {
             pale = a.readCache("pale.js");
             if (pale != null) paleFromCache = true;
             else {
-                pale = a.fetchUrl(paleUrl);
+                // fetchUrlIfChanged auch hier: ohne gemerkten ETag ist das ein
+                // normaler GET, merkt sich aber ETag/Last-Modified - sonst laedt
+                // die erste Auffrischung die 900 KB nochmal komplett (live so
+                // beobachtet: "Cache erneuert (910627 Zeichen)" bei
+                // unveraenderter Datei).
+                pale = a.fetchUrlIfChanged(paleUrl, "paleEtag", "paleMod");
                 if (pale != null) a.writeCache("pale.js", pale);
             }
         }

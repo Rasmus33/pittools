@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.29.0
+// @version      4.30.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.29.0';
+    const VERSION = '4.30.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -4212,14 +4212,61 @@
      * hört. Live gesehen: der Set-Kachel-Klick meldete Erfolg, die Ansicht
      * reagierte aber nicht.
      */
+    /**
+     * Einen echten Tap nachbilden. Drei Dinge, die vorher fehlten und den
+     * Batch am HANDY haben scheitern lassen (live: "Set-Kachel geklickt
+     * (exakt)" dreimal, und die App blieb im Hub):
+     *
+     *  1. TOUCH-Events. Die schmale EA-Ansicht haengt ihre Tap-Handler an
+     *     touchstart/touchend - am PC (Maus) reichten pointer+mouse.
+     *  2. KOORDINATEN. Die Events kamen mit clientX/clientY = 0, also aus der
+     *     linken oberen Ecke. Wer per Hit-Test prueft, verwirft das.
+     *  3. scrollIntoView. Die gesuchte Kachel steht im Hub weit unten (im
+     *     Live-Report war "Daily Silver Upgrade" die achte von vielen); ein
+     *     Tap ausserhalb des Viewports ist keiner.
+     *
+     * Hat ein Touch-Handler preventDefault aufgerufen, ist der Tap verarbeitet
+     * und die Maus-Events entfallen - genau wie im echten Browser. Sonst
+     * kaeme die Navigation womoeglich zweimal.
+     */
     function clickLike(el) {
         if (!el) return false;
-        const o = { bubbles: true, cancelable: true, view: window, button: 0 };
-        let sent = 0;
-        function fire(type, Ctor) {
-            try { el.dispatchEvent(new Ctor(type, o)); sent++; } catch (e) {}
+        try { el.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (e) {
+            try { el.scrollIntoView(); } catch (e2) {}
         }
+        const r = (el.getBoundingClientRect && el.getBoundingClientRect()) ||
+                  { left: 0, top: 0, width: 0, height: 0 };
+        const x = Math.round(r.left + r.width / 2);
+        const y = Math.round(r.top + r.height / 2);
+        const o = { bubbles: true, cancelable: true, view: window, button: 0, buttons: 1,
+                    clientX: x, clientY: y, screenX: x, screenY: y,
+                    pointerType: 'touch', isPrimary: true };
+        const sent = [];
+        function fire(type, Ctor, init) {
+            try {
+                const ok = el.dispatchEvent(new Ctor(type, init || o));
+                sent.push(type);
+                return ok;
+            } catch (e) { return true; }
+        }
+        let touchHandled = false;
         try {
+            if (typeof window.Touch === 'function' && typeof window.TouchEvent === 'function') {
+                const mk = () => new window.Touch({
+                    identifier: 1, target: el, clientX: x, clientY: y,
+                    pageX: x + (window.scrollX || 0), pageY: y + (window.scrollY || 0),
+                    screenX: x, screenY: y
+                });
+                const t = mk();
+                const base = { bubbles: true, cancelable: true, view: window };
+                fire('touchstart', window.TouchEvent, Object.assign({}, base,
+                    { touches: [t], targetTouches: [t], changedTouches: [t] }));
+                const notPrevented = fire('touchend', window.TouchEvent, Object.assign({}, base,
+                    { touches: [], targetTouches: [], changedTouches: [t] }));
+                touchHandled = !notPrevented;
+            }
+        } catch (e) {}
+        if (!touchHandled) {
             if (typeof window.PointerEvent === 'function') {
                 fire('pointerdown', window.PointerEvent);
                 fire('pointerup', window.PointerEvent);
@@ -4227,8 +4274,16 @@
             fire('mousedown', MouseEvent);
             fire('mouseup', MouseEvent);
             fire('click', MouseEvent);
-            return sent > 0;
-        } catch (e) { return false; }
+        }
+        try {
+            STATE.diag.lastTap = {
+                events: sent.join(','), touchHandled: touchHandled,
+                x: x, y: y,
+                inViewport: (y >= 0 && y <= (window.innerHeight || 0) &&
+                             x >= 0 && x <= (window.innerWidth || 0))
+            };
+        } catch (e) {}
+        return sent.length > 0;
     }
     function visibleAll(sel) {
         const out = [];
@@ -4294,10 +4349,12 @@
         // Erst die Kachel, dann ihr Titel-Element - manche Views haengen ihren
         // Tap-Handler am Kind, nicht am Container.
         clickLike(hit);
+        const tap = STATE.diag.lastTap || null;
         const inner = hit.querySelector('.tileHeader, .tileTitle, h1');
         if (inner) clickLike(inner);
         return { ok: true, why: 'Set-Kachel geklickt (' + how + ')',
-                 want: want, hitTitle: titleOf(hit) };
+                 want: want, hitTitle: titleOf(hit), tap: tap,
+                 tapInner: inner ? (STATE.diag.lastTap || null) : null };
     }
     /** Challenge-Zeile in der geoeffneten Set-Ansicht anklicken. */
     function clickChallengeRow() {

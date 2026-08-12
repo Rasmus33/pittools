@@ -967,6 +967,29 @@ function mulberry32(a) {
         fn.indexOf("c.submitChallenge === ") < fn.indexOf("c._submitChallenge === "));
 }
 
+// ========== 8b-2f. Tap am Handy: Touch-Events + Koordinaten ==========
+{
+    // Live (v4.29.0, Handy): batchSteps meldete dreimal "Set-Kachel geklickt
+    // (exakt)", die App blieb aber im Hub (hubScan.inHub true,
+    // UTSBCHubViewController). clickLike schickte nur pointer+mouse, ohne
+    // Koordinaten - die schmale EA-Ansicht haengt ihre Tap-Handler an
+    // touchstart/touchend.
+    const src = require("fs").readFileSync(__dirname + "/ea-fc-sbc-optimizer.user.js", "utf8");
+    const fn = src.slice(src.indexOf("function clickLike"),
+                         src.indexOf("function visibleAll"));
+    check("Tap schickt touchstart/touchend",
+        fn.indexOf("touchstart") > -1 && fn.indexOf("touchend") > -1);
+    check("Tap hat Koordinaten (nicht 0,0)",
+        /clientX: x/.test(fn) && /getBoundingClientRect/.test(fn));
+    check("Tap scrollt das Ziel ins Bild", fn.indexOf("scrollIntoView") > -1);
+    check("Maus-Events entfallen, wenn Touch verarbeitet wurde",
+        /if \(!touchHandled\)/.test(fn));
+    check("Touch kommt VOR pointer/mouse",
+        fn.indexOf("touchstart") < fn.indexOf("pointerdown"));
+    check("Tap-Details landen im Diagnose-Report",
+        /STATE.diag.lastTap/.test(fn) && /tap: tap/.test(src));
+}
+
 // ========== 8b-3. Der Rare-Parser darf keine Spielernamen matchen ==========
 {
     // Live-Fehler (v4.24.0): ein Substring-Match auf "RARE" im Scope-Namen hat

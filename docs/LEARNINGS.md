@@ -242,41 +242,56 @@ trotz Erfolg).
   installieren. `build.sh` erzeugt deshalb NIE still einen neuen Keystore,
   sondern bricht ab (`ALLOW_NEW_KEYSTORE=1` erzwingt).
 
-## 9. SBC abgeben (Batch)
+## 9. SBC abgeben + warum der Batch ausgebaut wurde
 
-- **Abgeben laeuft ueber den LIVE-CONTROLLER, nicht ueber den Service mit
-  Argument.** `services.SBC.submitChallenge(challenge)` kam live mit HTTP 403
-  zurueck; der Diagnose-Report zeigte `submitChallengeArity: 0` (die Methode
-  nimmt gar kein Argument) und dass `UTSBCSquadSplitViewController` selbst
-  `submitChallenge`/`_submitChallenge`/`_onChallengeSubmitted` hat - das ist der
-  Weg, den die App beim Klick auf ihren eigenen Submit-Button nimmt. Ueber den
-  Controller klappt es (live bestaetigt, `grantedSetAwards` in der Antwort).
-  Dasselbe Muster wie beim Eintragen (Paragraph 5): erst Controller, dann
-  Service als Fallback.
+**Jede Wiederholung einer SBC hat eine EIGENE challengeId.** Das ist die
+Erkenntnis, die alles erklaert. Live gesehen an derselben wiederholbaren SBC:
+erst 3829, dann 3800, dann 3771. Folgen:
+- Wer in eine verbrauchte Instanz schreibt, bekommt **HTTP 404** von
+  `saveChallenge` bzw. **475** vom PUT. Das trifft auch den normalen
+  Einzel-Betrieb, wenn man dieselbe SBC mehrmals hintereinander macht: die
+  Ansicht/der App-Cache steht noch auf der alten Instanz. Seit v4.17.0 gibt es
+  dafuer eine verstaendliche Meldung ("SBC-Instanz veraltet - im Spiel schliessen
+  und neu oeffnen") statt eines nackten Status.
+- Eine ID-Gleichheitspruefung ist als Sicherheitsnetz beim Fortsetzen deshalb
+  FALSCH: die ID darf sich zwischen zwei Runden legitim aendern. Ueber das Set
+  (`setId`) waere der richtige Anker, plus `requestChallengesForSet(setId)`, um
+  die aktuelle Instanz zu finden.
+
+**Abgeben selbst funktioniert** (live bestaetigt): ueber die Methode des
+Live-Controllers, NICHT ueber `services.SBC.submitChallenge(challenge)` -
+letzteres kam mit 403 zurueck, und der Report zeigte auch warum
+(`submitChallengeArity: 0`, die Methode nimmt kein Argument, und
+`UTSBCSquadSplitViewController` hat selbst `submitChallenge`). Dasselbe Muster
+wie beim Eintragen (Paragraph 5): erst Controller, dann Service.
+`gPopupClickShield.closeActivePopup()` raeumt den Belohnungs-Dialog weg - das ist
+EAs eigener Popup-Manager, PaleTools nutzt ihn fuer sein Plugin
+"claim-sbc-rewards".
+
+**Woran der Batch gescheitert ist:** nach dem Abgeben ist der
+SBC-Squad-Controller weg (`batchSteps` zeigte `controller: null`,
+`challengeBack: false` in jeder Runde; die Controller-Kette endete teils auf
+`UTSBCHubViewController`). `services.SBC.loadChallenge(id)` laedt nur Daten und
+wechselt die Ansicht nicht - und mit der ALTEN ID ohnehin die falsche Instanz.
+Ein Weg, eine Challenge programmatisch zu OEFFNEN, wurde nicht gefunden;
+`UTGameFlowNavigationController` hat `pushViewController`, aber dafuer muesste
+man einen korrekt initialisierten Controller bauen.
+Konsequenz (Rasmus' Ansage: "entweder funktioniert das automatisch oder wir
+koennen es wieder ausbauen"): der Lauf ist in v4.17.0 ausgebaut. Ein
+halbautomatischer Batch ist wertlos - "Weiter druecken ist ja quasi so als wenn
+ich einfach selbst noch mal auf Optimieren druecke".
+`planBatch()` im Solver bleibt samt 8 Testfaellen stehen; die Planung war nie
+das Problem.
+
+**Falls wir es nochmal angehen:** ueber `requestChallengesForSet(setId)` die
+neue Instanz holen und die noch offene Frage klaeren, wie man sie oeffnet.
+Kandidat, den Rasmus pruefen muesste: der Button `#repeat-sbc`
+("Repeat Search") in `.sbc-button-container` - ungeklaert, ob das PaleTools'
+repeatSbc oder EAs Suche-wiederholen ist. Bewusst nicht geraten.
+
 - `_squad.isSBCSquadEligible()` sagt VOR dem Abgeben, ob EA die SBC fuer
   erfuellt haelt - spart einen 403-Blindflug. Nur bei explizit `false`
   abbrechen, damit ein unerwarteter Rueckgabewert nicht alles blockiert.
-- **Nach dem Abgeben ist die Challenge-Ansicht WEG.** Live danach:
-  `UTSBCHubViewController`, `.sbc-button-container` verschwunden - und ein
-  Belohnungs-Dialog, der weggeklickt werden muss. Ein Batch kann also nicht
-  einfach "kurz warten" und weitermachen. Ab v4.13.0 pausiert der Lauf an
-  dieser Stelle (`plan.nextIndex` merkt sich die Position), sagt was zu tun ist
-  und macht per "Weiter" da weiter. Bewusst KEIN automatisches Klicken in
-  fremden Dialogen: ein falsch getroffener Button (Quick Sell) waere nicht
-  rueckholbar. `afterSubmit` im Diagnose-Report haelt die sichtbaren Buttons
-  direkt nach der Abgabe fest - Grundlage, das spaeter zu automatisieren.
-- **Belohnungs-Dialog nach dem Abgeben:** `gPopupClickShield.closeActivePopup()`
-  raeumt ihn weg - das ist der Popup-Manager der EA-App selbst, PaleTools nutzt
-  genau diesen Aufruf fuer sein Plugin "claim-sbc-rewards". Bewusst kein Klick
-  auf einen per Text geratenen Button: daneben liegen Dinge wie "Quick Sell",
-  ein Fehlklick waere nicht rueckholbar. Danach `services.SBC.loadChallenge(id)`
-  und pruefen, ob wieder ein SBC-Squad-Controller da ist; nur wenn nicht, wird
-  pausiert. Die Challenge-ID VOR dem Abgeben festhalten - danach zeigt
-  `STATE.sbc` womoeglich schon woanders hin.
-  Wichtig zur Interpretation des ersten Reports: dass danach
-  `UTSBCHubViewController` stand, war KEIN Beweis fuer automatisches
-  Wegnavigieren - der Report entstand, nachdem Rasmus den Dialog weggeklickt und
-  selbst navigiert hatte.
 - **Ein halbautomatischer Batch ist wertlos.** Rasmus' Einwand: "Weiter druecken
   ist ja quasi so als wenn ich einfach selbst noch mal auf Optimieren druecke".
   Wenn pro Runde Handgriffe noetig sind, spart der Batch nichts - er MUSS

@@ -35,22 +35,15 @@
    das die Requests nativ ausführt und das Ergebnis zurückgibt — erst angehen,
    wenn wirklich diese Features fehlen.
    Ein GM_-Shim ist NICHT nötig (PaleTools hat Fallbacks, LEARNINGS §8).
-1b. **Batch: Challenge automatisch neu oeffnen** (der letzte fehlende Schritt).
-   Stand v4.15.0: Abgeben klappt (Controller-Weg), der Belohnungs-Dialog wird
-   ueber `gPopupClickShield.closeActivePopup()` weggeraeumt - aber die Challenge
-   muss noch von Hand geoeffnet werden. `services.SBC.loadChallenge(id)` laedt
-   offenbar nur DATEN und wechselt die Ansicht nicht.
-   Rasmus' Einwand gilt: mit Handgriffen pro Runde spart der Batch nichts.
-   Naechster Schritt: Feld `navScan` im Diagnose-Report auswerten (Methoden der
-   Navigation-/Hub-Controller) und daraus den Weg finden, mit dem die App selbst
-   eine Challenge oeffnet. Kandidaten, die noch zu pruefen sind:
-   - eine Methode am `UTGameFlowNavigationController` (navigate/push/showScreen)
-   - `UTSBCSquadDetailPanelViewController` - PaleTools' repeatSbc ruft dort eine
-     interne Methode (im Bundle obfuskiert, zur Laufzeit ueber `navScan`
-     auffindbar)
-   - Als Notloesung: PaleTools' eigener Button `#repeat-sbc` klicken (existiert
-     nur, wenn PaleTools laeuft - auf dem PC ist das der Fall, in der App nicht)
-   Bis dahin pausiert der Lauf und prueft beim Fortsetzen die Challenge-ID.
+1b. ~~Batch: mehrere SBCs automatisch abgeben~~ — **ausgebaut in v4.17.0**.
+   Abgeben und Dialog-Wegraeumen funktionierten; gescheitert ist das Zurueckkommen
+   in die naechste Runde. Grund (jetzt bekannt): jede Wiederholung einer SBC hat
+   eine EIGENE `challengeId` — `loadChallenge(alteId)` laedt die verbrauchte
+   Instanz, und ein Weg, eine Challenge programmatisch zu OEFFNEN, wurde nicht
+   gefunden. Details in LEARNINGS §9.
+   Wieder aufgreifen nur mit: `requestChallengesForSet(setId)` fuer die neue
+   Instanz + geklaerter Frage, was `#repeat-sbc` ("Repeat Search") tut.
+   `planBatch()` + 8 Testfaelle bleiben im Code.
 
 2. **APK beim Kollegen testen**: v1.3.0 (PitTools, Hochformat, Pitroipa-Icon,
    GitHub-URL als Default) ist gebaut, aber der EA-Login im WebView ist erst auf

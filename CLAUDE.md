@@ -8,7 +8,7 @@ JS/Java-Engineering. Umgangssprache: Deutsch.
 ## Repo-Struktur
 
 - `ea-fc-sbc-optimizer.user.js` — DAS Produkt. Ein einziges Userscript
-  (aktuell v4.16.0). Tampermonkey aktualisiert es über `@updateURL`/`@downloadURL`
+  (aktuell v4.17.0). Tampermonkey aktualisiert es über `@updateURL`/`@downloadURL`
   im Header selbst; die Handy-App lädt dieselbe Datei von
   `https://raw.githubusercontent.com/Rasmus33/pittools/main/ea-fc-sbc-optimizer.user.js`
   bei jedem App-Start. **Push auf main = Deployment.**
@@ -70,17 +70,14 @@ JS/Java-Engineering. Umgangssprache: Deutsch.
   Kosten-Aufschlag (Default +8) wirkt zusätzlich innerhalb des Erlaubten.
 - Ein Klick = Optimieren + Eintragen. Bei EINZEL-SBCs drückt Rasmus Submit
   selbst im Spiel.
-- **Batch-Modus (ab v4.11.0) darf abgeben** — von Rasmus ausdrücklich
-  freigegeben, aber nur in dieser Form: erst alle Teams planen, Vorschau
-  ansehen, dann EINE Freigabe (Button + Rückfrage), danach läuft
-  Eintragen→Abgeben sequenziell. Nach jeder Abgabe kommt ein Belohnungs-Dialog;
-  der wird über `gPopupClickShield.closeActivePopup()` weggeräumt und die
-  Challenge neu geladen, damit der Lauf OHNE Handgriffe durchläuft — der Batch
-  wäre sonst nicht mehr wert als einmal "Optimieren" pro SBC (Rasmus' Einwand).
-  Klappt das nicht, PAUSIERT der Lauf und macht per "Weiter" da weiter
-  (LEARNINGS §9). Bricht bei jeder Unstimmigkeit sofort ab ("2 von 5 fertig"
-  ist besser als eine falsch abgegebene SBC). Der Plan ist nach dem Lauf
-  verbraucht, damit niemand zweimal abgibt.
+- **Kein automatisches Abgeben.** Der Batch-Modus (mehrere SBCs am Stück
+  planen + abgeben) war in v4.11–v4.16 eingebaut und ist in v4.17.0 wieder
+  ausgebaut: das Abgeben klappte, aber nach jeder Runde kommt man nicht
+  automatisch in die nächste Instanz zurück (jede Wiederholung einer SBC hat
+  eine EIGENE `challengeId`, LEARNINGS §9). Ein halbautomatischer Lauf mit
+  Handgriffen pro Runde spart nichts — Rasmus: "so bringt uns das Feature
+  nichts". `planBatch()` im Solver bleibt samt Tests stehen, falls wir es mit
+  dieser Erkenntnis nochmal angehen.
 - Der Pool lädt automatisch beim App-Start; nach jedem Eintragen fliegen die
   verbauten Karten aus dem Pool (nächste SBC ohne Neuladen).
 - Panel-UI: "Spieler laden" oben, Min-Rating + Max-Überschuss prominent,

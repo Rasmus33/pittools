@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.16.0
+// @version      4.17.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.16.0';
+    const VERSION = '4.17.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -1810,7 +1810,15 @@
             return finishTeam(result.team);
         }
         /**
-         * BATCH: mehrere Teams für DIESELBE SBC hintereinander planen.
+         * BATCH-PLANUNG. Aktuell NICHT in der UI verdrahtet: der Lauf
+         * "mehrere SBCs automatisch abgeben" ist ausgebaut, weil das Abgeben
+         * zwar klappte, das Zurückkommen in die nächste Runde aber nicht
+         * (Details in LEARNINGS §9 - jede Wiederholung einer SBC hat eine
+         * eigene challengeId). Die Funktion bleibt samt ihrer 8 Testfälle
+         * stehen, weil sie der erprobte Teil ist: wenn wir es mit dieser
+         * Erkenntnis nochmal angehen, ist die Planung fertig.
+         *
+         * Plant mehrere Teams für DIESELBE SBC hintereinander.
          * Jede Runde rechnet mit dem Pool OHNE die Karten der vorherigen
          * Runden - genau wie im echten Ablauf, wo verbaute Karten weg sind.
          * Wird eine Runde unlösbar, bricht die Planung ab und liefert die
@@ -2026,7 +2034,18 @@
         catch (e) { lastErr = e; warn('Service-Eintrag meldete Fehler:', e.message); diagError('submitViaServices: ' + (e.message || e)); }
         confirmed = await verifySquadCount(result);
         if (confirmed >= need) { STATE.diag.submitVia = 'services'; return { confirmed: confirmed, via: 'services' }; }
-        // Nichts hat gegriffen.
+        // Nichts hat gegriffen. 404/475 haben eine bekannte Ursache:
+        // WIEDERHOLBARE SBCs bekommen pro Durchlauf eine NEUE challengeId.
+        // Live gesehen: dieselbe SBC lief unter 3829, dann 3800, dann 3771 -
+        // wer in die verbrauchte Instanz schreibt, bekommt 404 (weg) bzw. 475.
+        // Das passiert nach mehreren Durchläufen derselben SBC, weil die
+        // Ansicht/der Cache noch auf der alten Instanz steht.
+        const msg = String((lastErr && lastErr.message) || '');
+        if (/\b(404|475)\b/.test(msg)) {
+            throw new Error('Die SBC-Instanz ist veraltet (Status aus ' + msg + '). ' +
+                'Wiederholbare SBCs bekommen pro Durchlauf eine neue ID - bitte die ' +
+                'SBC im Spiel einmal schliessen und neu öffnen, dann erneut optimieren.');
+        }
         throw lastErr || new Error('Eintragen fehlgeschlagen (Server bestätigt ' + Math.max(0, confirmed) + '/' + need + ').');
     }
     // Spieler-Objekt in eine App-Entity umwandeln (für setPlayers).
@@ -2373,35 +2392,7 @@
         .sbc-opt-btn.primary { background:#00e0b8; color:#001018; }
         .sbc-opt-btn.blue { background:#0077ff; color:#fff; }
         .sbc-opt-btn.ghost { background:#1c2938; color:#cfe0f2; }
-        /* Rot: gibt SBCs endgültig ab, das ist nicht rückholbar. */
-        .sbc-opt-btn.danger { background:#c0392b; color:#fff; }
         .sbc-opt-btn:disabled { opacity:.5; cursor:not-allowed; }
-        .sbc-opt-batch {
-            margin-top:12px; padding-top:10px; border-top:1px solid #1f2b3a;
-        }
-        #sbc-opt-batch-preview:empty { display:none; }
-        #sbc-opt-batch-preview {
-            background:#131e2b; border:1px solid #1f2b3a; border-radius:8px;
-            padding:8px 10px; margin-top:8px; font-size:12px; line-height:1.5;
-            max-height:340px; overflow-y:auto;
-        }
-        .sbc-opt-batch-cards { margin:4px 0 2px; }
-        .sbc-opt-batch-card {
-            font-size:11px; color:#cfe0f2; padding:1px 0;
-            white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
-        }
-        .sbc-opt-batch-card .r {
-            display:inline-block; min-width:22px; font-weight:700; color:#e6edf3;
-        }
-        .sbc-opt-batch-card .src { color:#7d93ab; }
-        .sbc-opt-batch-card .rar { color:#9db2c8; }
-        .sbc-opt-batch-card .untr { color:#6f8aa6; font-style:italic; }
-        .sbc-opt-batch-card.prot .rar { color:#ffb454; font-weight:700; }
-        .sbc-opt-batch-round { padding:3px 0; border-bottom:1px solid #1b2735; }
-        .sbc-opt-batch-round:last-child { border-bottom:none; }
-        .sbc-opt-batch-round b { color:#00e0b8; }
-        .sbc-opt-batch-warn { color:#ffb454; }
-        .sbc-opt-batch-bad { color:#ff6b6b; }
         .sbc-opt-result {
             margin-top:12px; background:#0b1219; border:1px solid #1f2b3a;
             border-radius:8px; padding:10px; display:none;
@@ -2584,22 +2575,6 @@
                 <button class="sbc-opt-btn primary" id="sbc-opt-run">Optimieren + Eintragen</button>
                 <div class="sbc-opt-result" id="sbc-opt-result"></div>
                 <button class="sbc-opt-btn blue" id="sbc-opt-submit" style="display:none;">Erneut eintragen</button>
-                <!-- BATCH: dieselbe SBC mehrfach. Bewusst zwei Schritte -
-                     erst planen und ansehen, dann eine einzige Freigabe. -->
-                <div class="sbc-opt-batch">
-                    <div class="sbc-opt-inline" style="margin-bottom:8px;">
-                        <label style="margin:0;flex:1;">SBC mehrfach abschließen</label>
-                        <input type="number" id="sbc-opt-batch-count" value="3" min="1" max="10"
-                               style="width:64px;">
-                    </div>
-                    <button class="sbc-opt-btn ghost" id="sbc-opt-batch-plan">Teams planen (Vorschau)</button>
-                    <div id="sbc-opt-batch-preview"></div>
-                    <button class="sbc-opt-btn danger" id="sbc-opt-batch-run" style="display:none;">
-                        Alle eintragen + abgeben
-                    </button>
-                </div>
-                <button class="sbc-opt-btn ghost" id="sbc-opt-diag" style="margin-top:10px;">Diagnose in Konsole schreiben</button>
-            </div>
         `;
         document.body.appendChild(panel);
         ui = {
@@ -2630,10 +2605,6 @@
             result: panel.querySelector('#sbc-opt-result'),
             submit: panel.querySelector('#sbc-opt-submit'),
             diagBtn: panel.querySelector('#sbc-opt-diag'),
-            batchCount: panel.querySelector('#sbc-opt-batch-count'),
-            batchPlan: panel.querySelector('#sbc-opt-batch-plan'),
-            batchPreview: panel.querySelector('#sbc-opt-batch-preview'),
-            batchRun: panel.querySelector('#sbc-opt-batch-run')
         };
         panel.querySelector('#sbc-opt-close').addEventListener('click', () => panel.classList.remove('open'));
         makeDraggable(panel, panel.querySelector('.sbc-opt-header'), 'sbcOptPanelPos', {
@@ -2650,8 +2621,6 @@
         ui.run.addEventListener('click', onRunClick);
         ui.submit.addEventListener('click', onSubmitClick);
         ui.diagBtn.addEventListener('click', onDiagClick);
-        ui.batchPlan.addEventListener('click', onBatchPlanClick);
-        ui.batchRun.addEventListener('click', onBatchRunClick);
         ui.rarityPickFilter.addEventListener('input', renderRarityPickOptions);
         // Zustand der "Erweiterte Einstellungen" merken
         const adv = panel.querySelector('#sbc-opt-advanced');
@@ -3064,91 +3033,15 @@
             lastUtasPaths: STATE.diag.lastUtasPaths,
             lastErrors: STATE.diag.lastErrors,
             uiScan: STATE.diag.uiScan || null,
-            // Zustand kurz NACH einer Abgabe: daraus ist der Belohnungs-Dialog
-            // ablesbar (welcher Button ihn schliesst) und wohin die App
-            // navigiert - Grundlage, um den Batch ganz ohne Handgriffe
-            // durchlaufen zu lassen.
-            afterSubmit: STATE.diag.afterSubmit || null,
-            // Pro Batch-Runde: hat das Wegräumen des Dialogs und das
-            // Neu-Öffnen der Challenge geklappt? (afterSubmit wurde vorher
-            // jede Runde überschrieben - genau die Felder fehlten dann.)
-            batchSteps: STATE.diag.batchSteps || null,
-            // Womit öffnet die App eine Challenge? Für die Vollautomatik
-            // brauche ich den Navigationsweg: loadChallenge lädt offenbar nur
-            // Daten, ohne die Ansicht zu wechseln.
-            navScan: (function () {
-                function methodsOf(o, max) {
-                    const out = [];
-                    try {
-                        for (const k in o) {
-                            if (typeof o[k] === 'function') out.push(k);
-                            if (out.length >= (max || 40)) break;
-                        }
-                    } catch (e) {}
-                    return out;
-                }
-                const out = { chain: [] };
-                try {
-                    for (const c of getControllerChain()) {
-                        const n = (c.constructor && c.constructor.name) || '?';
-                        if (!/navigation|tabbar|root|hub|flow/i.test(n)) continue;
-                        out.chain.push({ name: n, methods: methodsOf(c, 40) });
-                    }
-                    const svc = window.services && window.services.SBC;
-                    out.sbcServiceAll = methodsOf(svc, 40);
-                    out.hasGlobals = {
-                        popupShield: !!(window.gPopupClickShield),
-                        popupShieldMethods: methodsOf(window.gPopupClickShield, 12),
-                        sbcHubView: !!document.querySelector('.ut-sbc-hub-view, .sbc-hub'),
-                        sbcTiles: document.querySelectorAll('.ut-sbc-set-tile-view, .sbc-set-tile').length
-                    };
-                } catch (e) { out.error = String(e && e.message || e); }
-                return out;
-            })(),
-            // Batch/Abgeben: ist der Abgabe-Weg in dieser Web-App-Version da?
-            // Vor dem ersten echten Abgeben gegenprüfen - submitChallenge ist
-            // unwiderruflich, ein Blindflug wäre teuer.
-            batch: (function () {
+            // Submit-Diagnose (der Batch-Lauf ist ausgebaut): welcher Weg hat
+            // zuletzt gegriffen und ist ueberhaupt eine Challenge offen?
+            submitInfo: (function () {
                 const svc = window.services && window.services.SBC;
-                let methods = null;
-                try {
-                    if (svc) {
-                        methods = [];
-                        for (const k in svc) {
-                            if (typeof svc[k] === 'function' &&
-                                /submit|save|challenge|reward/i.test(k)) methods.push(k);
-                        }
-                        methods = methods.slice(0, 25);
-                    }
-                } catch (e) {}
-                // Der Controller-Weg ist der eigentliche (siehe
-                // submitChallengeToEa): die App ruft beim Klick auf ihren
-                // Submit-Button die Controller-Methode, nicht den Service mit
-                // Argument. Und isSBCSquadEligible sagt VOR dem Abgeben, ob EA
-                // die SBC für erfüllt hält - genau das war der 403 in v4.11.x.
                 const ctrl = findSbcController();
-                const sq = ctrl && (ctrl._squad || (ctrl.getSquad && ctrl.getSquad()));
-                let eligible = null, squadFull = null;
-                try {
-                    if (sq && typeof sq.isSBCSquadEligible === 'function') eligible = sq.isSBCSquadEligible();
-                } catch (e) { eligible = 'Fehler: ' + (e && e.message); }
-                try {
-                    if (sq && typeof sq.isSquadFull === 'function') squadFull = sq.isSquadFull();
-                } catch (e) {}
                 return {
-                    sbcServiceThere: !!svc,
-                    submitChallengeThere: !!(svc && typeof svc.submitChallenge === 'function'),
-                    submitChallengeArity: (svc && typeof svc.submitChallenge === 'function')
-                        ? svc.submitChallenge.length : null,
-                    saveChallengeThere: !!(svc && typeof svc.saveChallenge === 'function'),
-                    relevantMethods: methods,
+                    saveChallengeThere: !!(svc && typeof svc.saveChallenge === "function"),
                     liveChallengeThere: !!findLiveChallenge(),
-                    controllerSubmitThere: !!(ctrl && typeof ctrl.submitChallenge === 'function'),
-                    controllerName: (ctrl && ctrl.constructor && ctrl.constructor.name) || null,
-                    squadEligible: eligible,
-                    squadFull: squadFull,
-                    lastSubmitVia: STATE.diag.submitChallengeVia || null,
-                    plannedRounds: (STATE.batch && STATE.batch.planned) || 0
+                    controllerName: (ctrl && ctrl.constructor && ctrl.constructor.name) || null
                 };
             })(),
             // Einstiegspunkt-Diagnose: sitzt der Menüpunkt in der EA-Leiste
@@ -3485,14 +3378,10 @@
     async function onSubmitClick() {
         await submitCurrentResult();
     }
-    // ========================================================================
-    //  BATCH: dieselbe SBC mehrfach abschliessen
-    // ========================================================================
-    /**
-     * Die Challenge der offenen Ansicht. Bewusst eine EIGENE Funktion und
-     * kein Refactoring von submitViaApp: der Eintrage-Weg 0 ist live
-     * verifiziert und wird nicht angefasst (LEARNINGS §5).
-     */
+    // ---- Reste des ausgebauten Batch-Modus ---------------------------------
+    // Der Lauf "mehrere SBCs automatisch abgeben" ist ausgebaut (siehe
+    // LEARNINGS 9 und ROADMAP). Diese zwei Helfer bleiben, weil der
+    // Diagnose-Report mit ihnen zeigt, ob eine Challenge offen ist.
     function findLiveChallenge() {
         for (const c of getControllerChain()) {
             const n = (c.constructor && c.constructor.name) || '';
@@ -3513,419 +3402,6 @@
             if (/sbc/i.test(n) && (c._squad || (c.getSquad && c.getSquad()))) found = c;
         }
         return found;
-    }
-    /**
-     * SBC endgültig abgeben. UNWIDERRUFLICH - nur aus dem Batch-Lauf nach
-     * expliziter Freigabe.
-     *
-     * Der erste Versuch (v4.11.x) lief über services.SBC.submitChallenge(challenge)
-     * und kam live mit HTTP 403 zurück. Der Diagnose-Report zeigte auch warum:
-     *   - submitChallenge nimmt gar kein Argument (arity 0),
-     *   - und der Live-Controller (UTSBCSquadSplitViewController) hat SELBST
-     *     submitChallenge/_submitChallenge/_onChallengeSubmitted - das ist der
-     *     Weg, den die App beim Klick auf ihren eigenen Submit-Button nimmt.
-     * Deshalb jetzt: Controller zuerst, Service ohne Argument als Fallback -
-     * dasselbe Muster wie beim Eintragen (LEARNINGS §5).
-     */
-    async function submitChallengeToEa() {
-        const ctrl = findSbcController();
-        const liveSquad = ctrl && (ctrl._squad || (ctrl.getSquad && ctrl.getSquad()));
-        // Vorab: hält EA die SBC überhaupt für abgabefähig? Spart einen
-        // 403-Blindflug und nennt den Grund. Nur bei EXPLIZIT false abbrechen -
-        // liefert die Methode etwas anderes, wird sie ignoriert.
-        if (liveSquad && typeof liveSquad.isSBCSquadEligible === 'function') {
-            let eligible = null;
-            try { eligible = liveSquad.isSBCSquadEligible(); } catch (e) {}
-            if (eligible === false) {
-                throw new Error('EA hält die SBC nicht für abgabefähig - ' +
-                    'wahrscheinlich eine Vorgabe offen, die wir nicht abdecken ' +
-                    '(z.B. Verein/Liga/Chemie). NICHT abgegeben.');
-            }
-        }
-        const problems = [];
-        // Weg A: Controller-Methode (der App-eigene Weg).
-        if (ctrl && typeof ctrl.submitChallenge === 'function') {
-            try {
-                const r = ctrl.submitChallenge();
-                let resp = null;
-                if (r && (typeof r.then === 'function' || typeof r.subscribe === 'function' ||
-                          typeof r.observe === 'function')) {
-                    resp = await obsPromise(r);
-                }
-                if (resp && !responseOk(resp)) {
-                    problems.push('Controller: Status ' + resp.status);
-                } else {
-                    STATE.diag.submitChallengeVia = 'controller';
-                    return { via: 'controller' };
-                }
-            } catch (e) {
-                problems.push('Controller: ' + (e && e.message || e));
-            }
-        } else {
-            problems.push('Controller hat kein submitChallenge()');
-        }
-        // Weg B: Service OHNE Argument (arity 0 laut Diagnose).
-        const sbcSvc = window.services && window.services.SBC;
-        if (sbcSvc && typeof sbcSvc.submitChallenge === 'function') {
-            try {
-                const resp = await obsPromise(sbcSvc.submitChallenge());
-                if (responseOk(resp)) {
-                    STATE.diag.submitChallengeVia = 'service';
-                    return { via: 'service' };
-                }
-                problems.push('Service: Status ' + (resp && resp.status));
-            } catch (e) {
-                problems.push('Service: ' + (e && e.message || e));
-            }
-        } else {
-            problems.push('services.SBC.submitChallenge fehlt');
-        }
-        throw new Error('Abgeben fehlgeschlagen (' + problems.join(' | ') + '). ' +
-            'Bei 403 ist die SBC meist nicht wirklich erfüllt.');
-    }
-    function batchWait(ms) { return new Promise(r => setTimeout(r, ms)); }
-    async function onBatchPlanClick() {
-        syncSbcWithOpenChallenge();
-        if (!STATE.sbc.targetOVR && !(STATE.sbc.playerLevelConstraints || []).length &&
-            !(STATE.sbc.rarityConstraints || []).length &&
-            !(STATE.sbc.qualityConstraints || []).length) {
-            toast('Keine SBC-Vorgaben erkannt. Bitte Challenge im Spiel öffnen.', 'error');
-            return;
-        }
-        if (!STATE.pool.length) { toast('Pool leer. Bitte zuerst "Spieler laden".', 'error'); return; }
-        const want = Math.max(1, Math.min(10, parseInt(ui.batchCount.value, 10) || 1));
-        ui.batchPlan.disabled = true;
-        setStatus('plane ' + want + ' Teams...');
-        try {
-            const plan = SolverCore.planBatch(STATE.pool, readConfig(), want);
-            // Für WELCHE Challenge wurde geplant? Beim Fortsetzen wird das
-            // gegengeprüft - Rasmus hat beim Testen versehentlich eine andere
-            // SBC geöffnet, und ohne diese Prüfung würde ein Team dort
-            // eingetragen UND abgegeben. Das ist nicht rückholbar.
-            plan.challengeId = STATE.sbc.challengeId;
-            plan.setId = STATE.sbc.setId;
-            plan.targetOVR = STATE.sbc.targetOVR;
-            STATE.batch = plan;
-            renderBatchPreview(plan);
-            setStatus(plan.planned + ' von ' + want + ' Teams geplant');
-        } catch (e) {
-            toast('Batch-Planung fehlgeschlagen: ' + e.message, 'error');
-            warn(e);
-        } finally {
-            ui.batchPlan.disabled = false;
-        }
-    }
-    /**
-     * Kurzbezeichnung der Karten-Rarity. Die rareflag-NUMMER wird bewusst
-     * mitgezeigt: welche Zahl welches Event ist (FUTTIES, TOTS, …), weiss
-     * Rasmus besser als das Script - eine geratene Zuordnung wäre schlechter
-     * als die rohe Zahl. Gruppe 83 ist das, was Rarity-Vorgaben verlangen.
-     */
-    function rarityLabel(p) {
-        const rf = Number(p.rareflag);
-        let base;
-        if (rf === 3) base = 'TOTW';
-        else if (rf === 0 || rf === 1) base = 'Gold';
-        else base = 'Special rf' + rf;
-        const prot = !!(p.groups && p.groups.indexOf(83) > -1);
-        return base + (prot ? ' · Gruppe 83' : '');
-    }
-    function renderBatchPreview(plan) {
-        const box = ui.batchPreview;
-        if (!box) return;
-        let html = '';
-        plan.rounds.forEach(function (r, i) {
-            const nStore = r.players.filter(p => p.isStorage).length;
-            const nUntr = r.players.filter(p => p.untradeable).length;
-            const nProt = r.players.filter(p => p.groups && p.groups.indexOf(83) > -1).length;
-            html += '<div class="sbc-opt-batch-round">' +
-                '<b>Team ' + (i + 1) + ':</b> OVR ' + r.ovr +
-                ' (' + r.ovrExact.toFixed(2) + ')' +
-                '<br><span style="color:#9db2c8;">Storage ' + nStore +
-                ' · unverkäuflich ' + nUntr +
-                (nProt ? ' · <span class="sbc-opt-batch-warn">geschützt ' + nProt + '</span>' : '') +
-                '</span>';
-            // Karte für Karte: Rating, Name, Herkunft, Rarity - damit vor der
-            // Freigabe zu sehen ist, WAS genau verbraucht wird.
-            const players = r.players.slice().sort((a, b) => b.rating - a.rating);
-            html += '<div class="sbc-opt-batch-cards">';
-            for (const p of players) {
-                const prot = !!(p.groups && p.groups.indexOf(83) > -1);
-                html += '<div class="sbc-opt-batch-card' + (prot ? ' prot' : '') + '">' +
-                    '<span class="r">' + p.rating + '</span> ' +
-                    escapeHtml(displayName(p)) +
-                    ' <span class="src">' + (p.isStorage ? 'Storage' : 'Verein') + '</span>' +
-                    ' <span class="rar">' + escapeHtml(rarityLabel(p)) + '</span>' +
-                    (p.untradeable ? ' <span class="untr">unverkäuflich</span>' : '') +
-                    '</div>';
-            }
-            html += '</div>';
-            for (const w of (r.warnings || [])) {
-                html += '<span class="sbc-opt-batch-warn">⚠ ' + escapeHtml(w) + '</span><br>';
-            }
-            html += '</div>';
-        });
-        if (plan.stoppedReason) {
-            html += '<div class="sbc-opt-batch-round sbc-opt-batch-bad">Nur ' + plan.planned +
-                ' von ' + plan.requested + ' möglich: ' + escapeHtml(plan.stoppedReason) + '</div>';
-        }
-        if (!plan.planned) {
-            html += '<div class="sbc-opt-batch-bad">Kein Team planbar.</div>';
-        }
-        box.innerHTML = html;
-        ui.batchRun.style.display = plan.planned ? 'block' : 'none';
-        ui.batchRun.textContent = 'Alle ' + plan.planned + ' eintragen + abgeben';
-    }
-    /**
-     * Arbeitet den geplanten Batch ab: pro Runde eintragen, dann abgeben.
-     * Bricht bei JEDER Unstimmigkeit sofort ab - besser 2 von 5 fertig als
-     * eine falsch abgegebene SBC.
-     */
-    async function onBatchRunClick() {
-        const plan = STATE.batch;
-        if (!plan || !plan.planned) { toast('Erst "Teams planen" ausführen.', 'error'); return; }
-        // Fortsetzen braucht keine zweite Bestätigung - die Freigabe gilt für
-        // den ganzen Plan.
-        if (!plan.nextIndex) {
-            if (!window.confirm(plan.planned + ' SBC(s) werden eingetragen UND endgültig ' +
-                    'abgegeben.\n\nDie verbauten Karten sind danach weg. Fortfahren?')) return;
-            plan.nextIndex = 0;
-            plan.doneLog = [];
-        }
-        await runBatchFrom(plan);
-    }
-    /**
-     * Nach dem Abgeben schliesst die App die Challenge-Ansicht (live: danach
-     * steht UTSBCHubViewController, .sbc-button-container ist weg) und zeigt
-     * einen Belohnungs-Dialog, der weggeklickt werden muss. Der Lauf kann
-     * deshalb NICHT einfach weiterlaufen: er pausiert, sagt was zu tun ist, und
-     * macht per "Weiter" da weiter, wo er war. Bewusst kein automatisches
-     * Klicken in fremden Dialogen - ein falsch getroffener Button (Quick Sell!)
-     * wäre nicht rückholbar.
-     */
-    async function runBatchFrom(plan) {
-        const n = plan.planned;
-        ui.batchRun.disabled = true;
-        ui.batchPlan.disabled = true;
-        ui.run.disabled = true;
-        let stopped = null, paused = false;
-        try {
-            while (plan.nextIndex < n) {
-                const i = plan.nextIndex;
-                const round = plan.rounds[i];
-                const tag = 'Batch ' + (i + 1) + '/' + n;
-                // 1. Karten müssen noch im Pool sein (Pool kann sich geändert haben).
-                const missing = round.players.filter(p =>
-                    !STATE.pool.some(q => String(q.id) === String(p.id)));
-                if (missing.length) {
-                    throw new Error(tag + ': ' + missing.length +
-                        ' Karte(n) nicht mehr im Pool. Neu planen.');
-                }
-                // 2. Die Challenge muss offen sein. Ist sie es nicht, ist das
-                //    nach einer Abgabe der NORMALFALL - dann pausieren statt
-                //    abbrechen, es ist ja nichts schiefgegangen.
-                setStatus(tag + ': prüfe Challenge...');
-                syncSbcWithOpenChallenge();
-                if (!findLiveChallenge() || !findSbcController()) {
-                    if (i > 0) { paused = true; break; }
-                    throw new Error(tag + ': keine offene Challenge (im Spiel öffnen).');
-                }
-                // SICHERHEIT: Ist das noch DIESELBE SBC, für die geplant wurde?
-                // Beim Fortsetzen kann versehentlich eine andere offen sein -
-                // dann würde hier ein fremdes Team eingetragen und abgegeben.
-                if (plan.challengeId != null && STATE.sbc.challengeId != null &&
-                    String(STATE.sbc.challengeId) !== String(plan.challengeId)) {
-                    throw new Error(tag + ': es ist eine ANDERE SBC offen (geplant war ' +
-                        plan.challengeId + ', offen ist ' + STATE.sbc.challengeId +
-                        '). Nichts eingetragen - richtige SBC öffnen und neu planen.');
-                }
-                // ID JETZT festhalten - nach dem Abgeben kann STATE.sbc schon
-                // auf etwas anderes zeigen, wir brauchen sie zum Neu-Öffnen.
-                const chId = plan.challengeId != null ? plan.challengeId : STATE.sbc.challengeId;
-                // 3. Eintragen (bewährter Weg inkl. Verify).
-                setStatus(tag + ': trage ein...');
-                const sub = await submitToSbc(round);
-                if (sub && sub.via !== 'app') {
-                    await refreshChallengeCache();
-                    refreshOpenSbcView();
-                }
-                removeFromPool(round.players);
-                // 4. Abgeben.
-                setStatus(tag + ': gebe ab...');
-                await submitChallengeToEa();
-                plan.nextIndex = i + 1;
-                plan.doneLog.push('Team ' + (i + 1) + ': OVR ' + round.ovr + ' abgegeben');
-                log('[Batch] Team ' + (i + 1) + '/' + n + ' abgegeben (OVR ' + round.ovr + ').');
-                // 5. Belohnungs-Dialog wegräumen und die Challenge wieder
-                //    benutzbar machen, damit der Lauf OHNE Handgriffe
-                //    weiterkommt - sonst wäre der Batch nicht mehr wert als
-                //    einmal "Optimieren" pro SBC zu drücken.
-                await batchWait(1200);
-                captureAfterSubmitDom(i + 1);
-                if (plan.nextIndex < n) {
-                    setStatus(tag + ': Belohnung wegräumen, warte auf die SBC...');
-                    const prep = await prepareNextRound(chId);
-                    const back = prep.ok;
-                    if (STATE.diag.afterSubmit) {
-                        STATE.diag.afterSubmit.challengeBack = back;
-                    }
-                    // Pro Runde festhalten (nicht überschreiben) - sonst steht
-                    // im Report nur die letzte Runde und genau die Felder
-                    // fehlen, um die es geht.
-                    STATE.diag.batchSteps = (STATE.diag.batchSteps || []).concat([{
-                        round: i + 1, challengeBack: back,
-                        challengeIdNow: STATE.sbc.challengeId, wanted: chId,
-                        waitSteps: prep.steps,
-                        controller: (findSbcController() && findSbcController().constructor &&
-                                     findSbcController().constructor.name) || null
-                    }]).slice(-10);
-                    // Klappt es nicht automatisch, wird pausiert statt
-                    // abgebrochen - abgegeben ist abgegeben, das ist kein Fehler.
-                    if (!back) { paused = true; break; }
-                }
-            }
-        } catch (e) {
-            stopped = (e && e.message) || String(e);
-            warn('[Batch] gestoppt:', e);
-            diagError('Batch gestoppt nach ' + plan.nextIndex + '/' + n + ': ' + stopped);
-        } finally {
-            ui.batchPlan.disabled = false;
-            ui.run.disabled = false;
-            renderBatchState(plan, stopped, paused);
-        }
-    }
-    /**
-     * Belohnungs-Dialog nach dem Abgeben wegräumen. `gPopupClickShield` ist der
-     * Popup-Manager der EA-App; PaleTools benutzt genau dieses
-     * closeActivePopup() für sein "claim-sbc-rewards"-Plugin - also der von EA
-     * selbst vorgesehene Weg und KEIN Klick auf einen geratenen Button (ein
-     * Fehlklick auf "Quick Sell" wäre nicht rückholbar).
-     */
-    function dismissRewardPopup() {
-        let closed = false;
-        try {
-            const shield = window.gPopupClickShield;
-            if (shield && typeof shield.closeActivePopup === 'function') {
-                shield.closeActivePopup();
-                closed = true;
-            }
-        } catch (e) { warn('[Batch] closeActivePopup:', e && e.message); }
-        // Zweiter Weg: der oberste PRÄSENTIERTE Controller ist bei offenem
-        // Dialog der Dialog selbst - er bringt sein eigenes Schliessen mit.
-        // Nach dem Abgeben kommen teils mehrere Overlays hintereinander
-        // (Belohnung, Pack-Hinweis), deshalb wird das wiederholt aufgerufen.
-        try {
-            const chain = getControllerChain();
-            const top = chain.length ? chain[chain.length - 1] : null;
-            const n = (top && top.constructor && top.constructor.name) || '';
-            if (top && /popup|dialog|reward|award/i.test(n)) {
-                for (const m of ['close', 'dismiss', 'hide', 'onClose']) {
-                    if (typeof top[m] === 'function') { top[m](); closed = true; break; }
-                }
-            }
-        } catch (e) {}
-        return closed;
-    }
-    /**
-     * Nächste Runde vorbereiten: warten, bis die SBC-Ansicht wieder benutzbar
-     * ist. Die App braucht nach dem Abgeben Zeit für Belohnungs-Animation und
-     * Neuaufbau - der erste Versuch (v4.14.0) gab nach 1,2s auf und pausierte
-     * deshalb, obwohl die Ansicht laut Diagnose erhalten bleibt
-     * (afterSubmit.controllers endete auf UTSBCSquadSplitViewController).
-     * Bis zu ~25s geduldig, jede Sekunde Dialog wegräumen und nachsehen.
-     */
-    async function prepareNextRound(chId) {
-        const steps = [];
-        for (let t = 0; t < 25; t++) {
-            const closed = dismissRewardPopup();
-            await batchWait(1000);
-            syncSbcWithOpenChallenge();
-            const ctrl = findSbcController();
-            const sameCh = STATE.sbc.challengeId == null ||
-                String(STATE.sbc.challengeId) === String(chId);
-            const sq = ctrl && (ctrl._squad || (ctrl.getSquad && ctrl.getSquad()));
-            let empty = null;
-            try { if (sq && typeof sq.isSquadEmpty === 'function') empty = sq.isSquadEmpty(); }
-            catch (e) {}
-            if (t < 6 || t % 5 === 0) {
-                steps.push({ t: t, popup: closed, ctrl: !!ctrl, same: sameCh, empty: empty });
-            }
-            // Brauchbar, sobald der Squad-Controller der RICHTIGEN Challenge da
-            // ist und der Squad nicht mehr voll ist.
-            if (ctrl && sq && sameCh && empty !== false) return { ok: true, steps: steps };
-            // Nach 6s die Challenge einmal aktiv nachladen (falls die App den
-            // Squad-Stand nicht selbst auffrischt).
-            if (t === 6) {
-                const svc = window.services && window.services.SBC;
-                if (svc && typeof svc.loadChallenge === 'function' && chId != null) {
-                    try { await obsPromise(svc.loadChallenge(chId)); }
-                    catch (e) { warn('[Batch] loadChallenge:', e && e.message); }
-                }
-            }
-        }
-        return { ok: false, steps: steps };
-    }
-    /** Merkt sich die sichtbaren Buttons kurz nach dem Abgeben (Diagnose). */
-    function captureAfterSubmitDom(roundNo) {
-        try {
-            const out = [];
-            const btns = document.querySelectorAll('button');
-            for (let i = 0; i < btns.length && out.length < 20; i++) {
-                const b = btns[i];
-                if (!(b.offsetParent !== null || b.getClientRects().length)) continue;
-                if (String(b.id).indexOf('sbc-opt') === 0) continue; // unsere eigenen
-                out.push({
-                    txt: (b.textContent || '').trim().slice(0, 40),
-                    id: b.id || null,
-                    cls: String(b.className || '').slice(0, 60),
-                    parentCls: String((b.parentNode && b.parentNode.className) || '').slice(0, 60)
-                });
-            }
-            STATE.diag.afterSubmit = {
-                round: roundNo,
-                controllers: getControllerChain().map(c =>
-                    (c.constructor && c.constructor.name) || '?'),
-                buttons: out
-            };
-        } catch (e) {}
-    }
-    function renderBatchState(plan, stopped, paused) {
-        const n = plan.planned, done = plan.nextIndex || 0;
-        let html = '';
-        if (plan.doneLog && plan.doneLog.length) {
-            html += '<div class="sbc-opt-batch-round">' +
-                plan.doneLog.map(escapeHtml).join('<br>') + '</div>';
-        }
-        if (stopped) {
-            setStatus('Batch gestoppt nach ' + done + '/' + n);
-            toast('Batch gestoppt nach ' + done + ' von ' + n + ': ' + stopped, 'error');
-            html += '<div class="sbc-opt-batch-round sbc-opt-batch-bad">Gestoppt: ' +
-                escapeHtml(stopped) + '</div>';
-            STATE.batch = null;
-            ui.batchRun.style.display = 'none';
-        } else if (paused) {
-            setStatus(done + '/' + n + ' abgegeben - warte auf dich');
-            toast('Team ' + done + ' abgegeben. Belohnung wegklicken, SBC erneut öffnen, ' +
-                'dann "Weiter" drücken.', 'warn');
-            html += '<div class="sbc-opt-batch-round sbc-opt-batch-warn">' +
-                done + ' von ' + n + ' abgegeben.<br>' +
-                'Jetzt im Spiel: Belohnung wegklicken und <b>genau diese SBC</b> ' +
-                'erneut öffnen' +
-                (plan.challengeId != null ? ' (Challenge ' + plan.challengeId + ')' : '') +
-                '. Dann unten auf "Weiter" drücken.<br>' +
-                '<span style="color:#7d93ab;">Ist eine andere SBC offen, bricht der ' +
-                'Lauf ab statt dort einzutragen.</span></div>';
-            ui.batchRun.style.display = 'block';
-            ui.batchRun.disabled = false;
-            ui.batchRun.textContent = 'Weiter mit Team ' + (done + 1) + ' von ' + n;
-        } else {
-            setStatus(done + ' SBC(s) abgegeben ✓');
-            toast(done + ' von ' + n + ' SBCs eingetragen und abgegeben.', 'ok');
-            // Fertig: Plan verbraucht, damit niemand zweimal abgibt.
-            STATE.batch = null;
-            ui.batchRun.style.display = 'none';
-        }
-        ui.batchPreview.innerHTML = html;
     }
     async function submitCurrentResult() {
         const res = STATE.lastResult;

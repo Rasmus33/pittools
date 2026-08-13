@@ -1147,6 +1147,37 @@ function mulberry32(a) {
         /rerender: f2/.test(src) && /setTileAfterRerender/.test(src));
 }
 
+// ========== 8b-2j. Veraltete SBC-Instanz + nicht abgedeckte Vorgaben ==========
+{
+    // Live: nach einem langen Batch lief ein einzelner Lauf in 403 (Challenge
+    // 3729), danach in 404/475 (3821). 475/404 heisst "Instanz verbraucht"
+    // (wiederholbare SBCs bekommen pro Durchlauf eine neue ID), 403 heisst
+    // "EA nimmt das so nicht an" - im reqDump standen scope PLAYER und
+    // CLUB MEMBER, also Vorgaben, die der Solver bewusst nicht abdeckt.
+    const src = require("fs").readFileSync(__dirname + "/ea-fc-sbc-optimizer.user.js", "utf8");
+    const rf = src.slice(src.indexOf("async function resolveFreshChallengeId"),
+                         src.indexOf("// Anforderungen der aktuellen Challenge"));
+    check("Frische Instanz wird aus der Set-Liste geholt",
+        /sbs\/setId\/. \+ setId \+ ./.test(rf) || rf.indexOf("/challenges") > -1);
+    check("Die alte ID wird ausgeschlossen", /String\(n.challengeId\) === String\(oldId\)/.test(rf));
+    check("Nur bei EINDEUTIGEM Treffer wird getauscht (sonst Abbruch)",
+        /cands.length !== 1/.test(rf) && /return null/.test(rf));
+    check("Signatur wird geprueft (Ziel-OVR und Slots)",
+        /okTarget/.test(rf) && /okSlots/.test(rf));
+    check("Der Tausch landet im Report", /staleRecover/.test(rf) && /staleRecover: STATE.diag.staleRecover/.test(src));
+    check("Nach dem Tausch wird GENAU EINMAL neu versucht",
+        /submitToSbc\(result, true\)/.test(src) && /if \(!_retried\)/.test(src));
+
+    check("403 wird nicht als 'veraltet' verkauft",
+        /EA hat das Eintragen abgelehnt \(403\)/.test(src));
+    check("Nicht abgedeckte Vorgaben werden erkannt",
+        /unsupportedScopes/.test(src) && /CLUB MEMBER/.test(src));
+    check("Bekannte Vorgaben-Typen gelten NICHT als unbekannt",
+        /TEAM_RATING., .PLAYER_RARITY/.test(src.replace(/['"]/g, ".")));
+    check("Warnung kommt VOR dem Optimieren, nicht erst als Statuscode",
+        /PitTools nicht abdeckt/.test(src));
+}
+
 // ========== 8b-3. Der Rare-Parser darf keine Spielernamen matchen ==========
 {
     // Live-Fehler (v4.24.0): ein Substring-Match auf "RARE" im Scope-Namen hat

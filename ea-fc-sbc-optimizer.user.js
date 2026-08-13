@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.33.0
+// @version      4.34.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.33.0';
+    const VERSION = '4.34.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -486,6 +486,7 @@
         STATE.sbc.rarityConstraints = [];
         STATE.sbc.playerLevelConstraints = [];
         STATE.sbc.qualityConstraints = [];
+        STATE.sbc.unsupportedScopes = [];
         STATE.sbc.rareConstraints = [];
         STATE.sbc.reqDump = [];
         STATE.sbc.formationSlots = 11;
@@ -524,6 +525,81 @@
             }
         }
         return null;
+    }
+    /**
+     * ALLE Challenge-Knoten einer Set-Antwort sammeln (nicht nur den mit einer
+     * bestimmten ID). Wird gebraucht, um nach einem 404/475 die frische Instanz
+     * derselben SBC zu finden: wiederholbare SBCs bekommen pro Durchlauf eine
+     * neue challengeId, und die Ansicht steht danach auf der verbrauchten.
+     */
+    function collectChallengeNodes(root) {
+        const out = [];
+        if (!root || typeof root !== 'object') return out;
+        const seen = new Set();
+        const queue = [{ o: root, d: 0 }];
+        let visited = 0;
+        while (queue.length && visited < 20000) {
+            const cur = queue.shift();
+            const o = cur.o, d = cur.d;
+            if (!o || typeof o !== 'object' || seen.has(o) || d > 6 || isDomOrWindow(o)) continue;
+            seen.add(o);
+            visited++;
+            if (o.challengeId != null &&
+                (o.elgReq || o.requirements || o.eligibilityRequirements || o.name)) {
+                out.push(o);
+            }
+            if (Array.isArray(o)) {
+                for (const child of o) {
+                    if (child && typeof child === 'object') queue.push({ o: child, d: d + 1 });
+                }
+            } else {
+                for (const k of Object.keys(o)) {
+                    let child;
+                    try { child = o[k]; } catch (e) { continue; }
+                    if (child && typeof child === 'object') queue.push({ o: child, d: d + 1 });
+                }
+            }
+        }
+        return out;
+    }
+    /**
+     * Nach einem 404/475 die FRISCHE Instanz derselben SBC finden: Challenge-
+     * Liste des Sets neu holen und den Knoten nehmen, dessen Vorgaben zur
+     * geplanten Signatur passen (Ziel-OVR + Slots) - NICHT einfach den ersten.
+     * Sonst landet das Team in einer fremden SBC.
+     * Liefert die neue challengeId oder null.
+     */
+    async function resolveFreshChallengeId() {
+        const setId = STATE.sbc.setId;
+        const oldId = STATE.sbc.challengeId;
+        const wantTarget = STATE.sbc.targetOVR;
+        const wantSlots = STATE.sbc.slots;
+        if (setId == null) return null;
+        let json = null;
+        try { json = await apiGet('sbs/setId/' + setId + '/challenges'); }
+        catch (e) { warn('Frische Challenge holen fehlgeschlagen:', e && e.message); return null; }
+        const nodes = collectChallengeNodes(json);
+        STATE.diag.staleRecover = { setId: setId, oldId: oldId, nodes: nodes.length,
+                                    wantTarget: wantTarget, wantSlots: wantSlots };
+        const cands = [];
+        for (const n of nodes) {
+            if (String(n.challengeId) === String(oldId)) continue;
+            let scan = null;
+            try { scan = deepScanChallenge(n); } catch (e) { continue; }
+            if (!scan) continue;
+            const okTarget = (wantTarget == null) || (String(scan.target) === String(wantTarget));
+            const okSlots = (wantSlots == null) || (scan.slots == null) ||
+                            (Number(scan.slots) === Number(wantSlots));
+            if (okTarget && okSlots) cands.push(n.challengeId);
+        }
+        STATE.diag.staleRecover.candidates = cands.slice(0, 5);
+        if (cands.length !== 1) {
+            // Mehrdeutig oder nichts gefunden: lieber sauber melden als in die
+            // falsche SBC schreiben.
+            return null;
+        }
+        STATE.lastSetChallenges = json;
+        return cands[0];
     }
     // Anforderungen der aktuellen Challenge aus der gecachten Set-Liste ziehen.
     function applyFromSetChallenges() {
@@ -617,7 +693,26 @@
         if (scan.playerLevel.length) { STATE.sbc.playerLevelConstraints = scan.playerLevel; changed = true; }
         if (scan.quality && scan.quality.length) { STATE.sbc.qualityConstraints = scan.quality; changed = true; }
         if (scan.rare && scan.rare.length) { STATE.sbc.rareConstraints = scan.rare; changed = true; }
-        if (scan.reqs.length) { STATE.sbc.reqDump = scan.reqs; changed = true; }
+        if (scan.reqs.length) {
+            STATE.sbc.reqDump = scan.reqs;
+            // Vorgaben, die der Solver bewusst NICHT abdeckt (Rasmus: Chemie,
+            // Positionen, Vereins-/Liga-/Spieler-Bindungen). Live fuehrte genau
+            // das zu einem 403 beim Eintragen, und im Panel stand nur ein
+            // Statuscode. Jetzt wird es VORHER benannt.
+            const KNOWN = ['TEAM_RATING', 'PLAYER_RARITY', 'PLAYER_QUALITY', 'PLAYER_LEVEL',
+                           'PLAYER_COUNT', 'PLAYER_OVERALL_RATING', 'CHEMISTRY'];
+            const un = [];
+            for (const r of scan.reqs) {
+                const sc = String(r.scope || '').toUpperCase();
+                if (!sc) continue;
+                if (KNOWN.some(k => sc.indexOf(k) > -1)) continue;
+                // Reine Namens-Scopes (Spieler, Verein, Set-Name) haben keinen
+                // Wert - genau die sind das Problem.
+                if (r.value == null && un.indexOf(sc) < 0) un.push(sc.slice(0, 40));
+            }
+            STATE.sbc.unsupportedScopes = un;
+            changed = true;
+        }
         if (changed) {
             log('SBC erkannt (' + source + '):', JSON.stringify({
                 setId: STATE.sbc.setId,
@@ -2493,7 +2588,7 @@
             throw new Error('saveChallenge abgelehnt (Status ' + (resp && resp.status) + ').');
         return true;
     }
-    async function submitToSbc(result) {
+    async function submitToSbc(result, _retried) {
         if (!result || !result.players || result.players.length === 0)
             throw new Error('Kein Ergebnis zum Eintragen.');
         const need = result.players.length;
@@ -2524,9 +2619,35 @@
         // Ansicht/der Cache noch auf der alten Instanz steht.
         const msg = String((lastErr && lastErr.message) || '');
         if (/\b(404|475)\b/.test(msg)) {
-            throw new Error('Die SBC-Instanz ist veraltet (Status aus ' + msg + '). ' +
-                'Wiederholbare SBCs bekommen pro Durchlauf eine neue ID - bitte die ' +
-                'SBC im Spiel einmal schliessen und neu öffnen, dann erneut optimieren.');
+            // ERHOLUNG statt Handarbeit: die verbrauchte Instanz gegen die
+            // frische desselben Sets tauschen und EINMAL neu versuchen. Der
+            // Tausch passiert nur, wenn GENAU EINE Challenge zur geplanten
+            // Signatur (Ziel-OVR + Slots) passt - sonst landet das Team in einer
+            // fremden SBC, und das wäre schlimmer als ein Abbruch.
+            if (!_retried) {
+                const fresh = await resolveFreshChallengeId();
+                if (fresh != null) {
+                    log('SBC-Instanz war veraltet - weiter mit frischer ID ' + fresh + '.');
+                    setCurrentChallenge(fresh);
+                    applyFromSetChallenges();
+                    return await submitToSbc(result, true);
+                }
+            }
+            throw new Error('Die SBC-Instanz ist veraltet (Status aus ' + msg + ') und ' +
+                'liess sich nicht eindeutig ersetzen. Wiederholbare SBCs bekommen pro ' +
+                'Durchlauf eine neue ID - bitte die SBC im Spiel einmal schliessen und ' +
+                'neu öffnen, dann erneut optimieren.');
+        }
+        // 403 heisst NICHT "veraltet", sondern "EA nimmt das so nicht an" -
+        // meist eine Vorgabe, die der Solver nicht abdeckt (live: reqDump mit
+        // scope PLAYER und CLUB MEMBER, also "dieser Spieler"/"Vereinsmitglied").
+        if (/\b403\b/.test(msg)) {
+            const un = (STATE.sbc.unsupportedScopes || []);
+            throw new Error('EA hat das Eintragen abgelehnt (403).' +
+                (un.length ? ' Diese SBC hat Vorgaben, die PitTools nicht abdeckt: ' +
+                    un.join(', ') + '. Solche SBCs muss man von Hand bauen.'
+                           : ' Wahrscheinlich ist eine Vorgabe offen, die wir nicht ' +
+                             'abdecken (z.B. ein bestimmter Spieler oder Verein).'));
         }
         throw lastErr || new Error('Eintragen fehlgeschlagen (Server bestätigt ' + Math.max(0, confirmed) + '/' + need + ').');
     }
@@ -3791,6 +3912,8 @@
                 rareConstraints: STATE.sbc.rareConstraints || [],
                 usableSlots: STATE.sbc.usableSlots || null,
                 reqDump: STATE.sbc.reqDump,
+                unsupportedScopes: STATE.sbc.unsupportedScopes || [],
+                staleRecover: STATE.diag.staleRecover || null,
                 entityCaptured: !!STATE.sbc.entity,
                 setChallengesCached: !!STATE.lastSetChallenges
             },
@@ -3997,6 +4120,15 @@
         if (STATE.pool.length === 0) {
             toast('Pool leer. Bitte zuerst "Spieler laden".', 'error');
             return;
+        }
+        // Vorgaben, die wir nicht abdecken, VORHER benennen. Live endete so ein
+        // Lauf mit einem nackten "403" - Rasmus konnte daraus nicht sehen, dass
+        // die SBC einen bestimmten Spieler bzw. ein Vereinsmitglied verlangt.
+        const unsup = STATE.sbc.unsupportedScopes || [];
+        if (unsup.length) {
+            toast('Achtung: Diese SBC hat Vorgaben, die PitTools nicht abdeckt (' +
+                unsup.join(', ') + '). Das Team erfüllt nur Rating und Rarity - ' +
+                'EA lehnt das Eintragen dann evtl. ab.', 'warn');
         }
         if (STATE.loadIncomplete) {
             toast('ACHTUNG: Der Pool ist unvollständig geladen (' + STATE.pool.length +

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.32.0
+// @version      4.33.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.32.0';
+    const VERSION = '4.33.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -4099,13 +4099,65 @@
         }, ok ? 2600 : 5000);
     }
     /** Belohnungs-Dialog wegräumen (EAs eigener Popup-Manager). */
+    /**
+     * Liegt noch ein Dialog/Shield oben? EAs Kachel-Handler sind registriert,
+     * reagieren aber nicht, solange die App einen Popup-Zustand hat - genau das
+     * Bild aus dem Live-Report: Tap kommt an (touchHandled true), Kachel oeffnet
+     * nicht, nach einem Neustart geht es wieder.
+     * Ausgelesen wird beides: der Shield der App UND was tatsaechlich an der
+     * Tap-Stelle liegt (elementFromPoint) - ein synthetisch verschickter Event
+     * umgeht Hit-Testing, EA prueft die Ueberdeckung aber womoeglich selbst.
+     */
+    function popupState() {
+        const st = { shield: null, overlays: 0, top: null };
+        try {
+            const sh = window.gPopupClickShield;
+            if (sh) {
+                st.shield = {
+                    up: !!(sh.isShieldUp ? sh.isShieldUp() : (sh._shieldUp || sh.visible)),
+                    hasClose: typeof sh.closeActivePopup === 'function'
+                };
+            }
+        } catch (e) {}
+        try {
+            // Alles, was bildschirmfuellend obendrauf liegt.
+            const sel = '.ut-click-shield,[class*="click-shield"],[class*="dialog"],' +
+                        '[class*="popup"],[class*="overlay"],[class*="modal"]';
+            const els = document.querySelectorAll(sel);
+            const seen = [];
+            for (let i = 0; i < els.length; i++) {
+                const e = els[i];
+                if (String(e.className || '').indexOf('sbc-opt') > -1) continue;
+                const r = e.getBoundingClientRect();
+                if (r.width < window.innerWidth * 0.5 || r.height < window.innerHeight * 0.3) continue;
+                if (!(e.offsetParent !== null || e.getClientRects().length)) continue;
+                st.overlays++;
+                if (seen.length < 3) seen.push(String(e.className || '').slice(0, 50));
+            }
+            if (seen.length) st.overlayCls = seen.join(' | ');
+        } catch (e) {}
+        try {
+            const chain = getControllerChain();
+            st.top = (chain.length && chain[chain.length - 1].constructor &&
+                      chain[chain.length - 1].constructor.name) || null;
+        } catch (e) {}
+        return st;
+    }
     function dismissRewardPopup() {
         let closed = false;
         try {
             const shield = window.gPopupClickShield;
             if (shield && typeof shield.closeActivePopup === 'function') {
-                shield.closeActivePopup();
-                closed = true;
+                // MEHRFACH: nach dem Abgeben koennen mehrere Overlays
+                // hintereinander kommen (Belohnung, dann "Set abgeschlossen").
+                // Vorher wurde genau einmal geschlossen - und `closed` wurde
+                // auch dann gemeldet, wenn gar nichts offen war.
+                for (let k = 0; k < 3; k++) {
+                    const before = popupState();
+                    if (!before.overlays && !(before.shield && before.shield.up)) break;
+                    shield.closeActivePopup();
+                    closed = true;
+                }
             }
         } catch (e) {}
         // Zweiter Weg: ist der oberste präsentierte Controller ein Dialog,
@@ -4257,6 +4309,15 @@
             // gelegentlich nachfassen (die Kachelliste braucht manchmal einen
             // Moment, bis sie gerendert ist).
             if (!ctrl && (!clicked || i === 20 || i === 40)) {
+                // Vor dem Tap aufraeumen: liegt noch ein Dialog oben, ignoriert
+                // EA den Kachel-Tap (Live-Bild: touchHandled true, nichts
+                // passiert, nach Neustart ging es wieder).
+                const pop = popupState();
+                if (pop.overlays || (pop.shield && pop.shield.up)) {
+                    dismissRewardPopup();
+                    steps.push({ ms: Date.now() - t0, popupClosed: pop });
+                    await batchWait(500);
+                }
                 let s1 = clickSetTile(plan);
                 // Nicht gefunden? Dann versteckt der Hub-Filter sie vielleicht
                 // (live: "Favourites" aktiv, gesuchte SBC nicht dabei).
@@ -4264,6 +4325,19 @@
                     const f = clickAllFilter();
                     steps.push({ ms: Date.now() - t0, filter: f });
                     if (f.ok) { await batchWait(900); s1 = clickSetTile(plan); }
+                }
+                // Kachel GEFUNDEN und getippt, aber schon zweimal ohne Wirkung?
+                // Dann die Liste ueber den Filter neu aufbauen lassen und noch
+                // einmal tippen - eine stale View ist die wahrscheinlichste
+                // Erklaerung, wenn der Tap nachweislich ankommt.
+                if (s1.ok && clicked && (i === 20 || i === 40)) {
+                    const f2 = clickAllFilter();
+                    steps.push({ ms: Date.now() - t0, rerender: f2 });
+                    if (f2.ok) {
+                        await batchWait(900);
+                        const s3 = clickSetTile(plan);
+                        steps.push({ ms: Date.now() - t0, setTileAfterRerender: s3 });
+                    }
                 }
                 if (s1.ok) {
                     clicked = true;
@@ -4283,7 +4357,8 @@
             await batchWait(300);
         }
         const repEnd = setLooksRepeatable(plan.setName || '');
-        steps.push({ setState: repEnd, why: 'Status der Kachel nach den Versuchen' });
+        steps.push({ setState: repEnd, popup: popupState(),
+                     why: 'Status der Kachel nach den Versuchen' });
         return { ok: false, exhausted: repEnd.repeatable === false,
                  status: repEnd.status, steps: steps };
     }
@@ -4371,11 +4446,24 @@
             fire('click', MouseEvent);
         }
         try {
+            // Was liegt an der Tap-Stelle GANZ OBEN? Ist das nicht die Kachel
+            // selbst (oder ein Kind davon), deckt etwas sie ab - im Live-Report
+            // kam der Tap an und die Kachel oeffnete trotzdem nicht.
+            let covered = null, topCls = null;
+            try {
+                const top = document.elementFromPoint(x, y);
+                if (top) {
+                    topCls = String(top.className || top.tagName || '').slice(0, 60);
+                    covered = !(top === el || el.contains(top) || top.contains(el));
+                }
+            } catch (e2) {}
             STATE.diag.lastTap = {
                 events: sent.join(','), touchHandled: touchHandled,
                 x: x, y: y,
                 inViewport: (y >= 0 && y <= (window.innerHeight || 0) &&
-                             x >= 0 && x <= (window.innerWidth || 0))
+                             x >= 0 && x <= (window.innerWidth || 0)),
+                covered: covered, topAtPoint: topCls,
+                popup: popupState()
             };
         } catch (e) {}
         return sent.length > 0;

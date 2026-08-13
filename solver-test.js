@@ -1117,6 +1117,36 @@ function mulberry32(a) {
     pending.push(Promise.all(results));
 }
 
+// ========== 8b-2i. Kachel-Tap ohne Wirkung: Popup/Ueberdeckung ==========
+{
+    // Live (v4.32.0, PC): der Batch gab eine Runde ab, dann kam die naechste
+    // nicht auf. Der Tap kam dreimal an (touchHandled true, inViewport true),
+    // das Set hatte laut Kachel noch 19 Wiederholungen offen. Nach einem
+    // Neustart lief es wieder -> es hing ein Zustand, kein Selektor.
+    const src = require("fs").readFileSync(__dirname + "/ea-fc-sbc-optimizer.user.js", "utf8");
+    const ps = src.slice(src.indexOf("function popupState"), src.indexOf("function dismissRewardPopup"));
+    check("popupState liest den App-Shield", /gPopupClickShield/.test(ps) && /isShieldUp/.test(ps));
+    check("popupState zaehlt bildschirmfuellende Overlays",
+        /click-shield/.test(ps) && /innerWidth/.test(ps));
+    check("popupState ignoriert unsere eigene UI", /sbc-opt/.test(ps));
+
+    const dm = src.slice(src.indexOf("function dismissRewardPopup"),
+                         src.indexOf("function popupState") > 0 ? src.length : 0);
+    check("Popups werden MEHRFACH geschlossen (mehrere Overlays hintereinander)",
+        /for \(let k = 0; k < 3; k\+\+\)/.test(src));
+    check("closed wird nur gemeldet, wenn wirklich was offen war",
+        /if \(!before.overlays/.test(src));
+
+    const cl = src.slice(src.indexOf("function clickLike"), src.indexOf("function visibleAll"));
+    check("Tap meldet, was an der Stelle GANZ OBEN liegt",
+        /elementFromPoint/.test(cl) && /covered/.test(cl));
+    check("Tap nimmt den Popup-Zustand mit", /popup: popupState\(\)/.test(cl));
+
+    check("Vor dem Tap wird aufgeraeumt", /popupClosed: pop/.test(src));
+    check("Nach zwei wirkungslosen Taps wird der Hub neu aufgebaut",
+        /rerender: f2/.test(src) && /setTileAfterRerender/.test(src));
+}
+
 // ========== 8b-3. Der Rare-Parser darf keine Spielernamen matchen ==========
 {
     // Live-Fehler (v4.24.0): ein Substring-Match auf "RARE" im Scope-Namen hat

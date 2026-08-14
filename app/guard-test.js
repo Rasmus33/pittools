@@ -22,13 +22,29 @@ const JAVA = path.join(__dirname, 'java', 'com', 'sbctools', 'browser', 'MainAct
 const BS = String.fromCharCode(92); // Backslash
 
 // ---- Wächter aus der Java-Quelle extrahieren -----------------------------
-function extractGuard() {
+// In eine eigene Funktion ausgelagert (statt inline in extractGuard), damit
+// Test 0 unten dieselbe Parse-Logik gegen einen synthetischen CRLF-Block
+// prüfen kann, unabhängig davon, ob der eigene Checkout gerade CRLF oder LF
+// verwendet.
+function literalsFromJavaBlock(block) {
     // CRLF-Checkouts (core.autocrlf=true) lassen ein "\r" am Zeilenende stehen.
     // Ohne Normalisierung verfehlt der Kommentar-Regex unten sein "$"-Anker
     // (der Punkt matcht kein "\r", und "$" ohne /m sitzt hinter dem "\r",
     // nicht davor) - der Java-Zeilenkommentar bleibt dann stehen und seine
     // Anführungszeichen-Fragmente landen im rekonstruierten Guard-JS.
-    const src = fs.readFileSync(JAVA, 'utf8').replace(/\r\n/g, '\n');
+    block = block.replace(/\r\n/g, '\n');
+    const lits = [];
+    for (let line of block.split('\n')) {
+        line = line.replace(/\/\/.*$/, '');           // Java-Zeilenkommentar
+        const re = /"((?:[^"\\]|\\.)*)"/g;
+        let m;
+        while ((m = re.exec(line)) !== null) lits.push(m[1]);
+    }
+    return lits.map(unescapeJava).join('');
+}
+
+function extractGuard() {
+    const src = fs.readFileSync(JAVA, 'utf8');
     const startMark = '"(function(){" +';
     const endMark = '"})()", null);';
     const start = src.indexOf(startMark);
@@ -38,14 +54,7 @@ function extractGuard() {
             + 'Markierungen geändert? Gesucht: ' + startMark);
     }
     const block = src.slice(start, end + '"})()"'.length);
-    const lits = [];
-    for (let line of block.split('\n')) {
-        line = line.replace(/\/\/.*$/, '');           // Java-Zeilenkommentar
-        const re = /"((?:[^"\\]|\\.)*)"/g;
-        let m;
-        while ((m = re.exec(line)) !== null) lits.push(m[1]);
-    }
-    return lits.map(unescapeJava).join('');
+    return literalsFromJavaBlock(block);
 }
 
 function unescapeJava(s) {
@@ -140,6 +149,17 @@ function ok(name, cond, detail) {
 
 // ---- Tests ---------------------------------------------------------------
 (async function main() {
+    // 0. Regression: CRLF-Zeilenenden (wie sie ein core.autocrlf=true-Checkout
+    //    erzeugt) dürfen keine Anführungszeichen-Fragmente aus Kommentaren in
+    //    den extrahierten Code durchlassen - unabhängig davon, ob der eigene
+    //    Checkout gerade CRLF oder LF verwendet.
+    const crlfBlock = 'code +\r\n'
+        + '"a(" + // Kommentar mit "Anfuehrungszeichen" drin\r\n'
+        + '"1)";\r\n';
+    ok('CRLF-Block: Kommentar-Anführungszeichen bleiben draußen',
+        literalsFromJavaBlock(crlfBlock) === 'a(1)',
+        JSON.stringify(literalsFromJavaBlock(crlfBlock)));
+
     const guard = extractGuard();
 
     // 1. Syntax

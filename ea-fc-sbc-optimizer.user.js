@@ -4886,7 +4886,7 @@
             setStatus(plan.planned + ' von ' + want + ' Teams geplant');
         } catch (e) {
             toast('Batch-Planung fehlgeschlagen: ' + e.message, 'error');
-            warn(e);
+            reportError('Batch-Planung fehlgeschlagen', e);
         } finally { ui.batchPlan.disabled = false; }
     }
     /** Kurzbezeichnung der Rarity. Die rareflag-NUMMER bleibt sichtbar -
@@ -5036,9 +5036,9 @@
         }
     }
     // ---- Helfer, die auch die Diagnose nutzt -------------------------------
-    // Der Lauf "mehrere SBCs automatisch abgeben" ist ausgebaut (siehe
-    // LEARNINGS 9 und ROADMAP). Diese zwei Helfer bleiben, weil der
-    // Diagnose-Report mit ihnen zeigt, ob eine Challenge offen ist.
+    // findLiveChallenge/findSbcController werden vom aktiven, automatischen
+    // Batch-Lauf (onBatchRunClick, siehe CLAUDE.md "Batch-Modus darf abgeben")
+    // UND vom Diagnose-Report genutzt, um zu pruefen, ob eine Challenge offen ist.
     function findLiveChallenge() {
         for (const c of getControllerChain()) {
             const n = (c.constructor && c.constructor.name) || '';

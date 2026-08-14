@@ -23,7 +23,12 @@ const BS = String.fromCharCode(92); // Backslash
 
 // ---- Wächter aus der Java-Quelle extrahieren -----------------------------
 function extractGuard() {
-    const src = fs.readFileSync(JAVA, 'utf8');
+    // CRLF-Checkouts (core.autocrlf=true) lassen ein "\r" am Zeilenende stehen.
+    // Ohne Normalisierung verfehlt der Kommentar-Regex unten sein "$"-Anker
+    // (der Punkt matcht kein "\r", und "$" ohne /m sitzt hinter dem "\r",
+    // nicht davor) - der Java-Zeilenkommentar bleibt dann stehen und seine
+    // Anführungszeichen-Fragmente landen im rekonstruierten Guard-JS.
+    const src = fs.readFileSync(JAVA, 'utf8').replace(/\r\n/g, '\n');
     const startMark = '"(function(){" +';
     const endMark = '"})()", null);';
     const start = src.indexOf(startMark);

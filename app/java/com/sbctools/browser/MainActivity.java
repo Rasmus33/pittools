@@ -130,7 +130,35 @@ public class MainActivity extends Activity {
     String appVersion() {
         try {
             return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
-        } catch (Exception e) { return "?"; }
+        } catch (Exception e) {
+            reportNetError("appVersion", e.getClass().getSimpleName() + " " + e.getMessage());
+            return "?";
+        }
+    }
+
+    // ---- Zustands-Setter ------------------------------------------------
+    // Einziger Schreibweg fuer scriptsReady/paleStatus/paleInjected: loggt bei
+    // jeder tatsaechlichen Aenderung. Am Geraet haengt keine Konsole - ohne
+    // diesen Choke-Point koennte eine neue Schreibstelle das Log-Signal
+    // vergessen (analog zum "!status.equals(a.paleStatus)"-Vergleich, der
+    // hier zentralisiert wird).
+
+    void setScriptsReady(boolean value) {
+        if (scriptsReady == value) return;
+        scriptsReady = value;
+        addLog("scriptsReady=" + value);
+    }
+
+    void setPaleStatus(String value) {
+        if (value != null && value.equals(paleStatus)) return;
+        paleStatus = value;
+        addLog("PaleTools-Status: " + value);
+    }
+
+    void setPaleInjected(boolean value) {
+        if (paleInjected == value) return;
+        paleInjected = value;
+        addLog("paleInjected=" + value);
     }
 
     void shareLog() {
@@ -251,7 +279,7 @@ public class MainActivity extends Activity {
      */
     void injectPaleLate() {
         if (!scriptsReady || scriptPale == null || paleInjected) return;
-        paleInjected = true;
+        setPaleInjected(true);
         injectPaleChunked();
         web.postDelayed(new PalePoll(this, 0), 1500);
     }
@@ -389,15 +417,31 @@ public class MainActivity extends Activity {
         return sb.toString();
     }
 
+    /**
+     * Einziger Log-Choke-Point fuer Netz-/Cache-Fehler: buendelt Ort und
+     * Detail (Exception-Message oder Statuscode) in eine addLog-Zeile, damit
+     * neue Fehlerstellen keinen eigenen Ad-hoc-String erfinden.
+     */
+    void reportNetError(String where, String detail) {
+        addLog("[net] " + where + ": " + detail);
+    }
+
     String fetchUrl(String u) {
         try {
             HttpURLConnection c = (HttpURLConnection) new URL(u).openConnection();
             c.setConnectTimeout(8000);
             c.setReadTimeout(8000);
             c.setInstanceFollowRedirects(true);
-            if (c.getResponseCode() != 200) return null;
+            int code = c.getResponseCode();
+            if (code != 200) {
+                reportNetError("fetchUrl " + u, "HTTP " + code);
+                return null;
+            }
             return readStream(c.getInputStream());
-        } catch (Exception e) { return null; }
+        } catch (Exception e) {
+            reportNetError("fetchUrl " + u, e.getClass().getSimpleName() + " " + e.getMessage());
+            return null;
+        }
     }
 
     /**
@@ -417,28 +461,46 @@ public class MainActivity extends Activity {
             if (etag != null) c.setRequestProperty("If-None-Match", etag);
             if (mod != null) c.setRequestProperty("If-Modified-Since", mod);
             int code = c.getResponseCode();
-            if (code == 304) return null;
-            if (code != 200) return null;
+            if (code == 304) {
+                reportNetError("fetchUrlIfChanged " + u, "304 (Cache aktuell)");
+                return null;
+            }
+            if (code != 200) {
+                reportNetError("fetchUrlIfChanged " + u, "HTTP " + code);
+                return null;
+            }
             String newEtag = c.getHeaderField("ETag");
             String newMod = c.getHeaderField("Last-Modified");
             String body = readStream(c.getInputStream());
-            if (body == null) return null;
+            if (body == null) {
+                reportNetError("fetchUrlIfChanged " + u, "leerer Body");
+                return null;
+            }
             SharedPreferences.Editor e = prefs.edit();
             if (newEtag != null) e.putString(etagKey, newEtag);
             if (newMod != null) e.putString(modKey, newMod);
             e.apply();
             return body;
-        } catch (Exception e) { return null; }
+        } catch (Exception e) {
+            reportNetError("fetchUrlIfChanged " + u, e.getClass().getSimpleName() + " " + e.getMessage());
+            return null;
+        }
     }
 
     String readAsset(String name) {
         try { return readStream(getAssets().open(name)); }
-        catch (Exception e) { return null; }
+        catch (Exception e) {
+            reportNetError("readAsset " + name, e.getClass().getSimpleName() + " " + e.getMessage());
+            return null;
+        }
     }
 
     String readCache(String name) {
         try { return readStream(new FileInputStream(new File(getFilesDir(), name))); }
-        catch (Exception e) { return null; }
+        catch (Exception e) {
+            reportNetError("readCache " + name, e.getClass().getSimpleName() + " " + e.getMessage());
+            return null;
+        }
     }
 
     void writeCache(String name, String content) {
@@ -446,7 +508,10 @@ public class MainActivity extends Activity {
         try {
             out = new FileOutputStream(new File(getFilesDir(), name));
             out.write(content.getBytes(StandardCharsets.UTF_8));
-        } catch (Exception e) { /* Cache ist optional */ }
+        } catch (Exception e) {
+            /* Cache ist optional */
+            reportNetError("writeCache " + name, e.getClass().getSimpleName() + " " + e.getMessage());
+        }
         finally { try { if (out != null) out.close(); } catch (Exception e) {} }
     }
 
@@ -647,8 +712,7 @@ class PalePoll implements Runnable, ValueCallback<String> {
         }
         boolean didToast = toasted;
         if (have && !status.equals(a.paleStatus)) {
-            a.paleStatus = status;
-            a.addLog("PaleTools-Status: " + status);
+            a.setPaleStatus(status);
             if (!didToast) {
                 Toast.makeText(a, "PaleTools: " + status, Toast.LENGTH_LONG).show();
                 didToast = true;
@@ -664,8 +728,7 @@ class PalePoll implements Runnable, ValueCallback<String> {
         if (tries < 240) {
             a.web.postDelayed(new PalePoll(a, tries + 1, didToast), 5000);
         } else if (!have) {
-            a.paleStatus = "keine Rückmeldung (letzter Wartestand: " + wait + ")";
-            a.addLog("PaleTools-Status: " + a.paleStatus);
+            a.setPaleStatus("keine Rückmeldung (letzter Wartestand: " + wait + ")");
         }
     }
 }
@@ -711,7 +774,7 @@ class SbcWebViewClient extends android.webkit.WebViewClient {
         // Neue Seite = neues window, also darf PaleTools wieder injiziert
         // werden (sonst fehlt es nach jedem Reload). Gegen Doppel-Injection
         // innerhalb DERSELBEN Seite schützt der __inj_pale-Guard im JS.
-        a.paleInjected = false;
+        a.setPaleInjected(false);
         // So früh wie möglich injizieren - die fetch/XHR-Interception der
         // Scripts muss VOR dem EA-Bundle stehen.
         a.injectScripts();
@@ -769,7 +832,7 @@ class ScriptLoader implements Runnable {
         }
         a.scriptPale = pale;
         a.paleSource = (pale == null) ? "keine" : (paleFromCache ? "Cache" : "Download");
-        a.scriptsReady = true;
+        a.setScriptsReady(true);
 
         // BEWUSST "geladen", nicht "bereit": das sagt nur, dass die Dateien
         // heruntergeladen sind. Ob PaleTools auch LÄUFT, meldet erst der
@@ -822,7 +885,7 @@ class SettingsSave implements DialogInterface.OnClickListener {
             .putBoolean("paleOn", paleOn.isChecked())
             .putString("paleUrl", urlPale.getText().toString().trim())
             .apply();
-        a.scriptsReady = false;
+        a.setScriptsReady(false);
         a.scriptSbc = null;
         a.scriptPale = null;
         a.loadScriptsThenStart();

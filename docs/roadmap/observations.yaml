@@ -45,6 +45,17 @@ entries:
     P0-Task #12 eingeschoben (Variant b), da alle Final-Gates in frischen Worktrees
     betroffen sind. #1 wartet mit Review bis der Fix gemergt und der Branch nachgezogen
     ist.'
+- at: '2026-08-14T22:41:49Z'
+  issue: 12
+  po_class: null
+  surprises:
+  - "Wurzelursache des guard-test-CRLF-Bruchs: JS-Regex $ matcht nicht vor \r und\
+    \ . matcht \r nicht — der Kommentar-Strip war auf CRLF-Zeilen ein stilles No-op.\
+    \ Fix: CRLF-Normalisierung in literalsFromJavaBlock() + synthetischer Regressionstest,\
+    \ checkout-unabhaengig."
+  reasoning: 'Task #12 sauber durch: nur app/guard-test.js, Validator PASS, alle Gates
+    gruen im CRLF-Worktree. Damit sind die Final-Gates fuer alle folgenden Tickets
+    wieder verlaesslich.'
 discoveries:
   pattern_candidates: []
   antipattern_candidates: []

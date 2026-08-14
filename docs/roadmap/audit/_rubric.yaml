@@ -1,0 +1,144 @@
+android-app-wrapper:
+  RA:
+    evidence:
+    - app/java/com/sbctools/browser/MainActivity.java:392-401
+    - app/java/com/sbctools/browser/MainActivity.java:409-432
+    - app/java/com/sbctools/browser/MainActivity.java:730-772
+    - app/guard-test.js:25-118
+    - app/java/com/sbctools/browser/MainActivity.java:603-671
+    iteration_scored: 0
+    reasoning: Fallback-Ketten, Marker-Extraktions-Testsuite und ausfuehrliche LEARNINGS-Begruendungen
+      sprechen fuer RA; aber stille Catches genau an der DevTools-losen Netzwerk-/Cache-Grenze
+      (fetchUrl/fetchUrlIfChanged ohne addLog) und direkte Feldmutation zwischen Top-Level-Klassen
+      druecken die Beobachtbarkeit deutlich.
+    score: 48.0
+    source: audit-evaluator
+    updated_at: '2026-08-14'
+batch-modus:
+  RA:
+    evidence:
+    - ea-fc-sbc-optimizer.user.js:4793-4796
+    - ea-fc-sbc-optimizer.user.js:4900-4923
+    - ea-fc-sbc-optimizer.user.js:4468-4482
+    - solver-test.js:946-1190
+    - docs/LEARNINGS.md:283-401
+    iteration_scored: 0
+    reasoning: Disziplinierte Fehlertoleranz/Beobachtbarkeit/Abbruch-Struktur (Selector-Fallbacks,
+      ok/why-Objekte, STATE.diag, Plan-verbraucht) gemindert durch bestaetigten ungetesteten
+      Bug im Kern-Anker (matchesPlannedSbc vergleicht nie belegtes STATE.sbc.slots
+      — Slots-Teil No-Op) und einen veralteten Kommentar (~4982).
+    score: 60.0
+    source: audit-evaluator
+    updated_at: '2026-08-14'
+bedienpanel-ui:
+  RA:
+    evidence:
+    - ea-fc-sbc-optimizer.user.js:3360-3370
+    - ea-fc-sbc-optimizer.user.js:1485
+    - ea-fc-sbc-optimizer.user.js:4054
+    - ea-fc-sbc-optimizer.user.js:3564-3574
+    - docs/LEARNINGS.md:436-492
+    iteration_scored: 0
+    reasoning: Einstiegspunkte robust gegen EA-Wandel (Fail-Open, generische Erkennung,
+      LEARNINGS §10); aber der Band-Editor liefert ueber defaultBands() nachweislich
+      veraltete Reset-Werte (SSOT-Bruch zu DEFAULT_RATING_COST_SPEC, kein Drift-Test).
+    score: 68.0
+    source: audit-evaluator
+    updated_at: '2026-08-14'
+diagnose-werkzeuge:
+  RA:
+    evidence:
+    - ea-fc-sbc-optimizer.user.js:105-112
+    - ea-fc-sbc-optimizer.user.js:3758
+    - ea-fc-sbc-optimizer.user.js:3927-3928
+    - ea-fc-sbc-optimizer.user.js:116-122
+    - app/java/com/sbctools/browser/MainActivity.java:93-102
+    iteration_scored: 0
+    reasoning: Beide Kanaele strukturell solide und stark WARUM-dokumentiert; aber
+      der Kern-Report hat verifizierte Defekte (kein STATE.diag-Schema, totes uiScan-Feld,
+      doppelter rareConstraints-Key) und die Android-Log-Infrastruktur hat keine Testabdeckung.
+    score: 58.0
+    source: audit-evaluator
+    updated_at: '2026-08-14'
+ea-app-anbindung:
+  RA:
+    evidence:
+    - ea-fc-sbc-optimizer.user.js:1236-1253
+    - ea-fc-sbc-optimizer.user.js:1184-1235
+    - ea-fc-sbc-optimizer.user.js:187
+    - ea-fc-sbc-optimizer.user.js:4986-5006
+    - ea-fc-sbc-optimizer.user.js:1100
+    iteration_scored: 0
+    reasoning: Solide Fallback-Ketten (Services vs. HTTP), disziplinierte Fehlermeldungen
+      und gut belegte WARUM-Kommentare/LEARNINGS-Eintraege stehen einem klar nachweisbaren
+      Cluster aus SSOT-/DRY-Verstoessen gegenueber (duplizierte sbs/sbc-Regex, duplizierte
+      401-Retry-Logik, duplizierte Controller-Traversal statt Helfer-Nutzung, Beobachtbarkeits-Luecken
+      im Services-Fallback ohne diagError).
+    score: 64.0
+    source: audit-evaluator
+    updated_at: '2026-08-14'
+rating-solver:
+  RA:
+    evidence:
+    - ea-fc-sbc-optimizer.user.js:1855-1866
+    - ea-fc-sbc-optimizer.user.js:1908-1917
+    - ea-fc-sbc-optimizer.user.js:1958-1959
+    - ea-fc-sbc-optimizer.user.js:2115-2147
+    - solver-test.js:10-13
+    iteration_scored: 0
+    reasoning: 'Sehr starke Testbarkeit (Marker-Extraktion + Brute-Force-Paritaet),
+      Abbruch-Disziplin und WARUM-Kommentare mit Live-Belegen; runtergezogen durch
+      zwei reale Architektur-Lecks: reserve()-Invariante an zwei Pfaden (Anker, Rarity-Pick)
+      umgangen und derselbe Komparator viermal dupliziert.'
+    score: 78.0
+    source: audit-evaluator
+    updated_at: '2026-08-14'
+sbc-vorgaben-erkennung:
+  RA:
+    evidence:
+    - ea-fc-sbc-optimizer.user.js:362-476
+    - ea-fc-sbc-optimizer.user.js:742-764
+    - ea-fc-sbc-optimizer.user.js:596-599
+    - ea-fc-sbc-optimizer.user.js:576
+    - solver-test.js:1218-1235
+    iteration_scored: 0
+    reasoning: Generischer, mehrschichtig fallback-gesicherter Deep-Scan mit sauberer
+      Abbruch-Disziplin und dokumentierten WARUM-Learnings; runtergezogen durch den
+      realen Namensdrift-Bug (STATE.sbc.slots nie geschrieben, Slot-Disambiguierung
+      faktisch tot) und fehlende ausfuehrbare Tests fuer die Parsing-Kernlogik (nur
+      String-Regressionschecks).
+    score: 65.0
+    source: audit-evaluator
+    updated_at: '2026-08-14'
+spieler-pool:
+  RA:
+    evidence:
+    - ea-fc-sbc-optimizer.user.js:1358-1385
+    - solver-test.js:1034-1116
+    - ea-fc-sbc-optimizer.user.js:1334
+    - ea-fc-sbc-optimizer.user.js:907
+    - docs/LEARNINGS.md:543-563
+    iteration_scored: 0
+    reasoning: Solide Fallback-Kette an der EA-Grenze mit dem fragilsten Teil (Club-Lade-Takt)
+      durch echte Funktionssimulation abgedeckt; Beobachtbarkeit inkonsistent (reportwuerdige
+      catches ohne diagError bei Unassigned/Storage/Locks) und Normalisierungs-/Lock-Harvest-Logik
+      ungetestet.
+    score: 70.0
+    source: audit-evaluator
+    updated_at: '2026-08-14'
+team-eintragen:
+  RA:
+    evidence:
+    - ea-fc-sbc-optimizer.user.js:2595-2669
+    - ea-fc-sbc-optimizer.user.js:2692-2716
+    - ea-fc-sbc-optimizer.user.js:2556-2570
+    - ea-fc-sbc-optimizer.user.js:2811-2836
+    - docs/LEARNINGS.md:708-742
+    iteration_scored: 0
+    reasoning: Vorbildliche Fallback-Ketten und praezise 404/475-vs-403-Abbrueche
+      mit Diagnose-Feldern; aber die kanonischen Helfer (getControllerChain/findSbcController/findLiveChallenge)
+      werden in submitViaApp, syncSbcWithOpenChallenge und refreshOpenSbcView inline
+      nachgebaut — reales Drift-Risiko in der fragilsten Zone.
+    score: 60.0
+    source: audit-evaluator
+    updated_at: '2026-08-14'

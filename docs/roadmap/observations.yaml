@@ -90,6 +90,15 @@ discoveries:
     note: severity=P3; 304-Zweig (Cache aktuell) laeuft durch den Fehler-Chokepoint
       reportNetError — funktional harmlos, aber begriffliche Unschaerfe; Kandidat
       fuer Audit-Sammelticket.
+  - slug: lasteligible-nie-im-report
+    evidence:
+    - ea-fc-sbc-optimizer.user.js:122
+    - ea-fc-sbc-optimizer.user.js:2685
+    issues:
+    - 3
+    note: severity=P3; STATE.diag.lastEligible wird bei 403 echt zugewiesen, aber
+      nie in buildDiagReport ausgegeben — Spiegelbild des uiScan-Falls (befuellt-aber-nie-sichtbar).
+      Vorbestehend, Kandidat Audit-Sammelticket.
 seeds_next:
   seeded_at: null
   patterns: []

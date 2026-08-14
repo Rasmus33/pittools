@@ -133,6 +133,31 @@ public class MainActivity extends Activity {
         } catch (Exception e) { return "?"; }
     }
 
+    // ---- Zustands-Setter ------------------------------------------------
+    // Einziger Schreibweg fuer scriptsReady/paleStatus/paleInjected: loggt bei
+    // jeder tatsaechlichen Aenderung. Am Geraet haengt keine Konsole - ohne
+    // diesen Choke-Point koennte eine neue Schreibstelle das Log-Signal
+    // vergessen (analog zum "!status.equals(a.paleStatus)"-Vergleich, der
+    // hier zentralisiert wird).
+
+    void setScriptsReady(boolean value) {
+        if (scriptsReady == value) return;
+        scriptsReady = value;
+        addLog("scriptsReady=" + value);
+    }
+
+    void setPaleStatus(String value) {
+        if (value != null && value.equals(paleStatus)) return;
+        paleStatus = value;
+        addLog("PaleTools-Status: " + value);
+    }
+
+    void setPaleInjected(boolean value) {
+        if (paleInjected == value) return;
+        paleInjected = value;
+        addLog("paleInjected=" + value);
+    }
+
     void shareLog() {
         String text = buildLogReport();
         // Der Intent-Extra geht über Binder - grob begrenzen, sonst fliegt es
@@ -251,7 +276,7 @@ public class MainActivity extends Activity {
      */
     void injectPaleLate() {
         if (!scriptsReady || scriptPale == null || paleInjected) return;
-        paleInjected = true;
+        setPaleInjected(true);
         injectPaleChunked();
         web.postDelayed(new PalePoll(this, 0), 1500);
     }
@@ -387,6 +412,15 @@ public class MainActivity extends Activity {
         }
         sb.append('"');
         return sb.toString();
+    }
+
+    /**
+     * Einziger Log-Choke-Point fuer Netz-/Cache-Fehler: buendelt Ort und
+     * Detail (Exception-Message oder Statuscode) in eine addLog-Zeile, damit
+     * neue Fehlerstellen keinen eigenen Ad-hoc-String erfinden.
+     */
+    void reportNetError(String where, String detail) {
+        addLog("[net] " + where + ": " + detail);
     }
 
     String fetchUrl(String u) {
@@ -647,8 +681,7 @@ class PalePoll implements Runnable, ValueCallback<String> {
         }
         boolean didToast = toasted;
         if (have && !status.equals(a.paleStatus)) {
-            a.paleStatus = status;
-            a.addLog("PaleTools-Status: " + status);
+            a.setPaleStatus(status);
             if (!didToast) {
                 Toast.makeText(a, "PaleTools: " + status, Toast.LENGTH_LONG).show();
                 didToast = true;
@@ -664,8 +697,7 @@ class PalePoll implements Runnable, ValueCallback<String> {
         if (tries < 240) {
             a.web.postDelayed(new PalePoll(a, tries + 1, didToast), 5000);
         } else if (!have) {
-            a.paleStatus = "keine Rückmeldung (letzter Wartestand: " + wait + ")";
-            a.addLog("PaleTools-Status: " + a.paleStatus);
+            a.setPaleStatus("keine Rückmeldung (letzter Wartestand: " + wait + ")");
         }
     }
 }
@@ -711,7 +743,7 @@ class SbcWebViewClient extends android.webkit.WebViewClient {
         // Neue Seite = neues window, also darf PaleTools wieder injiziert
         // werden (sonst fehlt es nach jedem Reload). Gegen Doppel-Injection
         // innerhalb DERSELBEN Seite schützt der __inj_pale-Guard im JS.
-        a.paleInjected = false;
+        a.setPaleInjected(false);
         // So früh wie möglich injizieren - die fetch/XHR-Interception der
         // Scripts muss VOR dem EA-Bundle stehen.
         a.injectScripts();
@@ -769,7 +801,7 @@ class ScriptLoader implements Runnable {
         }
         a.scriptPale = pale;
         a.paleSource = (pale == null) ? "keine" : (paleFromCache ? "Cache" : "Download");
-        a.scriptsReady = true;
+        a.setScriptsReady(true);
 
         // BEWUSST "geladen", nicht "bereit": das sagt nur, dass die Dateien
         // heruntergeladen sind. Ob PaleTools auch LÄUFT, meldet erst der
@@ -822,7 +854,7 @@ class SettingsSave implements DialogInterface.OnClickListener {
             .putBoolean("paleOn", paleOn.isChecked())
             .putString("paleUrl", urlPale.getText().toString().trim())
             .apply();
-        a.scriptsReady = false;
+        a.setScriptsReady(false);
         a.scriptSbc = null;
         a.scriptPale = null;
         a.loadScriptsThenStart();

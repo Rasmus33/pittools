@@ -1650,6 +1650,104 @@ function mulberry32(a) {
     }
 }
 
+// ========== 21. Batch-Perspektive: matchesPlannedSbc im Lauf-Kontext (Brick-Slot-Transientes) ==========
+// Ergaenzt Abschnitt 19 (isolierter Comparator-Test mit fest konstruierten
+// Objekten) um die Sicht aus onBatchPlanClick/openNextInstance: der Plan
+// merkt sich formationSlots beim PLANEN (Brick-Slot-SBC, 8 von 11 Slots
+// nutzbar), danach setzt setCurrentChallenge() bei JEDEM Challenge-Wechsel
+// formationSlots auf den Default 11 zurueck (ea-fc-sbc-optimizer.user.js:534) -
+// die Brick-Slot-Korrektur (parseSbcChallenge, :682/:717) liefert den echten
+// Wert erst nach dem naechsten Netzwerk-Scan nach. Im Retry-Fenster von
+// openNextInstance kann matchesPlannedSbc dadurch TRANSIENT false liefern,
+// obwohl die offene SBC eigentlich die geplante ist - failsafe (kein falscher
+// Treffer), aber ohne diesen Test unentdeckt geblieben.
+{
+    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
+    function extractFn(name) {
+        const key = src.indexOf('function ' + name);
+        check('Funktion ' + name + ' gefunden (21)', key > -1);
+        const openBrace = src.indexOf('{', src.indexOf('(', key));
+        let depth = 0, close = -1;
+        for (let i = openBrace; i < src.length; i++) {
+            if (src[i] === '{') depth++;
+            else if (src[i] === '}') { depth--; if (depth === 0) { close = i; break; } }
+        }
+        return src.slice(key, close + 1);
+    }
+    const matchesSrc = extractFn('matchesPlannedSbc');
+    function buildMatcher(STATE) {
+        return new Function('STATE', matchesSrc + '\nreturn matchesPlannedSbc;')(STATE);
+    }
+
+    // 1) Plan-Erstellung wie onBatchPlanClick: plan.slots = STATE.sbc.formationSlots
+    //    zum Planungszeitpunkt.
+    const STATE = { sbc: { targetOVR: 84, formationSlots: 8 } };
+    const plan = { targetOVR: STATE.sbc.targetOVR, slots: STATE.sbc.formationSlots };
+    check('Plan uebernimmt formationSlots beim Planen (Brick-Slot-SBC, 8 von 11 nutzbar)',
+        plan.slots === 8);
+
+    // 2) Challenge-Wechsel zur naechsten Instanz: setCurrentChallenge() setzt
+    //    formationSlots auf den Default 11 zurueck, BEVOR der Brick-Slot-Scan
+    //    die Korrektur nachliefert.
+    STATE.sbc.formationSlots = 11;
+    check('Waehrend des Challenge-Wechsels (formationSlots noch Default 11): ' +
+        'matchesPlannedSbc liefert false (failsafe, kein falscher Treffer)',
+        buildMatcher(STATE)(plan) === false);
+
+    // 3) Brick-Slot-Scan liefert die Korrektur nach (formationSlots wieder 8) ->
+    //    matchesPlannedSbc erkennt die SBC wieder als die geplante.
+    STATE.sbc.formationSlots = 8;
+    check('Nach der Brick-Slot-Korrektur (formationSlots wieder 8): matchesPlannedSbc liefert true',
+        buildMatcher(STATE)(plan) === true);
+
+    // 4) Echte Diskrepanz: zweite Wiederholung/Variante desselben Sets mit
+    //    gleichem targetOVR, aber ANDEREN Slots (10 statt geplanter 8) - muss
+    //    dauerhaft false bleiben, nicht nur transient.
+    STATE.sbc.formationSlots = 10;
+    check('Gleicher targetOVR, dauerhaft andere formationSlots (10 vs. geplante 8): ' +
+        'matchesPlannedSbc liefert false',
+        buildMatcher(STATE)(plan) === false);
+
+    // Die Abbruchmeldung in onBatchRunClick muss STATE.sbc.formationSlots nennen -
+    // sonst zeigt sie bei echter Diskrepanz "undefined" statt Ist/Soll (Namensdrift).
+    const runFn = src.slice(src.indexOf('async function onBatchRunClick'),
+                             src.indexOf('function findLiveChallenge'));
+    check('onBatchRunClick-Abbruchmeldung nennt STATE.sbc.formationSlots (nicht das ' +
+        'nie geschriebene STATE.sbc.slots)',
+        runFn.indexOf('STATE.sbc.formationSlots') > -1 && !/STATE\.sbc\.slots\b/.test(runFn));
+}
+
+// ========== 22. Statischer Regressionstest: Batch-Orchestrierung (onBatchRunClick/openNextInstance) ==========
+// Analog zum bestehenden Source-Slice-Check fuer setLooksRepeatable
+// (solver-test.js:1015, Technik aus patterns/good/eingebetteten-code-exakt-testen.md
+// als Stilvorlage uebernommen). Verhindert, dass ein kuenftiges Refactoring
+// eine der Abbruch-/Diagnose-Stellen still entfernt, ohne dass ein Test das
+// bemerkt - genau der Mangel, der erklaert, warum der Slots-No-Op (Abschnitt 19)
+// unbemerkt blieb.
+{
+    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
+    const runFn = src.slice(src.indexOf('async function onBatchRunClick'),
+                             src.indexOf('function findLiveChallenge'));
+    check('onBatchRunClick wirft bei fehlender Pool-Karte',
+        runFn.indexOf('Karte(n) nicht mehr im Pool') > -1);
+    check('onBatchRunClick wirft bei fehlendem Controller/Challenge',
+        runFn.indexOf('keine offene SBC-Ansicht') > -1);
+    check('onBatchRunClick wirft bei !matchesPlannedSbc(plan)',
+        runFn.indexOf('!matchesPlannedSbc(plan)') > -1 && runFn.indexOf('passt nicht zum Plan') > -1);
+    check('Alle drei Abbrueche sind eigene throw new Error(...)-Aufrufe',
+        (runFn.match(/throw new Error\(/g) || []).length >= 3);
+    check('Plan gilt nach dem Lauf als verbraucht (STATE.batch = null im finally)',
+        runFn.indexOf('finally') > -1 &&
+        runFn.indexOf('STATE.batch = null') > runFn.indexOf('finally'));
+
+    const nextFn = src.slice(src.indexOf('async function openNextInstance'),
+                              src.indexOf('function clickLike'));
+    check('stuck-Diagnosezweig bei i===2/20/45 vorhanden',
+        nextFn.indexOf('i === 2 || i === 20 || i === 45') > -1);
+    check('clickBackButton-Zweig bei i===5/25 vorhanden',
+        nextFn.indexOf('i === 5 || i === 25') > -1 && nextFn.indexOf('clickBackButton()') > -1);
+}
+
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt
 // process.exit() die Loader-Tests, bevor sie laufen - sie zählten dann nicht mit
 // und ein Fehler dort wäre unbemerkt geblieben.

@@ -868,3 +868,23 @@ Aufrufe, Submit-Pfade, Pool-/Lock-Laden) rufen `reportError()`, damit keine
 Call-Site den zweiten Kanal vergisst. Bewusst stille Catches an der EA-Grenze
 (Fremd-Objekte, deren Fehlschlag folgenlos bleibt - Response-Traversierung,
 `localStorage`-Zugriffe) bleiben davon unberuehrt.
+
+## 24. App-seitig: reportNetError() + Zustands-Setter als Choke-Points
+
+Am Geraet haengt keine DevTools-Konsole - der einzige Diagnosekanal fuer die
+Android-App ist der `addLog`-Ringpuffer (⚙ → "Log teilen"/"Log kopieren").
+`MainActivity.reportNetError(where, detail)` ist der einzige Aufrufweg, ueber
+den `fetchUrl`, `fetchUrlIfChanged`, `readAsset`, `readCache`, `writeCache`
+und `appVersion` einen Fehlschlag melden - jeder stille Catch bzw.
+Early-Return dieser Methoden ruft ihn auf, statt einen eigenen Ad-hoc-String
+zu bauen. `app/guard-test.js` prueft per statischem Source-Regex-Check, dass
+jede dieser sechs Methoden mindestens einen `addLog`- oder
+`reportNetError`-Aufruf im Methodenkoerper enthaelt.
+
+Analog dazu sind `setScriptsReady(boolean)`, `setPaleStatus(String)` und
+`setPaleInjected(boolean)` der einzige Schreibweg fuer die gleichnamigen
+Felder: jeder tatsaechliche Wertwechsel landet automatisch im Log, ohne dass
+die aufrufende Klasse (`ScriptLoader`, `PalePoll`, `SbcWebViewClient`,
+`SettingsSave`) selbst daran denken muss. Neue Schreibstellen fuer diese drei
+Felder gehoeren ausschliesslich ueber die Setter, direkte Feldmutation
+(`a.scriptsReady = ...` o.ae.) unterlaeuft den Choke-Point.

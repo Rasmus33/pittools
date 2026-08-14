@@ -947,3 +947,29 @@ Fixtures (FIFO-Eviction bei > 400 Zeilen, Kuerzung + Suffix bei > 600
 Zeichen), zusaetzliche statische Checks sichern die Kopf-Label des
 Log-Reports (App-Version, Android, Optimizer, PaleTools, PaleTools-Status)
 sowie die Grundform von `addLog()` ab.
+
+## 27. Batch-Diagnose: Haeufigkeit statt Einzelfall, Transientes am Namensdrift-Anker sichtbar
+
+Fortsetzung von §9/§21/§26: der `stuck`-Diagnosezweig in `openNextInstance()`
+(v4.36.0, ein einziger Live-Beleg, "TOTW-Batch nach 4/5 gestoppt") zaehlt jetzt
+ueber `STATE.diag.batchStuckCount` mit, wie oft er seit App-Start auslöste -
+statt nur aus einem einzelnen Report ablesbar zu sein. Derselbe Zweig traegt
+zusaetzlich `formationSlots`/`planSlots` mit: `setCurrentChallenge()` setzt
+`formationSlots` bei JEDEM Challenge-Wechsel auf den Default 11 zurueck, bevor
+die Brick-Slot-Korrektur (`parseSbcChallenge`) den echten Wert nachliefert -
+`matches: false` im `stuck`-Eintrag kann in diesem Fenster also transient
+sein, nicht zwingend eine echte Diskrepanz zum Plan. `STATE.diag.submitWithoutResponseCount`
+zaehlt parallel, wie oft `submitChallengeToEa()` ohne auswertbare Promise-/
+Observable-Response trotzdem als Erfolg galt (der offen gelassene Punkt am
+Ende von §9) - rein additiv, der Live-verifizierte Controller-Weg selbst
+bleibt unveraendert.
+
+`solver-test.js` deckt die Batch-Perspektive auf `matchesPlannedSbc()` jetzt
+zusaetzlich zum isolierten Comparator-Test aus §26 ab: Plan-Erstellung wie
+`onBatchPlanClick()`, der transiente Reset auf `formationSlots: 11` waehrend
+eines Challenge-Wechsels, die Brick-Slot-Korrektur danach und die echte,
+dauerhafte Diskrepanz zwischen zwei Varianten desselben Sets. Ein statischer
+Source-Slice-Regressionstest (Stil analog `setLooksRepeatable`) sichert die
+drei Abbruch-Zweige von `onBatchRunClick()`, das Plan-verbraucht-Prinzip im
+`finally` sowie den `stuck`-/`clickBackButton`-Diagnosezweig in
+`openNextInstance()` gegen stillschweigendes Entfernen ab.

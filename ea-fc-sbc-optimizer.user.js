@@ -405,15 +405,16 @@
             const scope = scopeString(o);
             if (scope) {
                 const v = reqValue(o);
-                // Roh-Dump für Transparenz/Diagnose (max 25 Einträge)
-                if (out.reqs.length < 25 &&
-                    (scope.indexOf('RATING') > -1 || scope.indexOf('RARITY') > -1 ||
-                     scope.indexOf('PLAYER') > -1 || scope.indexOf('OVR') > -1 ||
-                     scope.indexOf('LEVEL') > -1 || scope.indexOf('QUALITY') > -1 ||
-                     scope.indexOf('CLUB') > -1 || scope.indexOf('LEAGUE') > -1 ||
-                     scope.indexOf('NATION') > -1 || scope.indexOf('CHEM') > -1)) {
-                    out.reqs.push({ scope: scope, value: v, ids: reqIds(o), count: reqCount(o, par) });
-                }
+                // matchedAs zeigt, welcher der unten folgenden, sich
+                // gegenseitig ausschliessenden Zweige tatsaechlich griff -
+                // 'unclassified' deckt exakt die Luecke aus dem
+                // PLAYER_LEVEL-Dual-Use-Bug ab (LEARNINGS 6/11): ein Scope wie
+                // PLAYER_LEVEL erfuellt sowohl isPlayerLevel als auch
+                // isQualityScope strukturell, aber nur EIN Wertebereich
+                // (40-99 bzw. 1-3) loest den jeweiligen Zweig unten aus; ein
+                // Wert dazwischen (4-39) faellt durch beide und bleibt sichtbar
+                // 'unclassified' statt lautlos zu verschwinden.
+                let matchedAs = 'unclassified';
                 const isTeamRating =
                     scope.indexOf('TEAM_RATING') > -1 || scope.indexOf('SQUAD_RATING') > -1 ||
                     ((scope.indexOf('RATING') > -1 || scope.indexOf('OVR') > -1) &&
@@ -422,6 +423,7 @@
                     if (v != null && v >= 40 && v <= 99) {
                         // höchste gefundene Team-Rating-Anforderung gewinnt
                         if (out.target == null || v > out.target) out.target = v;
+                        matchedAs = 'TEAM_RATING';
                     }
                 }
                 // Spieler-Level-Vorgabe: "min. N Spieler mit Rating X+"
@@ -431,6 +433,7 @@
                     scope.indexOf('CHEM') === -1;
                 if (isPlayerLevel && v != null && v >= 40 && v <= 99) {
                     out.playerLevel.push({ label: scope, minRating: v, count: reqCount(o, par) });
+                    matchedAs = 'PLAYER_LEVEL';
                 }
                 // Qualitäts-Vorgabe (Tausch-/Upgrade-SBCs ohne Team-Rating):
                 // 1=Bronze, 2=Silber, 3=Gold.
@@ -445,6 +448,7 @@
                     (scope.indexOf('LEVEL') > -1 && scope.indexOf('CHEM') === -1);
                 if (isQualityScope && v != null && v >= 1 && v <= 3) {
                     out.quality.push({ label: scope, quality: Number(v), count: reqCount(o, par) });
+                    matchedAs = 'PLAYER_QUALITY';
                 }
                 // KEIN Substring-Match auf "RARE" hier! Das hat live
                 // SPIELERNAMEN getroffen ("Carrarese Calcio", "Brian Ferrares",
@@ -460,6 +464,16 @@
                         // Karten matchen über ihr "groups"-Feld.
                         groupId: (scope.indexOf('GROUP') > -1 && v != null) ? v : null
                     });
+                    matchedAs = 'RARITY';
+                }
+                // Roh-Dump für Transparenz/Diagnose (max 25 Einträge)
+                if (out.reqs.length < 25 &&
+                    (scope.indexOf('RATING') > -1 || scope.indexOf('RARITY') > -1 ||
+                     scope.indexOf('PLAYER') > -1 || scope.indexOf('OVR') > -1 ||
+                     scope.indexOf('LEVEL') > -1 || scope.indexOf('QUALITY') > -1 ||
+                     scope.indexOf('CLUB') > -1 || scope.indexOf('LEAGUE') > -1 ||
+                     scope.indexOf('NATION') > -1 || scope.indexOf('CHEM') > -1)) {
+                    out.reqs.push({ scope: scope, value: v, ids: reqIds(o), count: reqCount(o, par), matchedAs: matchedAs });
                 }
             }
             // Slot-Anzahl (manche SBCs haben < 11 Spieler)

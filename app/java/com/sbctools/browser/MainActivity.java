@@ -130,7 +130,10 @@ public class MainActivity extends Activity {
     String appVersion() {
         try {
             return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
-        } catch (Exception e) { return "?"; }
+        } catch (Exception e) {
+            reportNetError("appVersion", e.getClass().getSimpleName() + " " + e.getMessage());
+            return "?";
+        }
     }
 
     // ---- Zustands-Setter ------------------------------------------------
@@ -429,9 +432,16 @@ public class MainActivity extends Activity {
             c.setConnectTimeout(8000);
             c.setReadTimeout(8000);
             c.setInstanceFollowRedirects(true);
-            if (c.getResponseCode() != 200) return null;
+            int code = c.getResponseCode();
+            if (code != 200) {
+                reportNetError("fetchUrl " + u, "HTTP " + code);
+                return null;
+            }
             return readStream(c.getInputStream());
-        } catch (Exception e) { return null; }
+        } catch (Exception e) {
+            reportNetError("fetchUrl " + u, e.getClass().getSimpleName() + " " + e.getMessage());
+            return null;
+        }
     }
 
     /**
@@ -451,28 +461,46 @@ public class MainActivity extends Activity {
             if (etag != null) c.setRequestProperty("If-None-Match", etag);
             if (mod != null) c.setRequestProperty("If-Modified-Since", mod);
             int code = c.getResponseCode();
-            if (code == 304) return null;
-            if (code != 200) return null;
+            if (code == 304) {
+                reportNetError("fetchUrlIfChanged " + u, "304 (Cache aktuell)");
+                return null;
+            }
+            if (code != 200) {
+                reportNetError("fetchUrlIfChanged " + u, "HTTP " + code);
+                return null;
+            }
             String newEtag = c.getHeaderField("ETag");
             String newMod = c.getHeaderField("Last-Modified");
             String body = readStream(c.getInputStream());
-            if (body == null) return null;
+            if (body == null) {
+                reportNetError("fetchUrlIfChanged " + u, "leerer Body");
+                return null;
+            }
             SharedPreferences.Editor e = prefs.edit();
             if (newEtag != null) e.putString(etagKey, newEtag);
             if (newMod != null) e.putString(modKey, newMod);
             e.apply();
             return body;
-        } catch (Exception e) { return null; }
+        } catch (Exception e) {
+            reportNetError("fetchUrlIfChanged " + u, e.getClass().getSimpleName() + " " + e.getMessage());
+            return null;
+        }
     }
 
     String readAsset(String name) {
         try { return readStream(getAssets().open(name)); }
-        catch (Exception e) { return null; }
+        catch (Exception e) {
+            reportNetError("readAsset " + name, e.getClass().getSimpleName() + " " + e.getMessage());
+            return null;
+        }
     }
 
     String readCache(String name) {
         try { return readStream(new FileInputStream(new File(getFilesDir(), name))); }
-        catch (Exception e) { return null; }
+        catch (Exception e) {
+            reportNetError("readCache " + name, e.getClass().getSimpleName() + " " + e.getMessage());
+            return null;
+        }
     }
 
     void writeCache(String name, String content) {
@@ -480,7 +508,10 @@ public class MainActivity extends Activity {
         try {
             out = new FileOutputStream(new File(getFilesDir(), name));
             out.write(content.getBytes(StandardCharsets.UTF_8));
-        } catch (Exception e) { /* Cache ist optional */ }
+        } catch (Exception e) {
+            /* Cache ist optional */
+            reportNetError("writeCache " + name, e.getClass().getSimpleName() + " " + e.getMessage());
+        }
         finally { try { if (out != null) out.close(); } catch (Exception e) {} }
     }
 

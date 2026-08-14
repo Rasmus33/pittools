@@ -77,6 +77,16 @@ entries:
     kann nur Rasmus (Keystore).'
   reasoning: Groesste RA-Luecke (48/56) strukturell geschlossen; Wirkung misst das
     Audit. Build-Schritt als Handoff an Rasmus vermerkt.
+- at: '2026-08-14T23:24:36Z'
+  issue: 3
+  po_class: D
+  surprises:
+  - 'Validator PARTIAL bei #3: Akzeptanz voll erfuellt, Findings sind Folgearbeit
+    (Test-Garantie enger ziehen, lastEligible sichtbar machen) — als Discoveries geroutet
+    statt Re-Spawn, da kein aktueller Defekt und alles additiv.'
+  reasoning: 'PO-Entscheidung: Merge trotz PARTIAL — alle 190 Tests gruen, Report
+    nur additiv veraendert, Findings betreffen Zukunfts-Garantien, nicht Ist-Verhalten.
+    Version 4.38.0 geht live.'
 discoveries:
   pattern_candidates:
   - slug: symmetrie-test-lesen-schreiben-trennen

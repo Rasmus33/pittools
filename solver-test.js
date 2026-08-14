@@ -1421,6 +1421,17 @@ function mulberry32(a) {
         fn(93) === 12 && fn(97) === 12);
 }
 
+// ========== 16. reportError-Helfer: existiert und bedient beide Kanaele ==========
+{
+    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
+    const a = src.indexOf('function reportError');
+    check('reportError ist direkt neben diagError definiert', a > -1);
+    const b = src.indexOf('\n    }', a) + 6;
+    const body = a > -1 ? src.slice(a, b) : '';
+    check('reportError ruft warn( auf', /\bwarn\(/.test(body), body);
+    check('reportError ruft diagError( auf', /\bdiagError\(/.test(body), body);
+}
+
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt
 // process.exit() die Loader-Tests, bevor sie laufen - sie zählten dann nicht mit
 // und ein Fehler dort wäre unbemerkt geblieben.

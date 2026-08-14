@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.36.0
+// @version      4.37.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.36.0';
+    const VERSION = '4.37.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -119,6 +119,14 @@
             arr.push(String(msg).slice(0, 300));
             if (arr.length > 24) arr.shift();
         } catch (e) {}
+    }
+    // warn() + diagError() in einem Aufruf - fuer reportwuerdige eigene Fehler.
+    // NICHT fuer die bewusst stillen Catches an der EA-Grenze (Fremd-Objekte,
+    // deren Fehlschlag folgenlos bleibt - siehe
+    // patterns/good/stille-catches-nur-an-der-ea-grenze.md).
+    function reportError(label, e) {
+        warn(label + ':', e);
+        diagError(label + ': ' + ((e && e.message) || String(e)));
     }
     // ========================================================================
     //  1. FETCH / XHR INTERCEPTION  (ab document-start)

@@ -1,0 +1,18 @@
+[
+  {
+    "slug": "controller-chain-konsolidierung",
+    "consumers": ["team-eintragen", "ea-app-anbindung"],
+    "proposed_target_path": "ea-fc-sbc-optimizer.user.js (bestehender Helfer-Cluster: getControllerChain :2692-2716, findLiveChallenge :4986-4997, findSbcController :4999-5006 — keine neue Datei, nur formale Erfassung der Cross-Feature-Kopplung)",
+    "test_paths": ["solver-test.js"],
+    "bundle_hint": "controller-traversal-helfer",
+    "rationale": "getControllerChain() liegt laut vision/features/team-eintragen.md in dessen Code-Geographie, findLiveChallenge() laut vision/features/ea-app-anbindung.md in dessen Code-Geographie (:4982-5145). Der Lift-Plan von team-eintragen laesst syncSbcWithOpenChallenge() (team-eintragen) direkt in findLiveChallenge() (ea-app-anbindung) hineinrufen, statt die Key-Liste inline zu duplizieren (patterns/bad/helfer-existiert-wird-umgangen.md). Das ist der beabsichtigte SSOT-Gewinn (Q5), erzeugt aber eine Cross-Feature-Abhaengigkeit: ein kuenftiger Lift von ea-app-anbindung, der getControllerChain/findLiveChallenge aendert (z.B. eine neue chainFns-Variante fuer ein weiteres EA-Layout, analog LEARNINGS Paragraph 19), wirkt sich dann automatisch auf team-eintragen aus. gap_aggregator.py sollte diese Kopplung als Shared-Item fuehren, damit Main bei parallel geplanten Lift-Plaenen fuer beide Features den Konflikt-Resolution-Pfad aus dem Lift-Plan-Guide anwendet statt zwei Plaene unabhaengig gegen dieselben Zeilen laufen zu lassen."
+  },
+  {
+    "slug": "fehler-sichtbarkeit-diagerror",
+    "consumers": ["team-eintragen"],
+    "proposed_target_path": "ea-fc-sbc-optimizer.user.js (neuer Helfer neben diagError, ca. Z. 116-122)",
+    "test_paths": ["solver-test.js"],
+    "bundle_hint": "diagnose-helfer",
+    "rationale": "syncSbcWithOpenChallenge() (:762) faengt Fehler aktuell NUR mit warn() ab, ohne diagError() - ein Verstoss gegen das in patterns/good/diagnose-feld-statt-raten.md dokumentierte Zwei-Kanal-Muster (jeder reportwuerdige Fehler muss zusaetzlich in STATE.diag.lastErrors landen, weil am Handy keine DevTools-Konsole haengt). Dasselbe warn()+diagError()-Paar ist bereits an mindestens drei weiteren Stellen im selben File wortgleich dupliziert (submitToSbc :2606,2609,2615) - ein klassischer Q4-DRY-Fund. team-eintragen ist Konsument eines gebuendelten warnAndDiag(label, e)-Helfers, der dieses Paar an einer Stelle haelt: verhindert strukturell, dass ein kuenftiger neuer Catch (wie bisher bei syncSbcWithOpenChallenge :762) diagError() vergisst, statt sich auf Code-Review allein zu verlassen."
+  }
+]

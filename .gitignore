@@ -3,3 +3,9 @@ app/build/
 *.idsig
 debug.keystore
 node_modules/
+
+# OTTO roadmap-manager
+docs/roadmap/.state.yaml
+docs/roadmap/.cache/
+docs/roadmap/iteration-seeds.yaml
+credentials/

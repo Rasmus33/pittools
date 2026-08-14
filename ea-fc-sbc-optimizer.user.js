@@ -340,6 +340,7 @@
     //  gesamten Objektgraphen (begrenzt) nach requirement-artigen Objekten.
     //  Funktioniert für Netzwerk-JSON UND für App-interne Entities.
     // ========================================================================
+    // [SBCSCAN-BEGIN]
     function scopeString(o) {
         const cand = [o.scope, o.type, o.key, o.requirementKey, o.name];
         for (const c of cand) {
@@ -500,6 +501,7 @@
         out.reqs = dedupe(out.reqs, r => r.scope + '|' + r.value + '|' + r.count + '|' + r.ids.join(','));
         return out;
     }
+    // [SBCSCAN-END]
     // Wechsel der aktiven Challenge: alte Anforderungen zurücksetzen, damit
     // nichts von der vorherigen SBC hängen bleibt.
     function setCurrentChallenge(cid) {
@@ -599,7 +601,7 @@
         const setId = STATE.sbc.setId;
         const oldId = STATE.sbc.challengeId;
         const wantTarget = STATE.sbc.targetOVR;
-        const wantSlots = STATE.sbc.slots;
+        const wantSlots = STATE.sbc.formationSlots;
         if (setId == null) return null;
         let json = null;
         try { json = await apiGet('sbs/setId/' + setId + '/challenges'); }
@@ -4832,7 +4834,7 @@
     /** Passt die offene SBC zu dem, wofuer geplant wurde? (Vorgaben, nicht ID) */
     function matchesPlannedSbc(plan) {
         if (String(STATE.sbc.targetOVR || '') !== String(plan.targetOVR || '')) return false;
-        if (Number(STATE.sbc.slots || 0) !== Number(plan.slots || 0)) return false;
+        if (Number(STATE.sbc.formationSlots || 0) !== Number(plan.slots || 0)) return false;
         return true;
     }
     async function onBatchPlanClick() {
@@ -4853,7 +4855,7 @@
             // sich pro Wiederholung und taugt nicht als Vergleich.
             plan.setId = STATE.sbc.setId;
             plan.targetOVR = STATE.sbc.targetOVR;
-            plan.slots = STATE.sbc.slots;
+            plan.slots = STATE.sbc.formationSlots;
             plan.usedChallengeIds = [];
             // Set-NAME: damit die richtige Kachel im Hub wiedergefunden wird
             // (der Controller haelt das Set als UTSBCSetEntity).
@@ -4953,7 +4955,7 @@
                 }
                 if (!matchesPlannedSbc(plan)) {
                     throw new Error(tag + ': die offene SBC passt nicht zum Plan ' +
-                        '(Ziel ' + STATE.sbc.targetOVR + '/' + STATE.sbc.slots + ' statt ' +
+                        '(Ziel ' + STATE.sbc.targetOVR + '/' + STATE.sbc.formationSlots + ' statt ' +
                         plan.targetOVR + '/' + plan.slots + '). Nichts eingetragen.');
                 }
                 // Die JETZT offene Instanz merken - sie ist nach dem Abgeben

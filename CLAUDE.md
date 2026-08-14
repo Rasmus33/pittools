@@ -22,6 +22,18 @@ JS/Java-Engineering. Umgangssprache: Deutsch.
   der Code so ist, wie er ist.
 - `docs/ROADMAP.md` — offene Punkte und Ideen.
 
+## Oberste Regel: keine Regression (von Rasmus, gilt für ALLE Arbeiten)
+
+Alles muss nach jeder Änderung GENAUSO funktionieren wie vorher — nur besser.
+Konkret:
+- Live verifiziertes Verhalten (LEARNINGS, "Nicht anfassen ohne Grund") ist
+  Vertrag: Umbauten daran nur mit zwingendem Grund und eigenem Testfall.
+- Refactorings ändern nachweislich NICHTS am Verhalten (Tests vorher = nachher
+  grün); Verbesserungen kommen additiv (neuer Weg + alter Weg als Fallback)
+  statt als Ersatz, wo immer möglich.
+- Kleine Diffs. Push erst, wenn der komplette eiserne Arbeitsablauf grün ist —
+  Push auf main landet sofort auf beiden Handys.
+
 ## Eiserner Arbeitsablauf (nicht verhandelbar)
 
 1. Änderung implementieren.

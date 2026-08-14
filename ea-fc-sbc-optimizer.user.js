@@ -123,9 +123,11 @@
             refreshLog: null,        // Protokoll des View-Refresh nach dem Abgeben
             uiScan: null,            // Panel/FAB/inSbcView-Snapshot zum Diagnose-Klick
             batchSteps: null,        // letzte Batch-Runden: ok/steps beim Oeffnen der naechsten Instanz
+            batchStuckCount: 0,      // wie oft der stuck-Diagnosezweig in openNextInstance auslöste (v4.36.0-Vorfall über mehrere Läufe hinweg messbar statt anekdotisch)
             lastTeam: null,          // zuletzt vom Solver geliefertes Team (ok/reason/cards)
             submitCandidates: null,  // Controller.Methode-Kandidaten fuers Abgeben
             submitChallengeVia: null, // welcher Controller-/Service-Weg beim Abgeben gegriffen hat
+            submitWithoutResponseCount: 0, // wie oft submitChallengeToEa ohne auswertbare Response als Erfolg durchging (LEARNINGS §9, v4.36.0: offen, ob Abgabe wirklich bestätigt war)
             lastTap: null            // letzter simulierter Tap: Events/Position/Abdeckung/Popup
         }
     };
@@ -3804,6 +3806,10 @@
             // Instanz öffnen wollte? (Die Abbruchmeldung verweist darauf -
             // in v4.18.0 fehlte das Feld im Report, mein Fehler.)
             batchSteps: STATE.diag.batchSteps || null,
+            // Wie oft loeste der stuck-Zweig oben schon aus? Macht den
+            // v4.36.0-Live-Vorfall ueber mehrere Laeufe hinweg messbar statt
+            // nur aus einem einzelnen LEARNINGS-Eintrag ablesbar.
+            batchStuckCount: STATE.diag.batchStuckCount || 0,
             // Welches Team hat der Solver zuletzt geliefert (id/assetId/rating/
             // storage)? Bei HTTP 460 ist hier direkt zu sehen, ob eine Karte
             // oder ein Spieler doppelt drin war.
@@ -3816,6 +3822,10 @@
             // gegriffen? Am Handy heisst der Controller anders als am PC.
             submitCandidates: STATE.diag.submitCandidates || null,
             submitChallengeVia: STATE.diag.submitChallengeVia || null,
+            // Wie oft galt eine Abgabe ohne auswertbare Promise/Observable-Response
+            // trotzdem als Erfolg? (LEARNINGS §9, v4.36.0: offen gelassene Frage,
+            // ob EA die Abgabe wirklich bestaetigt hat.)
+            submitWithoutResponseCount: STATE.diag.submitWithoutResponseCount || 0,
             // Der letzte fehlende Schritt: nach dem Abgeben landet die App im
             // SBC-HUB (mehrfach belegt), und loadChallenge() bringt die Ansicht
             // nicht zurück. Um die SBC wie von Hand anzuklicken, brauche ich die
@@ -4442,6 +4452,9 @@
                 // Abgabe wirklich bestaetigt hatte, war nicht ablesbar.
                 STATE.diag.submitChallengeVia = cand.w + '.' + cand.m +
                     (resp ? '' : ' (ohne Response)');
+                if (!resp) {
+                    STATE.diag.submitWithoutResponseCount = (STATE.diag.submitWithoutResponseCount || 0) + 1;
+                }
                 return { via: 'controller' };
             } catch (e) {
                 problems.push(cand.w + '.' + cand.m + ': ' + (e && e.message || e));
@@ -4522,12 +4535,20 @@
             // navigieren - von dort kennt der Kachel-Klick den Weg, und die
             // Erschoepfungs-Erkennung kann den Kachel-Status ueberhaupt lesen.
             if (ctrl && (i === 2 || i === 20 || i === 45)) {
+                STATE.diag.batchStuckCount = (STATE.diag.batchStuckCount || 0) + 1;
                 steps.push({ ms: Date.now() - t0, stuck: {
                     top: (ctrl.constructor && ctrl.constructor.name) || null,
                     challengeId: STATE.sbc.challengeId,
                     usedInstance: (plan.usedChallengeIds || [])
                         .indexOf(String(STATE.sbc.challengeId)) > -1,
                     matches: matchesPlannedSbc(plan),
+                    // Verlauf des Namensdrift-Ankers: setCurrentChallenge() setzt
+                    // formationSlots bei jedem Challenge-Wechsel auf den Default 11
+                    // zurueck, bevor die Brick-Slot-Korrektur (parseSbcChallenge)
+                    // nachliefert - "matches: false" kann in diesem Fenster
+                    // transient sein statt eine echte Diskrepanz zu sein.
+                    formationSlots: STATE.sbc.formationSlots,
+                    planSlots: plan.slots,
                     empty: empty
                 } });
             }

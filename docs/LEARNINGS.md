@@ -856,3 +856,15 @@ jetzt auch ueber `fetchUrlIfChanged`.
 **Zur Log-Lesehilfe:** `Optimizer: 259968 Zeichen` sind **Java-Zeichen
 (UTF-16)**, nicht Bytes. Die Datei hat 260424 Bytes - die Differenz sind die
 Umlaute und Sonderzeichen. 259968 ist also genau v4.29.0, kein alter Stand.
+
+## 23. reportError() erzwingt den Doppelkanal strukturell
+
+Direkt neben `diagError()` steht `reportError(label, e)`: buendelt
+`warn(label + ':', e)` und `diagError(label + ': ' + e.message)` in einem
+Aufruf. Am Handy haengt keine DevTools-Konsole - was nur in `warn()` landet,
+sieht Rasmus nie; nur `STATE.diag.lastErrors` (ueber `diagError`) taucht im
+kopierbaren Report auf. Reportwuerdige eigene Fehler (Netzwerk-/Service-
+Aufrufe, Submit-Pfade, Pool-/Lock-Laden) rufen `reportError()`, damit keine
+Call-Site den zweiten Kanal vergisst. Bewusst stille Catches an der EA-Grenze
+(Fremd-Objekte, deren Fehlschlag folgenlos bleibt - Response-Traversierung,
+`localStorage`-Zugriffe) bleiben davon unberuehrt.

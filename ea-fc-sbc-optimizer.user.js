@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.37.0
+// @version      4.38.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.37.0';
+    const VERSION = '4.38.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -102,13 +102,31 @@
         cancelLoad: false,
         lastChallengeRaw: null,      // letzte SBC-Response (fürs Debugging)
         lastSetChallenges: null,     // gecachte Challenge-Liste des geöffneten Sets
+        // Offene Ablage fuer Laufzeitzustand, den buildDiagReport() kopiert -
+        // jedes tatsaechlich verwendete Feld MUSS hier deklariert sein
+        // (solver-test.js prueft das symmetrisch: gelesen <-> deklariert <->
+        // zugewiesen), sonst bleibt es im Report unbemerkt bei seinem
+        // Initialwert stehen (siehe uiScan-Vorfall).
         diag: {
             fetchSeen: 0,
             xhrSeen: 0,
             utasSeen: 0,
             lastUtasPaths: [],       // letzte utas-Pfade (IDs maskiert)
             lastErrors: [],          // letzte Fehlermeldungen (ohne Tokens)
-            evoExcluded: 0           // ausgeschlossene Evolution-Karten
+            evoExcluded: 0,          // ausgeschlossene Evolution-Karten
+            lastSquadPutBody: null,  // letzter PUT-Body an den Squad (fuers 460-Debugging)
+            staleRecover: null,      // Erholungsversuch bei veralteter challengeId
+            locks: null,             // PaleTools-Sperrliste: Anzahl + Beispiel-IDs
+            clubLoad: null,          // Club-Ladelauf: Seitengroesse/Takt/Seiten/Retries/Dauer
+            submitVia: null,         // welcher Submit-Weg zuletzt gegriffen hat (app/http/services)
+            lastEligible: null,      // isSBCSquadEligible()-Ergebnis bei 403
+            refreshLog: null,        // Protokoll des View-Refresh nach dem Abgeben
+            uiScan: null,            // Panel/FAB/inSbcView-Snapshot zum Diagnose-Klick
+            batchSteps: null,        // letzte Batch-Runden: ok/steps beim Oeffnen der naechsten Instanz
+            lastTeam: null,          // zuletzt vom Solver geliefertes Team (ok/reason/cards)
+            submitCandidates: null,  // Controller.Methode-Kandidaten fuers Abgeben
+            submitChallengeVia: null, // welcher Controller-/Service-Weg beim Abgeben gegriffen hat
+            lastTap: null            // letzter simulierter Tap: Events/Position/Abdeckung/Popup
         }
     };
     function log(...args) { try { console.log(LOG_PREFIX, ...args); } catch (e) {} }
@@ -3825,7 +3843,10 @@
             })(),
             // Einstiegspunkt-Diagnose: sitzt der Menüpunkt in der EA-Leiste
             // oder fällt die App auf den FAB zurück? tabBarCount zeigt, ob
-            // mehrere (auch unsichtbare) Leisten im DOM stehen.
+            // mehrere (auch unsichtbare) Leisten im DOM stehen. Ueberschneidet
+            // sich bewusst mit STATE.diag.uiScan (panelOpen/fabVisible) - dort
+            // stehen nur die billigsten Basiswerte OHNE den vollen DOM-Scan
+            // hier, siehe Kommentar an der uiScan-Zuweisung in onDiagClick().
             launcher: (function () {
                 function rect(el) {
                     try {
@@ -3932,7 +3953,6 @@
                 rarityConstraints: STATE.sbc.rarityConstraints,
                 playerLevelConstraints: STATE.sbc.playerLevelConstraints,
                 qualityConstraints: STATE.sbc.qualityConstraints || [],
-            rareConstraints: STATE.sbc.rareConstraints || [],
                 rareConstraints: STATE.sbc.rareConstraints || [],
                 usableSlots: STATE.sbc.usableSlots || null,
                 reqDump: STATE.sbc.reqDump,
@@ -3997,6 +4017,18 @@
         };
     }
     function onDiagClick() {
+        // uiScan: billige, EIGENSTAENDIGE Momentaufnahme in STATE.diag - anders
+        // als das launcher-Sub-Objekt (buildDiagReport() weiter unten, liest
+        // dieselben Basiswerte zusaetzlich zu einem vollen DOM-Scan aller
+        // Buttons/Controller) ist sie ohne den teuren Report-Aufbau lesbar und
+        // bleibt erhalten, selbst wenn ein spaeteres Feld in buildDiagReport()
+        // einmal einen Fehler wirft.
+        STATE.diag.uiScan = {
+            panelOpen: !!(ui.panel && ui.panel.classList.contains('open')),
+            fabVisible: !!(ui.fab && !ui.fab.classList.contains('sbc-opt-hidden')),
+            inSbcView: inSbcView(),
+            btnAttached: !!document.getElementById(BTN_ID)
+        };
         const report = buildDiagReport();
         console.log(LOG_PREFIX + ' ===== DIAGNOSE-REPORT (bitte komplett kopieren) =====');
         console.log(JSON.stringify(report, null, 2));

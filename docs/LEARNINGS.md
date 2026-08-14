@@ -888,3 +888,35 @@ die aufrufende Klasse (`ScriptLoader`, `PalePoll`, `SbcWebViewClient`,
 `SettingsSave`) selbst daran denken muss. Neue Schreibstellen fuer diese drei
 Felder gehoeren ausschliesslich ueber die Setter, direkte Feldmutation
 (`a.scriptsReady = ...` o.ae.) unterlaeuft den Choke-Point.
+
+## 25. STATE.diag ist vollstaendig deklariert, uiScan lebt neben launcher
+
+Die `STATE.diag`-Deklaration (nahe Kopf des Userscripts) listet ALLE
+tatsaechlich verwendeten Felder mit Kurzzweck-Kommentar (`fetchSeen`,
+`xhrSeen`, `utasSeen`, `lastUtasPaths`, `lastErrors`, `evoExcluded`,
+`lastSquadPutBody`, `staleRecover`, `locks`, `clubLoad`, `submitVia`,
+`lastEligible`, `refreshLog`, `uiScan`, `batchSteps`, `lastTeam`,
+`submitCandidates`, `submitChallengeVia`, `lastTap`) - jedes neue Feld gehoert
+zuerst hierher, danach erst an seine Zuweisungsstelle. `solver-test.js` prueft
+das symmetrisch: jedes in `buildDiagReport()` gelesene `STATE.diag.*`-Feld
+muss deklariert sein, und jedes deklarierte Feld muss irgendwo im File auch
+tatsaechlich befuellt werden (direkte Zuweisung, `++`, oder wie bei
+`lastErrors`/`lastUtasPaths` per Referenz eingesammelt und mit `push()`/
+`shift()` mutiert). Ein weiterer Test prueft, dass das `sbc`-Objekt-Literal in
+`buildDiagReport()` keinen Property-Namen doppelt deklariert.
+
+`STATE.diag.uiScan` wird direkt beim Diagnose-Klick (`onDiagClick()`) gesetzt
+(Panel-/FAB-Sichtbarkeit + `inSbcView()`), bevor `buildDiagReport()`
+aufgerufen wird - unabhaengig vom `launcher`-Sub-Objekt, das dieselben
+Basiswerte zusaetzlich zu einem vollen DOM-Scan (Controller-Kette,
+Button-Dump, Rects) liefert. `uiScan` bleibt dadurch auch dann verfuegbar,
+wenn ein spaeteres Feld in `buildDiagReport()` einmal einen Fehler wirft.
+
+`app/log-test.js` prueft den App-seitigen Log-Ringpuffer (`addLog`/
+`buildLogReport`) unabhaengig vom Gradle-Build: `LOG_MAX`/`LOG_LINE_MAX`
+sowie der Kuerzungs-Suffix werden per Regex aus `MainActivity.java`
+extrahiert, die Ringpuffer-Logik selbst laeuft als reine JS-Portierung gegen
+Fixtures (FIFO-Eviction bei > 400 Zeilen, Kuerzung + Suffix bei > 600
+Zeichen), zusaetzliche statische Checks sichern die Kopf-Label des
+Log-Reports (App-Version, Android, Optimizer, PaleTools, PaleTools-Status)
+sowie die Grundform von `addLog()` ab.

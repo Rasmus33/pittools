@@ -1432,6 +1432,97 @@ function mulberry32(a) {
     check('reportError ruft diagError( auf', /\bdiagError\(/.test(body), body);
 }
 
+// ========== 17. STATE.diag-Schema: gelesen <-> deklariert <-> zugewiesen ==========
+{
+    // Verhindert die Fehlerklasse aus dem uiScan-Vorfall: ein Feld, das
+    // buildDiagReport() liest, aber das nirgends deklariert ist, liefert
+    // dauerhaft null, ohne dass ein Fehler auffaellt - und umgekehrt ein
+    // deklariertes Feld, das nirgends befuellt wird, ist tote Deklaration.
+    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
+    function matchingBrace(openIdx) {
+        let depth = 0;
+        for (let i = openIdx; i < src.length; i++) {
+            if (src[i] === '{') depth++;
+            else if (src[i] === '}') { depth--; if (depth === 0) return i; }
+        }
+        return -1;
+    }
+    const diagDeclKey = src.indexOf('diag: {');
+    check('STATE.diag-Deklaration gefunden', diagDeclKey > -1);
+    const diagOpen = src.indexOf('{', diagDeclKey);
+    const diagClose = matchingBrace(diagOpen);
+    const diagDeclSrc = src.slice(diagOpen + 1, diagClose);
+    const declared = new Set();
+    {
+        const re = /^\s*([A-Za-z_$][\w$]*)\s*:/gm;
+        let mm;
+        while ((mm = re.exec(diagDeclSrc))) declared.add(mm[1]);
+    }
+    check('STATE.diag deklariert mindestens 18 Felder (voller Schema-Umfang statt 6)',
+        declared.size >= 18, Array.from(declared).join(','));
+
+    const fnKey = src.indexOf('function buildDiagReport');
+    check('buildDiagReport() gefunden', fnKey > -1);
+    const fnOpen = src.indexOf('{', fnKey);
+    const fnClose = matchingBrace(fnOpen);
+    const fnBody = src.slice(fnOpen, fnClose + 1);
+    const readNames = new Set();
+    {
+        const re = /STATE\.diag\.([A-Za-z_$][\w$]*)/g;
+        let mm;
+        while ((mm = re.exec(fnBody))) readNames.add(mm[1]);
+    }
+    const undeclaredReads = Array.from(readNames).filter(n => !declared.has(n));
+    check('Jedes in buildDiagReport() gelesene STATE.diag-Feld ist deklariert',
+        undeclaredReads.length === 0, undeclaredReads.join(','));
+
+    // Symmetrisch: jedes deklarierte Feld wird auch AUSSERHALB von
+    // buildDiagReport() referenziert - dort wird es befuellt (direkte
+    // Zuweisung, ++, oder wie bei lastErrors/lastUtasPaths per Referenz
+    // eingesammelt und via push()/shift() mutiert; eine reine "= "-Regex
+    // wuerde genau diese beiden bestehenden, echten Felder faelschlich als
+    // "nie zugewiesen" melden). Ein Feld OHNE jede Stelle ausserhalb des
+    // Reports ist exakt der uiScan-Fall vor diesem Fix.
+    const unassigned = [];
+    for (const name of declared) {
+        const re = new RegExp('STATE\\.diag\\.' + name + '\\b', 'g');
+        let mm, foundOutside = false;
+        while ((mm = re.exec(src))) {
+            if (mm.index < fnOpen || mm.index >= fnClose) { foundOutside = true; break; }
+        }
+        if (!foundOutside) unassigned.push(name);
+    }
+    check('Jedes deklarierte STATE.diag-Feld wird auch ausserhalb des Reports befuellt',
+        unassigned.length === 0, unassigned.join(','));
+}
+
+// ========== 18. buildDiagReport(): keine doppelten Property-Namen im sbc-Objekt ==========
+{
+    // Regressionstest zum entfernten rareConstraints-Duplikat (Copy-Paste-Rest,
+    // v4.37.0): zur Laufzeit harmlos (letzter Wert gewinnt), verschluckt aber
+    // bei zwei tatsaechlich verschieden gemeinten Feldern eines davon lautlos.
+    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
+    const fnKey = src.indexOf('function buildDiagReport');
+    const sbcKey = src.indexOf('sbc: {', fnKey);
+    check('sbc-Objekt-Literal in buildDiagReport() gefunden', sbcKey > -1);
+    let depth = 0, sbcClose = -1;
+    const sbcOpen = src.indexOf('{', sbcKey);
+    for (let i = sbcOpen; i < src.length; i++) {
+        if (src[i] === '{') depth++;
+        else if (src[i] === '}') { depth--; if (depth === 0) { sbcClose = i; break; } }
+    }
+    const sbcSrc = src.slice(sbcOpen + 1, sbcClose);
+    const keys = [];
+    {
+        const re = /^\s*([A-Za-z_$][\w$]*)\s*:/gm;
+        let mm;
+        while ((mm = re.exec(sbcSrc))) keys.push(mm[1]);
+    }
+    const dupes = Array.from(new Set(keys.filter((k, i) => keys.indexOf(k) !== i)));
+    check('Keine doppelten Property-Namen im sbc-Objekt-Literal', dupes.length === 0,
+        dupes.join(','));
+}
+
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt
 // process.exit() die Loader-Tests, bevor sie laufen - sie zählten dann nicht mit
 // und ein Fehler dort wäre unbemerkt geblieben.

@@ -66,6 +66,17 @@ entries:
   reasoning: Shared-Item zuerst gemergt, damit die 4 Konsumenten-Features den Helfer
     nutzen koennen. Version 4.37.0 geht mit dem Merge live auf beide Handys — rein
     additive Aenderung, kein Verhaltensrisiko.
+- at: '2026-08-14T23:03:58Z'
+  issue: 2
+  po_class: null
+  surprises:
+  - 'Feature-Lift #2: alle 6 stillen Netz-/Cache-Pfade der App loggen jetzt via reportNetError
+    in den Ringpuffer; Zustands-Setter statt Direktmutation; 2 neue statische guard-test-Checks.
+    Java ohne Compiler — Validator hat den Diff zeilenweise auf Syntax geprueft.'
+  - 'APK-Build steht aus: versionCode 11 / versionName 1.7.0 gemergt, aber Installation
+    kann nur Rasmus (Keystore).'
+  reasoning: Groesste RA-Luecke (48/56) strukturell geschlossen; Wirkung misst das
+    Audit. Build-Schritt als Handoff an Rasmus vermerkt.
 discoveries:
   pattern_candidates: []
   antipattern_candidates: []

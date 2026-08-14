@@ -75,6 +75,28 @@ function unescapeJava(s) {
     return out;
 }
 
+// ---- Statische Source-Checks: Fallback-Reihenfolge + Pflicht-Logging ----
+// HttpURLConnection/Dateizugriffe lassen sich nicht sinnvoll in vm simulieren
+// (Technik 3 aus docs/roadmap/patterns/good/eingebetteten-code-exakt-testen.md)
+// - deshalb wird hier der rohe Java-Quelltext per Klammer-Balance ab der
+// Methoden-/Klassensignatur extrahiert und als Text geprüft, kein vm-Play.
+function extractBraceBlock(src, signature) {
+    const sigIdx = src.indexOf(signature);
+    if (sigIdx < 0) {
+        throw new Error('Signatur nicht gefunden: ' + signature);
+    }
+    const braceStart = src.indexOf('{', sigIdx);
+    let depth = 0;
+    for (let i = braceStart; i < src.length; i++) {
+        if (src[i] === '{') depth++;
+        else if (src[i] === '}') {
+            depth--;
+            if (depth === 0) return src.slice(braceStart, i + 1);
+        }
+    }
+    throw new Error('Keine schließende Klammer gefunden für: ' + signature);
+}
+
 // ---- Fake-Browser --------------------------------------------------------
 // appendChild führt textContent aus, wie ein echtes inline-<script>.
 // BEWUSST kein Function aus diesem Scope in die Sandbox geben: der vm-Kontext
@@ -236,6 +258,45 @@ function ok(name, cond, detail) {
     ok('Nachkontrolle zählt localStorage-Keys', /LS-Keys:2\b/.test(st), st);
     ok('Nachkontrolle zählt DOM + Sichtbarkeit', /DOM:5 sichtbar:2/.test(st), st);
     ok('Nachkontrolle meldet Ausrichtung', /orient:hoch/.test(st), st);
+
+    // 8. ScriptLoader-Fallback-Reihenfolge (siehe
+    //    docs/roadmap/patterns/good/ea-grenz-fallback-ketten.md): Optimizer
+    //    Download -> Cache -> gebündeltes Asset, PaleTools Cache -> Download.
+    const javaSrc = fs.readFileSync(JAVA, 'utf8');
+    const loaderBody = extractBraceBlock(javaSrc, 'class ScriptLoader');
+    const idxFetch = loaderBody.indexOf('a.fetchUrl(sbcUrl)');
+    const idxReadCacheSbc = loaderBody.indexOf('a.readCache("sbc.js")');
+    const idxReadAsset = loaderBody.indexOf('a.readAsset("sbc-optimizer.user.js")');
+    ok('ScriptLoader Optimizer-Reihenfolge: fetchUrl vor readCache vor readAsset',
+        idxFetch >= 0 && idxReadCacheSbc >= 0 && idxReadAsset >= 0
+            && idxFetch < idxReadCacheSbc && idxReadCacheSbc < idxReadAsset,
+        'fetch=' + idxFetch + ' readCache=' + idxReadCacheSbc + ' readAsset=' + idxReadAsset);
+
+    const idxReadCachePale = loaderBody.indexOf('a.readCache("pale.js")');
+    const idxFetchIfChanged = loaderBody.indexOf('a.fetchUrlIfChanged(paleUrl,');
+    ok('ScriptLoader PaleTools-Reihenfolge: readCache vor fetchUrlIfChanged',
+        idxReadCachePale >= 0 && idxFetchIfChanged >= 0 && idxReadCachePale < idxFetchIfChanged,
+        'readCache=' + idxReadCachePale + ' fetchUrlIfChanged=' + idxFetchIfChanged);
+
+    // 9. Pflicht-Logging: jede Netz-/Cache-Methode ruft addLog oder
+    //    reportNetError auf (siehe
+    //    docs/roadmap/patterns/bad/fehler-unsichtbar-verschluckt.md) - ein
+    //    stiller Catch/Early-Return ohne Log-Aufruf lässt den Grund eines
+    //    Download-/Cache-Fehlschlags im einzigen Diagnosekanal verschwinden.
+    const loggedMethods = [
+        ['fetchUrl', 'String fetchUrl(String u) {'],
+        ['fetchUrlIfChanged', 'String fetchUrlIfChanged(String u, String etagKey, String modKey) {'],
+        ['readAsset', 'String readAsset(String name) {'],
+        ['readCache', 'String readCache(String name) {'],
+        ['writeCache', 'void writeCache(String name, String content) {'],
+        ['appVersion', 'String appVersion() {']
+    ];
+    for (const [name, signature] of loggedMethods) {
+        const body = extractBraceBlock(javaSrc, signature);
+        ok('Pflicht-Logging in ' + name,
+            /addLog\(|reportNetError\(/.test(body),
+            name + ' ruft weder addLog noch reportNetError auf');
+    }
 
     console.log(failed
         ? '\n' + failed + ' Test(s) fehlgeschlagen.'

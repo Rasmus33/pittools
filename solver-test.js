@@ -1170,12 +1170,49 @@ function mulberry32(a) {
 
     check("403 wird nicht als 'veraltet' verkauft",
         /EA hat das Eintragen abgelehnt \(403\)/.test(src));
-    check("Nicht abgedeckte Vorgaben werden erkannt",
-        /unsupportedScopes/.test(src) && /CLUB MEMBER/.test(src));
-    check("Bekannte Vorgaben-Typen gelten NICHT als unbekannt",
-        /TEAM_RATING., .PLAYER_RARITY/.test(src.replace(/['"]/g, ".")));
-    check("Warnung kommt VOR dem Optimieren, nicht erst als Statuscode",
-        /PitTools nicht abdeckt/.test(src));
+
+    // v4.34.0 hatte hier eine WARNUNG gebaut: Scopes ohne Wert galten als
+    // "Vorgabe, die PitTools nicht abdeckt". Das war falsch - "PLAYER" und
+    // "CLUB MEMBER" stehen bei JEDER SBC drin (Eligibility: "Spieler-Items aus
+    // deinem Verein"). Live bewiesen an einer SBC, die tadellos durchlief
+    // (lastErrors leer, lastTeam ok, submitVia app) und trotzdem gewarnt wurde.
+    // Diese Tests halten die Fehlannahme jetzt DRAUSSEN.
+    check("Keine Warnung mehr aus den reqDump-Scopes",
+        src.indexOf("PitTools nicht abdeckt") === -1 &&
+        src.indexOf("unsupportedScopes") === -1);
+    check("PLAYER und CLUB MEMBER gelten als Boilerplate",
+        /BOILERPLATE = \['PLAYER', 'CLUB MEMBER'/.test(src));
+    check("Die Scope-Liste ist nur noch informativ", /otherScopes/.test(src));
+    check("403 fragt EA selbst (isSBCSquadEligible) statt zu raten",
+        /lastEligible/.test(src) && /isSBCSquadEligible/.test(src));
+    check("Der Denkfehler ist im Code dokumentiert",
+        /Eligibility-Scopes, die JEDE SBC hat/.test(src));
+}
+
+// ========== 8b-2k. Aufgerufene Helfer muessen es auch geben ==========
+{
+    // In v4.35.0 stand kurz ein Aufruf von findLiveSquad() im Code - eine
+    // Funktion, die es nie gab. `node --check` sieht das nicht (die Syntax ist
+    // gueltig), es haette erst am Handy geknallt. Dieselbe Fehlerklasse wie der
+    // log2()-Tippfehler von damals.
+    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
+    const defined = new Set();
+    let m;
+    const defRe = /function\s+([A-Za-z_$][\w$]*)\s*\(/g;
+    while ((m = defRe.exec(src))) defined.add(m[1]);
+    const constRe = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:function|\()/g;
+    while ((m = constRe.exec(src))) defined.add(m[1]);
+    // Unsere eigenen Helfer folgen erkennbaren Namensschemata - Browser- und
+    // EA-Funktionen bleiben damit aussen vor.
+    const callRe = /\b((?:find|click|dismiss|resolve|collect|normalize|merge|extract|nudge|popup|batch)[A-Z][\w$]*)\s*\(/g;
+    const missing = new Set();
+    while ((m = callRe.exec(src))) {
+        const before = src.charAt(m.index - 1);
+        if (before === '.' || before === '_') continue;
+        if (!defined.has(m[1])) missing.add(m[1]);
+    }
+    check('Kein Aufruf einer Funktion, die es nicht gibt',
+        missing.size === 0, Array.from(missing).join(', '));
 }
 
 // ========== 8b-3. Der Rare-Parser darf keine Spielernamen matchen ==========

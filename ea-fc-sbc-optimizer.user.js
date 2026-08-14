@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.34.0
+// @version      4.35.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.34.0';
+    const VERSION = '4.35.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -486,7 +486,7 @@
         STATE.sbc.rarityConstraints = [];
         STATE.sbc.playerLevelConstraints = [];
         STATE.sbc.qualityConstraints = [];
-        STATE.sbc.unsupportedScopes = [];
+        STATE.sbc.otherScopes = [];
         STATE.sbc.rareConstraints = [];
         STATE.sbc.reqDump = [];
         STATE.sbc.formationSlots = 11;
@@ -695,22 +695,26 @@
         if (scan.rare && scan.rare.length) { STATE.sbc.rareConstraints = scan.rare; changed = true; }
         if (scan.reqs.length) {
             STATE.sbc.reqDump = scan.reqs;
-            // Vorgaben, die der Solver bewusst NICHT abdeckt (Rasmus: Chemie,
-            // Positionen, Vereins-/Liga-/Spieler-Bindungen). Live fuehrte genau
-            // das zu einem 403 beim Eintragen, und im Panel stand nur ein
-            // Statuscode. Jetzt wird es VORHER benannt.
-            const KNOWN = ['TEAM_RATING', 'PLAYER_RARITY', 'PLAYER_QUALITY', 'PLAYER_LEVEL',
-                           'PLAYER_COUNT', 'PLAYER_OVERALL_RATING', 'CHEMISTRY'];
-            const un = [];
+            // NUR INFORMATIV, KEINE Warnung mehr. In v4.34.0 habe ich Scopes
+            // ohne Wert als "Vorgabe, die wir nicht abdecken" gedeutet und
+            // gewarnt. Das war falsch: "PLAYER" und "CLUB MEMBER" sind die
+            // Eligibility-Scopes, die JEDE SBC hat ("Spieler-Items aus deinem
+            // Verein"). Live bewiesen an einer SBC, die einwandfrei durchlief
+            // (lastErrors leer, lastTeam ok, submitVia app) und trotzdem die
+            // Warnung bekam. Ausserdem enthaelt reqDump je nach gescanntem
+            // Knoten gar nicht die echten Vorgaben - TEAM_RATING fehlte dort,
+            // obwohl das Ziel-OVR erkannt war. Aus dieser Liste laesst sich
+            // "unerfuellbar" also nicht ableiten. Wer das wirklich wissen will,
+            // fragt EA selbst: _squad.isSBCSquadEligible().
+            const BOILERPLATE = ['PLAYER', 'CLUB MEMBER', 'CLUBMEMBER', 'ITEM'];
+            const other = [];
             for (const r of scan.reqs) {
                 const sc = String(r.scope || '').toUpperCase();
-                if (!sc) continue;
-                if (KNOWN.some(k => sc.indexOf(k) > -1)) continue;
-                // Reine Namens-Scopes (Spieler, Verein, Set-Name) haben keinen
-                // Wert - genau die sind das Problem.
-                if (r.value == null && un.indexOf(sc) < 0) un.push(sc.slice(0, 40));
+                if (!sc || r.value != null) continue;
+                if (BOILERPLATE.indexOf(sc) > -1) continue;
+                if (other.indexOf(sc) < 0) other.push(sc.slice(0, 40));
             }
-            STATE.sbc.unsupportedScopes = un;
+            STATE.sbc.otherScopes = other;
             changed = true;
         }
         if (changed) {
@@ -2642,12 +2646,24 @@
         // meist eine Vorgabe, die der Solver nicht abdeckt (live: reqDump mit
         // scope PLAYER und CLUB MEMBER, also "dieser Spieler"/"Vereinsmitglied").
         if (/\b403\b/.test(msg)) {
-            const un = (STATE.sbc.unsupportedScopes || []);
+            // Kein Rateschluss auf die reqDump-Scopes mehr (v4.34.0, war
+            // falsch). Stattdessen EA selbst fragen: haelt die App den Squad
+            // fuer abgabefaehig? Das ist dieselbe Pruefung, die der Batch vor
+            // dem Abgeben benutzt.
+            let eligible = null;
+            try {
+                const c = findSbcController();
+                const sq = c && (c._squad || (c.getSquad && c.getSquad()));
+                if (sq && typeof sq.isSBCSquadEligible === 'function') eligible = sq.isSBCSquadEligible();
+            } catch (e) {}
+            STATE.diag.lastEligible = eligible;
             throw new Error('EA hat das Eintragen abgelehnt (403).' +
-                (un.length ? ' Diese SBC hat Vorgaben, die PitTools nicht abdeckt: ' +
-                    un.join(', ') + '. Solche SBCs muss man von Hand bauen.'
-                           : ' Wahrscheinlich ist eine Vorgabe offen, die wir nicht ' +
-                             'abdecken (z.B. ein bestimmter Spieler oder Verein).'));
+                (eligible === false
+                    ? ' Die App haelt den Squad nicht fuer abgabefaehig - im Spiel steht ' +
+                      'noch eine Vorgabe rot, die der Solver nicht abdeckt (nur Rating und ' +
+                      'Rarity werden erfuellt).'
+                    : ' Meist ist die geoeffnete Instanz nicht mehr aktuell - SBC im Spiel ' +
+                      'einmal schliessen und neu oeffnen, dann erneut optimieren.'));
         }
         throw lastErr || new Error('Eintragen fehlgeschlagen (Server bestätigt ' + Math.max(0, confirmed) + '/' + need + ').');
     }
@@ -3912,7 +3928,9 @@
                 rareConstraints: STATE.sbc.rareConstraints || [],
                 usableSlots: STATE.sbc.usableSlots || null,
                 reqDump: STATE.sbc.reqDump,
-                unsupportedScopes: STATE.sbc.unsupportedScopes || [],
+                // Scopes ohne Wert, die NICHT zur Standard-Boilerplate gehoeren -
+                // rein informativ (siehe applyScan: daraus folgt NICHTS).
+                otherScopes: STATE.sbc.otherScopes || [],
                 staleRecover: STATE.diag.staleRecover || null,
                 entityCaptured: !!STATE.sbc.entity,
                 setChallengesCached: !!STATE.lastSetChallenges
@@ -4121,15 +4139,11 @@
             toast('Pool leer. Bitte zuerst "Spieler laden".', 'error');
             return;
         }
-        // Vorgaben, die wir nicht abdecken, VORHER benennen. Live endete so ein
-        // Lauf mit einem nackten "403" - Rasmus konnte daraus nicht sehen, dass
-        // die SBC einen bestimmten Spieler bzw. ein Vereinsmitglied verlangt.
-        const unsup = STATE.sbc.unsupportedScopes || [];
-        if (unsup.length) {
-            toast('Achtung: Diese SBC hat Vorgaben, die PitTools nicht abdeckt (' +
-                unsup.join(', ') + '). Das Team erfüllt nur Rating und Rarity - ' +
-                'EA lehnt das Eintragen dann evtl. ab.', 'warn');
-        }
+        // KEINE Vorab-Warnung aus reqDump-Scopes (war v4.34.0 und ist wieder
+        // raus): "PLAYER"/"CLUB MEMBER" stehen bei JEDER SBC drin, die Warnung
+        // kam also auch bei SBCs, die tadellos liefen. Ob EA das Team annimmt,
+        // sagt nach dem Eintragen isSBCSquadEligible() - das ist die einzige
+        // verlaessliche Quelle.
         if (STATE.loadIncomplete) {
             toast('ACHTUNG: Der Pool ist unvollständig geladen (' + STATE.pool.length +
                 ' Karten) - das Ergebnis kann schlechter oder unlösbar sein. Am besten erst "Spieler laden" erneut ausführen.', 'warn');

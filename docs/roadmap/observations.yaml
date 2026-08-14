@@ -1,0 +1,69 @@
+# Worker-Knowledge — committetes Wissens-Substrat (ADR #78, erweitert ADR #77).
+#
+# EINE committete Datei (NICHT gitignored) für alles, was OTTO während einer
+# Iteration an Wissen erzeugt. Überlebt Worktree-/Klon-Wechsel + Multi-User;
+# Git-Log ist die Per-Iteration-History (ADR #15) — kein Archiv-Ordner.
+#
+# Drei Bereiche mit GETRENNTER Reset-Semantik (ADR #78):
+#
+#   entries       Mid-Loop-Beobachtungen der LAUFENDEN Iteration (`observation
+#                 add`): surprises[] + PO-Reasoning. Wird bei `iteration-done`
+#                 geleert (vorher vom Audit nach learnings.md destilliert).
+#                 Schema je Eintrag:
+#                   - at: <ISO-8601-UTC>      # Zeitstempel
+#                     issue: <nr|null>        # auslösendes Ticket (optional)
+#                     po_class: <A..H|Q|null> # PO-Klasse falls zuordenbar
+#                     surprises: [<str>, ...]  # Beobachtungen ohne Action-Bedarf
+#                     reasoning: <str>         # Klartext / Wurzelursachen-Hunch
+#
+#   discoveries   Mid-Loop-Kandidaten der LAUFENDEN Iteration (`observation
+#                 discovery-add`): Pattern-/Antipattern-/Shared-Item-Kandidaten
+#                 + Cross-Feature-Smells. Vorher in gitignored .state.yaml →
+#                 jetzt committet (ADR #78). Reife (≥3 Evidenz ∧ ≥2 Tickets)
+#                 wird hieraus rekonstruiert. Wird bei `iteration-done` geleert.
+#                 Schema je Kandidat: {slug, evidence: [<file:line>], issues:
+#                 [<nr>], class?, note?}.
+#
+#   seeds_next    VORWÄRTS-Seeds für die NÄCHSTE Iteration (`observation seed`,
+#                 vom Audit am Iter-Ende geschrieben). Wird beim Start der
+#                 Folge-Iteration von Vision/Gap konsumiert (`observation
+#                 consume-seeds`) — NICHT bei iteration-done geleert. Ersetzt
+#                 das deprecatete gitignored `iteration-seeds.yaml` (ADR #78).
+schema_version: 1.4.0
+iteration: 0
+entries:
+- at: '2026-08-14T22:32:20Z'
+  issue: 1
+  po_class: B
+  surprises:
+  - 'guard-test.js ist zeilenenden-empfindlich: LF-Checkout gruen, CRLF-Worktree (autocrlf=true)
+    rot — Java-Kommentarzeilen mit Anfuehrungszeichen rutschen in die Literal-Extraktion.
+    Betrifft JEDES Worktree-Final-Gate auf Windows.'
+  - 'Implementer #1 hat den Fund korrekt als out-of-scope behandelt und per Baseline-Verifikation
+    (git archive) belegt statt zu raten.'
+  reasoning: 'Wurzelursache ist die Extraktion (nicht die Java-Kommentare) — Fix als
+    P0-Task #12 eingeschoben (Variant b), da alle Final-Gates in frischen Worktrees
+    betroffen sind. #1 wartet mit Review bis der Fix gemergt und der Branch nachgezogen
+    ist.'
+- at: '2026-08-14T22:41:49Z'
+  issue: 12
+  po_class: null
+  surprises:
+  - "Wurzelursache des guard-test-CRLF-Bruchs: JS-Regex $ matcht nicht vor \r und\
+    \ . matcht \r nicht — der Kommentar-Strip war auf CRLF-Zeilen ein stilles No-op.\
+    \ Fix: CRLF-Normalisierung in literalsFromJavaBlock() + synthetischer Regressionstest,\
+    \ checkout-unabhaengig."
+  reasoning: 'Task #12 sauber durch: nur app/guard-test.js, Validator PASS, alle Gates
+    gruen im CRLF-Worktree. Damit sind die Final-Gates fuer alle folgenden Tickets
+    wieder verlaesslich.'
+discoveries:
+  pattern_candidates: []
+  antipattern_candidates: []
+  shared_item_candidates: []
+  cross_feature_smells: []
+seeds_next:
+  seeded_at: null
+  patterns: []
+  shared_items: []
+  features: []
+  discoveries: []

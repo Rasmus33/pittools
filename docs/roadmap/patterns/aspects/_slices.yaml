@@ -1,0 +1,90 @@
+# Aspect-Slices für pittools (ADR #42) — Querschnitts-Themen des Userscripts + der App.
+# Fast alles lebt in EINER Datei; die Slices trennen per grep_patterns, nicht per Pfad.
+
+slices:
+  - name: netz-api
+    grep_patterns:
+      - "apiGet\\(|apiPut\\(|apiHeaders|absorbSessionHeaders|detectApiBase|classifyUrl"
+      - "fetch\\(|XMLHttpRequest|utasSeen|xhrSeen"
+      - "X-UT-SID|phishing|sessionReady|httpErrText"
+    file_globs:
+      - "ea-fc-sbc-optimizer.user.js"
+    ignore: []
+
+  - name: ea-services
+    grep_patterns:
+      - "window\\.services|services\\.SBC|services\\.Club|services\\.Item|servicesAvailable"
+      - "getControllerChain|ViewController|obsPromise|responseOk"
+      - "UTItemEntityFactory|saveChallenge|requestChallengesForSet|_challenge|_squad"
+    file_globs:
+      - "ea-fc-sbc-optimizer.user.js"
+    ignore: []
+
+  - name: dom-interaktion
+    grep_patterns:
+      - "clickLike|visibleAll|dispatchEvent|TouchEvent|scrollIntoView|elementFromPoint"
+      - "querySelector|getBoundingClientRect|offsetParent"
+      - "ut-sbc-|ut-click-shield|sbc-button-container|ea-filter-bar"
+    file_globs:
+      - "ea-fc-sbc-optimizer.user.js"
+    ignore: []
+
+  - name: fehler-abbruch
+    grep_patterns:
+      - "throw new Error|catch \\(e"
+      - "diagError|lastErrors|stopped"
+      - "toast\\(|warn\\("
+    file_globs:
+      - "ea-fc-sbc-optimizer.user.js"
+    ignore: []
+
+  - name: diagnose
+    grep_patterns:
+      - "STATE\\.diag|buildDiagReport|onDiagClick|batchSteps|refreshLog"
+      - "addLog|buildLogReport|onConsoleMessage|paleStatus"
+      - "console\\.log|log\\(|JSON\\.stringify"
+    file_globs:
+      - "ea-fc-sbc-optimizer.user.js"
+      - "app/java/**/*.java"
+    ignore: []
+
+  - name: zustand-config
+    grep_patterns:
+      - "localStorage"
+      - "readConfig|defaultBands|saveBands|DEFAULT|Defaults"
+      - "STATE\\.pool|STATE\\.sbc|STATE\\.batch|VERSION"
+    file_globs:
+      - "ea-fc-sbc-optimizer.user.js"
+    ignore: []
+
+  - name: solver
+    grep_patterns:
+      - "SOLVER-BEGIN|SOLVER-END"
+      - "squadRating|squadV|buildDp|solveCore|finishTeam|planBatch"
+      - "costOf|priorityOf|parseRatingCosts|matchesRarity|isTotw"
+    file_globs:
+      - "ea-fc-sbc-optimizer.user.js"
+      - "solver-test.js"
+    ignore: []
+
+  - name: tests
+    grep_patterns:
+      - "function ok|ok\\(|assert|expect"
+      - "brute|Brute|extract|MARKER|SOLVER"
+      - "test"
+    file_globs:
+      - "solver-test.js"
+      - "app/guard-test.js"
+    ignore: []
+
+  - name: android-app
+    grep_patterns:
+      - "evaluateJavascript|WebView|addJavascriptInterface|onConsoleMessage"
+      - "inject|chunk|guard|paleStatus|cache"
+      - "keystore|apksigner|versionCode|versionName"
+    file_globs:
+      - "app/java/**/*.java"
+      - "app/*.sh"
+      - "app/AndroidManifest.xml"
+      - "app/guard-test.js"
+    ignore: []

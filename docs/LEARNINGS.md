@@ -912,6 +912,33 @@ Basiswerte zusaetzlich zu einem vollen DOM-Scan (Controller-Kette,
 Button-Dump, Rects) liefert. `uiScan` bleibt dadurch auch dann verfuegbar,
 wenn ein spaeteres Feld in `buildDiagReport()` einmal einen Fehler wirft.
 
+## 26. Slots-Vergleich im Batch-Anker ist scharf, deepScanChallenge per Marker testbar
+
+`STATE.sbc.formationSlots` ist die einzige Quelle fuer die Anzahl nutzbarer
+SBC-Slots (geschrieben beim Scan der `playerRequirements`/`getSBCSlots()`,
+Default 11 bei jedem Challenge-Wechsel). `resolveFreshChallengeId()`
+(Kandidaten-Filter `okTarget && okSlots`), `matchesPlannedSbc()` (Batch-Anker-
+Abgleich) und der Nutzertext bei Batch-Abbruch-Diskrepanz lesen ausschliesslich
+dieses Feld. Ein Batch-Plan mit `plan.slots: 11` gegen eine offene SBC mit
+`STATE.sbc.formationSlots: 4` liefert dadurch tatsaechlich `false` - vorher
+verglichen beide Stellen ein nie geschriebenes `STATE.sbc.slots` und damit
+immer `undefined === undefined`.
+
+Der Deep-Scan-Parser-Cluster (`scopeString`, `reqValue`, `reqIds`, `reqCount`,
+`isDomOrWindow`, `deepScanChallenge`) steht zwischen den Kommentar-Markern
+`// [SBCSCAN-BEGIN]` und `// [SBCSCAN-END]` - `solver-test.js` extrahiert ihn
+darueber (analog `// [SOLVER-BEGIN]`/`// [SOLVER-END]` fuer den Solver) und
+ruft ihn mit konstruierten EA-Objekten auf, statt nur den Rohquelltext auf
+bestimmte Strings zu pruefen. Jeder `reqDump`-Eintrag traegt zusaetzlich
+`matchedAs` (`'TEAM_RATING'`/`'PLAYER_LEVEL'`/`'PLAYER_QUALITY'`/`'RARITY'`/
+`'unclassified'`): macht sichtbar, welcher der sich gegenseitig ausschliessenden
+Klassifizierungs-Zweige tatsaechlich griff. Ein `PLAYER_LEVEL`-Wert zwischen 4
+und 39 faellt durch beide realen Zweige (`isPlayerLevel` verlangt `v >= 40`,
+`isQualityScope` verlangt `v` in 1..3) und zeigt `'unclassified'` statt
+lautlos zu verschwinden - genau die Information, die beim
+`PLAYER_LEVEL`-Dual-Use-Bug (§6/§11) zuerst haendisch rekonstruiert werden
+musste.
+
 `app/log-test.js` prueft den App-seitigen Log-Ringpuffer (`addLog`/
 `buildLogReport`) unabhaengig vom Gradle-Build: `LOG_MAX`/`LOG_LINE_MAX`
 sowie der Kuerzungs-Suffix werden per Regex aus `MainActivity.java`

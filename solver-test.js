@@ -1523,6 +1523,133 @@ function mulberry32(a) {
         dupes.join(','));
 }
 
+// ========== 19. Namensdrift-Fix: Slot-Disambiguierung jetzt scharf ==========
+// STATE.sbc.slots wurde nie geschrieben (immer undefined) - resolveFreshChallengeId()
+// und matchesPlannedSbc() verglichen dadurch bislang undefined===undefined (immer
+// wahr). Seit dem Umstieg auf STATE.sbc.formationSlots vergleichen beide Stellen
+// tatsaechliche Zahlen. Extrahiert und ruft den ECHTEN, ausgelieferten Code auf
+// (kein Nachbau) - collectChallengeNodes/resolveFreshChallengeId per Funktionsname
+// + Klammerzaehlung (wie looksLikeItemId oben), deepScanChallenge ueber den
+// [SBCSCAN-BEGIN]/[SBCSCAN-END]-Marker.
+{
+    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
+    function extractFn(name) {
+        let key = src.indexOf('function ' + name);
+        check('Funktion ' + name + ' gefunden', key > -1);
+        if (src.slice(Math.max(0, key - 6), key) === 'async ') key -= 6;
+        const openBrace = src.indexOf('{', src.indexOf('(', key));
+        let depth = 0, close = -1;
+        for (let i = openBrace; i < src.length; i++) {
+            if (src[i] === '{') depth++;
+            else if (src[i] === '}') { depth--; if (depth === 0) { close = i; break; } }
+        }
+        return src.slice(key, close + 1);
+    }
+    const scanM = src.match(/\/\/ \[SBCSCAN-BEGIN\]([\s\S]*?)\/\/ \[SBCSCAN-END\]/);
+    check('SBCSCAN-Marker-Block gefunden', !!scanM);
+    const scanExports = new Function(scanM[1] + '\nreturn { deepScanChallenge: deepScanChallenge, isDomOrWindow: isDomOrWindow };')();
+    const collectSrc = extractFn('collectChallengeNodes');
+    const resolveSrc = extractFn('resolveFreshChallengeId');
+
+    function buildResolver(jsonPayload, STATE) {
+        return new Function('STATE', 'warn', 'apiGet', 'deepScanChallenge', 'isDomOrWindow',
+            collectSrc + '\n' + resolveSrc + '\nreturn resolveFreshChallengeId;'
+        )(STATE, function () {}, async function () { return jsonPayload; },
+          scanExports.deepScanChallenge, scanExports.isDomOrWindow);
+    }
+    function node(cid, slots) {
+        return { challengeId: cid, name: 'Node ' + cid,
+                 requirements: [{ scope: 'TEAM_RATING', minimum: 84 }], slots: slots };
+    }
+
+    const results = [];
+    // Zwei simulierte Set-Challenge-Knoten mit gleichem Ziel-OVR, aber
+    // unterschiedlichem formationSlots - der Plan will 11.
+    const stA = { sbc: { setId: 1, challengeId: 'OLD', targetOVR: 84, formationSlots: 11 }, diag: {} };
+    results.push(buildResolver([node('A', 11), node('B', 4)], stA)().then(id => {
+        check('resolveFreshChallengeId: waehlt den Knoten mit passenden Slots',
+            id === 'A', 'ergebnis=' + id);
+        check('resolveFreshChallengeId: lehnt den Knoten mit falschen Slots ab',
+            stA.diag.staleRecover.candidates.indexOf('B') === -1,
+            JSON.stringify(stA.diag.staleRecover));
+    }));
+    // Beide Knoten passen (Slots gleich) -> mehrdeutig, sauber null statt Raten.
+    const stB = { sbc: { setId: 1, challengeId: 'OLD', targetOVR: 84, formationSlots: 11 }, diag: {} };
+    results.push(buildResolver([node('A', 11), node('B', 11)], stB)().then(id => {
+        check('resolveFreshChallengeId: mehrdeutig -> null statt raten', id === null, 'ergebnis=' + id);
+    }));
+    pending.push(Promise.all(results));
+
+    // matchesPlannedSbc: derselbe Namensdrift-Fix, synchron testbar.
+    const matchesSrc = extractFn('matchesPlannedSbc');
+    function buildMatcher(STATE) {
+        return new Function('STATE', matchesSrc + '\nreturn matchesPlannedSbc;')(STATE);
+    }
+    const matches = buildMatcher({ sbc: { targetOVR: 84, formationSlots: 4 } });
+    check('matchesPlannedSbc: Plan mit slots 11 gegen offene SBC mit formationSlots 4 -> false',
+        matches({ targetOVR: 84, slots: 11 }) === false);
+    const matchesOk = buildMatcher({ sbc: { targetOVR: 84, formationSlots: 11 } });
+    check('matchesPlannedSbc: gleiche Slots + gleiches Ziel-OVR -> true',
+        matchesOk({ targetOVR: 84, slots: 11 }) === true);
+}
+
+// ========== 20. SBCSCAN-Marker: deepScanChallenge real mit EA-Objekten getestet ==========
+// Bislang nur String-Praesenz-Checks auf den Rohquelltext (siehe Abschnitt 8b-3).
+// Hier laeuft der ECHTE, ausgelieferte Parser gegen konstruierte EA-Response-
+// Objekte, die die Live-Bugs aus LEARNINGS 6/11 nachstellen.
+{
+    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
+    const scanM = src.match(/\/\/ \[SBCSCAN-BEGIN\]([\s\S]*?)\/\/ \[SBCSCAN-END\]/);
+    check('SBCSCAN-Marker-Block gefunden (20)', !!scanM);
+    const deepScanChallenge = new Function(scanM[1] + '\nreturn deepScanChallenge;')();
+
+    // (a) PLAYER_RARITY_GROUP=4 (echte Rare-Vorgabe) neben einem Namens-Scope
+    // mit RARE-Substring ("Carrarese Calcio", LEARNINGS 11) - der Namens-Scope
+    // darf NICHT als Rarity-Vorgabe landen.
+    {
+        const out = deepScanChallenge([
+            { scope: 'PLAYER_RARITY_GROUP', value: 4 },
+            { name: 'Carrarese Calcio' }
+        ]);
+        check('deepScanChallenge: PLAYER_RARITY_GROUP=4 erkannt (Gruppe 4 = Rare)',
+            out.rarity.length === 1 && out.rarity[0].groupId === 4, JSON.stringify(out.rarity));
+        check('deepScanChallenge: Namens-Scope mit RARE-Substring erzeugt KEINE Rarity-Vorgabe',
+            !out.rarity.some(r => r.label.indexOf('CARRARESE') > -1), JSON.stringify(out.rarity));
+        check('deepScanChallenge: matchedAs der echten Vorgabe ist RARITY',
+            out.reqs.length === 1 && out.reqs[0].matchedAs === 'RARITY', JSON.stringify(out.reqs));
+    }
+    // (b) PLAYER_LEVEL value 1 = Qualitaetsstufe (Bronze), nicht Rating.
+    {
+        const out = deepScanChallenge([{ scope: 'PLAYER_LEVEL', value: 1 }]);
+        check('deepScanChallenge: PLAYER_LEVEL value 1 landet in out.quality',
+            out.quality.length === 1 && out.quality[0].quality === 1, JSON.stringify(out.quality));
+        check('deepScanChallenge: PLAYER_LEVEL value 1 landet NICHT in out.playerLevel',
+            out.playerLevel.length === 0, JSON.stringify(out.playerLevel));
+        check('deepScanChallenge: matchedAs fuer PLAYER_LEVEL value 1 ist PLAYER_QUALITY',
+            out.reqs[0].matchedAs === 'PLAYER_QUALITY', JSON.stringify(out.reqs));
+    }
+    // (c) PLAYER_LEVEL value 87 = Mindest-Rating, nicht Qualitaetsstufe.
+    {
+        const out = deepScanChallenge([{ scope: 'PLAYER_LEVEL', value: 87 }]);
+        check('deepScanChallenge: PLAYER_LEVEL value 87 landet in out.playerLevel',
+            out.playerLevel.length === 1 && out.playerLevel[0].minRating === 87, JSON.stringify(out.playerLevel));
+        check('deepScanChallenge: PLAYER_LEVEL value 87 landet NICHT in out.quality',
+            out.quality.length === 0, JSON.stringify(out.quality));
+        check('deepScanChallenge: matchedAs fuer PLAYER_LEVEL value 87 ist PLAYER_LEVEL',
+            out.reqs[0].matchedAs === 'PLAYER_LEVEL', JSON.stringify(out.reqs));
+    }
+    // Edge-Case: ein Wert zwischen 4 und 39 faellt durch BEIDE Zweige
+    // (isPlayerLevel verlangt >=40, isQualityScope verlangt 1..3) - die Vorgabe
+    // bleibt im reqDump sichtbar, aber unclassified statt lautlos zu verschwinden.
+    {
+        const out = deepScanChallenge([{ scope: 'PLAYER_LEVEL', value: 15 }]);
+        check('deepScanChallenge: Wert 15 (4-39) faellt durch beide Zweige',
+            out.playerLevel.length === 0 && out.quality.length === 0);
+        check('deepScanChallenge: matchedAs fuer Wert 15 ist unclassified',
+            out.reqs.length === 1 && out.reqs[0].matchedAs === 'unclassified', JSON.stringify(out.reqs));
+    }
+}
+
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt
 // process.exit() die Loader-Tests, bevor sie laufen - sie zählten dann nicht mit
 // und ein Fehler dort wäre unbemerkt geblieben.

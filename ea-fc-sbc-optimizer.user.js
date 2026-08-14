@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.38.0
+// @version      4.39.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.38.0';
+    const VERSION = '4.39.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -340,6 +340,7 @@
     //  gesamten Objektgraphen (begrenzt) nach requirement-artigen Objekten.
     //  Funktioniert für Netzwerk-JSON UND für App-interne Entities.
     // ========================================================================
+    // [SBCSCAN-BEGIN]
     function scopeString(o) {
         const cand = [o.scope, o.type, o.key, o.requirementKey, o.name];
         for (const c of cand) {
@@ -404,15 +405,16 @@
             const scope = scopeString(o);
             if (scope) {
                 const v = reqValue(o);
-                // Roh-Dump für Transparenz/Diagnose (max 25 Einträge)
-                if (out.reqs.length < 25 &&
-                    (scope.indexOf('RATING') > -1 || scope.indexOf('RARITY') > -1 ||
-                     scope.indexOf('PLAYER') > -1 || scope.indexOf('OVR') > -1 ||
-                     scope.indexOf('LEVEL') > -1 || scope.indexOf('QUALITY') > -1 ||
-                     scope.indexOf('CLUB') > -1 || scope.indexOf('LEAGUE') > -1 ||
-                     scope.indexOf('NATION') > -1 || scope.indexOf('CHEM') > -1)) {
-                    out.reqs.push({ scope: scope, value: v, ids: reqIds(o), count: reqCount(o, par) });
-                }
+                // matchedAs zeigt, welcher der unten folgenden, sich
+                // gegenseitig ausschliessenden Zweige tatsaechlich griff -
+                // 'unclassified' deckt exakt die Luecke aus dem
+                // PLAYER_LEVEL-Dual-Use-Bug ab (LEARNINGS 6/11): ein Scope wie
+                // PLAYER_LEVEL erfuellt sowohl isPlayerLevel als auch
+                // isQualityScope strukturell, aber nur EIN Wertebereich
+                // (40-99 bzw. 1-3) loest den jeweiligen Zweig unten aus; ein
+                // Wert dazwischen (4-39) faellt durch beide und bleibt sichtbar
+                // 'unclassified' statt lautlos zu verschwinden.
+                let matchedAs = 'unclassified';
                 const isTeamRating =
                     scope.indexOf('TEAM_RATING') > -1 || scope.indexOf('SQUAD_RATING') > -1 ||
                     ((scope.indexOf('RATING') > -1 || scope.indexOf('OVR') > -1) &&
@@ -421,6 +423,7 @@
                     if (v != null && v >= 40 && v <= 99) {
                         // höchste gefundene Team-Rating-Anforderung gewinnt
                         if (out.target == null || v > out.target) out.target = v;
+                        matchedAs = 'TEAM_RATING';
                     }
                 }
                 // Spieler-Level-Vorgabe: "min. N Spieler mit Rating X+"
@@ -430,6 +433,7 @@
                     scope.indexOf('CHEM') === -1;
                 if (isPlayerLevel && v != null && v >= 40 && v <= 99) {
                     out.playerLevel.push({ label: scope, minRating: v, count: reqCount(o, par) });
+                    matchedAs = 'PLAYER_LEVEL';
                 }
                 // Qualitäts-Vorgabe (Tausch-/Upgrade-SBCs ohne Team-Rating):
                 // 1=Bronze, 2=Silber, 3=Gold.
@@ -444,6 +448,7 @@
                     (scope.indexOf('LEVEL') > -1 && scope.indexOf('CHEM') === -1);
                 if (isQualityScope && v != null && v >= 1 && v <= 3) {
                     out.quality.push({ label: scope, quality: Number(v), count: reqCount(o, par) });
+                    matchedAs = 'PLAYER_QUALITY';
                 }
                 // KEIN Substring-Match auf "RARE" hier! Das hat live
                 // SPIELERNAMEN getroffen ("Carrarese Calcio", "Brian Ferrares",
@@ -459,6 +464,16 @@
                         // Karten matchen über ihr "groups"-Feld.
                         groupId: (scope.indexOf('GROUP') > -1 && v != null) ? v : null
                     });
+                    matchedAs = 'RARITY';
+                }
+                // Roh-Dump für Transparenz/Diagnose (max 25 Einträge)
+                if (out.reqs.length < 25 &&
+                    (scope.indexOf('RATING') > -1 || scope.indexOf('RARITY') > -1 ||
+                     scope.indexOf('PLAYER') > -1 || scope.indexOf('OVR') > -1 ||
+                     scope.indexOf('LEVEL') > -1 || scope.indexOf('QUALITY') > -1 ||
+                     scope.indexOf('CLUB') > -1 || scope.indexOf('LEAGUE') > -1 ||
+                     scope.indexOf('NATION') > -1 || scope.indexOf('CHEM') > -1)) {
+                    out.reqs.push({ scope: scope, value: v, ids: reqIds(o), count: reqCount(o, par), matchedAs: matchedAs });
                 }
             }
             // Slot-Anzahl (manche SBCs haben < 11 Spieler)
@@ -500,6 +515,7 @@
         out.reqs = dedupe(out.reqs, r => r.scope + '|' + r.value + '|' + r.count + '|' + r.ids.join(','));
         return out;
     }
+    // [SBCSCAN-END]
     // Wechsel der aktiven Challenge: alte Anforderungen zurücksetzen, damit
     // nichts von der vorherigen SBC hängen bleibt.
     function setCurrentChallenge(cid) {
@@ -599,7 +615,7 @@
         const setId = STATE.sbc.setId;
         const oldId = STATE.sbc.challengeId;
         const wantTarget = STATE.sbc.targetOVR;
-        const wantSlots = STATE.sbc.slots;
+        const wantSlots = STATE.sbc.formationSlots;
         if (setId == null) return null;
         let json = null;
         try { json = await apiGet('sbs/setId/' + setId + '/challenges'); }
@@ -4832,7 +4848,7 @@
     /** Passt die offene SBC zu dem, wofuer geplant wurde? (Vorgaben, nicht ID) */
     function matchesPlannedSbc(plan) {
         if (String(STATE.sbc.targetOVR || '') !== String(plan.targetOVR || '')) return false;
-        if (Number(STATE.sbc.slots || 0) !== Number(plan.slots || 0)) return false;
+        if (Number(STATE.sbc.formationSlots || 0) !== Number(plan.slots || 0)) return false;
         return true;
     }
     async function onBatchPlanClick() {
@@ -4853,7 +4869,7 @@
             // sich pro Wiederholung und taugt nicht als Vergleich.
             plan.setId = STATE.sbc.setId;
             plan.targetOVR = STATE.sbc.targetOVR;
-            plan.slots = STATE.sbc.slots;
+            plan.slots = STATE.sbc.formationSlots;
             plan.usedChallengeIds = [];
             // Set-NAME: damit die richtige Kachel im Hub wiedergefunden wird
             // (der Controller haelt das Set als UTSBCSetEntity).
@@ -4953,7 +4969,7 @@
                 }
                 if (!matchesPlannedSbc(plan)) {
                     throw new Error(tag + ': die offene SBC passt nicht zum Plan ' +
-                        '(Ziel ' + STATE.sbc.targetOVR + '/' + STATE.sbc.slots + ' statt ' +
+                        '(Ziel ' + STATE.sbc.targetOVR + '/' + STATE.sbc.formationSlots + ' statt ' +
                         plan.targetOVR + '/' + plan.slots + '). Nichts eingetragen.');
                 }
                 // Die JETZT offene Instanz merken - sie ist nach dem Abgeben

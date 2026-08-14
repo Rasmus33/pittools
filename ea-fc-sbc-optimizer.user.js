@@ -120,6 +120,14 @@
             if (arr.length > 24) arr.shift();
         } catch (e) {}
     }
+    // warn() + diagError() in einem Aufruf - fuer reportwuerdige eigene Fehler.
+    // NICHT fuer die bewusst stillen Catches an der EA-Grenze (Fremd-Objekte,
+    // deren Fehlschlag folgenlos bleibt - siehe
+    // patterns/good/stille-catches-nur-an-der-ea-grenze.md).
+    function reportError(label, e) {
+        warn(label + ':', e);
+        diagError(label + ': ' + ((e && e.message) || String(e)));
+    }
     // ========================================================================
     //  1. FETCH / XHR INTERCEPTION  (ab document-start)
     // ========================================================================

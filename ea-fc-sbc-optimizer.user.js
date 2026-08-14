@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.35.0
+// @version      4.36.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.35.0';
+    const VERSION = '4.36.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -4379,7 +4379,13 @@
                     problems.push(cand.w + '.' + cand.m + ': Status ' + resp.status);
                     continue;
                 }
-                STATE.diag.submitChallengeVia = cand.w + '.' + cand.m;
+                // Kam gar keine auswertbare Response (r weder Promise noch
+                // Observable), gilt der Aufruf trotzdem als Erfolg - aber der
+                // Report soll das unterscheiden koennen: beim 4/5-Abbruch
+                // blieb die App danach im Squad-View haengen, und ob EA die
+                // Abgabe wirklich bestaetigt hatte, war nicht ablesbar.
+                STATE.diag.submitChallengeVia = cand.w + '.' + cand.m +
+                    (resp ? '' : ' (ohne Response)');
                 return { via: 'controller' };
             } catch (e) {
                 problems.push(cand.w + '.' + cand.m + ': ' + (e && e.message || e));
@@ -4439,6 +4445,7 @@
         // offen (seen.detailsView war 1, rowView 0).
         // requestChallengesForSet ist raus: es lieferte freshId null und wird
         // nicht gebraucht, weil der Klick-Weg die frische Instanz mitbringt.
+        let wentBack = false;
         for (let i = 0; i < 60; i++) {          // 60 x 300ms = max ~18s
             dismissRewardPopup();
             syncSbcWithOpenChallenge();
@@ -4450,6 +4457,28 @@
             if (ctrl && sq && matchesPlannedSbc(plan) && empty !== false) {
                 steps.push({ ms: Date.now() - t0, done: true, clicked: clicked });
                 return { ok: true, steps: steps };
+            }
+            // Die App blieb nach dem Abgeben im SQUAD-VIEW haengen (live,
+            // 4/5-Abbruch): der Controller war die ganzen 18s da, der Squad
+            // noch voll - und weil ALLE Zweige unten nur im Hub (!ctrl)
+            // arbeiten, wurde weder etwas geloggt noch etwas unternommen.
+            // Deshalb: den Zustand protokollieren und zurueck zum Hub
+            // navigieren - von dort kennt der Kachel-Klick den Weg, und die
+            // Erschoepfungs-Erkennung kann den Kachel-Status ueberhaupt lesen.
+            if (ctrl && (i === 2 || i === 20 || i === 45)) {
+                steps.push({ ms: Date.now() - t0, stuck: {
+                    top: (ctrl.constructor && ctrl.constructor.name) || null,
+                    challengeId: STATE.sbc.challengeId,
+                    usedInstance: (plan.usedChallengeIds || [])
+                        .indexOf(String(STATE.sbc.challengeId)) > -1,
+                    matches: matchesPlannedSbc(plan),
+                    empty: empty
+                } });
+            }
+            if (ctrl && (i === 5 || i === 25)) {
+                const b = clickBackButton();
+                steps.push({ ms: Date.now() - t0, back: b });
+                if (b.ok) { wentBack = true; await batchWait(900); continue; }
             }
             // Im Hub: Set-Kachel anklicken. Erster Versuch sofort, danach
             // gelegentlich nachfassen (die Kachelliste braucht manchmal einen
@@ -4494,8 +4523,9 @@
                 if (i === 3 || i === 20) steps.push({ ms: Date.now() - t0, setTile: s1 });
             }
             // Nur falls das Set MEHRERE Challenges hat, steht eine Zeilenliste
-            // offen - dann die erste anklicken.
-            if (!ctrl && clicked && (i === 10 || i === 25)) {
+            // offen - dann die erste anklicken. Auch nach einem Zurueck-Klick:
+            // der landet u.U. in der Challenge-Liste des Sets statt im Hub.
+            if (!ctrl && (clicked || wentBack) && (i === 10 || i === 25)) {
                 const s2 = clickChallengeRow();
                 if (s2.ok) { steps.push({ ms: Date.now() - t0, chRow: s2 }); await batchWait(500); }
                 else if (i === 10) steps.push({ ms: Date.now() - t0, chRow: s2 });
@@ -4700,6 +4730,28 @@
         }
         // Die erste Zeile ist die noch offene Wiederholung.
         return { ok: clickLike(rows[0]), why: rows.length + ' Zeile(n), erste geklickt' };
+    }
+    /**
+     * Den Zurueck-Pfeil der App-Kopfleiste klicken. Gebraucht, wenn die App
+     * nach dem Abgeben im Squad-View haengen bleibt (live beim 4/5-Abbruch):
+     * es gibt keinen gefundenen Weg, eine Challenge programmatisch zu OEFFNEN
+     * (LEARNINGS 9), aber ZURUECK geht per DOM - .ut-navigation-button-control
+     * ist der Pfeil oben links (dieselbe EA-Klasse, die auch Community-Scripte
+     * fuer "Back" nutzen). Harmlos: das Team ist zu diesem Zeitpunkt bereits
+     * abgegeben, der Klick verlaesst nur die Ansicht. Geklickt wird NUR, wenn
+     * kein Overlay offen ist - nie blind in einen Dialog.
+     */
+    function clickBackButton() {
+        const pop = popupState();
+        if (pop.overlays || (pop.shield && pop.shield.up)) {
+            return { ok: false, why: 'Overlay offen - kein Zurueck-Klick', popup: pop };
+        }
+        const cands = visibleAll('.ut-navigation-button-control')
+            .concat(visibleAll('.ut-navigation-bar-view .btn-navigation'));
+        if (!cands.length) return { ok: false, why: 'kein Zurueck-Button gefunden' };
+        const el = cands[0];
+        return { ok: clickLike(el), why: 'Zurueck geklickt',
+                 cls: String(el.className || el.tagName || '').slice(0, 60) };
     }
     /**
      * Laesst sich das Set ueberhaupt noch wiederholen? Gelesen wird der

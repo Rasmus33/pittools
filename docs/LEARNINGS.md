@@ -377,6 +377,29 @@ Ein Klick auf eine Kachel ist harmlos - sie oeffnet nur eine Ansicht. Das ist
 der Unterschied zu einem geratenen Klick in einem Belohnungs-Dialog, wo
 "Quick Sell" danebenliegt; solche Klicks bleiben tabu.
 
+**Die App kann nach dem Abgeben auch im SQUAD-VIEW haengen bleiben (v4.36.0,
+live: TOTW-Batch nach 4/5 gestoppt).** Bisher galt: nach dem Abgeben steht die
+App im Hub. Beim 4. von 5 TOTW-Upgrades blieb sie stattdessen 18s im
+`UTSBCSquadSplitViewController` mit dem VOLLEN (gerade abgegebenen) Squad -
+erkennbar daran, dass der fehlgeschlagene `batchSteps`-Eintrag NUR den
+Endzustand enthielt: alle Klick- UND Log-Zweige von `openNextInstance` liefen
+nur unter `!ctrl` (= "wir sind im Hub"). Drei Folgen und ihre Fixes:
+- Nichts geloggt, nichts unternommen -> neuer `stuck`-Step (Controller,
+  challengeId, ob die Instanz schon in `usedChallengeIds` steht, `matches`,
+  `empty`) bei i=2/20/45.
+- Kein Weg zurueck -> `clickBackButton()`: der Zurueck-Pfeil der Kopfleiste
+  (`.ut-navigation-button-control`) wird bei i=5/25 geklickt, danach greift
+  der bekannte Kachel-Weg. Harmlos, weil das Team bereits abgegeben ist;
+  geklickt wird nie, solange ein Overlay offen ist. Landet der Klick in der
+  Challenge-Liste statt im Hub, darf `clickChallengeRow` jetzt auch ohne
+  vorherigen Kachel-Klick ran (`wentBack`).
+- `setLooksRepeatable` liest Kachel-Status - aus dem Squad-View gibt es keine
+  Kacheln, also kam `{repeatable: null, status: ""}` statt einer moeglichen
+  Erschoepfungs-Meldung. Nach dem Back-Klick ist der Status wieder lesbar.
+Offen blieb, ob Abgabe 4 von EA wirklich bestaetigt wurde:
+`ctrl.submitChallenge()` ohne auswertbare Response galt still als Erfolg.
+Der Report unterscheidet das jetzt (`submitChallengeVia: "... (ohne Response)"`).
+
 Noch ungeklaert, waere die naechste Option: der Button `#repeat-sbc`
 ("Repeat Search") in `.sbc-button-container` - PaleTools' repeatSbc oder EAs
 Suche-wiederholen? Bewusst nicht geraten.

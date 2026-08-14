@@ -78,7 +78,16 @@ entries:
   reasoning: Groesste RA-Luecke (48/56) strukturell geschlossen; Wirkung misst das
     Audit. Build-Schritt als Handoff an Rasmus vermerkt.
 discoveries:
-  pattern_candidates: []
+  pattern_candidates:
+  - slug: symmetrie-test-lesen-schreiben-trennen
+    evidence:
+    - solver-test.js:1465-1480
+    issues:
+    - 3
+    class: good
+    note: Der STATE.diag-Symmetrie-Test sollte Schreiben (=, .push(, .shift(, ++)
+      von Lesen unterscheiden statt nur Referenz-ausserhalb zu pruefen — sonst besteht
+      ein nur-gelesenes Feld (uiScan-Klasse). 1 Beleg, noch unreif.
   antipattern_candidates: []
   shared_item_candidates: []
   cross_feature_smells:

@@ -87,6 +87,21 @@ entries:
   reasoning: 'PO-Entscheidung: Merge trotz PARTIAL — alle 190 Tests gruen, Report
     nur additiv veraendert, Findings betreffen Zukunfts-Garantien, nicht Ist-Verhalten.
     Version 4.38.0 geht live.'
+- at: '2026-08-14T23:44:27Z'
+  issue: 4
+  po_class: D
+  surprises:
+  - 'Slots-Fix #4 macht das Batch-Sicherheitsnetz erstmals scharf — dabei neu entstandene
+    Verhaltensflaeche: formationSlots wird bei jedem Challenge-Wechsel auf Default
+    11 zurueckgesetzt, Brick-Slot-SBCs koennten im Retry-Fenster transient mismatchen.
+    Fail-safe (Abbruch statt Falscheintrag), Korrektur idR synchron.'
+  - matchedAs musste an die wert-gegateten Bedingungen gekoppelt werden statt an die
+    Scope-Flags (PLAYER_LEVEL-Dual-Use) — exakt der Bug, den das Feld sichtbar machen
+    soll.
+  reasoning: 'PARTIAL akzeptiert und gemergt: alle Akzeptanzkriterien erfuellt, Finding
+    ist eine ungetestete (nicht falsche) Timing-Flaeche mit sauberem Fail-Verhalten.
+    Diagnose-Protokollierung des formationSlots-Verlaufs wird in Ticket #5 (batch-modus)
+    mit umgesetzt — dort gehoert sie hin.'
 discoveries:
   pattern_candidates:
   - slug: symmetrie-test-lesen-schreiben-trennen

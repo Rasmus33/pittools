@@ -3843,7 +3843,10 @@
             })(),
             // Einstiegspunkt-Diagnose: sitzt der Menüpunkt in der EA-Leiste
             // oder fällt die App auf den FAB zurück? tabBarCount zeigt, ob
-            // mehrere (auch unsichtbare) Leisten im DOM stehen.
+            // mehrere (auch unsichtbare) Leisten im DOM stehen. Ueberschneidet
+            // sich bewusst mit STATE.diag.uiScan (panelOpen/fabVisible) - dort
+            // stehen nur die billigsten Basiswerte OHNE den vollen DOM-Scan
+            // hier, siehe Kommentar an der uiScan-Zuweisung in onDiagClick().
             launcher: (function () {
                 function rect(el) {
                     try {
@@ -4014,6 +4017,18 @@
         };
     }
     function onDiagClick() {
+        // uiScan: billige, EIGENSTAENDIGE Momentaufnahme in STATE.diag - anders
+        // als das launcher-Sub-Objekt (buildDiagReport() weiter unten, liest
+        // dieselben Basiswerte zusaetzlich zu einem vollen DOM-Scan aller
+        // Buttons/Controller) ist sie ohne den teuren Report-Aufbau lesbar und
+        // bleibt erhalten, selbst wenn ein spaeteres Feld in buildDiagReport()
+        // einmal einen Fehler wirft.
+        STATE.diag.uiScan = {
+            panelOpen: !!(ui.panel && ui.panel.classList.contains('open')),
+            fabVisible: !!(ui.fab && !ui.fab.classList.contains('sbc-opt-hidden')),
+            inSbcView: inSbcView(),
+            btnAttached: !!document.getElementById(BTN_ID)
+        };
         const report = buildDiagReport();
         console.log(LOG_PREFIX + ' ===== DIAGNOSE-REPORT (bitte komplett kopieren) =====');
         console.log(JSON.stringify(report, null, 2));

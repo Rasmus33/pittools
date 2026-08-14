@@ -102,13 +102,31 @@
         cancelLoad: false,
         lastChallengeRaw: null,      // letzte SBC-Response (fürs Debugging)
         lastSetChallenges: null,     // gecachte Challenge-Liste des geöffneten Sets
+        // Offene Ablage fuer Laufzeitzustand, den buildDiagReport() kopiert -
+        // jedes tatsaechlich verwendete Feld MUSS hier deklariert sein
+        // (solver-test.js prueft das symmetrisch: gelesen <-> deklariert <->
+        // zugewiesen), sonst bleibt es im Report unbemerkt bei seinem
+        // Initialwert stehen (siehe uiScan-Vorfall).
         diag: {
             fetchSeen: 0,
             xhrSeen: 0,
             utasSeen: 0,
             lastUtasPaths: [],       // letzte utas-Pfade (IDs maskiert)
             lastErrors: [],          // letzte Fehlermeldungen (ohne Tokens)
-            evoExcluded: 0           // ausgeschlossene Evolution-Karten
+            evoExcluded: 0,          // ausgeschlossene Evolution-Karten
+            lastSquadPutBody: null,  // letzter PUT-Body an den Squad (fuers 460-Debugging)
+            staleRecover: null,      // Erholungsversuch bei veralteter challengeId
+            locks: null,             // PaleTools-Sperrliste: Anzahl + Beispiel-IDs
+            clubLoad: null,          // Club-Ladelauf: Seitengroesse/Takt/Seiten/Retries/Dauer
+            submitVia: null,         // welcher Submit-Weg zuletzt gegriffen hat (app/http/services)
+            lastEligible: null,      // isSBCSquadEligible()-Ergebnis bei 403
+            refreshLog: null,        // Protokoll des View-Refresh nach dem Abgeben
+            uiScan: null,            // Panel/FAB/inSbcView-Snapshot zum Diagnose-Klick
+            batchSteps: null,        // letzte Batch-Runden: ok/steps beim Oeffnen der naechsten Instanz
+            lastTeam: null,          // zuletzt vom Solver geliefertes Team (ok/reason/cards)
+            submitCandidates: null,  // Controller.Methode-Kandidaten fuers Abgeben
+            submitChallengeVia: null, // welcher Controller-/Service-Weg beim Abgeben gegriffen hat
+            lastTap: null            // letzter simulierter Tap: Events/Position/Abdeckung/Popup
         }
     };
     function log(...args) { try { console.log(LOG_PREFIX, ...args); } catch (e) {} }
@@ -3932,7 +3950,6 @@
                 rarityConstraints: STATE.sbc.rarityConstraints,
                 playerLevelConstraints: STATE.sbc.playerLevelConstraints,
                 qualityConstraints: STATE.sbc.qualityConstraints || [],
-            rareConstraints: STATE.sbc.rareConstraints || [],
                 rareConstraints: STATE.sbc.rareConstraints || [],
                 usableSlots: STATE.sbc.usableSlots || null,
                 reqDump: STATE.sbc.reqDump,

@@ -70,7 +70,15 @@ discoveries:
   pattern_candidates: []
   antipattern_candidates: []
   shared_item_candidates: []
-  cross_feature_smells: []
+  cross_feature_smells:
+  - slug: reportneterror-304-nicht-fehler
+    evidence:
+    - app/java/com/sbctools/browser/MainActivity.java:464-467
+    issues:
+    - 2
+    note: severity=P3; 304-Zweig (Cache aktuell) laeuft durch den Fehler-Chokepoint
+      reportNetError — funktional harmlos, aber begriffliche Unschaerfe; Kandidat
+      fuer Audit-Sammelticket.
 seeds_next:
   seeded_at: null
   patterns: []

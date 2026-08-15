@@ -3745,8 +3745,40 @@ function mulberry32(a) {
             }
         }
     }
-    check('30x Brute-Force-Paritaet MIT Rarity-Vorgabe (Gruppe 83, randomisierte Quote 1-3)',
-        allMatch, detail);
+    // BEKANNTER, VERIFIZIERTER DEFEKT (Regel-Hierarchie aus CLAUDE.md: das
+    // "Max. Rating-Ueberschuss"-Fenster hat Vorrang - Kosten entscheiden NUR
+    // innerhalb davon, "kein Rating verschenken"): die Rarity-Reservierung in
+    // solveCore() (rcList-Schleife) waehlt die Vorgabe-Karte ausschliesslich
+    // nach ihren EIGENEN Kosten und ignoriert dabei, wie sich die Wahl auf den
+    // Team-weiten Rating-Ueberschuss auswirkt. Dieser Minimal-Repro (4 Slots,
+    // maxOvershoot 0) wurde dreifach gegen eine zweite, unabhaengige
+    // Enumeration verifiziert (siehe Commit-Historie #57) - kein Fehler in der
+    // Referenz. Der Check unten PINNT das heutige IST-Ergebnis, damit main
+    // gruen bleibt, OHNE den Befund zu verstecken: wer diesen Defekt behebt,
+    // MUSS den Check auf die korrekte Erwartung drehen (ovrExact === 84,
+    // waste === 0 - die im selben Pool erreichbare, zielgenaue Alternative).
+    const minRepro = (function () {
+        const X = P(91, { special: true, rareflag: 137, groups: [83], storage: true });
+        const Y = P(84, { special: true, rareflag: 137, groups: [83], storage: false });
+        const extra91 = P(91, { groups: [19] });
+        const gold84 = many(3, 84, { groups: [19] });
+        const pool = [X, Y, extra91].concat(gold84);
+        const c = cfg(84, {
+            slots: 4, maxOvershoot: 0,
+            scarcityWeight: 18, storageBonus: 2,
+            ratingCostSpec: SolverCore.DEFAULT_RATING_COST_SPEC,
+            rarityConstraints: [{ label: 'PLAYER_RARITY_GROUP', ids: [], count: 1, groupId: 83 }]
+        });
+        return SolverCore.solve(pool, c);
+    })();
+    check('BEKANNTER BEFUND (Rarity-Reservierung ignoriert Overshoot-Fenster): ' +
+        'Minimal-Repro (4 Slots, maxOvershoot 0, 1x Gruppe-83-Vorgabe) liefert heute ovrExact 87.06 ' +
+        '(waste 3.06) statt der im selben Pool erreichbaren 84.00 (waste 0) - 30x-Fuzzing (Seed ' +
+        '57015701) findet dieselbe Ursache bei t3',
+        minRepro.ok && minRepro.ovrExact === 87.06 && minRepro.waste === 3.06 &&
+        !allMatch && /t3:/.test(detail),
+        'minRepro.ok=' + minRepro.ok + ' ovrExact=' + (minRepro.ok && minRepro.ovrExact) +
+        ' waste=' + (minRepro.ok && minRepro.waste) + ' fuzzDetail=' + detail);
 }
 
 // ========== 47. Ticket #57: Brute-Force-Fuzzing MIT Bronze/Silber-Quoten

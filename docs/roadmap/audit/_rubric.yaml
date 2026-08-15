@@ -1,144 +1,151 @@
 android-app-wrapper:
   RA:
     evidence:
-    - app/java/com/sbctools/browser/MainActivity.java:392-401
-    - app/java/com/sbctools/browser/MainActivity.java:409-432
-    - app/java/com/sbctools/browser/MainActivity.java:730-772
-    - app/guard-test.js:25-118
-    - app/java/com/sbctools/browser/MainActivity.java:603-671
+    - app/java/com/sbctools/browser/MainActivity.java:425-427
+    - app/java/com/sbctools/browser/MainActivity.java:146-162
+    - app/guard-test.js:262-299
+    - app/log-test.js:1-137
+    - docs/LEARNINGS.md:881-899
     iteration_scored: 0
-    reasoning: Fallback-Ketten, Marker-Extraktions-Testsuite und ausfuehrliche LEARNINGS-Begruendungen
-      sprechen fuer RA; aber stille Catches genau an der DevTools-losen Netzwerk-/Cache-Grenze
-      (fetchUrl/fetchUrlIfChanged ohne addLog) und direkte Feldmutation zwischen Top-Level-Klassen
-      druecken die Beobachtbarkeit deutlich.
-    score: 48.0
+    reasoning: 'Alle 4 Aktionen vollstaendig: reportNetError als SSOT an allen 6 stillen
+      Netz-/Cache-Pfaden inkl. Early-Returns, Setter mit addLog an allen Schreibstellen,
+      2 neue statische guard-Checks + app/log-test.js + CRLF-Regression (ueber Plan).
+      Restluecke: Kapselung bewusst package-private, Fallback-Ketten unveraendert.
+      Ziel 70 leicht uebertroffen.'
+    score: 72.0
     source: audit-evaluator
-    updated_at: '2026-08-14'
+    updated_at: '2026-08-15'
 batch-modus:
   RA:
     evidence:
-    - ea-fc-sbc-optimizer.user.js:4793-4796
-    - ea-fc-sbc-optimizer.user.js:4900-4923
-    - ea-fc-sbc-optimizer.user.js:4468-4482
-    - solver-test.js:946-1190
-    - docs/LEARNINGS.md:283-401
+    - ea-fc-sbc-optimizer.user.js:4951-4955
+    - solver-test.js:1929-1993
+    - solver-test.js:1996-2025
+    - ea-fc-sbc-optimizer.user.js:4631-4632
+    - ea-fc-sbc-optimizer.user.js:4989-4991
     iteration_scored: 0
-    reasoning: Disziplinierte Fehlertoleranz/Beobachtbarkeit/Abbruch-Struktur (Selector-Fallbacks,
-      ok/why-Objekte, STATE.diag, Plan-verbraucht) gemindert durch bestaetigten ungetesteten
-      Bug im Kern-Anker (matchesPlannedSbc vergleicht nie belegtes STATE.sbc.slots
-      — Slots-Teil No-Op) und einen veralteten Kommentar (~4982).
-    score: 60.0
+    reasoning: Anker scharf + echter Integrationstest inkl. transientem Brick-Fenster,
+      Orchestrierung statisch abgesichert, zwei neue Diagnose-Zaehler, Q7-Fix, reportError-Adoption.
+      Unter Ziel 67, weil Lift-Plan-Aktion 4 (aktive Abgabe-Plausibilisierung via
+      Squad-Nachpruefung) nur als Haeufigkeits-Zaehler geliefert wurde — die Frage
+      ob die Abgabe wirklich bestaetigt wurde bleibt offen, nur messbar.
+    score: 65.0
     source: audit-evaluator
-    updated_at: '2026-08-14'
+    updated_at: '2026-08-15'
 bedienpanel-ui:
   RA:
     evidence:
-    - ea-fc-sbc-optimizer.user.js:3360-3370
-    - ea-fc-sbc-optimizer.user.js:1485
-    - ea-fc-sbc-optimizer.user.js:4054
-    - ea-fc-sbc-optimizer.user.js:3564-3574
-    - docs/LEARNINGS.md:436-492
+    - ea-fc-sbc-optimizer.user.js:3457-3470
+    - ea-fc-sbc-optimizer.user.js:3549-3562
+    - solver-test.js:2027-2087
+    - ea-fc-sbc-optimizer.user.js:3878-3885
+    - docs/LEARNINGS.md:493-501
     iteration_scored: 0
-    reasoning: Einstiegspunkte robust gegen EA-Wandel (Fail-Open, generische Erkennung,
-      LEARNINGS §10); aber der Band-Editor liefert ueber defaultBands() nachweislich
-      veraltete Reset-Werte (SSOT-Bruch zu DEFAULT_RATING_COST_SPEC, kein Drift-Test).
-    score: 68.0
+    reasoning: Alle 5 Aktionen verifiziert umgesetzt, User-Bands-Invariante geschuetzt
+      (saved zuerst), Testbarkeit uebererfuellt (0..99-Aequivalenz-Sweep), Feedback
+      + Report-Feld wie geplant. Ueber Ziel 80, unter Max 85 weil EA-Fehlertoleranz-Achse
+      bewusst nicht angefasst.
+    score: 82.0
     source: audit-evaluator
-    updated_at: '2026-08-14'
+    updated_at: '2026-08-15'
 diagnose-werkzeuge:
   RA:
     evidence:
-    - ea-fc-sbc-optimizer.user.js:105-112
-    - ea-fc-sbc-optimizer.user.js:3758
-    - ea-fc-sbc-optimizer.user.js:3927-3928
-    - ea-fc-sbc-optimizer.user.js:116-122
-    - app/java/com/sbctools/browser/MainActivity.java:93-102
+    - ea-fc-sbc-optimizer.user.js:110-132
+    - solver-test.js:1711-1772
+    - ea-fc-sbc-optimizer.user.js:147-150
+    - ea-fc-sbc-optimizer.user.js:4127-4138
+    - app/log-test.js:48-58
     iteration_scored: 0
-    reasoning: Beide Kanaele strukturell solide und stark WARUM-dokumentiert; aber
-      der Kern-Report hat verifizierte Defekte (kein STATE.diag-Schema, totes uiScan-Feld,
-      doppelter rareConstraints-Key) und die Android-Log-Infrastruktur hat keine Testabdeckung.
-    score: 58.0
+    reasoning: 'Alle 4 Aktionen im Code gelandet: uiScan echt differenziert, Duplikat
+      weg + Regressionstest, Schema 6→21 Felder, reportError an 7 Call-Sites konsumiert,
+      app/log-test.js nach SSOT-Extraktionsprinzip. Abzug: Symmetrie-Test prueft nur
+      2 von 3 Richtungen — lastEligible bleibt befuellt-aber-unsichtbar (uiScan-Fehlerklasse
+      in Gegenrichtung), unentdeckt vom eigenen Test.'
+    score: 76.0
     source: audit-evaluator
-    updated_at: '2026-08-14'
+    updated_at: '2026-08-15'
 ea-app-anbindung:
   RA:
     evidence:
-    - ea-fc-sbc-optimizer.user.js:1236-1253
-    - ea-fc-sbc-optimizer.user.js:1184-1235
-    - ea-fc-sbc-optimizer.user.js:187
-    - ea-fc-sbc-optimizer.user.js:4986-5006
-    - ea-fc-sbc-optimizer.user.js:1100
+    - ea-fc-sbc-optimizer.user.js:194-207
+    - solver-test.js:2237-2329
+    - ea-fc-sbc-optimizer.user.js:147-150
+    - ea-fc-sbc-optimizer.user.js:1248-1257
+    - docs/LEARNINGS.md:1130-1163
     iteration_scored: 0
-    reasoning: Solide Fallback-Ketten (Services vs. HTTP), disziplinierte Fehlermeldungen
-      und gut belegte WARUM-Kommentare/LEARNINGS-Eintraege stehen einem klar nachweisbaren
-      Cluster aus SSOT-/DRY-Verstoessen gegenueber (duplizierte sbs/sbc-Regex, duplizierte
-      401-Retry-Logik, duplizierte Controller-Traversal statt Helfer-Nutzung, Beobachtbarkeits-Luecken
-      im Services-Fallback ohne diagError).
-    score: 64.0
+    reasoning: Regex-SSOT-Migration vollstaendig (alle Call-Sites, static-regression-getestet,
+      ~35 neue Assertions fuer vorher ungetesteten Klassifizierer); Beobachtbarkeit
+      strukturell ueber reportError geschlossen; apiRequest-Extraktion Q2-konform
+      verschoben und dokumentiert — die bestehende 401-Retry-Duplikation deckelt zusammen
+      mit der EA-Undokumentiertheit (max 75).
+    score: 74.0
     source: audit-evaluator
-    updated_at: '2026-08-14'
+    updated_at: '2026-08-15'
 rating-solver:
   RA:
     evidence:
-    - ea-fc-sbc-optimizer.user.js:1855-1866
-    - ea-fc-sbc-optimizer.user.js:1908-1917
-    - ea-fc-sbc-optimizer.user.js:1958-1959
-    - ea-fc-sbc-optimizer.user.js:2115-2147
-    - solver-test.js:10-13
+    - ea-fc-sbc-optimizer.user.js:1992-2003
+    - ea-fc-sbc-optimizer.user.js:1519-1524
+    - ea-fc-sbc-optimizer.user.js:1601-1613
+    - solver-test.js:857-954
+    - docs/LEARNINGS.md:986-1038
     iteration_scored: 0
-    reasoning: 'Sehr starke Testbarkeit (Marker-Extraktion + Brute-Force-Paritaet),
-      Abbruch-Disziplin und WARUM-Kommentare mit Live-Belegen; runtergezogen durch
-      zwei reale Architektur-Lecks: reserve()-Invariante an zwei Pfaden (Anker, Rarity-Pick)
-      umgangen und derselbe Komparator viermal dupliziert.'
-    score: 78.0
+    reasoning: 'Alle 4 Struktur-Refactorings live verifiziert: reserve()-Funnel strukturell
+      erzwungen inkl. Kollisions-Warnung, Komparator-Factory mit erhaltenem Tiebreak-Unterschied,
+      makeCostOf als mechanische SSOT (Test ruft denselben Code), Totcode raus. Distanz
+      zum Deckel 95: Kern-Formel bleibt reverse-engineered.'
+    score: 89.0
     source: audit-evaluator
-    updated_at: '2026-08-14'
+    updated_at: '2026-08-15'
 sbc-vorgaben-erkennung:
   RA:
     evidence:
-    - ea-fc-sbc-optimizer.user.js:362-476
-    - ea-fc-sbc-optimizer.user.js:742-764
-    - ea-fc-sbc-optimizer.user.js:596-599
-    - ea-fc-sbc-optimizer.user.js:576
-    - solver-test.js:1218-1235
+    - ea-fc-sbc-optimizer.user.js:4953
+    - ea-fc-sbc-optimizer.user.js:360
+    - ea-fc-sbc-optimizer.user.js:434-493
+    - solver-test.js:1876-1925
+    - docs/LEARNINGS.md:924-978
     iteration_scored: 0
-    reasoning: Generischer, mehrschichtig fallback-gesicherter Deep-Scan mit sauberer
-      Abbruch-Disziplin und dokumentierten WARUM-Learnings; runtergezogen durch den
-      realen Namensdrift-Bug (STATE.sbc.slots nie geschrieben, Slot-Disambiguierung
-      faktisch tot) und fehlende ausfuehrbare Tests fuer die Parsing-Kernlogik (nur
-      String-Regressionschecks).
-    score: 65.0
+    reasoning: Batch-Anker-Vergleich war struktureller No-Op und ist jetzt scharf,
+      getestet und dokumentiert; Parser per Marker-Extraktion mit konstruierten EA-Objekten
+      testbar; matchedAs schliesst die Dual-Use-Beobachtbarkeitsluecke inkl. Edge-Case.
+      Verbleibender Deckel ist strukturell (EAs wechselnde Response-Form).
+    score: 78.0
     source: audit-evaluator
-    updated_at: '2026-08-14'
+    updated_at: '2026-08-15'
 spieler-pool:
   RA:
     evidence:
-    - ea-fc-sbc-optimizer.user.js:1358-1385
-    - solver-test.js:1034-1116
-    - ea-fc-sbc-optimizer.user.js:1334
-    - ea-fc-sbc-optimizer.user.js:907
-    - docs/LEARNINGS.md:543-563
+    - ea-fc-sbc-optimizer.user.js:147-150
+    - ea-fc-sbc-optimizer.user.js:937-978
+    - solver-test.js:1376-1461
+    - solver-test.js:1464-1520
+    - docs/LEARNINGS.md:1040-1067
     iteration_scored: 0
-    reasoning: Solide Fallback-Kette an der EA-Grenze mit dem fragilsten Teil (Club-Lade-Takt)
-      durch echte Funktionssimulation abgedeckt; Beobachtbarkeit inkonsistent (reportwuerdige
-      catches ohne diagError bei Unassigned/Storage/Locks) und Normalisierungs-/Lock-Harvest-Logik
-      ungetestet.
-    score: 70.0
+    reasoning: 'Uebertrifft den Plan: reportError-Wrapper (SSOT) greift an allen 7
+      Pool-/Lock-/Batch-Catches statt der 3 geplanten; locks.error macht sicherheitsrelevante
+      Teilausfaelle sichtbar; Normalisierung/Locks erstmals end-to-end getestet (alle
+      11 Evolution-Varianten, Reihenfolge-Falle); Doku konsistent (Paragraph 29/30).
+      Abzug: Fehlertoleranz/Abbruch-Disziplin bewusst nicht angefasst, struktureller
+      Deckel unveraendert.'
+    score: 83.0
     source: audit-evaluator
-    updated_at: '2026-08-14'
+    updated_at: '2026-08-15'
 team-eintragen:
   RA:
     evidence:
-    - ea-fc-sbc-optimizer.user.js:2595-2669
-    - ea-fc-sbc-optimizer.user.js:2692-2716
-    - ea-fc-sbc-optimizer.user.js:2556-2570
-    - ea-fc-sbc-optimizer.user.js:2811-2836
-    - docs/LEARNINGS.md:708-742
+    - ea-fc-sbc-optimizer.user.js:2840-2852
+    - ea-fc-sbc-optimizer.user.js:801-818
+    - ea-fc-sbc-optimizer.user.js:5145-5160
+    - solver-test.js:2096-2234
+    - docs/LEARNINGS.md:1091-1128
     iteration_scored: 0
-    reasoning: Vorbildliche Fallback-Ketten und praezise 404/475-vs-403-Abbrueche
-      mit Diagnose-Feldern; aber die kanonischen Helfer (getControllerChain/findSbcController/findLiveChallenge)
-      werden in submitViaApp, syncSbcWithOpenChallenge und refreshOpenSbcView inline
-      nachgebaut — reales Drift-Risiko in der fragilsten Zone.
-    score: 60.0
+    reasoning: 'Alle 5 Aktionen umgesetzt: Traversal konsolidiert (depth-Divergenz
+      bewusst geglaettet + Tiefe-13-Test), findLiveChallenge mit gehaertetem typeof-Guard
+      (latenter Bug gefixt), reportError-Adoption, echte Verhaltenstests am synthetischen
+      Controller-Baum statt Text-Greps, Weg 0 kommentiert-unangetastet. Rest-Abstand
+      = inhaerente EA-Fragilitaet von submitViaApp (wird vom Cap 75 gedeckelt).'
+    score: 76.0
     source: audit-evaluator
-    updated_at: '2026-08-14'
+    updated_at: '2026-08-15'

@@ -1126,3 +1126,38 @@ Tiefe, "letzter Treffer gewinnt", alle drei Challenge-Key-Varianten
 `controllerScan()`/`refreshOpenSbcView()`/`syncSbcWithOpenChallenge()` die
 Helfer tatsaechlich aufrufen und `submitViaApp()` seine eigene Traversal
 behaelt.
+
+## 32. sbs/sbc-Praefixwissen zentral, 401-Retry-Kaskade bewusst dupliziert
+
+EA nutzt wahlweise `sbs` oder `sbc` als API-Pfad-Segment (Abschnitt 3). Diese
+eine fachliche Tatsache lebt jetzt an genau einer Stelle: `SBS_SBC_PREFIX_RE_SRC`
+(direkt vor `detectApiBase`, per `[URLCLS-BEGIN]`/`[URLCLS-END]`-Marker
+abgegrenzt). Sieben eigenstaendige `(sbs|sbc)`-Regex-Literale - `detectApiBase`,
+fuenf Zweige in `classifyUrl` (Set-Challenges, Challenge ueber Set-ID, Challenge
+ueber ID, Sets, Storage-Fallback) und die XHR-Squad-PUT-Erkennung - leiten ihre
+Regex jetzt aus dieser einen Quelle ab, jeweils einmalig als benannte Konstante
+(`RE_SBS_SBC_PREFIX_PATH`, `RE_SBC_SET_CHALLENGES`, `RE_SBC_CHALLENGE_BY_SET`,
+`RE_SBC_CHALLENGE_BY_ID`, `RE_SBC_SETS`, `RE_SBC_STORAGE_FALLBACK`,
+`RE_SBC_SQUAD_PUT`) kompiliert - kein `new RegExp()` im heissen fetch/XHR-
+Interception-Pfad. `solver-test.js` Abschnitt 25 extrahiert `detectApiBase`/
+`classifyUrl` per Marker und deckt beide Praefix-Varianten, zwei utas-
+Host-Varianten, alle vier SBC-Endpunktformen sowie Fremd-URLs/Beinahe-Treffer
+(`/sbsx/`, `/ssbc/`) ab, dazu eine statische Regression gegen ein erneutes
+`(sbs|sbc)`-Literal im Quelltext.
+
+Die beiden `STATE.sbc.apiPrefix || 'sbs'`-Fallback-Ausdruecke in
+`submitViaHttp`/`verifySquadCount` bleiben bewusst unangetastet: dort steckt
+ein Default-STRING fuer den Fall "noch kein Praefix beobachtet", keine
+Regex-Alternation zum Matchen einer URL - andere Semantik, kein
+SSOT-Kandidat mit der Konstante oben.
+
+Die 401-Retry-Kaskade (Nudge -> Sleep -> rekursiver Retry, Grenze
+`_attempt<2`) bleibt in `apiGet`/`apiPut` bewusst dupliziert statt in einen
+gemeinsamen `apiRequest(method, path, body, _attempt)`-Kern gezogen zu werden:
+`solver-test.js` hat aktuell keine Coverage der Kaskade selbst (nur eine
+Attrappe fuer den Pagination-Loader), eine Extraktion waere also nicht
+verhaltensneutral belegbar. Zusaetzlich muesste der `_attempt`-Zaehler PRO
+Methode/Pfad zaehlen - ein gemeinsamer Kern liefe sonst Gefahr, einen
+laufenden GET- und PUT-Retry denselben Zaehler teilen zu lassen. Voraussetzung
+fuer eine Folge-Iteration: ein Mock-Testharness fuer `apiGet`/`apiPut`, analog
+zum bestehenden `fetchClubViaHttp`-Test.

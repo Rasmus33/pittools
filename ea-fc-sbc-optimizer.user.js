@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.53.0
+// @version      4.54.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.53.0';
+    const VERSION = '4.54.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -4471,6 +4471,17 @@
         }
     }
     async function onRunClick() {
+        // Waehrend eines laufenden Pool-Refreshs ist STATE.pool ein
+        // Uebergangszustand (onLoadClick leert ihn beim Voll-Refresh und
+        // befuellt ihn asynchron neu) - ohne diesen Guard wuerde der Solver
+        // unbemerkt gegen einen unvollstaendigen Pool loesen, ohne dass die
+        // uebliche loadIncomplete-Warnung greift (analog zum bestehenden
+        // Re-Entrancy-Schutz in onLoadClick).
+        if (STATE.loading) {
+            toast('Pool lädt noch - gleich nochmal versuchen.', 'error');
+            setStatus('Pool lädt noch...');
+            return;
+        }
         // Erkennung IMMER mit der offen sichtbaren Challenge abgleichen -
         // der Hook-Zustand kann nach Pack-Öffnen/Submit veraltet sein.
         syncSbcWithOpenChallenge();

@@ -3227,6 +3227,58 @@ function mulberry32(a) {
         syncLauncherSrc.indexOf('sbcButtonContainer()') > -1);
 }
 
+// ========== 40. Ticket #52: onRunClick() lehnt einen Klick waehrend STATE.loading ab ==========
+// Analog zum Verhaltenstest in Abschnitt 29 (openNextInstance): die echte,
+// per Marker extrahierte Funktion laeuft gegen ein gestubbtes ui/STATE, statt
+// den Guard nur per Text-Grep zu belegen.
+{
+    const runFnSrc = extractFunction(src, 'onRunClick');
+    check('Funktion onRunClick gefunden (40)', !!runFnSrc);
+
+    function makeOnRunClickSandbox(loading) {
+        const calls = { toast: [], setStatus: [], solve: 0, submit: 0, reportError: 0 };
+        const STATE = {
+            loading: loading,
+            loadIncomplete: false,
+            pool: [{ rating: 84 }],
+            sbc: { targetOVR: 84, playerLevelConstraints: [], rarityConstraints: [], qualityConstraints: [] }
+        };
+        const ui = { run: { disabled: false } };
+        const sandbox = {
+            STATE: STATE,
+            ui: ui,
+            syncSbcWithOpenChallenge: () => {},
+            toast: (msg, kind) => { calls.toast.push({ msg: msg, kind: kind }); },
+            setStatus: (s) => { calls.setStatus.push(s); },
+            readConfig: () => ({}),
+            SolverCore: { solve: () => { calls.solve++; return { ok: true, ovr: 84, players: [] }; } },
+            renderResult: () => {},
+            submitCurrentResult: () => { calls.submit++; return Promise.resolve(); },
+            reportError: () => { calls.reportError++; }
+        };
+        const keys = Object.keys(sandbox);
+        const fn = new Function(keys.join(','), runFnSrc + '\nreturn onRunClick;')
+            .apply(null, keys.map(function (k) { return sandbox[k]; }));
+        return { fn: fn, calls: calls, STATE: STATE, ui: ui };
+    }
+
+    const loadingCase = makeOnRunClickSandbox(true);
+    pending.push(loadingCase.fn().then(function () {
+        check('onRunClick: STATE.loading=true -> SolverCore.solve() wird NIE gerufen',
+            loadingCase.calls.solve === 0);
+        check('onRunClick: STATE.loading=true -> genau ein toast()-Aufruf, kein submitCurrentResult()',
+            loadingCase.calls.toast.length === 1 && loadingCase.calls.submit === 0,
+            JSON.stringify(loadingCase.calls));
+    }));
+
+    const normalCase = makeOnRunClickSandbox(false);
+    pending.push(normalCase.fn().then(function () {
+        check('onRunClick: STATE.loading=false -> Normalpfad unveraendert (solve + submit laufen genau einmal)',
+            normalCase.calls.solve === 1 && normalCase.calls.submit === 1,
+            JSON.stringify(normalCase.calls));
+    }));
+}
+
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt
 // process.exit() die Loader-Tests, bevor sie laufen - sie zählten dann nicht mit
 // und ein Fehler dort wäre unbemerkt geblieben.

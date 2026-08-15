@@ -1504,3 +1504,9 @@ Quota-Fehler waren zuvor komplett unsichtbar - der In-Memory-Zustand wirkte
 weiter korrekt, aber nichts ueberlebte den naechsten Reload. Die
 Drag-Positions-Meldung traegt `posKey` im Label, weil `makeDraggable` sowohl
 fuer Panel als auch FAB verwendet wird und beide dieselbe Catch-Zeile teilen.
+
+`onRunClick()` prueft am Funktionsanfang `STATE.loading` (analog zum
+bestehenden Re-Entrancy-Schutz in `onLoadClick()`) und lehnt einen
+Optimieren-Klick waehrend eines laufenden Pool-Refreshs mit Toast +
+`setStatus()` ab, statt den Solver gegen den Uebergangs-Pool laufen zu
+lassen.

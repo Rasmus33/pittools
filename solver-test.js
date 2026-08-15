@@ -3279,6 +3279,76 @@ function mulberry32(a) {
     }));
 }
 
+// ========== 41. Ticket #54: clickSetTile()/titleOf() - titleSource sichtbar, Fallback-Pfad erstmals getestet ==========
+// Bisher lief nur ein Text-Grep gegen titleOf/tileTitle (solver-test.js:1859
+// Kommentar-Treffer), die interne Matching-Logik selbst war ungetestet (Gap-
+// Report batch-modus, Iteration 5). titleOf() faellt auf t.textContent zurueck,
+// wenn keines von .tileTitle/.tileHeader/h1 existiert - genau der Volltext-
+// Fallback, der laut LEARNINGS §9 (v4.23.0) live zum Teilstring-Fehlgriff
+// fuehrte. titleSource macht sichtbar, welcher Pfad griff, OHNE das Matching
+// selbst zu aendern - deshalb hier ein echter Verhaltenstest statt nur Text-Match.
+{
+    const fn = extractFunction(src, 'clickSetTile');
+    check('Funktion clickSetTile gefunden (41)', !!fn);
+
+    // Tile-Attrappe: subText simuliert den Inhalt von .tileTitle/.tileHeader/h1
+    // (null = kein Titel-Element gefunden, EA hat nur die inneren Elemente
+    // umgebaut), fullText simuliert t.textContent (Beschreibung + Belohnungen
+    // inklusive - der ganze Kachel-Text).
+    function makeTile(subText, fullText) {
+        return {
+            querySelector: function () { return subText == null ? null : { textContent: subText }; },
+            textContent: fullText
+        };
+    }
+
+    function run(tiles, setName) {
+        const STATE = { diag: {} };
+        const sandbox = {
+            STATE: STATE,
+            visibleAll: function () { return tiles; },
+            clickLike: function () { STATE.diag.lastTap = { clicked: true }; return true; }
+        };
+        const keys = Object.keys(sandbox);
+        const clickSetTileFn = new Function(keys.join(','), fn + '\nreturn clickSetTile;')
+            .apply(null, keys.map(function (k) { return sandbox[k]; }));
+        return clickSetTileFn({ setName: setName });
+    }
+
+    // (a) Titel kommt ueber das echte Titel-Element -> titleSource 'element'.
+    {
+        const tile = makeTile('Team of the Week', 'Team of the Week extra reward text');
+        const r = run([tile], 'Team of the Week');
+        check('(a) Element-Titel-Pfad: ok === true', r.ok === true, JSON.stringify(r));
+        check('(a) Element-Titel-Pfad: titleSource === "element"',
+            r.titleSource === 'element', JSON.stringify(r));
+    }
+
+    // (b) Kein Titel-Element gefunden -> Volltext-Fallback greift und trifft
+    // ueber einen reinen Teilstring (die 2023 gefixte Fehlerklasse, jetzt aber
+    // SICHTBAR statt unauffaellig).
+    {
+        const tile = makeTile(null, 'silver upgrade bundle bonus reward included');
+        const r = run([tile], 'upgrade');
+        check('(b) Volltext-Fallback: ok === true (Teilstring-Treffer)', r.ok === true, JSON.stringify(r));
+        check('(b) Volltext-Fallback: titleSource === "fulltext"',
+            r.titleSource === 'fulltext', JSON.stringify(r));
+    }
+
+    // (c) Gegenprobe: kein Treffer -> bisheriges Verhalten unveraendert (ok:false,
+    // "titles" bleibt ein Array aus Klartext-Strings wie vor der Aenderung,
+    // kein titleSource im Fehlerfall - es gibt keinen "how").
+    {
+        const tile = makeTile('Bronze Pack', 'Bronze Pack description');
+        const r = run([tile], 'gold pack');
+        check('(c) Kein Treffer: ok === false (unveraendertes Abbruchverhalten)', r.ok === false, JSON.stringify(r));
+        check('(c) Kein Treffer: why === "Set nicht gefunden" (unveraendert)', r.why === 'Set nicht gefunden');
+        check('(c) Kein Treffer: titles bleibt Array aus Klartext-Strings (kein Objekt-Format-Bruch)',
+            Array.isArray(r.titles) && r.titles[0] === 'bronze pack', JSON.stringify(r.titles));
+        check('(c) Kein Treffer: kein titleSource im Fehlerfall', r.titleSource === undefined, JSON.stringify(r));
+    }
+}
+
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt
 // process.exit() die Loader-Tests, bevor sie laufen - sie zählten dann nicht mit
 // und ein Fehler dort wäre unbemerkt geblieben.

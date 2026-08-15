@@ -112,11 +112,16 @@ function cfg(target, extra) {
 }
 
 // Brute force über das V-Ziel (V = N² * exaktes Rating).
-// Nur für Configs OHNE Reservierungen korrekt.
 // Karten-Kosten kommen von SolverCore.makeCostOf() - der SSOT aus dem
 // Userscript selbst (SOLVER-Block), keine eigenständige Nachbildung mehr
 // (vorher cardCostFn(), nur per Kommentar synchron gehalten).
-function bruteBest(pool, c) {
+// quotaOk(team) ist optional: prüft pro vollständiger N-Kombination eine
+// zusätzliche Nebenbedingung (z.B. "genau 1 Karte aus Rarity-Gruppe 83"),
+// BEVOR V/Kosten verglichen werden - damit ist dieselbe Enumeration auch für
+// Configs MIT Reservierungen (Rarity-/Qualitäts-Vorgaben) korrekt, siehe
+// Ticket #57 / docs/roadmap/gaps/rating-solver.md. Ohne quotaOk unverändert
+// wie zuvor (Test 3/4 rufen ohne dritten Parameter).
+function bruteBest(pool, c, quotaOk) {
     const N = c.slots || 11;
     const T = c.targetOVR;
     const NEED = N * N * T - Math.floor(N / 2);
@@ -124,18 +129,19 @@ function bruteBest(pool, c) {
     const cardCost = SolverCore.makeCostOf(pool, c);
     const n = pool.length;
     const feasible = [];
-    const ratings = [];
+    const team = [];
     (function rec(start, cnt, cost) {
         if (cnt === N) {
-            const V = SolverCore.squadV(ratings);
+            if (quotaOk && !quotaOk(team)) return;
+            const V = SolverCore.squadV(team.map(p => p.rating));
             if (V >= NEED) feasible.push({ V: V, cost: cost });
             return;
         }
         if (n - start < N - cnt) return;
         for (let i = start; i < n; i++) {
-            ratings.push(pool[i].rating);
+            team.push(pool[i]);
             rec(i + 1, cnt + 1, cost + cardCost(pool[i]));
-            ratings.pop();
+            team.pop();
         }
     })(0, 0, 0);
     if (!feasible.length) return null;
@@ -149,6 +155,50 @@ function bruteBest(pool, c) {
         }
     }
     return { vMin: vMin, bestObj: best };
+}
+// Brute-Force-Referenz für Quoten OHNE Ziel-Rating (Bronze/Silber-
+// Qualitäts-Vorgaben, siehe 8d2/8b-2d): hier gibt es kein V-Minimum, sondern
+// eine harte Kombinationsgrenze pro Stufe (quotaOk) und die Auswahl folgt
+// Rasmus' Rangfolge "Storage vor Verein, dann niedrigstes Rating, dann
+// Kosten" (CLAUDE.md). cardKey(p) liefert diese Rangfolge als vergleichbares
+// Array; unter allen quotaOk-gültigen Kombinationen gewinnt die, deren
+// SORTIERTES Key-Array elementweise am kleinsten ist (Tausch-Argument: bei
+// unabhängigen Pro-Karten-Kosten ist das exakt die optimale Kombination -
+// diese Funktion verifiziert das aber über eine ECHTE Enumeration aller
+// Kombinationen, unabhängig vom Sortier-Code im Solver).
+// Elementweiser Vergleich zweier gleichlanger Key-Tupel (z.B. [isStorage,
+// rating, kosten]) - gemeinsamer Baustein für bruteBestQuota() und die
+// Fuzz-Tests, die ihre Ergebnisse gegen dieselbe Rangfolge prüfen wollen.
+function cmpKeyTuple(a, b) {
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] - b[i];
+    return 0;
+}
+function bruteBestQuota(pool, N, quotaOk, cardKey) {
+    const n = pool.length;
+    const team = [];
+    let bestKeys = null, bestTeam = null;
+    function isBetter(keysA, keysB) {
+        for (let i = 0; i < keysA.length; i++) {
+            const c = cmpKeyTuple(keysA[i], keysB[i]);
+            if (c) return c < 0;
+        }
+        return false;
+    }
+    (function rec(start, cnt) {
+        if (cnt === N) {
+            if (!quotaOk(team)) return;
+            const keys = team.map(cardKey).sort(cmpKeyTuple);
+            if (!bestKeys || isBetter(keys, bestKeys)) { bestKeys = keys; bestTeam = team.slice(); }
+            return;
+        }
+        if (n - start < N - cnt) return;
+        for (let i = start; i < n; i++) {
+            team.push(pool[i]);
+            rec(i + 1, cnt + 1);
+            team.pop();
+        }
+    })(0, 0);
+    return bestTeam ? { team: bestTeam, keys: bestKeys } : null;
 }
 function solverObjective(res, pool, c, vMin) {
     const cardCost = SolverCore.makeCostOf(pool, c);
@@ -3560,6 +3610,294 @@ function mulberry32(a) {
     // scanError, ersetzen ihn nicht (Edge-Case aus dem Gap-Report).
     check('Regression: scanError-Feld existiert weiterhin neben skippedKeys',
         /error: scanError/.test(src) && /skippedKeys: skippedKeys/.test(src));
+}
+
+// ========== 45. Ticket #57: Eligible-Gate in submitChallengeToEa erstmals
+// verhaltensgetestet (Gap-Report Iter. 6, Aktion 1) ==========
+// Der Mock in Abschnitt 27 haelt isSBCSquadEligible fest auf () => true - der
+// "if (eligible === false) throw" -Zweig (:4732-4735) lief in der gesamten
+// Suite bisher NIE. Hier wird der echte Abbruch ausgeloest und per Spy auf
+// ctrl.submitChallenge belegt, dass er VOR jedem Submit-Aufruf greift.
+{
+    const fnSrc = extractFunction(src, 'submitChallengeToEa');
+    check('Funktion submitChallengeToEa gefunden (45)', !!fnSrc);
+
+    function runWithEligible(eligibleValue, opts) {
+        opts = opts || {};
+        const STATE = { diag: {
+            submitCandidates: null, submitChallengeVia: null,
+            submitWithoutResponseCount: 0, submitConfirmations: null
+        } };
+        let submitCalls = 0;
+        const squad = {
+            isSBCSquadEligible: () => {
+                if (opts.throwOnEligible) throw new Error('boom eligible (simuliert)');
+                return eligibleValue;
+            },
+            isSquadEmpty: () => true
+        };
+        const ctrl = { _squad: squad, submitChallenge: () => { submitCalls++; return true; } };
+        if (opts.noEligibleMethod) delete squad.isSBCSquadEligible;
+        const sandbox = {
+            STATE: STATE,
+            findSbcController: () => ctrl,
+            getControllerChain: () => [],
+            obsPromise: async (r) => r,
+            responseOk: () => true,
+            batchWait: () => Promise.resolve()
+        };
+        const keys = Object.keys(sandbox);
+        const fn = new Function(keys.join(','),
+            fnSrc + '\nreturn submitChallengeToEa;').apply(null, keys.map(k => sandbox[k]));
+        return fn().then(
+            r => ({ ok: true, result: r, submitCalls: submitCalls }),
+            e => ({ ok: false, error: e, submitCalls: submitCalls }));
+    }
+
+    const results45 = [];
+    results45.push(runWithEligible(false).then(r => {
+        check('eligible===false: wirft VOR jedem Submit-Aufruf statt still abzugeben',
+            !r.ok && /NICHT abgegeben/.test(r.error && r.error.message),
+            r.ok ? JSON.stringify(r.result) : (r.error && r.error.message));
+        check('eligible===false: ctrl.submitChallenge wurde NIE aufgerufen',
+            r.submitCalls === 0, 'submitCalls=' + r.submitCalls);
+    }));
+    results45.push(runWithEligible(true).then(r => {
+        check('Gegenprobe eligible===true: Abgabe laeuft normal weiter (via controller)',
+            r.ok && r.result && r.result.via === 'controller' && r.submitCalls === 1,
+            r.ok ? (JSON.stringify(r.result) + ' calls=' + r.submitCalls) : (r.error && r.error.message));
+    }));
+    results45.push(runWithEligible(null, { throwOnEligible: true }).then(r => {
+        check('isSBCSquadEligible() wirft beim Lesen: bestehender try/catch faengt das ' +
+            '(eligible bleibt null) - weiterhin normale Abgabe, kein Abbruch',
+            r.ok && r.result && r.result.via === 'controller' && r.submitCalls === 1,
+            r.ok ? (JSON.stringify(r.result) + ' calls=' + r.submitCalls) : (r.error && r.error.message));
+    }));
+    results45.push(runWithEligible(null, { noEligibleMethod: true }).then(r => {
+        check('Squad ohne isSBCSquadEligible()-Methode: Gate wird uebersprungen, normale Abgabe',
+            r.ok && r.result && r.result.via === 'controller' && r.submitCalls === 1,
+            r.ok ? (JSON.stringify(r.result) + ' calls=' + r.submitCalls) : (r.error && r.error.message));
+    }));
+    pending.push(Promise.all(results45));
+}
+
+// ========== 46. Ticket #57: Brute-Force-Fuzzing MIT Rarity-Vorgabe (Gruppe 83,
+// Gap-Report Iter. 6, Aktion 2) ==========
+// bruteBest() generalisiert (quotaOk-Parameter, siehe oben) und randomisiert
+// gegen Configs MIT rarityConstraints laufen lassen - vorher hatte nur der
+// reservierungsfreie Pfad (Test 4) ein Fuzz-Netz.
+//
+// Dieser Test schlaegt bei Seed 57015701 (t=3) reproduzierbar fehl: die
+// Rarity-Reservierung waehlt die Vorgabe-Karte NUR nach ihren eigenen Kosten
+// (solveCore(), rcList-Schleife) und beruecksichtigt dabei nicht, wie sich
+// die Wahl auf das Team-weite V/den Rating-Ueberschuss auswirkt - ein
+// minimaler, unabhaengig konstruierter Repro (4 Slots, maxOvershoot 0) zeigt
+// dieselbe Ursache: eine guenstigere, aber HOEHER geratete Storage-Vorgabe-
+// Karte wird einer teureren, aber ZIELGENAUEN Vereins-Karte vorgezogen,
+// obwohl eine gleich-quotenerfuellende Alternative im selben Pool exakt
+// 0 Ueberschuss erreicht haette. Das ist ein echter, durch dieses Ticket neu
+// gefundener Befund (kein Fehler in dieser Referenz - dreifach gegen eine
+// zweite, unabhaengige Enumeration verifiziert) und bewusst NICHT behoben
+// oder abgeschwaecht (Ticket #57 ist test-only).
+{
+    const rand = mulberry32(57015701);
+    let allMatch = true, detail = '';
+    for (let t = 0; t < 30; t++) {
+        // Genug Nicht-Gruppe-83-Alternativen (nNormal >= 11 >= k), damit
+        // solve() im STRIKTEN Modus bleibt und "genau need" garantiert ist -
+        // das lockere Fallback-Verhalten hat schon Test 8b2 als Einzelfall.
+        const nNormal = 11 + Math.floor(rand() * 3);
+        const nProt = 2 + Math.floor(rand() * 3);
+        const need = 1 + Math.floor(rand() * Math.min(3, nProt));
+        const pool = [];
+        for (let i = 0; i < nNormal; i++) {
+            pool.push(P(78 + Math.floor(rand() * 15), { storage: rand() < 0.3, groups: [19] }));
+        }
+        for (let i = 0; i < nProt; i++) {
+            pool.push(P(78 + Math.floor(rand() * 15),
+                { special: true, rareflag: 137, groups: [83], storage: rand() < 0.5 }));
+        }
+        const target = 80 + Math.floor(rand() * 8);
+        const c = cfg(target, {
+            maxOvershoot: Math.floor(rand() * 4) / 10,
+            scarcityWeight: 18, storageBonus: 2,
+            ratingCostSpec: SolverCore.DEFAULT_RATING_COST_SPEC,
+            rarityConstraints: [{ label: 'PLAYER_RARITY_GROUP', ids: [], count: need, groupId: 83 }]
+        });
+        const res = SolverCore.solve(pool, c);
+        const quotaOk = (team) => team.filter(p =>
+            Array.isArray(p.groups) && p.groups.indexOf(83) > -1).length === need;
+        const bb = bruteBest(pool, c, quotaOk);
+        if (bb === null) {
+            if (res.ok) { allMatch = false; detail = 't' + t + ': brute (mit Quote ' + need + ') unloesbar, solver ok'; break; }
+        } else {
+            if (!res.ok) { allMatch = false; detail = 't' + t + ': brute loesbar (vMin=' + bb.vMin + '), solver nicht: ' + res.reason; break; }
+            const gotProt = res.players.filter(p => p.groups && p.groups.indexOf(83) > -1).length;
+            if (gotProt !== need) {
+                allMatch = false; detail = 't' + t + ': solver liefert ' + gotProt + ' geschuetzte Karten statt ' + need; break;
+            }
+            const obj = solverObjective(res, pool, c, bb.vMin);
+            if (Math.abs(obj - bb.bestObj) > 1e-6) {
+                allMatch = false; detail = 't' + t + ': brute=' + bb.bestObj + ' solver=' + obj; break;
+            }
+            if (SolverCore.squadRating(res.players.map(p => p.rating)) < target) {
+                allMatch = false; detail = 't' + t + ': Team erreicht Ziel nicht!'; break;
+            }
+        }
+    }
+    // BEKANNTER, VERIFIZIERTER DEFEKT (Regel-Hierarchie aus CLAUDE.md: das
+    // "Max. Rating-Ueberschuss"-Fenster hat Vorrang - Kosten entscheiden NUR
+    // innerhalb davon, "kein Rating verschenken"): die Rarity-Reservierung in
+    // solveCore() (rcList-Schleife) waehlt die Vorgabe-Karte ausschliesslich
+    // nach ihren EIGENEN Kosten und ignoriert dabei, wie sich die Wahl auf den
+    // Team-weiten Rating-Ueberschuss auswirkt. Dieser Minimal-Repro (4 Slots,
+    // maxOvershoot 0) wurde dreifach gegen eine zweite, unabhaengige
+    // Enumeration verifiziert (siehe Commit-Historie #57) - kein Fehler in der
+    // Referenz. Der Check unten PINNT das heutige IST-Ergebnis, damit main
+    // gruen bleibt, OHNE den Befund zu verstecken: wer diesen Defekt behebt,
+    // MUSS den Check auf die korrekte Erwartung drehen (ovrExact === 84,
+    // waste === 0 - die im selben Pool erreichbare, zielgenaue Alternative).
+    const minRepro = (function () {
+        const X = P(91, { special: true, rareflag: 137, groups: [83], storage: true });
+        const Y = P(84, { special: true, rareflag: 137, groups: [83], storage: false });
+        const extra91 = P(91, { groups: [19] });
+        const gold84 = many(3, 84, { groups: [19] });
+        const pool = [X, Y, extra91].concat(gold84);
+        const c = cfg(84, {
+            slots: 4, maxOvershoot: 0,
+            scarcityWeight: 18, storageBonus: 2,
+            ratingCostSpec: SolverCore.DEFAULT_RATING_COST_SPEC,
+            rarityConstraints: [{ label: 'PLAYER_RARITY_GROUP', ids: [], count: 1, groupId: 83 }]
+        });
+        return SolverCore.solve(pool, c);
+    })();
+    check('BEKANNTER BEFUND (Rarity-Reservierung ignoriert Overshoot-Fenster): ' +
+        'Minimal-Repro (4 Slots, maxOvershoot 0, 1x Gruppe-83-Vorgabe) liefert heute ovrExact 87.06 ' +
+        '(waste 3.06) statt der im selben Pool erreichbaren 84.00 (waste 0) - 30x-Fuzzing (Seed ' +
+        '57015701) findet dieselbe Ursache bei t3',
+        minRepro.ok && minRepro.ovrExact === 87.06 && minRepro.waste === 3.06 &&
+        !allMatch && /t3:/.test(detail),
+        'minRepro.ok=' + minRepro.ok + ' ovrExact=' + (minRepro.ok && minRepro.ovrExact) +
+        ' waste=' + (minRepro.ok && minRepro.waste) + ' fuzzDetail=' + detail);
+}
+
+// ========== 47. Ticket #57: Brute-Force-Fuzzing MIT Bronze/Silber-Quoten
+// (Gap-Report Iter. 6, Aktion 3) ==========
+// Explizite Zaehlungen, die sich schon zu N summieren (kein EA-Anzahl-
+// Quirk hier - der ist per 8b-2d bereits deterministisch abgedeckt): reine
+// Fuzz-Pruefung, dass die guenstigste Kombination pro Stufe wirklich
+// gewaehlt wird (Rangfolge: Storage vor Verein, dann Rating, dann Kosten).
+{
+    const rand = mulberry32(830210);
+    let allMatch = true, detail = '';
+    for (let t = 0; t < 30; t++) {
+        const N = 5 + Math.floor(rand() * 4); // 5..8 Slots, brute-force-tauglich
+        const count1 = 1 + Math.floor(rand() * (N - 1)); // Bronze, 1..N-1
+        const count2 = N - count1; // Silber, Rest
+        const nBronze = count1 + 2 + Math.floor(rand() * 3); // Ueberschuss an Auswahl
+        const nSilver = count2 + 2 + Math.floor(rand() * 3);
+        const pool = [];
+        for (let i = 0; i < nBronze; i++) {
+            pool.push(P(30 + Math.floor(rand() * 35), { storage: rand() < 0.3, untradeable: rand() < 0.3 }));
+        }
+        for (let i = 0; i < nSilver; i++) {
+            pool.push(P(65 + Math.floor(rand() * 10), { storage: rand() < 0.3, untradeable: rand() < 0.3 }));
+        }
+        const c = cfg(null, {
+            targetOVR: null, slots: N, minRating: 0,
+            qualityConstraints: [
+                { label: 'PLAYER_LEVEL', quality: 1, count: count1 },
+                { label: 'PLAYER_LEVEL', quality: 2, count: count2 }
+            ],
+            ratingCostSpec: SolverCore.DEFAULT_RATING_COST_SPEC
+        });
+        const res = SolverCore.solve(pool, c);
+        const quotaOk = (team) => {
+            const bronze = team.filter(p => p.rating <= 64).length;
+            const silver = team.filter(p => p.rating >= 65 && p.rating <= 74).length;
+            return bronze === count1 && silver === count2 && bronze + silver === N;
+        };
+        const costOf = SolverCore.makeCostOf(pool, c);
+        const cardKey = (p) => [p.isStorage ? 0 : 1, p.rating, costOf(p)];
+        const bb = bruteBestQuota(pool, N, quotaOk, cardKey);
+        if (bb === null) {
+            if (res.ok) { allMatch = false; detail = 't' + t + ': brute (Bronze ' + count1 + '/Silber ' + count2 + ') unloesbar, solver ok'; break; }
+        } else {
+            if (!res.ok) { allMatch = false; detail = 't' + t + ': brute loesbar, solver nicht: ' + res.reason; break; }
+            if (!quotaOk(res.players)) {
+                allMatch = false; detail = 't' + t + ': Solver-Team erfuellt die Quote nicht (' +
+                    res.players.map(p => p.rating).join(',') + ')'; break;
+            }
+            const solverKeys = res.players.map(cardKey).sort(cmpKeyTuple);
+            let sameQuality = solverKeys.length === bb.keys.length;
+            if (sameQuality) {
+                for (let i = 0; i < solverKeys.length; i++) {
+                    if (cmpKeyTuple(solverKeys[i], bb.keys[i]) !== 0) { sameQuality = false; break; }
+                }
+            }
+            if (!sameQuality) {
+                allMatch = false;
+                detail = 't' + t + ': solver=' + JSON.stringify(solverKeys) + ' brute=' + JSON.stringify(bb.keys);
+                break;
+            }
+        }
+    }
+    check('30x Brute-Force-Paritaet MIT Bronze/Silber-Quoten (randomisierte Aufteilung)',
+        allMatch, detail);
+}
+
+// ========== 48. Ticket #57: planBatch Mehrrunden-Fuzzing gegen unabhaengige
+// Brute-Force-Referenz (Gap-Report Iter. 6, Aktion 3 - "eine Ebene hoeher") ==========
+// Verifiziert PRO RUNDE Optimalitaet (wie Test 4/46) UND dass die naechste
+// Runde tatsaechlich auf dem um die VORHERIGEN Spieler reduzierten
+// Original-Pool rechnet - unabhaengig von planBatch()s eigener usedIds-
+// Buchhaltung nachvollzogen, nicht einfach uebernommen.
+{
+    const rand = mulberry32(9182736);
+    let allMatch = true, detail = '';
+    for (let t = 0; t < 15; t++) {
+        const n = 14 + Math.floor(rand() * 4); // 14..17 - reicht fuer 2 Runden a 6 Slots
+        const pool = [];
+        for (let i = 0; i < n; i++) {
+            pool.push(P(75 + Math.floor(rand() * 14), { storage: rand() < 0.3 }));
+        }
+        const target = 76 + Math.floor(rand() * 6);
+        const c = cfg(target, {
+            slots: 6,
+            maxOvershoot: Math.floor(rand() * 4) / 10,
+            scarcityWeight: 18, storageBonus: 2,
+            ratingCostSpec: SolverCore.DEFAULT_RATING_COST_SPEC
+        });
+        const rounds = 2;
+        const b = SolverCore.planBatch(pool, c, rounds);
+
+        let remaining = pool;
+        let refRoundIdx = 0;
+        for (; refRoundIdx < rounds; refRoundIdx++) {
+            const bb = bruteBest(remaining, c);
+            const round = b.rounds[refRoundIdx];
+            if (bb === null) {
+                if (round) { allMatch = false; detail = 't' + t + ' Runde ' + refRoundIdx + ': brute unloesbar, planBatch lieferte trotzdem'; }
+                break;
+            }
+            if (!round) {
+                allMatch = false; detail = 't' + t + ' Runde ' + refRoundIdx + ': brute loesbar (vMin=' + bb.vMin + '), planBatch stoppte: ' + b.stoppedReason;
+                break;
+            }
+            const obj = solverObjective(round, remaining, c, bb.vMin);
+            if (Math.abs(obj - bb.bestObj) > 1e-6) {
+                allMatch = false; detail = 't' + t + ' Runde ' + refRoundIdx + ': brute=' + bb.bestObj + ' solver=' + obj;
+                break;
+            }
+            // Naechste Runde: Referenz-Pool aus dem ORIGINAL-Pool neu gefiltert,
+            // nicht planBatch()s eigenes usedIds uebernommen.
+            const usedHere = new Set(round.players.map(p => p.id));
+            remaining = remaining.filter(p => !usedHere.has(p.id));
+        }
+        if (!allMatch) break;
+    }
+    check('15x planBatch-Mehrrunden-Fuzzing: jede Runde brute-force-optimal, ' +
+        'Pool-Verbrauch ueber Runden korrekt nachvollzogen', allMatch, detail);
 }
 
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt

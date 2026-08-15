@@ -4604,7 +4604,7 @@
             let empty = null;
             try { if (sq && typeof sq.isSquadEmpty === 'function') empty = sq.isSquadEmpty(); }
             catch (e) {}
-            if (ctrl && sq && matchesPlannedSbc(plan) && empty !== false) {
+            if (ctrl && sq && isFreshMatchingInstance(plan, STATE.sbc, empty)) {
                 steps.push({ ms: Date.now() - t0, done: true, clicked: clicked });
                 return { ok: true, steps: steps };
             }
@@ -4633,7 +4633,7 @@
                     empty: empty
                 } });
             }
-            if (ctrl && (i === 5 || i === 25)) {
+            if (ctrl && shouldTryBack(i)) {
                 const b = clickBackButton();
                 steps.push({ ms: Date.now() - t0, back: b });
                 if (b.ok) { wentBack = true; await batchWait(900); continue; }
@@ -4889,6 +4889,10 @@
         // Die erste Zeile ist die noch offene Wiederholung.
         return { ok: clickLike(rows[0]), why: rows.length + ' Zeile(n), erste geklickt' };
     }
+    // Eigene, pur testbare Bedingung statt inline in openNextInstance - der
+    // v4.36.0-Live-Vorfall (App blieb im Squad-View haengen) war bisher nur per
+    // Text-Match belegt, nicht per Verhaltenstest.
+    function shouldTryBack(i) { return i === 5 || i === 25; }
     /**
      * Den Zurueck-Pfeil der App-Kopfleiste klicken. Gebraucht, wenn die App
      * nach dem Abgeben im Squad-View haengen bleibt (live beim 4/5-Abbruch):
@@ -4952,6 +4956,16 @@
         if (String(STATE.sbc.targetOVR || '') !== String(plan.targetOVR || '')) return false;
         if (Number(STATE.sbc.formationSlots || 0) !== Number(plan.slots || 0)) return false;
         return true;
+    }
+    // Sperre gegen eine bereits abgegebene Instanz: passt die offene SBC den
+    // Vorgaben nach, aber ihre challengeId steckt schon in plan.usedChallengeIds
+    // (onBatchRunClick traegt sie dort nach jeder Abgabe ein), ist es im
+    // Retry-Fenster die ALTE Instanz, nicht die neue - "jede Wiederholung hat
+    // eine eigene challengeId" (CLAUDE.md). Bisher nur beobachtet
+    // (usedInstance im stuck-Diagnosezweig), hier erstmals durchgesetzt.
+    function isFreshMatchingInstance(plan, sbcState, squadEmpty) {
+        return !!(matchesPlannedSbc(plan) && squadEmpty !== false &&
+            (plan.usedChallengeIds || []).indexOf(String(sbcState.challengeId)) === -1);
     }
     async function onBatchPlanClick() {
         syncSbcWithOpenChallenge();

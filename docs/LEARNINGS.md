@@ -490,6 +490,15 @@ Listener an einem gesetzten ui-Feld haengt.
   öffnet sich das Panel bei jedem Verschieben.
 - Gemerkte Positionen nach `resize` neu einklemmen: nach Drehen des Handys
   liegt eine gespeicherte Position sonst außerhalb des Bildschirms.
+- **Der Rating-Kosten-Band-Editor (`defaultBands()`) ist an die Solver-Konstante
+  `DEFAULT_RATING_COST_SPEC` gekoppelt** (SSOT, per `[BANDS-BEGIN]`/`[BANDS-END]`
+  in `solver-test.js` abgesichert): `defaultBands()` leitet die Reset-Bänder aus
+  `SolverCore.parseRatingCosts(DEFAULT_RATING_COST_SPEC)` ab, statt die Tabelle
+  als zweites Literal zu pflegen. Änderungen an der Kosten-Tabelle gehören daher
+  ausschließlich an die Stelle der Solver-Konstante — der Reset-Button zieht sie
+  automatisch nach. Gespeicherte Nutzer-Bands in `localStorage['sbcOptRatingBands']`
+  bleiben von einer solchen Änderung unberührt, bis der Nutzer aktiv
+  "Zurücksetzen" drückt.
 
 ## 11. Test-Harness
 

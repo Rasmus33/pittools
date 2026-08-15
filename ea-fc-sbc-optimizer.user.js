@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.43.0
+// @version      4.44.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.43.0';
+    const VERSION = '4.44.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -785,25 +785,20 @@
      */
     function syncSbcWithOpenChallenge() {
         try {
-            for (const c of getControllerChain()) {
-                const n = (c.constructor && c.constructor.name) || '';
-                if (!/sbc/i.test(n)) continue;
-                let ch = null;
-                for (const key of ['_overviewController', 'leftController', '_leftController']) {
-                    const oc = c[key];
-                    if (oc && oc._challenge && typeof oc._challenge === 'object') { ch = oc._challenge; break; }
+            // findLiveChallenge() ist SSOT fuer dieselbe Suche (Q4/Q5, siehe
+            // patterns/bad/helfer-existiert-wird-umgangen.md) - liefert zusaetzlich
+            // STATE.sbc.entity als Fallback (reine Erweiterung: captureChallengeEntity()
+            // no-op bei Nicht-Objekten, kein Verlust eines bestehenden Rueckgabewerts).
+            const ch = findLiveChallenge();
+            if (ch) {
+                const prevId = STATE.sbc.challengeId;
+                captureChallengeEntity(ch);
+                if (STATE.sbc.challengeId !== prevId) {
+                    log('SBC aus offener Ansicht synchronisiert: Challenge', STATE.sbc.challengeId, '(vorher', prevId + ')');
                 }
-                ch = ch || (c._challenge && typeof c._challenge === 'object' ? c._challenge : null);
-                if (ch) {
-                    const prevId = STATE.sbc.challengeId;
-                    captureChallengeEntity(ch);
-                    if (STATE.sbc.challengeId !== prevId) {
-                        log('SBC aus offener Ansicht synchronisiert: Challenge', STATE.sbc.challengeId, '(vorher', prevId + ')');
-                    }
-                    return true;
-                }
+                return true;
             }
-        } catch (e) { warn('SBC-Sync fehlgeschlagen:', e.message); }
+        } catch (e) { reportError('syncSbcWithOpenChallenge', e); }
         return false;
     }
     // ========================================================================
@@ -2637,7 +2632,13 @@
         const sbcSvc = window.services && window.services.SBC;
         if (!sbcSvc || typeof sbcSvc.saveChallenge !== 'function')
             throw new Error('services.SBC.saveChallenge nicht verfügbar.');
-        // Live-Controller der offenen SBC-Ansicht suchen
+        // Live-Controller der offenen SBC-Ansicht suchen. Bewusst NICHT
+        // findSbcController(): dies ist Submit-Weg 0 (LEARNINGS §5, CLAUDE.md
+        // "Nicht anfassen ohne Grund", der einzige Weg ohne F5) - die Duplikation
+        // der "letzter Treffer gewinnt"-Traversal ist hier gewollt, ein Umbau auf
+        // den Helfer wuerde das Regressionsrisiko am kritischsten Pfad erhoehen,
+        // ohne einen Fehler zu beheben (siehe
+        // patterns/bad/helfer-existiert-wird-umgangen.md, Abschnitt "Pattern").
         let ctrl = null;
         for (const c of getControllerChain()) {
             const n = (c.constructor && c.constructor.name) || '';
@@ -2647,7 +2648,9 @@
         const liveSquad = ctrl._squad || (ctrl.getSquad && ctrl.getSquad());
         if (!liveSquad || typeof liveSquad.setPlayers !== 'function')
             throw new Error('Live-Squad hat kein setPlayers().');
-        // Die Challenge, an der die Ansicht hängt (PaleTools: _leftController._challenge)
+        // Die Challenge, an der die Ansicht hängt (PaleTools: _leftController._challenge).
+        // Bewusst NICHT findLiveChallenge(): dieselbe Weg-0-Ausnahme wie oben -
+        // Submit-Weg 0 bleibt unangetastet, siehe LEARNINGS §5.
         let challenge = null;
         for (const key of ['_overviewController', 'leftController', '_leftController']) {
             const oc = ctrl[key];
@@ -2775,6 +2778,7 @@
         return p.raw || { id: p.id };
     }
     // View-Controller-Kette der App einsammeln (Root -> aktiver Controller).
+    // [CTRL-BEGIN]
     function getControllerChain() {
         const out = [];
         try {
@@ -2800,33 +2804,23 @@
         } catch (e) {}
         return out;
     }
+    // [CTRL-END]
     // CONTROLLER-SCAN: läuft die View-Controller-Kette der App entlang und
     // sammelt Klassennamen, squad-bezogene Methoden und SBC-Felder des
     // aktiven Controllers - die Landkarte für gezielte UI-Refreshes.
     function controllerScan() {
         const out = [];
         try {
-            let cur = (typeof window.getAppMain === 'function') ? window.getAppMain() : null;
-            if (!cur) return ['getAppMain fehlt'];
-            const chainFns = ['getRootViewController', 'getPresentedViewController', 'getCurrentViewController', 'getCurrentController'];
-            const visited = new Set();
-            let depth = 0;
-            while (cur && depth < 12 && !visited.has(cur)) {
-                visited.add(cur);
-                out.push(((cur.constructor && cur.constructor.name) || '?'));
-                let next = null;
-                for (const fn of chainFns) {
-                    if (typeof cur[fn] === 'function') {
-                        try {
-                            const cand = cur[fn]();
-                            if (cand && typeof cand === 'object' && !visited.has(cand)) { next = cand; break; }
-                        } catch (e) {}
-                    }
-                }
-                if (!next) break;
-                cur = next;
-                depth++;
-            }
+            // Traversal ueber getControllerChain() statt eigenem Nachbau (Q4/Q5 -
+            // SSOT, siehe patterns/bad/helfer-existiert-wird-umgangen.md). Bewusste
+            // Angleichung: diese Funktion begrenzte vorher auf depth<12,
+            // getControllerChain() auf depth<14 - jetzt einheitlich depth<14 (zwei
+            // Ebenen mehr Toleranz, kein Verlust), abgesichert durch den
+            // Tiefe-13-Testfall in solver-test.js.
+            const chain = getControllerChain();
+            if (!chain.length) return ['getAppMain fehlt'];
+            for (const c of chain) out.push(((c.constructor && c.constructor.name) || '?'));
+            const cur = chain[chain.length - 1];
             if (cur) {
                 const methods = [];
                 let proto = cur;
@@ -2898,28 +2892,11 @@
         const report = [];
         let ok = false;
         try {
-            let cur = (typeof window.getAppMain === 'function') ? window.getAppMain() : null;
-            if (!cur) { STATE.diag.refreshLog = ['getAppMain fehlt']; return false; }
-            const chainFns = ['getRootViewController', 'getPresentedViewController', 'getCurrentViewController', 'getCurrentController'];
-            const visited = new Set();
-            const controllers = [];
-            let depth = 0;
-            // Controller-Kette einsammeln
-            while (cur && depth < 14 && !visited.has(cur)) {
-                visited.add(cur);
-                controllers.push(cur);
-                let next = null;
-                for (const fn of chainFns) {
-                    if (typeof cur[fn] === 'function') {
-                        try {
-                            const c = cur[fn]();
-                            if (c && typeof c === 'object' && !visited.has(c)) { next = c; break; }
-                        } catch (e) {}
-                    }
-                }
-                if (!next) break;
-                cur = next; depth++;
-            }
+            // Traversal ueber getControllerChain() statt eigenem Nachbau (Q4/Q5 -
+            // SSOT, siehe patterns/bad/helfer-existiert-wird-umgangen.md) - war
+            // hier bereits depth<14 wie der Helfer, keine Divergenz zu harmonisieren.
+            const controllers = getControllerChain();
+            if (!controllers.length) { STATE.diag.refreshLog = ['getAppMain fehlt']; return false; }
             function viewOf(o) {
                 try { return (typeof o.getView === 'function') ? o.getView() : o._view; }
                 catch (e) { return null; }
@@ -5135,20 +5112,29 @@
     // findLiveChallenge/findSbcController werden vom aktiven, automatischen
     // Batch-Lauf (onBatchRunClick, siehe CLAUDE.md "Batch-Modus darf abgeben")
     // UND vom Diagnose-Report genutzt, um zu pruefen, ob eine Challenge offen ist.
+    // [SBCCTRL-BEGIN]
     function findLiveChallenge() {
         for (const c of getControllerChain()) {
             const n = (c.constructor && c.constructor.name) || '';
             if (!/sbc/i.test(n)) continue;
             for (const key of ['_overviewController', 'leftController', '_leftController']) {
                 const oc = c[key];
-                if (oc && oc._challenge) return oc._challenge;
+                // typeof-Objekt-Guard: eine truthy, aber nicht-objekthafte
+                // _challenge (z.B. eine rohe ID statt der Challenge-Entity)
+                // darf die Suche nicht vorzeitig mit einem unbrauchbaren Fund
+                // beenden - captureChallengeEntity() erwartet ein echtes Objekt.
+                if (oc && oc._challenge && typeof oc._challenge === 'object') return oc._challenge;
             }
-            if (c._challenge) return c._challenge;
+            if (c._challenge && typeof c._challenge === 'object') return c._challenge;
         }
         return STATE.sbc.entity || null;
     }
     /** Der SBC-Controller der offenen Ansicht (mit Squad). */
     function findSbcController() {
+        // "Letzter Treffer gewinnt" ist bewusst - siehe
+        // patterns/bad/helfer-existiert-wird-umgangen.md, Abschnitt "Edge-Cases":
+        // beim PC-Split-View-Stack sind mehrere /sbc/i-Controller gleichzeitig
+        // sichtbar, der zuletzt gefundene ist der tatsaechlich aktive.
         let found = null;
         for (const c of getControllerChain()) {
             const n = (c.constructor && c.constructor.name) || '';
@@ -5156,6 +5142,7 @@
         }
         return found;
     }
+    // [SBCCTRL-END]
     async function submitCurrentResult() {
         const res = STATE.lastResult;
         if (!res || !res.ok) {

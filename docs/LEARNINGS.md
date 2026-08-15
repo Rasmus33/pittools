@@ -1087,3 +1087,42 @@ kostete einen kompletten Ladevorgang (Paragraph 7). Seit v4.32.0 gilt:
 
 Getestet in `solver-test.js` ueber die echte Funktions-Simulation
 (Kalibrierung, Rate-Limit-Retry, Selbstbremsen-Gap, Diagnose-Report).
+
+## 31. Ein Helfer-Cluster fuer die View-Controller-Kette
+
+`getControllerChain()` ist die einzige Traversierung der View-Controller-Kette
+(Root -> aktiver Controller, `window.getAppMain()` + `chainFns`
+`getRootViewController`/`getPresentedViewController`/
+`getCurrentViewController`/`getCurrentController`, Tiefenschranke
+`depth<14`). `controllerScan()` (Diagnose-Report) und `refreshOpenSbcView()`
+(Fallback-Refresh nach gescheitertem Submit) rufen sie auf und arbeiten mit
+derselben Tiefenschranke - ein synthetischer Controller-Baum bis Tiefe 13
+(`solver-test.js` Abschnitt 24) haelt das fest, ebenso wie `findSbcController()`s
+"letzter Treffer gewinnt" (PC-Split-View zeigt mehrere `/sbc/i`-Controller
+gleichzeitig, der zuletzt gefundene ist der aktive - Abschnitt 19) bei
+mindestens zwei Kandidaten im selben Baum.
+
+`syncSbcWithOpenChallenge()` (Pre-Submit-Sync vor `submitCurrentResult()`)
+ruft `findLiveChallenge()` auf und meldet einen Fehlschlag ueber
+`reportError()` (Zwei-Kanal, `STATE.diag.lastErrors`, Abschnitt 29).
+`findLiveChallenge()` prueft bei jedem Kandidaten `typeof _challenge ===
+'object'`, bevor er zurueckgegeben wird - dieselbe Pruefung gilt fuer alle
+Aufrufer (Batch-Lauf, Diagnose-Report, `syncSbcWithOpenChallenge()`) und
+faellt sonst auf `STATE.sbc.entity` zurueck, wenn kein Controller im Baum
+passt.
+
+`submitViaApp()` (Submit-Weg 0, Abschnitt 5) baut Controller- und
+Challenge-Suche bewusst selbst nach, mit WARUM-Kommentaren direkt an der
+Stelle: ein Umbau auf die Helfer erhoeht das Regressionsrisiko am
+kritischsten Pfad, ohne einen Fehler zu beheben.
+
+`solver-test.js` Abschnitt 24 extrahiert `getControllerChain()`/
+`findSbcController()`/`findLiveChallenge()` per Marker (`[CTRL-BEGIN]`/
+`[CTRL-END]`, `[SBCCTRL-BEGIN]`/`[SBCCTRL-END]`) aus der ausgelieferten Datei
+und spielt sie gegen einen konstruierten View-Controller-Baum durch (Reihenfolge,
+Tiefe, "letzter Treffer gewinnt", alle drei Challenge-Key-Varianten
+`_overviewController`/`leftController`/`_leftController` inklusive
+`STATE.sbc.entity`-Fallback), dazu statische Regressionstests, dass
+`controllerScan()`/`refreshOpenSbcView()`/`syncSbcWithOpenChallenge()` die
+Helfer tatsaechlich aufrufen und `submitViaApp()` seine eigene Traversal
+behaelt.

@@ -134,7 +134,8 @@
             lastTap: null,           // letzter simulierter Tap: Events/Position/Abdeckung/Popup
             scanStats: null,         // Traversal-Metriken (visitedCount/depthCapped/budgetExhausted) von deepScan/findNode/collectNodes - reine Beobachtung, kein Abbruchkriterium (LEARNINGS 37)
             utasUnclassified: 0,     // /ut/game/-URLs, die classifyUrl() nicht zuordnen konnte (LEARNINGS 38)
-            lastUnclassifiedPaths: [] // 5er-Ring der zugehoerigen Pfade (IDs maskiert)
+            lastUnclassifiedPaths: [], // 5er-Ring der zugehoerigen Pfade (IDs maskiert)
+            popupDismissCount: 0     // wie oft dismissRewardPopup() seit App-Start wirklich etwas geschlossen hat (analog batchStuckCount, LEARNINGS §27)
         }
     };
     function log(...args) { try { console.log(LOG_PREFIX, ...args); } catch (e) {} }
@@ -4065,6 +4066,11 @@
             // v4.36.0-Live-Vorfall ueber mehrere Laeufe hinweg messbar statt
             // nur aus einem einzelnen LEARNINGS-Eintrag ablesbar.
             batchStuckCount: STATE.diag.batchStuckCount || 0,
+            // Wie oft hat dismissRewardPopup() seit App-Start wirklich etwas
+            // geschlossen? Der letzte Snapshot (popupState in lastTap) zeigt nur
+            // den Einzelfall - ein wiederkehrender Popup-Typ, der Zeit im
+            // 300ms-Fenster frisst, wird erst ueber die Haeufigkeit sichtbar.
+            popupDismissCount: STATE.diag.popupDismissCount || 0,
             // Welches Team hat der Solver zuletzt geliefert (id/assetId/rating/
             // storage)? Bei HTTP 460 ist hier direkt zu sehen, ob eine Karte
             // oder ein Spieler doppelt drin war.
@@ -4683,6 +4689,7 @@
                 }
             }
         } catch (e) {}
+        if (closed) STATE.diag.popupDismissCount = (STATE.diag.popupDismissCount || 0) + 1;
         return closed;
     }
     /**

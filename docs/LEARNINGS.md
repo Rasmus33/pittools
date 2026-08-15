@@ -1492,7 +1492,7 @@ Diagnose-Reports neben `containerVisible`.
 `onRunClick()` umschliesst `readConfig()` jetzt mit demselben Try/Catch, der
 zuvor nur `SolverCore.solve()` deckte - wirft `readConfig()` bei einer
 fehlenden `ui.*`-DOM-Referenz, laeuft der Catch-Zweig (Toast, `setStatus('Fehler')`,
-`reportError('readConfig fehlgeschlagen', e)`) statt dass der Fehler
+`reportError('onRunClick: readConfig/solve fehlgeschlagen', e)`) statt dass der Fehler
 unabgefangen durch die `finally` nach aussen durchreicht. Identischer Stil wie
 der bestehende Catch in `onBatchPlanClick()` um denselben `readConfig()`-Aufruf
 - eine Fehlerkonvention fuer beide Aufrufer statt eines neuen `{ok,why}`-Vertrags.

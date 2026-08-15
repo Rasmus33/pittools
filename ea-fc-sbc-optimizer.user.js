@@ -3175,6 +3175,7 @@
             font-size:13px; line-height:1;
         }
         .sbc-opt-bandrow.sbc-opt-dragover { outline:2px dashed #00e0b8; border-radius:6px; }
+        .sbc-opt-bandrow.sbc-opt-bandinvalid { outline:2px solid #ff5470; border-radius:6px; }
         #sbc-opt-toast-wrap {
             position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%);
             z-index: 1000000; display:flex; flex-direction:column; gap:8px; align-items:center;
@@ -3433,24 +3434,38 @@
     }
     // ---- Rating-Kosten Band-Editor ------------------------------------------
     let ratingBands = [];
+    // [BANDS-BEGIN]
+    // Leitet die Reset-Bänder aus SolverCore.DEFAULT_RATING_COST_SPEC ab (SSOT,
+    // siehe LEARNINGS §10) statt sie als zweites Literal zu pflegen: eine
+    // Bandgrenze entsteht überall dort, wo sich der geparste Kostenwert ändert.
     function defaultBands() {
-        return [
-            { lo: 0, hi: 80, cost: 0 },
-            { lo: 81, hi: 83, cost: 2 },
-            { lo: 84, hi: 84, cost: 1 },
-            { lo: 85, hi: 86, cost: 5 },
-            { lo: 87, hi: 88, cost: 2 },
-            { lo: 89, hi: 90, cost: 3 },
-            { lo: 91, hi: 92, cost: 4 },
-            { lo: 93, hi: 99, cost: 12 }
-        ];
+        const costOf = SolverCore.parseRatingCosts(SolverCore.DEFAULT_RATING_COST_SPEC);
+        const bands = [];
+        let lo = 0, cost = costOf(0);
+        for (let r = 1; r <= 99; r++) {
+            const c = costOf(r);
+            if (c !== cost) {
+                bands.push({ lo: lo, hi: r - 1, cost: cost });
+                lo = r; cost = c;
+            }
+        }
+        bands.push({ lo: lo, hi: 99, cost: cost });
+        return bands;
     }
+    // Kehrfunktion zu parseRatingCosts(): die Kurzformen (lo===hi bzw. hi===99)
+    // sind Pflicht, damit bandsToSpec(defaultBands()) exakt den Wortlaut von
+    // DEFAULT_RATING_COST_SPEC ergibt (Drift-Wächter in solver-test.js).
     function bandsToSpec(bands) {
         return bands
             .filter(b => b.lo != null && b.hi != null && b.cost != null)
-            .map(b => b.lo + '-' + b.hi + ':' + b.cost)
+            .map(function (b) {
+                if (b.lo === b.hi) return b.lo + ':' + b.cost;
+                if (b.hi >= 99) return b.lo + '+:' + b.cost;
+                return b.lo + '-' + b.hi + ':' + b.cost;
+            })
             .join(', ');
     }
+    // [BANDS-END]
     function saveBands() {
         try { localStorage.setItem('sbcOptRatingBands', JSON.stringify(ratingBands)); } catch (e) {}
     }
@@ -3477,6 +3492,7 @@
         ratingBands.forEach(function (band, i) {
             const row = document.createElement('div');
             row.className = 'sbc-opt-bandrow';
+            if (band.lo > band.hi) row.classList.add('sbc-opt-bandinvalid');
             // Drag-Handle zum Umsortieren der Zeilen
             const handle = document.createElement('span');
             handle.className = 'sbc-opt-draghandle';
@@ -3519,6 +3535,15 @@
                 band.hi = Math.max(0, Math.min(99, parseInt(hi.value, 10) || 0));
                 band.cost = Math.max(0, parseFloat(String(cost.value).replace(',', '.')) || 0);
                 saveBands();
+                // parseRatingCosts() überspringt lo>hi lautlos (die Schleife
+                // läuft dann nie) - eigene Fachentscheidung, keine EA-Grenze,
+                // also sichtbares Feedback statt stillem No-Op.
+                const invalid = band.lo > band.hi;
+                row.classList.toggle('sbc-opt-bandinvalid', invalid);
+                if (invalid) {
+                    warn('Rating-Kosten-Band ' + band.lo + '-' + band.hi + ' ist ungültig (lo>hi) und wirkt nicht.');
+                    toast('Band ' + band.lo + '-' + band.hi + ' ist ungültig (lo>hi) und wird ignoriert.', 'warn');
+                }
             }
             lo.addEventListener('change', upd);
             hi.addEventListener('change', upd);

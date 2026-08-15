@@ -788,7 +788,7 @@
             // findLiveChallenge() ist SSOT fuer dieselbe Suche (Q4/Q5, siehe
             // patterns/bad/helfer-existiert-wird-umgangen.md) - liefert zusaetzlich
             // STATE.sbc.entity als Fallback (reine Erweiterung: captureChallengeEntity()
-            // no-opt bei Nicht-Objekten, kein Verlust eines bestehenden Rueckgabewerts).
+            // no-op bei Nicht-Objekten, kein Verlust eines bestehenden Rueckgabewerts).
             const ch = findLiveChallenge();
             if (ch) {
                 const prevId = STATE.sbc.challengeId;
@@ -5119,9 +5119,10 @@
             if (!/sbc/i.test(n)) continue;
             for (const key of ['_overviewController', 'leftController', '_leftController']) {
                 const oc = c[key];
-                // typeof-Objekt-Guard: uebernommen aus syncSbcWithOpenChallenge()s
-                // frueherer Inline-Fassung, damit die Konsolidierung auf diesen
-                // Helfer (Q4/Q5) keine Karten-Objekt-Pruefung verliert.
+                // typeof-Objekt-Guard: eine truthy, aber nicht-objekthafte
+                // _challenge (z.B. eine rohe ID statt der Challenge-Entity)
+                // darf die Suche nicht vorzeitig mit einem unbrauchbaren Fund
+                // beenden - captureChallengeEntity() erwartet ein echtes Objekt.
                 if (oc && oc._challenge && typeof oc._challenge === 'object') return oc._challenge;
             }
             if (c._challenge && typeof c._challenge === 'object') return c._challenge;

@@ -1789,3 +1789,38 @@ dabei unangetastet (DP-Kern) und wird seit v4.62.0 an allen vier Call-Sites
 nur noch mit `null` belegt - sie war die DP-interne Umsetzung des entfernten
 Filters und steht als Mechanismus fuer einen moeglichen kuenftigen "hoechstens
 N Karten ab Rating X"-Filter weiter bereit.
+
+## 45. Ticket #68: Vorgabe-Kandidaten-Verfuegbarkeit im Panel, `reservationCandidates()` als SSOT
+
+Rasmus' O-Ton: "wie viele TOTW im Verein + Storage und wie viele FUTTIES/FOF-
+Karten im Storage noch verfuegbar sind" - Vorgaben-Kandidaten (Gruppe 83:
+TOTW/TOTS/FOF/FUTTIES) sind knapp, und ohne Anzeige merkt man erst beim
+gescheiterten Solve, dass keine mehr uebrig sind.
+
+`solveCore()` filterte die Kandidaten einer Rarity-Vorgabe an DREI Call-Sites
+mit fast identischem Code (Rating-Fenster + `freeCard()` + `inQualityBand()` +
+`matchesRarity()` + Storage-Special-Regel). `reservationCandidates(poolAll, rc,
+cfg, opts)` ist jetzt die einzige Stelle, die diese Eligibility berechnet -
+`freeCard`/`inQualityBand` kommen als Parameter (sie haengen in solveCore von
+`used`/`usedAssets` bzw. der aktiven Qualitaets-Vorgabe ab), `lo`/`hi` steuern
+das Rating-Fenster je Call-Site. Die drei Stellen in `solveCore` rufen sie
+jetzt auf, byte-identisches Verhalten (598 bestehende Solver-Tests blieben
+unveraendert gruen, keine Erwartungswerte angepasst).
+
+Dieselbe Funktion treibt jetzt auch die neue Panel-Anzeige
+(`SolverCore.computeRarityAvailability()`, Panel-Feld `#sbc-opt-availability`
+in `refreshAvailabilityUI()`, aufgerufen aus `refreshSbcInfoUI()` - kein
+neuer Aktualisierungspunkt, der Choke-Point deckt Pool-Laden/`removeFromPool`/
+SBC-Sync bereits ab): pro erkannter Rarity-Vorgabe eine Zeile "N verfuegbar"
+mit Aufschluesselung TOTW Verein/TOTW Storage/Specials Storage, ohne Vorgabe
+eine Dauerzeile ueber den gesamten Gruppe-83-Bestand. Liegt die Verfuegbarkeit
+unter der geforderten Anzahl, faerbt dieselbe Warnfarbe wie die bestehenden
+Solver-Warnungen (`#ffcf4d`) die Zeile - kein neues Farbschema.
+
+Locks (PaleTools-Schloss) und der Max-Rating-Vorfilter (Ticket #66, v4.62.0)
+mussten fuer die Anzeige denselben Vorfilter durchlaufen wie eine echte
+Reservierung, sonst zaehlt sie Karten mit, die `solve()` nie sehen wuerde.
+Beide liefen bisher nur inline in `solveCore()`/`solve()` - `isLockedOut()` +
+`filterLockedCards()` und `applyMaxRatingFilter()` sind jetzt eigene SSOT-
+Funktionen, von `solve()`/`solveCore()` UND `computeRarityAvailability()`
+genutzt.

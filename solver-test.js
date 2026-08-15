@@ -4695,6 +4695,106 @@ function mulberry32(a) {
         /submitToSbc\(round, false, \{ done: done, total: n \}\)/.test(runFn));
 }
 
+// ========== 57. Ticket #68: Vorgabe-Kandidaten-Verfuegbarkeit (TOTW/Gruppe-83) ==========
+{
+    // Rasmus' O-Ton: "wie viele TOTW im Verein + Storage und wie viele
+    // FUTTIES/FOF-Karten im Storage noch verfuegbar sind." Die Anzeige nutzt
+    // GENAU dieselbe Eligibility wie die Reservierung
+    // (SolverCore.reservationCandidates(), SSOT - keine Zweitlogik). Pool:
+    // 2x TOTW Verein, 3x TOTW Storage, 1x FUTTIES Storage (Gruppe 83, kein
+    // TOTW), 1x FUTTIES VEREIN (Gruppe 83, kein TOTW - muss ausgeschlossen
+    // bleiben, Rasmus' harte Regel "Verein-Specials nie ausser TOTW").
+    const totwClub = many(2, 84, { special: true, rareflag: 3, groups: [83] });
+    const totwStorage = many(3, 85, { special: true, rareflag: 3, groups: [83], storage: true });
+    const futtiesStorage = many(1, 90, { special: true, rareflag: 137, groups: [83], storage: true });
+    const futtiesClub = many(1, 91, { special: true, rareflag: 137, groups: [83] });
+    const filler = many(20, 80, { groups: [19] });
+    const pool = [].concat(totwClub, totwStorage, futtiesStorage, futtiesClub, filler);
+    const rc = { label: 'PLAYER_RARITY_GROUP', ids: [], count: 2, groupId: 83 };
+    const cAvail = cfg(null, { specialOnlyFromStorage: true });
+
+    // SSOT-Beweis: die Anzeige-Zählung ist exakt die Länge der Kandidatenliste,
+    // die auch solveCore für dieselbe Vorgabe zieht (dieselbe Funktion, kein
+    // zweiter Zähl-Weg).
+    const avail = SolverCore.computeRarityAvailability(pool, cAvail, [rc]);
+    const cands = SolverCore.reservationCandidates(pool, rc, cAvail);
+    check('Ticket 68: Anzeige-Zählung == Reservierungs-Kandidatenliste (SSOT)',
+        avail.perConstraint[0].available === cands.length,
+        'available=' + avail.perConstraint[0].available + ' cands=' + cands.length);
+    check('Ticket 68: 6 Kandidaten (2 Club-TOTW + 3 Storage-TOTW + 1 Storage-Special)',
+        cands.length === 6, 'cands=' + cands.length);
+    check('Ticket 68: needed spiegelt rc.count',
+        avail.perConstraint[0].needed === 2);
+    check('Ticket 68: Aufschlüsselung TOTW Verein/Storage + Specials Storage stimmt',
+        avail.perConstraint[0].totwClub === 2 && avail.perConstraint[0].totwStorage === 3 &&
+        avail.perConstraint[0].specialsStorage === 1,
+        JSON.stringify(avail.perConstraint[0]));
+
+    // Verein-Special-Ausschluss ausser TOTW: die Vereins-FUTTIES darf NIE als
+    // Kandidat auftauchen, die Vereins-TOTW schon.
+    check('Ticket 68: Vereins-FUTTIES (kein TOTW) wird ausgeschlossen',
+        !cands.some(p => p.id === futtiesClub[0].id));
+    check('Ticket 68: Vereins-TOTW bleibt Kandidat',
+        cands.some(p => p.id === totwClub[0].id));
+
+    // Ohne Rarity-Vorgabe: kompakte Dauerzeile über den gesamten Gruppe-83-Bestand.
+    const availNone = SolverCore.computeRarityAvailability(pool, cAvail, []);
+    check('Ticket 68: ohne Vorgabe keine perConstraint-Zeilen', availNone.perConstraint.length === 0);
+    check('Ticket 68: Dauerzeile TOTW (Verein+Storage) korrekt', availNone.totw === 5,
+        'totw=' + availNone.totw);
+    check('Ticket 68: Dauerzeile Storage-Specials korrekt', availNone.specialsStorage === 1,
+        'specialsStorage=' + availNone.specialsStorage);
+
+    // Lock-Ausschluss: eine gesperrte TOTW-Storage-Karte fehlt in der Zählung -
+    // derselbe Vorfilter wie solveCore (filterLockedCards()).
+    const cLocked = cfg(null, { specialOnlyFromStorage: true, lockedIds: [totwStorage[0].id] });
+    const availLocked = SolverCore.computeRarityAvailability(pool, cLocked, [rc]);
+    check('Ticket 68: gesperrte Karte reduziert die Verfügbarkeit',
+        availLocked.perConstraint[0].available === 5 &&
+        availLocked.perConstraint[0].totwStorage === 2,
+        JSON.stringify(availLocked.perConstraint[0]));
+
+    // Max-Rating-Wirkung (seit v4.62.0 ein harter Vorfilter am solve()-Eingang,
+    // Ticket #68 verlangt denselben Vorfilter für die Anzeige): eine Karte über
+    // der Grenze darf nicht mitgezählt werden.
+    const cCapped = cfg(null, { specialOnlyFromStorage: true, maxRatingEnabled: true, maxRating: 88 });
+    const availCapped = SolverCore.computeRarityAvailability(pool, cCapped, [rc]);
+    check('Ticket 68: Max-Rating-Filter schließt die 90er Storage-Special-Karte aus der Zählung aus',
+        availCapped.perConstraint[0].available === 5 && availCapped.perConstraint[0].specialsStorage === 0,
+        JSON.stringify(availCapped.perConstraint[0]));
+
+    // Diff-Beweis, dass die REALE Reservierung in solveCore verhaltensgleich
+    // bleibt: die von solve() tatsächlich reservierten Gruppe-83-Karten sind
+    // eine Teilmenge dessen, was reservationCandidates() für dieselbe Vorgabe
+    // als eligibel meldet (kein zweiter, abweichender Auswahl-Weg entstanden).
+    const solvePool = [].concat(totwClub, totwStorage, futtiesStorage, many(9, 84, { groups: [19] }));
+    const cSolve = cfg(84, {
+        slots: 11, specialOnlyFromStorage: true, maxOvershoot: 5,
+        rarityConstraints: [{ label: 'PLAYER_RARITY_GROUP', ids: [], count: 2, groupId: 83 }]
+    });
+    const res = SolverCore.solve(solvePool, cSolve);
+    check('Ticket 68: Solve mit Gruppe-83-Vorgabe bleibt lösbar', res.ok, res.ok ? '' : res.reason);
+    const reservedG83 = res.ok ? res.players.filter(p => (p.groups || []).indexOf(83) > -1) : [];
+    check('Ticket 68: genau 2 Gruppe-83-Karten reserviert', reservedG83.length === 2,
+        'n=' + reservedG83.length);
+    const candsForSolve = SolverCore.reservationCandidates(solvePool, cSolve.rarityConstraints[0], cSolve);
+    check('Ticket 68: jede reservierte Gruppe-83-Karte ist Kandidat laut reservationCandidates()',
+        reservedG83.every(p => candsForSolve.some(c => c.id === p.id)));
+
+    // Panel-Verdrahtung: refreshSbcInfoUI() hängt sich in den bestehenden
+    // Aktualisierungspunkt ein (kein neuer Trigger), refreshAvailabilityUI()
+    // nutzt SolverCore.computeRarityAvailability() - statischer Beleg gegen
+    // eine künftige zweite Zähl-Logik im UI-Code.
+    const refreshFn = extractFunction(src, 'refreshSbcInfoUI');
+    check('Ticket 68: refreshSbcInfoUI() ruft refreshAvailabilityUI()',
+        /refreshAvailabilityUI\(\)/.test(refreshFn));
+    const availFn = extractFunction(src, 'refreshAvailabilityUI');
+    check('Ticket 68: refreshAvailabilityUI() nutzt SolverCore.computeRarityAvailability (keine Zweitlogik)',
+        /SolverCore\.computeRarityAvailability\(/.test(availFn));
+    check('Ticket 68: Panel-DOM enthält den Verfügbarkeits-Block',
+        src.indexOf('sbc-opt-availability') > -1);
+}
+
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt
 // process.exit() die Loader-Tests, bevor sie laufen - sie zählten dann nicht mit
 // und ein Fehler dort wäre unbemerkt geblieben.

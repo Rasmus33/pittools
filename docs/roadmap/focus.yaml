@@ -110,4 +110,19 @@ history:
       78->79 (Ziel 79), ea-app 74->75 (Deckel), App 79->80 (Deckel, erstmals). ea-app
       und App sind damit strukturell ausgeschoepft. Gehaltene 6 Features per Konstruktion
       unveraendert.'
+- iteration: 4
+  decided_at: '2026-08-15T14:02:36Z'
+  dimensions:
+  - RA
+  features:
+  - bedienpanel-ui
+  - sbc-vorgaben-erkennung
+  phases: []
+  mode: soft-regression-guard
+  rationale: 'Auf expliziten User-Wunsch weitere Runde trotz Konvergenz. Ehrliche
+    Reste: bedienpanel-ui hat mit 82/85 den groessten Spielraum aller Features (nie
+    ueber iter0 hinaus geliftet); sbc-vorgaben-erkennung nur fuer den kleinen scanStats-Restfund
+    aus dem iter3-Re-Score (applyFromSetChallenges ohne recordDeepScanStats). Alle
+    uebrigen Features halten — an/1 Punkt unter Deckel.'
+  effectiveness: {}
 pending_suggestion: null

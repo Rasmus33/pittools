@@ -1258,15 +1258,19 @@ function mulberry32(a) {
 
     // Laedt die Funktion mit Attrappen. cap = was EA pro Seite maximal
     // herausgibt, TOTAL = Kartenzahl, withTotal = schickt EA totalItemCount?
-    function runLoader(TOTAL, cap, withTotal, failPages) {
+    // permanentFailFrom (optional): ab diesem Call-Zaehler schlaegt JEDER
+    // weitere Request fehl (alle 3 Versuche der betroffenen Seite) - simuliert
+    // den dauerhaften Fehlschlag, der STATE.loadIncomplete auf true setzt.
+    function runLoader(TOTAL, cap, withTotal, failPages, permanentFailFrom) {
         const calls = [];
+        const warnCalls = [];
         const STATE = { pool: [], cancelLoad: false, diag: {}, loadIncomplete: false };
         const sandbox = {
             STATE: STATE,
             calls: calls,
             setTimeout: (f) => { f(); return 0; },   // kein echtes Warten im Test
             Date: Date,
-            log: () => {}, warn: () => {},
+            log: () => {}, warn: (...a) => { warnCalls.push(a.join(' ')); },
             extractItems: (j) => j.items,
             normalizePlayer: (it) => ({ id: it.id, rating: 80, assetId: it.id }),
             mergeIntoPool: (ps) => { STATE.pool.push.apply(STATE.pool, ps); },
@@ -1274,7 +1278,8 @@ function mulberry32(a) {
                 const m = /count=(\d+)&start=(\d+)/.exec(path);
                 const want = Number(m[1]), start = Number(m[2]);
                 calls.push({ want: want, start: start });
-                if (failPages && failPages.indexOf(calls.length) > -1) {
+                if ((failPages && failPages.indexOf(calls.length) > -1) ||
+                    (permanentFailFrom && calls.length >= permanentFailFrom)) {
                     throw new Error('HTTP 401 (simuliert)');
                 }
                 const n = Math.max(0, Math.min(want, cap, TOTAL - start));
@@ -1288,7 +1293,7 @@ function mulberry32(a) {
         const keys = Object.keys(sandbox);
         const fn = new Function(keys.join(','),
             fnSrc + '\nreturn fetchClubViaHttp;').apply(null, keys.map(k => sandbox[k]));
-        return fn().then(found => ({ found: found, calls: calls, STATE: STATE }));
+        return fn().then(found => ({ found: found, calls: calls, STATE: STATE, warnCalls: warnCalls }));
     }
 
     const results = [];
@@ -1332,6 +1337,23 @@ function mulberry32(a) {
     check('Takt statt Schlafen (Latenz zaehlt mit)',
         /gap - \(Date\.now\(\) - tStart\)/.test(fnSrc) &&
         fnSrc.indexOf('setTimeout(r, 250)') === -1);
+
+    // 6. Dauerhafter Fehlschlag (Ticket #56): STATE.loadIncomplete steht
+    // zusaetzlich in clubLoad.loadIncomplete (JSON-Report ueber das bereits
+    // vorhandene clubLoad-Feld) UND warn() wird an derselben Stelle gerufen
+    // (App-Log-Kanal) - der bestehende STATE.loadIncomplete-Flag/Toast bleibt
+    // unveraendert der einzige Trigger fuer onRunClick/onBatchPlanClick.
+    results.push(runLoader(1000, 175, true, null, 2).then(r => {
+        check('Dauerhafter Fehlschlag: STATE.loadIncomplete bleibt gesetzt',
+            r.STATE.loadIncomplete === true);
+        check('Dauerhafter Fehlschlag: clubLoad.loadIncomplete steht im Report-Feld',
+            r.STATE.diag.clubLoad && r.STATE.diag.clubLoad.loadIncomplete === true,
+            JSON.stringify(r.STATE.diag.clubLoad));
+        check('Dauerhafter Fehlschlag: warn() wird an der Abbruchstelle gerufen',
+            r.warnCalls.some(m => /unvollst/i.test(m)), JSON.stringify(r.warnCalls));
+        check('Dauerhafter Fehlschlag: bereits geladene Karten der ersten Seite bleiben erhalten',
+            r.found === 175, 'found=' + r.found);
+    }));
 
     pending.push(Promise.all(results));
 }
@@ -3351,6 +3373,193 @@ function mulberry32(a) {
             Array.isArray(r.titles) && r.titles[0] === 'bronze pack', JSON.stringify(r.titles));
         check('(c) Kein Treffer: kein titleSource im Fehlerfall', r.titleSource === undefined, JSON.stringify(r));
     }
+}
+
+// ========== 42. Ticket #56: onBatchPlanClick warnt additiv bei STATE.loadIncomplete ==========
+// Analog zum Verhaltenstest in Abschnitt 40 (onRunClick): die echte, per
+// Marker extrahierte Funktion laeuft gegen ein gestubbtes ui/STATE. Prueft
+// GENAU den Kontrast aus dem Gap-Report: onRunClick warnte schon, onBatchPlanClick
+// nicht - jetzt warnt auch der Batch-Pfad, aber ADDITIV (Planen bleibt moeglich,
+// kein neuer Abbruch, CLAUDE.md "Batch darf abgeben").
+{
+    const planFnSrc = extractFunction(src, 'onBatchPlanClick');
+    check('Funktion onBatchPlanClick gefunden (42)', !!planFnSrc);
+
+    function makeOnBatchPlanClickSandbox(loadIncomplete) {
+        const calls = { toast: [], setStatus: [], planBatch: 0, renderBatchPreview: [], reportError: 0 };
+        const STATE = {
+            loadIncomplete: loadIncomplete,
+            pool: [{ rating: 84 }],
+            sbc: { targetOVR: 84, playerLevelConstraints: [], rarityConstraints: [], qualityConstraints: [],
+                   setId: 's1', formationSlots: 11 },
+            batch: null
+        };
+        const ui = { batchCount: { value: '3' }, batchPlan: { disabled: false } };
+        const sandbox = {
+            STATE: STATE,
+            ui: ui,
+            syncSbcWithOpenChallenge: () => {},
+            toast: (msg, kind) => { calls.toast.push({ msg: msg, kind: kind }); },
+            setStatus: (s) => { calls.setStatus.push(s); },
+            readConfig: () => ({}),
+            SolverCore: { planBatch: () => { calls.planBatch++; return { planned: 1, requested: 3, rounds: [] }; } },
+            findSbcController: () => null,
+            renderBatchPreview: (plan) => { calls.renderBatchPreview.push(plan); },
+            reportError: () => { calls.reportError++; }
+        };
+        const keys = Object.keys(sandbox);
+        const fn = new Function(keys.join(','), planFnSrc + '\nreturn onBatchPlanClick;')
+            .apply(null, keys.map(function (k) { return sandbox[k]; }));
+        return { fn: fn, calls: calls, STATE: STATE, ui: ui };
+    }
+
+    const incompleteCase = makeOnBatchPlanClickSandbox(true);
+    pending.push(incompleteCase.fn().then(function () {
+        check('onBatchPlanClick: STATE.loadIncomplete=true -> genau ein warn-Toast VOR dem Planen',
+            incompleteCase.calls.toast.length === 1 && incompleteCase.calls.toast[0].kind === 'warn',
+            JSON.stringify(incompleteCase.calls.toast));
+        check('onBatchPlanClick: Planen laeuft trotzdem (planBatch wird gerufen, KEIN Abbruch)',
+            incompleteCase.calls.planBatch === 1);
+        check('onBatchPlanClick: plan.poolLoadIncomplete steht fuer die Vorschau bereit',
+            incompleteCase.calls.renderBatchPreview.length === 1 &&
+            incompleteCase.calls.renderBatchPreview[0].poolLoadIncomplete === true,
+            JSON.stringify(incompleteCase.calls.renderBatchPreview));
+    }));
+
+    const normalCase = makeOnBatchPlanClickSandbox(false);
+    pending.push(normalCase.fn().then(function () {
+        check('onBatchPlanClick: STATE.loadIncomplete=false -> kein Toast, Normalpfad unveraendert',
+            normalCase.calls.toast.length === 0 && normalCase.calls.planBatch === 1,
+            JSON.stringify(normalCase.calls));
+        check('onBatchPlanClick: plan.poolLoadIncomplete === false im Normalfall',
+            normalCase.calls.renderBatchPreview[0].poolLoadIncomplete === false,
+            JSON.stringify(normalCase.calls.renderBatchPreview));
+    }));
+}
+
+// ========== 43. Ticket #56: renderBatchPreview zeigt das poolLoadIncomplete-Banner ==========
+{
+    const renderFnSrc = extractFunction(src, 'renderBatchPreview');
+    check('Funktion renderBatchPreview gefunden (43)', !!renderFnSrc);
+
+    function runRender(plan) {
+        const box = { innerHTML: '' };
+        const ui = { batchPreview: box, batchRun: { style: {}, disabled: false } };
+        const sandbox = {
+            ui: ui,
+            escapeHtml: (s) => String(s),
+            displayName: (p) => '#' + p.id,
+            rarityLabel: () => 'Gold'
+        };
+        const keys = Object.keys(sandbox);
+        const fn = new Function(keys.join(','), renderFnSrc + '\nreturn renderBatchPreview;')
+            .apply(null, keys.map(function (k) { return sandbox[k]; }));
+        fn(plan);
+        return box.innerHTML;
+    }
+
+    const plan = { planned: 1, requested: 1, rounds: [{ ovr: 84, ovrExact: 84.0, players: [], warnings: [] }] };
+    const htmlIncomplete = runRender(Object.assign({}, plan, { poolLoadIncomplete: true }));
+    check('renderBatchPreview: Banner erscheint bei poolLoadIncomplete=true',
+        /unvollständig geladen/.test(htmlIncomplete), htmlIncomplete);
+
+    const htmlComplete = runRender(Object.assign({}, plan, { poolLoadIncomplete: false }));
+    check('renderBatchPreview: KEIN Banner bei poolLoadIncomplete=false',
+        !/unvollständig geladen/.test(htmlComplete), htmlComplete);
+}
+
+// ========== 44. Ticket #56: readPaletoolsLocks - Pro-Key-Fehler zaehlen statt nur uebersprungen ==========
+// Erweitert 8b-6: dort war nur der GESAMT-Loop-Abbruch abgedeckt (scanError),
+// nicht der wahrscheinlichere Fall eines einzelnen kaputten Keys (Gap-Report
+// Praxisfrage 3). skippedKeys zaehlt JEDEN Fall, reportError() meldet aber
+// hoechstens einmal pro Session (STATE.locksSkipReported) - kein Spam bei
+// vielen korrupten Keys.
+{
+    const fnSrc = [
+        extractFunction(src, 'looksLikeItemId'),
+        extractFunction(src, 'harvestIds'),
+        extractFunction(src, 'findLockBranches'),
+        extractFunction(src, 'readPaletoolsLocks')
+    ].join('\n');
+
+    function makeThrowingLocalStorage(map, throwOnGetItemKey) {
+        const keys = Object.keys(map);
+        return {
+            get length() { return keys.length; },
+            key: (i) => keys[i],
+            getItem: (k) => {
+                if (k === throwOnGetItemKey) throw new Error('SecurityError (simuliert)');
+                return k in map ? map[k] : null;
+            }
+        };
+    }
+
+    // (a) Ein Key mit nicht-validem JSON: die uebrigen Locks kommen trotzdem an.
+    {
+        const map = {
+            'paletools:locks:lockedItems': JSON.stringify([100664921, 190871]),
+            'paletools:broken:corrupt': 'not-json{{{'
+        };
+        const localStorage = makeThrowingLocalStorage(map, null);
+        const STATE = { diag: {}, locksSkipReported: false };
+        const errors = [];
+        function reportError(label, e) { errors.push(label + ': ' + (e && e.message)); }
+        const mod = new Function('localStorage', 'STATE', 'reportError',
+            fnSrc + '\nreturn { readPaletoolsLocks: readPaletoolsLocks };')(localStorage, STATE, reportError);
+        const ids = mod.readPaletoolsLocks();
+        check('(a) Kaputter Key: uebrige Locks kommen trotzdem an',
+            ids.has('100664921') && ids.has('190871'), Array.from(ids).join(','));
+        check('(a) Kaputter Key: skippedKeys zaehlt genau 1',
+            STATE.diag.locks && STATE.diag.locks.skippedKeys === 1, JSON.stringify(STATE.diag.locks));
+        check('(a) Kaputter Key: genau EIN reportError (kein Spam)', errors.length === 1, errors.join(','));
+        check('(a) Kaputter Key: scanError bleibt null (kein Gesamt-Loop-Abbruch)',
+            STATE.diag.locks && STATE.diag.locks.error === null, JSON.stringify(STATE.diag.locks));
+    }
+
+    // (b) Ein Key, dessen getItem() wirft (z.B. SecurityError): dieselbe Zaehlung.
+    {
+        const map = {
+            'paletools:locks:lockedItems': JSON.stringify([100664921, 190871]),
+            'paletools:broken:unreadable': JSON.stringify([1])
+        };
+        const localStorage = makeThrowingLocalStorage(map, 'paletools:broken:unreadable');
+        const STATE = { diag: {}, locksSkipReported: false };
+        const errors = [];
+        function reportError(label, e) { errors.push(label + ': ' + (e && e.message)); }
+        const mod = new Function('localStorage', 'STATE', 'reportError',
+            fnSrc + '\nreturn { readPaletoolsLocks: readPaletoolsLocks };')(localStorage, STATE, reportError);
+        const ids = mod.readPaletoolsLocks();
+        check('(b) getItem() wirft: uebrige Locks kommen trotzdem an',
+            ids.has('100664921') && ids.has('190871'), Array.from(ids).join(','));
+        check('(b) getItem() wirft: skippedKeys zaehlt genau 1',
+            STATE.diag.locks && STATE.diag.locks.skippedKeys === 1, JSON.stringify(STATE.diag.locks));
+        check('(b) getItem() wirft: genau EIN reportError (kein Spam)', errors.length === 1, errors.join(','));
+    }
+
+    // (c) STATE.locksSkipReported bereits true (fruehere Runde derselben Session)
+    // -> ein weiterer Skip zaehlt, meldet aber KEIN zusaetzliches reportError.
+    {
+        const map = {
+            'paletools:locks:lockedItems': JSON.stringify([100664921]),
+            'paletools:broken:corrupt': 'not-json{{{'
+        };
+        const localStorage = makeThrowingLocalStorage(map, null);
+        const STATE = { diag: {}, locksSkipReported: true };
+        const errors = [];
+        function reportError(label, e) { errors.push(label + ': ' + (e && e.message)); }
+        const mod = new Function('localStorage', 'STATE', 'reportError',
+            fnSrc + '\nreturn { readPaletoolsLocks: readPaletoolsLocks };')(localStorage, STATE, reportError);
+        mod.readPaletoolsLocks();
+        check('(c) Bereits gemeldete Session: skippedKeys zaehlt trotzdem',
+            STATE.diag.locks && STATE.diag.locks.skippedKeys === 1, JSON.stringify(STATE.diag.locks));
+        check('(c) Bereits gemeldete Session: KEIN weiteres reportError', errors.length === 0, errors.join(','));
+    }
+
+    // Regression: der bestehende Gesamt-Loop-Abbruch-Test (8b-6) bleibt
+    // unveraendert gruen - skippedKeys/locksSkipReported stehen NEBEN
+    // scanError, ersetzen ihn nicht (Edge-Case aus dem Gap-Report).
+    check('Regression: scanError-Feld existiert weiterhin neben skippedKeys',
+        /error: scanError/.test(src) && /skippedKeys: skippedKeys/.test(src));
 }
 
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt

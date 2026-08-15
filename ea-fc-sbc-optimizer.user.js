@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.55.0
+// @version      4.56.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.55.0';
+    const VERSION = '4.56.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -101,6 +101,7 @@
         loading: false,
         servicesHooked: false,
         cancelLoad: false,
+        locksSkipReported: false,    // schon einmal reportError() fuer einen uebersprungenen Lock-Key gemeldet? (verhindert Spam bei vielen korrupten Keys)
         lastChallengeRaw: null,      // letzte SBC-Response (fürs Debugging)
         lastSetChallenges: null,     // gecachte Challenge-Liste des geöffneten Sets
         // Offene Ablage fuer Laufzeitzustand, den buildDiagReport() kopiert -
@@ -1023,6 +1024,7 @@
     function readPaletoolsLocks() {
         const ids = new Set();
         let keysScanned = 0;
+        let skippedKeys = 0;
         const keyInfo = [];
         // Bricht die Schleife mitten drin ab, bleibt die Sperrliste unvollstaendig,
         // OHNE dass der Report das zeigt (CLAUDE.md: gesperrte Karten NIEMALS
@@ -1030,6 +1032,18 @@
         // macht das im Report explizit sichtbar statt nur ueber niedrige Zahlen
         // erraten zu werden.
         let scanError = null;
+        // EIN einzelner kaputter Key (nicht lesbar ODER kein valides JSON) darf
+        // die restlichen Locks nicht kosten - deshalb pro Key ueberspringen statt
+        // die ganze Schleife abzubrechen. skippedKeys zaehlt JEDEN Fall, ein
+        // reportError() aber nur einmal pro Session (STATE.locksSkipReported) -
+        // sonst waeren 50 korrupte Keys 50 identische Konsolen-/Report-Zeilen.
+        function markSkipped(k, e) {
+            skippedKeys++;
+            if (!STATE.locksSkipReported) {
+                STATE.locksSkipReported = true;
+                reportError('readPaletoolsLocks: Key uebersprungen (' + k + ')', e);
+            }
+        }
         try {
             for (let i = 0; i < localStorage.length; i++) {
                 const k = localStorage.key(i);
@@ -1044,10 +1058,10 @@
                                    head: val.slice(0, 120) });
                 } catch (e) {}
                 let raw = null;
-                try { raw = localStorage.getItem(k); } catch (e) { continue; }
+                try { raw = localStorage.getItem(k); } catch (e) { markSkipped(k, e); continue; }
                 if (!raw) continue;
                 let obj = null;
-                try { obj = JSON.parse(raw); } catch (e) { continue; }
+                try { obj = JSON.parse(raw); } catch (e) { markSkipped(k, e); continue; }
                 // Steht der Key selbst schon für die Sperrliste, ist der ganze
                 // Wert die Quelle - sonst nur die "lock"-Zweige darin.
                 // ACHTUNG: "lockedPacks" enthaelt PACK-IDs ([1030, 20038, ...]),
@@ -1069,7 +1083,11 @@
             sample: Array.from(ids).slice(0, 5),
             // Nur noetig, wenn found = 0: daran ist der richtige Key ablesbar.
             keys: keyInfo.slice(0, 12),
-            error: scanError
+            error: scanError,
+            // Pro-Key uebersprungen (nicht lesbar / kein valides JSON) - anders
+            // als scanError (Gesamt-Loop-Abbruch) bleibt die Suche bei den
+            // restlichen Keys hier weiter aktiv.
+            skippedKeys: skippedKeys
         };
         return ids;
     }
@@ -1140,7 +1158,7 @@
                 refreshSbcInfoUI();
                 log(removed + ' verbaute Karten aus dem Pool entfernt (' + STATE.pool.length + ' übrig).');
             }
-        } catch (e) { warn('removeFromPool:', e.message); }
+        } catch (e) { reportError('removeFromPool', e); }
     }
     function harvestItems(json, fromStorage) {
         const items = extractItems(json);
@@ -1424,7 +1442,7 @@
         let total = Infinity;
         let gotAny = false;
         STATE.loadIncomplete = false;
-        STATE.diag.clubLoad = { pageSize: count, gap: gap, pages: 0, retries: 0, ms: 0 };
+        STATE.diag.clubLoad = { pageSize: count, gap: gap, pages: 0, retries: 0, ms: 0, loadIncomplete: false };
         const t0 = Date.now();
         while (page * count < total) {
             if (STATE.cancelLoad) break;
@@ -1451,6 +1469,12 @@
             if (!json) {
                 if (!gotAny) throw new Error('Club-Laden fehlgeschlagen (Session?). Bitte kurz in der App navigieren und erneut versuchen.');
                 STATE.loadIncomplete = true;
+                // Beide Debug-Kanaele: clubLoad.loadIncomplete steht im JSON-
+                // Report (buildDiagReport gibt clubLoad komplett zurueck),
+                // warn() landet im App-Log-Ringpuffer - der bestehende Toast
+                // (loadPool/onRunClick) bleibt zusaetzlich unveraendert bestehen.
+                STATE.diag.clubLoad.loadIncomplete = true;
+                warn('Club-Laden dauerhaft fehlgeschlagen ab Seite', page, '- Pool bleibt unvollstaendig.');
                 break;
             }
             gotAny = true;
@@ -5233,6 +5257,13 @@
             return;
         }
         if (!STATE.pool.length) { toast('Pool leer. Bitte zuerst "Spieler laden".', 'error'); return; }
+        // Analog zur Warnung in onRunClick (:4509): der Batch darf trotzdem
+        // planen und abgeben (Rasmus entscheidet bei der einen Freigabe,
+        // CLAUDE.md "Batch darf abgeben") - nur informieren, nicht blockieren.
+        if (STATE.loadIncomplete) {
+            toast('ACHTUNG: Der Pool war beim Planen unvollständig geladen (' + STATE.pool.length +
+                ' Karten) - der Plan kann auf fehlenden Karten beruhen. Am besten erst "Spieler laden" erneut ausführen, dann neu planen.', 'warn');
+        }
         const want = Math.max(1, Math.min(10, parseInt(ui.batchCount.value, 10) || 1));
         ui.batchPlan.disabled = true;
         setStatus('plane ' + want + ' Teams...');
@@ -5241,6 +5272,11 @@
             // Anker ist das SET plus die Vorgaben - die challengeId aendert
             // sich pro Wiederholung und taugt nicht als Vergleich.
             plan.setId = STATE.sbc.setId;
+            // Fuer die Vorschau festgehalten (renderBatchPreview): der Toast
+            // oben ist nach ein paar Sekunden weg, die Freigabe kommt aber oft
+            // erst deutlich spaeter - der Zustand muss in der Vorschau stehen
+            // bleiben.
+            plan.poolLoadIncomplete = STATE.loadIncomplete;
             plan.targetOVR = STATE.sbc.targetOVR;
             plan.slots = STATE.sbc.formationSlots;
             plan.usedChallengeIds = [];
@@ -5276,6 +5312,9 @@
         const box = ui.batchPreview;
         if (!box) return;
         let html = '';
+        if (plan.poolLoadIncomplete) {
+            html += '<div class="sbc-opt-batch-round sbc-opt-batch-warn">⚠ Pool war beim Planen unvollständig geladen - Plan kann auf fehlenden Karten beruhen. Vor der Freigabe ggf. "Spieler laden" erneut ausführen und neu planen.</div>';
+        }
         plan.rounds.forEach(function (r, i) {
             const nStore = r.players.filter(p => p.isStorage).length;
             const nUntr = r.players.filter(p => p.untradeable).length;

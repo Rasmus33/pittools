@@ -265,17 +265,83 @@ function mulberry32(a) {
     check('Storage-Karten werden bei gleichem Rating zuerst konsumiert', res.ok && st === 11, 'storage=' + st);
 }
 
-// ========== 6. Duplikat-Stapel: vom größten Stapel zuerst ==========
+// ========== 6. Spieler-Dedupe: dupeScore-Rangfolge entscheidet, nicht
+// Stapelgröße ==========
 {
-    const pool = [].concat(
-        many(10, 88, { storage: true, assetId: 111 }),
-        [P(88, { storage: true, assetId: 222 })],
-        many(15, 80)
-    );
-    const res = SolverCore.solve(pool, cfg(81, { scarcityWeight: 18, storageBonus: 2, maxOvershoot: 0.5 }));
-    const used88 = res.players.filter(p => p.rating === 88);
-    check('Duplikate: 88er kommt vom 10er-Stapel', res.ok && used88.length >= 1 &&
-        used88.every(p => p.assetId === 111), 'assets=' + used88.map(p => p.assetId).join(','));
+    // (a) dupeScore-Rangfolge (SPIELER-EINDEUTIGKEIT, dupeScore() im
+    // Userscript): Storage (+10) ist eine EIGENE Stufe, kein Ausgleich gegen
+    // Rating-Unterschiede. Zwei Duplikate derselben assetId, die Storage-
+    // Karte mit dem NIEDRIGEREN Rating - sie muss trotzdem gewinnen. Die
+    // beiden Duplikat-Ratings liegen bewusst außerhalb des Füllraster-
+    // Ratings (80), damit poolInfo.min/max eindeutig zeigen, welche der
+    // zwei Karten den Dedupe überlebt hat - unabhängig davon, ob sie am
+    // Ende im Team landet (poolInfo wird VOR der Team-Auswahl berechnet).
+    const filler = many(15, 80, {});
+    const poolStorageWins = [].concat(filler,
+        [P(70, { storage: true, assetId: 777 })],
+        [P(95, { storage: false, assetId: 777 })]);
+    const resA = SolverCore.solve(poolStorageWins, cfg(80, {}));
+    check('dupeScore: Storage schlägt höheres Rating (eigene Stufe, kein Ausgleich)',
+        resA.ok && resA.poolInfo && resA.poolInfo.min === 70 && resA.poolInfo.max === 80,
+        JSON.stringify(resA.poolInfo));
+
+    // Gegenprobe: Storage-Flag getauscht (jetzt die 95er-Karte Storage) -
+    // das Ergebnis MUSS kippen. Ohne diese Gegenprobe wäre die Assertion
+    // oben nicht von einem Zufall der Einfüge-/Sortier-Reihenfolge zu
+    // unterscheiden (genau der Vorwurf, der Test 6 vorher traf).
+    const poolFlipped = [].concat(filler,
+        [P(70, { storage: false, assetId: 888 })],
+        [P(95, { storage: true, assetId: 888 })]);
+    const resAFlip = SolverCore.solve(poolFlipped, cfg(80, {}));
+    check('dupeScore: Storage-Vorrang hängt am Flag, nicht an der Reihenfolge',
+        resAFlip.ok && resAFlip.poolInfo && resAFlip.poolInfo.min === 80 && resAFlip.poolInfo.max === 95,
+        JSON.stringify(resAFlip.poolInfo));
+
+    // (b) 10-Duplikate-Kollaps auf 1 (Gap-Report-Reproduktion, Iteration 1):
+    // 10 Kopien desselben Spielers (assetId 111) + 1 andere Karte (assetId
+    // 222) + 15 Füllkarten. Die erwartete Pool-Größe nach der Dedupe wird
+    // HIER aus der Konstruktion hergeleitet (Gesamt - wegfallende
+    // Duplikate), nicht als Zahl geraten.
+    const dupeCount = 10, altCount = 1, fillerCount = 15;
+    const poolDupes = [].concat(
+        many(dupeCount, 88, { storage: true, assetId: 111 }),
+        many(altCount, 88, { storage: true, assetId: 222 }),
+        many(fillerCount, 80, {}));
+    const totalIn = dupeCount + altCount + fillerCount;
+    const expectedAfterCollapse = totalIn - (dupeCount - 1);
+    const resB = SolverCore.solve(poolDupes, cfg(81, { scarcityWeight: 18, storageBonus: 2, maxOvershoot: 0.5 }));
+    check('Dedupe: ' + totalIn + ' Karten (10 Duplikate) kollabieren auf ' +
+        expectedAfterCollapse + ' (poolInfo.count)',
+        resB.ok && resB.poolInfo && resB.poolInfo.count === expectedAfterCollapse,
+        JSON.stringify(resB.poolInfo));
+}
+
+// ========== 6b. Diagnose: internes Suchfenster ausgeschöpft vs. echte
+// Unlösbarkeit ==========
+{
+    // Konstruktion, die das Suchfenster (stHardCap = stLow + 900, siehe
+    // Herleitung im Userscript) gezielt sprengt, obwohl eine Lösung
+    // existiert: 11 Karten Rating 99 (die einzig mögliche Lösung für Ziel
+    // 99 bei 11 Slots) + 20 Füllkarten Rating 1 (die 11 GÜNSTIGSTEN im Pool,
+    // drücken stLow auf 11). stHardCap wird damit 11 + 900 = 911 - die
+    // tatsächlich benötigte Summe (11 * 99 = 1089) liegt darüber, die Suche
+    // erschöpft ihr Fenster, obwohl squadV der 11 besten Karten (genau
+    // diese) das Ziel rechnerisch erreicht.
+    const poolWindow = [].concat(many(11, 99, {}), many(20, 1, {}));
+    const resWindow = SolverCore.solve(poolWindow, cfg(99, {}));
+    check('Diagnose: Suchfenster-Erschöpfung setzt das Flag',
+        !resWindow.ok && resWindow.warnings.some(w => /internes Suchfenster/i.test(w)),
+        JSON.stringify(resWindow.warnings));
+
+    // Gegenprobe: ein Pool, dessen bestmögliche 11 Karten (hier: alle 15
+    // vorhandenen, Rating 70) das Ziel 90 selbst im rechnerischen Optimum
+    // nicht erreichen - kein Suchfenster-Artefakt, sondern eine echte
+    // Ziel-OVR-Grenze. Das Flag darf hier NICHT gesetzt werden.
+    const poolReal = many(15, 70, {});
+    const resReal = SolverCore.solve(poolReal, cfg(90, {}));
+    check('Diagnose: echte Unlösbarkeit bekommt KEIN Suchfenster-Flag',
+        !resReal.ok && !resReal.warnings.some(w => /internes Suchfenster/i.test(w)),
+        JSON.stringify(resReal.warnings));
 }
 
 // ========== 7. Anker ==========

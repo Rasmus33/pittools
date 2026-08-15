@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.47.0
+// @version      4.48.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.47.0';
+    const VERSION = '4.48.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -1492,32 +1492,26 @@
             if (!p.isStorage && p.isGold) return 3;
             return 4; // Verein + Special
         }
-        // Konsum-Reihenfolge innerhalb eines Ratings:
-        //  1. Priorität (Storage-Gold -> Storage-Special -> Verein-Gold -> Verein-Special)
-        //  2. Spieler-Duplikate: vom GRÖSSTEN Stapel desselben Spielers zuerst
-        function makeConsumeCmp(list) {
-            const counts = new Map();
-            for (const p of list) {
-                const k = (p.assetId != null) ? p.assetId : p.name;
-                counts.set(k, (counts.get(k) || 0) + 1);
-            }
+        // Konsum-Reihenfolge innerhalb eines Ratings: Priorität
+        // (Storage-Gold -> Storage-Special -> Verein-Gold -> Verein-Special).
+        // Kein Duplikat-Stapel-Tiebreak nötig: die SPIELER-EINDEUTIGKEIT weiter
+        // oben lässt pro assetId strukturell nur eine Karte in pool/avail
+        // übrig, bevor makeConsumeCmp() überhaupt aufgerufen wird - ein
+        // zweites Vergleichsglied nach Stapelgröße könnte hier nie mehr als
+        // eine Karte je Schlüssel sehen (jeder Aufrufer bekommt ausschließlich
+        // schon deduplizierte Listen, siehe reserveCmp/cmp unten).
+        function makeConsumeCmp() {
             return function (a, b) {
-                const pa = priorityOf(a), pb = priorityOf(b);
-                if (pa !== pb) return pa - pb;
-                const ka = (a.assetId != null) ? a.assetId : a.name;
-                const kb = (b.assetId != null) ? b.assetId : b.name;
-                return (counts.get(kb) || 0) - (counts.get(ka) || 0);
+                return priorityOf(a) - priorityOf(b);
             };
         }
         // Sortier-Komparator "Storage vor Verein -> niedrigstes Rating ->
         // Kosten -> Tiebreak", an vier Stellen im Solver identisch gebraucht
         // (Bronze/Silber-Quoten, Rare-ohne-Ziel-Reservierung, Gold-Rare-
-        // Reservierung ohne Ziel-OVR, Auffüll-Karten ohne Ziel-OVR). Der
-        // Tiebreak-Comparator MUSS Parameter bleiben: zwei der vier Stellen
-        // schließen mit makeConsumeCmp(pool) ab, zwei mit makeConsumeCmp(avail)
-        // - unterschiedliche (gefilterte) Kartenmengen. Ein hartkodierter
-        // gemeinsamer Tiebreak würde an zwei Stellen die Reihenfolge
-        // stillschweigend ändern.
+        // Reservierung ohne Ziel-OVR, Auffüll-Karten ohne Ziel-OVR).
+        // tiebreakCmp kommt von zwei Konstruktionsstellen: reserveCmp
+        // (makeConsumeCmp() am Lösungs-Pool) und cmp (makeConsumeCmp() am
+        // Rest-Pool nach Reservierung).
         function makeFillCmp(costOf, tiebreakCmp) {
             return function (a, b) {
                 return ((b.isStorage ? 1 : 0) - (a.isStorage ? 1 : 0)) ||
@@ -1676,7 +1670,7 @@
             const ratings = Array.from(groups.keys()).sort((a, b) => a - b);
             // Verbrauchsreihenfolge innerhalb eines Ratings: KOSTEN zuerst
             // (Rarity-Schutz & Band-Kosten wirken), Konsum-Präferenz
-            // (Storage, Duplikat-Stapel) als Tiebreak.
+            // (Storage) als Tiebreak.
             for (const r of ratings) groups.get(r).sort((a, b) => (costOf(a) - costOf(b)) || cmp(a, b));
             const E = exp ? Math.max(0, exp.budget) + 1 : 1;
             const S = Math.max(0, sMax) + 1;
@@ -1981,7 +1975,7 @@
             const used = new Set();
             const usedAssets = new Set();
             const reserved = [];
-            const reserveCmp = makeConsumeCmp(pool);
+            const reserveCmp = makeConsumeCmp();
             // Jede Reservierung MUSS hierueber laufen: sie fuehrt used und
             // usedAssets zusammen nach. Zwei Karten desselben Spielers im Team
             // sind HTTP 460 (LEARNINGS 6). Anker und manueller Rarity-Pick
@@ -2211,7 +2205,7 @@
             if (avail.length < k) {
                 return { ok: false, reason: 'Nicht genug passende Spieler im Pool (' + (avail.length + reserved.length) + ' < ' + N + '). Erst "Spieler laden" ausführen oder Filter lockern.', warnings: warnings };
             }
-            const cmp = makeConsumeCmp(avail);
+            const cmp = makeConsumeCmp();
             // Pool-Transparenz: woraus wurde überhaupt gewählt?
             const poolInfo = (function () {
                 if (!pool.length) return null;
@@ -2404,6 +2398,11 @@
                     if (!band) {
                         const lowP = avail.filter(p => p.rating < rBoost);
                         const highP = avail.filter(p => p.rating >= rBoost);
+                        // 1300 als Band-Summen-Deckel bindet für die aktuell einzige
+                        // Aufrufer-Konfiguration nie: Formationsgröße ist N<=11, k<=N,
+                        // also k*99<=1089<1300 selbst im Extremfall (alle Boosterkarten
+                        // Rating 99). Reine Sicherheitsobergrenze gegen eine künftig
+                        // größere Formation, kein aktuell wirksames Limit.
                         const sMaxLow = Math.min(k * Math.max(0, rBoost - 1), 1300);
                         const sMaxHigh = Math.min(k * 99, 1300);
                         band = {
@@ -2454,6 +2453,13 @@
                     }
                 }
                 // Phase 1: erste machbare Lösung -> obere Schranke für V
+                // 900 als Suchfenster über stLow: die reale Summenspanne bei N<=11
+                // und dem üblichen Gold-Rating-Band 75-99 ist höchstens
+                // 11 * (99-75) = 264 - weit innerhalb von 900. Wird stHardCap
+                // trotzdem je erreicht, ohne dass Phase 1 eine Lösung fand,
+                // unterscheidet die Prüfung unten ("internes Suchfenster
+                // ausgeschöpft" vs. "Ziel rechnerisch unerreichbar"), statt beide
+                // Fälle in derselben Meldung zu verstecken.
                 const stHardCap = stLow + 900;
                 let vBound = -1;
                 for (let st = stLow; st <= stHardCap && vBound < 0; st++) {
@@ -2503,6 +2509,16 @@
                 if (result) warnings.push('Max. teure Spieler (' + cfg.maxExpensiveCount + ' ab ' + exp.th + '+) ist mit diesem Pool nicht einhaltbar - Beschränkung gelockert.');
             }
             if (!result) {
+                // Unterscheidung "SBC mit diesem Pool tatsächlich unlösbar" von
+                // "internes Suchfenster (stHardCap, s.o.) ausgeschöpft": squadV der
+                // N bestmöglichen verfügbaren Ratings (ohne jede Kosten-/Exp-
+                // Einschränkung) ist das absolute Optimum dieses Pools - erreicht
+                // selbst das NEED nicht, ist der Pool unabhängig vom Suchfenster zu
+                // schwach; erreicht es NEED trotzdem, hat nur das Fenster nicht
+                // gereicht. Rein additiv (kein Einfluss auf reason/ok unten).
+                if (squadV(allDesc) >= NEED) {
+                    warnings.push('Internes Suchfenster ausgeschöpft, ohne eine Lösung zu finden - das rechnerische Optimum dieses Pools erreicht das Ziel aber. Bitte Diagnose schicken.');
+                }
                 return { ok: false, reason: 'Ziel-OVR ' + target + ' ist mit dem aktuellen Pool nicht erreichbar. Filter lockern oder bessere Karten laden.', warnings: warnings };
             }
             return finishTeam(result.team);

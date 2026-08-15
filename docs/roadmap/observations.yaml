@@ -102,6 +102,16 @@ entries:
     ist eine ungetestete (nicht falsche) Timing-Flaeche mit sauberem Fail-Verhalten.
     Diagnose-Protokollierung des formationSlots-Verlaufs wird in Ticket #5 (batch-modus)
     mit umgesetzt — dort gehoert sie hin.'
+- at: '2026-08-15T00:01:42Z'
+  issue: 5
+  po_class: D
+  surprises:
+  - 'reportError hatte bis #5 projektweit KEINEN Aufrufer — onBatchPlanClick ist die
+    erste echte Adoption; die uebrigen Konsumenten-Stellen kommen mit #8/#9/#10.'
+  - Beleg-Koordinaten verschieben sich zwischen Phasen-Commits desselben Tickets (22
+    Zeilen) — Validator hat die ADR-87-Registrierung auf :4910 korrigiert.
+  reasoning: 'PARTIAL akzeptiert und gemergt: Kontrollfluss byte-identisch additiv,
+    Abbruch-Disziplin unveraendert, 224/224. v4.40.0 geht live.'
 discoveries:
   pattern_candidates:
   - slug: symmetrie-test-lesen-schreiben-trennen

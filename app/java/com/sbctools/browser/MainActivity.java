@@ -77,6 +77,10 @@ public class MainActivity extends Activity {
     // IPC-Aufruf klar unter dem ~1-MB-Binder-Limit.
     // (Kein u-Escape-Literal in Kommentaren: javac wertet die auch dort aus.)
     static final int PALE_CHUNK = 60000;
+    // Intent-Extra fuer "Log teilen" laeuft ueber denselben Binder-IPC-Umweg
+    // wie evaluateJavascript - deshalb von PALE_CHUNK abgeleitet statt einer
+    // zweiten, separat gepflegten Zahl.
+    static final int MAX_LOG_SHARE_CHARS = PALE_CHUNK * 2;
 
     WebView web;
     SharedPreferences prefs;
@@ -187,8 +191,10 @@ public class MainActivity extends Activity {
     void shareLog() {
         String text = buildLogReport();
         // Der Intent-Extra geht über Binder - grob begrenzen, sonst fliegt es
-        // bei langen Logs (dieselbe Grenze wie bei evaluateJavascript).
-        if (text.length() > 120000) text = text.substring(text.length() - 120000);
+        // bei langen Logs.
+        if (text.length() > MAX_LOG_SHARE_CHARS) {
+            text = text.substring(text.length() - MAX_LOG_SHARE_CHARS);
+        }
         Intent i = new Intent(Intent.ACTION_SEND);
         i.setType("text/plain");
         i.putExtra(Intent.EXTRA_SUBJECT, "PitTools-Log " + appVersion());

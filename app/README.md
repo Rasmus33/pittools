@@ -127,3 +127,6 @@ Der PaleTools-Status sagt, woran es liegt:
   Konsole und damit `SbcChromeClient.onConsoleMessage`.
 - `fetchUrl`/`fetchUrlIfChanged` prüfen den gelesenen Body auf `isEmpty()`,
   nicht auf `null` — `readStream` liefert laut Signatur nie `null`, nur `""`.
+- `MAX_LOG_SHARE_CHARS` (für "Log teilen") ist von `PALE_CHUNK`
+  (`evaluateJavascript`-Rohzeichen-Limit) abgeleitet, keine separat
+  gepflegte Zahl — beide hängen an derselben Binder-IPC-Größenordnung.

@@ -176,5 +176,20 @@ history:
     Batch verbarg die Structural-Begruendung noch einen echten Kern (titleOf). Ergebnis
     nichts/duenn ist explizit erwuenscht und beendet die Roadmap mit Beweis statt
     Behauptung. Nur echte Funde werden umgesetzt.'
-  effectiveness: {}
+  effectiveness:
+    verdict: hit
+    focused_gains:
+      rating-solver:
+        RA: 2
+      spieler-pool:
+        RA: 1
+      diagnose-werkzeuge:
+        RA: 0
+    held_features_regressions: {}
+    notes: 'Verifikations-Runde widerlegte die eigene Structural-Behauptung produktiv:
+      solver 92->94 (Fuzzing fand echten Reservierungs-Defekt, gefixt), pool 83->84
+      (loadIncomplete/Lock-Sichtbarkeit), diagnose 84 verifiziert gehalten (Verdict
+      duenn, nur Kosmetik — direkt erledigt). Parallel bewaehrte sich die gesamte
+      Diagnose-Infrastruktur live: 6 Reports an einem Abend fuehrten zu 4 Hotfixes
+      (v4.57 Daily-Same-Id, v4.58 Scan-Prioritaet, v4.59 = #60, v4.60 elgReq-Quelle).'
 pending_suggestion: null

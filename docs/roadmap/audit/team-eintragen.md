@@ -1,6 +1,6 @@
-# Audit — `team-eintragen` — Iteration 1
+# Audit — `team-eintragen` — Iteration 2
 
-**Stand:** 2026-08-15T10:26:33Z
+**Stand:** 2026-08-15T12:14:18Z
 ## Score-Stand
 
 | Dim | Ist (raw) | Capped (struct_max) | Schwellwert | Status | Provenance |
@@ -11,17 +11,17 @@
 
 | Dim | Pre | Post | Gain | Target | Reach % |
 |-----|-----|------|------|--------|---------|
-| **RA** | 60.0 | 76.0 | 16.0 | 70 | 160.0% |
+| **RA** | 60.0 | 76.0 | N/A (held iter0) | 70 | — |
 
 > Held-Dimensionen (in dieser Iteration nicht re-gescored, ADR #98) zeigen `N/A` —
 > ihr Gain wird nicht gegen eine veraltete Baseline gerechnet.
 
 ## Regression / Effektivität
 
-🟢 Keine Regression — Σ Ist 76.0 (≥ 60.0 Iter 0).
+🟢 Keine Regression — Σ Ist 76.0 (≥ 0.0 Iter 1).
 
-**Effektivität:** in-range
-(16.0 von 10.0 = 160.0% Reach über 1 Fokus-Dim)
+**Effektivität:** all-held
+(0.0 von 0.0 = 0.0% Reach über 0 Fokus-Dim, 1 Dim held)
 
 ## Evidence + Reasoning pro Dim
 

@@ -1,19 +1,18 @@
 android-app-wrapper:
   RA:
     evidence:
-    - app/java/com/sbctools/browser/MainActivity.java:425-427
-    - app/java/com/sbctools/browser/MainActivity.java:146-162
-    - app/guard-test.js:262-299
-    - app/log-test.js:1-137
-    - docs/LEARNINGS.md:881-899
-    iteration_scored: 0
-    reasoning: 'Alle 4 Aktionen vollstaendig: reportNetError als SSOT an allen 6 stillen
-      Netz-/Cache-Pfaden inkl. Early-Returns, Setter mit addLog an allen Schreibstellen,
-      2 neue statische guard-Checks + app/log-test.js + CRLF-Regression (ueber Plan).
-      Restluecke: Kapselung bewusst package-private, Fallback-Ketten unveraendert.
-      Ziel 70 leicht uebertroffen.'
-    score: 72.0
-    source: audit-evaluator
+    - app/java/com/sbctools/browser/MainActivity.java:454-466
+    - app/java/com/sbctools/browser/MainActivity.java:171-189
+    - app/java/com/sbctools/browser/MainActivity.java:844-857
+    - app/guard-test.js:294-358
+    - app/AndroidManifest.xml:4-5
+    notes: 'Post-iter2 audit-evaluator: alle 5 Lift-Aktionen live verifiziert (304-Notiz,
+      Setter-Kapselung mit Regex-Negativ-Check, WebView-Fehler-Overrides, Leer-Body-Fix
+      inkl. fetchUrl, gemeinsame IPC-Konstante). Restluecke zum Deckel 80: LEARNINGS-Eintrag
+      fehlte zum Score-Zeitpunkt (direkt danach als §36 nachgezogen) + guard-test-Literal-Extraktion
+      bewusst deferred.'
+    score: 79.0
+    source: user-manual
     updated_at: '2026-08-15'
 batch-modus:
   RA:

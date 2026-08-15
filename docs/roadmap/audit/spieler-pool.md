@@ -1,6 +1,6 @@
-# Audit — `spieler-pool` — Iteration 1
+# Audit — `spieler-pool` — Iteration 2
 
-**Stand:** 2026-08-15T10:26:33Z
+**Stand:** 2026-08-15T12:14:18Z
 ## Score-Stand
 
 | Dim | Ist (raw) | Capped (struct_max) | Schwellwert | Status | Provenance |
@@ -11,17 +11,17 @@
 
 | Dim | Pre | Post | Gain | Target | Reach % |
 |-----|-----|------|------|--------|---------|
-| **RA** | 70.0 | 83.0 | 13.0 | 80 | 130.0% |
+| **RA** | 70.0 | 83.0 | N/A (held iter0) | 80 | — |
 
 > Held-Dimensionen (in dieser Iteration nicht re-gescored, ADR #98) zeigen `N/A` —
 > ihr Gain wird nicht gegen eine veraltete Baseline gerechnet.
 
 ## Regression / Effektivität
 
-🟢 Keine Regression — Σ Ist 83.0 (≥ 70.0 Iter 0).
+🟢 Keine Regression — Σ Ist 83.0 (≥ 0.0 Iter 1).
 
-**Effektivität:** in-range
-(13.0 von 10.0 = 130.0% Reach über 1 Fokus-Dim)
+**Effektivität:** all-held
+(0.0 von 0.0 = 0.0% Reach über 0 Fokus-Dim, 1 Dim held)
 
 ## Evidence + Reasoning pro Dim
 

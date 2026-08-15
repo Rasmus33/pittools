@@ -61,3 +61,33 @@ data_quality: ok
 - median Gain: 13.0
 - stdev: 6.4
 - Fokus-Zellen (re-gescored): 9 · Held (gain N/A): 0 · gesamt: 9
+
+---
+iteration: 2
+generated_at: 2026-08-15T12:14:18Z
+schema_version: "1.0"
+data_quality: ok
+---
+
+## Iteration 2 — Velocity-Snapshot
+| Feature | Dim | Pre | Post | Gain | Target | Reach % |
+|---------|-----|-----|------|------|--------|---------|
+| `android-app-wrapper` | RA | 72.0 | 79.0 | 7.0 | 78 | 116.7% |
+| `batch-modus` | RA | 65.0 | 69.0 | 4.0 | 69 | 100.0% |
+| `bedienpanel-ui` | RA | 68.0 | 82.0 | N/A (held iter0) | 80 | — |
+| `diagnose-werkzeuge` | RA | 76.0 | 84.0 | 8.0 | 82 | 133.3% |
+| `ea-app-anbindung` | RA | 64.0 | 74.0 | N/A (held iter0) | 72 | — |
+| `rating-solver` | RA | 89.0 | 92.0 | 3.0 | 90 | 300.0% |
+| `sbc-vorgaben-erkennung` | RA | 65.0 | 78.0 | N/A (held iter0) | 75 | — |
+| `spieler-pool` | RA | 70.0 | 83.0 | N/A (held iter0) | 80 | — |
+| `team-eintragen` | RA | 60.0 | 76.0 | N/A (held iter0) | 70 | — |
+
+> `N/A (held iterN)` = Zelle wurde in dieser Iteration nicht re-gescored (ADR #98);
+> ihr Gain fließt nicht ins Aggregat ein.
+
+### Aggregat (Iter 2)
+
+- avg Gain (Fokus-Zellen): 5.5
+- median Gain: 5.5
+- stdev: 2.4
+- Fokus-Zellen (re-gescored): 4 · Held (gain N/A): 5 · gesamt: 9

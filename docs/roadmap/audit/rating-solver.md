@@ -1,6 +1,6 @@
-# Audit — `rating-solver` — Iteration 1
+# Audit — `rating-solver` — Iteration 2
 
-**Stand:** 2026-08-15T10:26:33Z
+**Stand:** 2026-08-15T12:14:18Z
 ## Score-Stand
 
 | Dim | Ist (raw) | Capped (struct_max) | Schwellwert | Status | Provenance |
@@ -18,7 +18,7 @@
 
 ## Regression / Effektivität
 
-🟢 Keine Regression — Σ Ist 92.0 (≥ 89.0 Iter 0).
+🟢 Keine Regression — Σ Ist 92.0 (≥ 89.0 Iter 1).
 
 **Effektivität:** in-range
 (3.0 von 1.0 = 300.0% Reach über 1 Fokus-Dim)

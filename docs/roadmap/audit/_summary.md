@@ -1,6 +1,6 @@
-# Audit-Summary — Iteration 1
+# Audit-Summary — Iteration 2
 
-**Stand:** 2026-08-15T10:26:33Z
+**Stand:** 2026-08-15T12:14:18Z
 **Features:** 9 · **Dimensionen:** 1
 **Coverage:** 9 / 9 Rubric-Zellen
 
@@ -8,8 +8,8 @@
 
 | Feature | RA (Ist / Soll / Δ) | Σ Ist | Σ Soll | Σ Δ |
 |---------|---|---|---|---|
-| `android-app-wrapper` | 72.0 / 70 / 2.0 |
-72.0 | 70 | 2.0 |
+| `android-app-wrapper` | 79.0 / 78 / 1.0 |
+79.0 | 78 | 1.0 |
 | `batch-modus` | 69.0 / 69 / 0.0 |
 69.0 | 69 | 0.0 |
 | `bedienpanel-ui` | 82.0 / 80 / 2.0 |
@@ -29,9 +29,9 @@
 
 ## Aggregat
 
-- **Σ Ist** über alle Features: 710.0
-- **Σ Soll**: 688
-- **Σ Gain**: 105.0 (126.5%)
+- **Σ Ist** über alle Features: 717.0
+- **Σ Soll**: 696
+- **Σ Gain**: 22.0 (129.4%)
 - **Features mit Regression** (Ist < vorherige Iter): 0
 - **Features unter Target**: 0 / 9
 

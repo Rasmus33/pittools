@@ -45,6 +45,16 @@ entries:
   reasoning: 'PARTIAL → gezielter Nachtrag statt Debt: die Test-Infrastruktur ist
     DAS Sicherheitsnetz, unbegruendete Sonderfaelle dort sind teurer als 10 Minuten
     Nacharbeit. Kein Version-Bump (Test-only).'
+- at: '2026-08-15T09:33:25Z'
+  issue: 32
+  po_class: null
+  surprises:
+  - '#32: usedChallengeIds ist jetzt echte Sperre (einzige gewollte Verhaltensaenderung,
+    getestet Sperr-Fall + Re-Plan), Post-Submit-Plausibilisierung rein diagnostisch
+    (submitConfirmations), Recovery erstmals per Mock-Ausfuehrung getestet. LEARNINGS-Eintrag
+    fuer die Sperre noch offen (Debt, Audit-Buendel).'
+  reasoning: Validator PASS am fragilsten Pfad — Erfolgs-Pfad byte-identisch bewiesen.
+    v4.46.0 geht live.
 discoveries:
   pattern_candidates: []
   antipattern_candidates: []

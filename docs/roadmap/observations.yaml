@@ -55,6 +55,19 @@ entries:
   reasoning: 'Glattes PASS. EA-Wandel-Linse Teil 2: JSON-Parse-Fehler an SBC-URLs
     landen in lastErrors, unbekannte /ut/game/-Endpunkte werden gezaehlt+gesampelt,
     neue rareflag-Werte sind trotz Top-5-Cap sichtbar. v4.50.0.'
+- at: '2026-08-15T13:38:27Z'
+  issue: 44
+  po_class: null
+  surprises:
+  - Der Waechter-Extraktions-Umbau lief mit Byte-Gleichheits-Beweis beider Wege an
+    der ECHTEN MainActivity — dieselbe Neutralitaets-Technik wie beim extractFunction-Umbau
+    in iter1 (#31), bewaehrt sich als Standard fuer Testwerkzeug-Refactorings.
+  - MainActivity-Diff exakt +2/-0 Kommentarzeilen — der Beweis, dass Test-Infra-Haertung
+    ohne jedes Runtime-Risiko moeglich ist (kein versionCode-Bump, kein APK noetig).
+  reasoning: 'Glattes PASS. Test-Infra-Runde: javac-Gate ohne Keystore (compile-check.sh)
+    faengt Java-Syntaxfehler kuenftig VOR dem PO-Build; Waechter-Extraktion marker-basiert
+    mit Literal-Fallback statt nur inzidenteller Literale. Kein Produkt-Verhalten
+    geaendert.'
 discoveries:
   pattern_candidates: []
   antipattern_candidates: []

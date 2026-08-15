@@ -11,6 +11,13 @@
  * (gleiches Prinzip wie solver-test.js beim Userscript) und in einem Fake-DOM
  * durchgespielt.
  *
+ * Zwei Extraktionsprinzipien bestehen bewusst nebeneinander: extractGuard()
+ * (Marker-primär, Fragment-Literale als Fallback) für den Wächter selbst und
+ * extractBraceBlock() (Signatur + Klammer-Balance) für alle übrigen Checks.
+ * Der Wächter ist ein anonymer IIFE-Ausdruck ohne feste Methoden-Signatur -
+ * extractBraceBlock passt darauf strukturell nicht 1:1, deshalb keine
+ * Migration auf ein einziges Prinzip (Q4).
+ *
  * Keine Dependencies.
  */
 'use strict';

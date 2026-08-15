@@ -64,6 +64,21 @@ Nach dem Build gegenprüfen, dass die Signatur zur installierten Version passt:
 apksigner verify --print-certs build/pittools-v1.5.1.apk   # SHA-256: 41f23895…1b17
 ```
 
+### Compile-Gate ohne Keystore
+
+```bash
+bash app/compile-check.sh   # prüft NUR: kompiliert MainActivity.java?
+```
+
+Führt ausschließlich die SDK-Erkennung (`app/sdk-env.sh`, geteilt mit
+`build.sh`) und den `javac`-Aufruf aus — kein `d8`/`aapt2`/`zipalign`/
+`apksigner`, kein Zugriff auf `app/debug.keystore`. Läuft deshalb auch ohne
+den (personengebundenen) Keystore lokal durch, in ~1s. Prüft NICHT: ob die
+`.dex`/APK-Erzeugung, das Manifest/die Ressourcen oder die Signatur
+funktionieren — dafür bleibt `./build.sh` der maßgebliche Lauf vor jedem
+APK-Versand. javac-Warnungen (z. B. Deprecation-Hinweise) sind kein
+Fehlschlag, genau wie in `build.sh` — beide nutzen kein `-Werror`.
+
 ## Logs vom Gerät holen
 
 Am Handy hängt keine Konsole. Die App sammelt deshalb alle Konsolenmeldungen der
@@ -131,3 +146,8 @@ statischen App-Invarianten (Pflicht-Logging, Setter-Kapselung, Leer-Body-Guard).
 - `MAX_LOG_SHARE_CHARS` (für "Log teilen") ist von `PALE_CHUNK`
   (`evaluateJavascript`-Rohzeichen-Limit) abgeleitet, keine separat
   gepflegte Zahl — beide hängen an derselben Binder-IPC-Größenordnung.
+- `// [PALE-GUARD-BEGIN]` / `// [PALE-GUARD-END]` sind reine
+  Java-Zeilenkommentare um den PaleTools-Wächter (kein Effekt auf
+  `.class`/`.dex`-Bytes). `guard-test.js` extrahiert primär über diese
+  Marker, mit Fallback auf die Fragment-Literale darunter, solange beide
+  Wege existieren.

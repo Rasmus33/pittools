@@ -1245,6 +1245,16 @@
         warn('Session-Nudge: SID unverändert (Session evtl. noch gültig / Rate-Limit).');
         return false;
     }
+    // apiGet/apiPut bauen dieselbe Nudge->Sleep->Retry-Kaskade absichtlich
+    // JEDER FUER SICH nach statt sie in einen gemeinsamen
+    // apiRequest(method, path, body, _attempt)-Kern zu ziehen: solver-test.js
+    // hat aktuell keine Coverage der 401-Retry-Kaskade selbst (nur eine
+    // Attrappe fuer den Pagination-Loader), eine Extraktion waere also nicht
+    // verhaltensneutral belegbar. Dazu muesste der _attempt-Zaehler PRO
+    // Methode/Pfad zaehlen - ein gemeinsamer Kern liefe sonst Gefahr, einen
+    // laufenden GET- und PUT-Retry denselben Zaehler teilen zu lassen.
+    // Kandidat fuer eine Folge-Iteration, sobald ein Mock-Testharness fuer
+    // apiGet/apiPut existiert (analog zum fetchClubViaHttp-Test).
     async function apiGet(path, _attempt) {
         const url = STATE.session.apiBase + path.replace(/^\//, '');
         let resp;

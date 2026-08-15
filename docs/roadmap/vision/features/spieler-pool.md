@@ -19,7 +19,7 @@ code_geography:
   (ca. Z. 1349–1399)
 - ea-fc-sbc-optimizer.user.js — readPaletoolsLocks, findLockBranches, harvestIds,
   looksLikeItemId (ca. Z. 833–917)
-- docs/LEARNINGS.md — §2, §7, §12, §16, §23
+- docs/LEARNINGS.md — §2, §7, §12, §16, §30
 last_updated: '2026-08-14'
 ---
 
@@ -34,7 +34,7 @@ Laedt Verein (paginiert, selbstbremsender Takt gegen 401er), Unassigned-Pile und
 - `ea-fc-sbc-optimizer.user.js — isEvolution, normalizePlayer, resolvePlayerName, mergeIntoPool, removeFromPool, harvestItems (ca. Z. 770–1008)`
 - `ea-fc-sbc-optimizer.user.js — Pool-Load Club/Unassigned/Storage inkl. Club-Lade-Takt (ca. Z. 1349–1399)`
 - `ea-fc-sbc-optimizer.user.js — readPaletoolsLocks, findLockBranches, harvestIds, looksLikeItemId (ca. Z. 833–917)`
-- `docs/LEARNINGS.md — §2, §7, §12, §16, §23`
+- `docs/LEARNINGS.md — §2, §7, §12, §16, §30`
 
 ## Strukturelle Maxima — Begründung
 

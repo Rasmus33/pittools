@@ -1065,3 +1065,25 @@ Feldern bleibt ausgeschlossen), sowie `lockedItems` als Array UND
 `lockedItemsMap` als Objekt-Keys (ein `false`-Eintrag zaehlt nicht),
 `lockedPacks` koexistierend in derselben `localStorage`-Instanz (bleibt
 ausgeschlossen) und ein verschachtelter Zweig ueber `findLockBranches`.
+
+## 30. Der Club-Lade-Takt: 300ms zwischen den STARTS, Selbstbremse bei Fehlversuchen
+
+Referenz-Abschnitt fuer die "Nicht anfassen ohne Grund"-Regel in CLAUDE.md
+(die historisch auf "Paragraph 23" zeigte, bevor dieser Platz durch den
+reportError-Eintrag belegt war - jetzt zeigt sie hierher).
+
+Der Club laedt paginiert ueber `fetchClubViaHttp`. Der Takt lief urspruenglich
+mit 120ms ZWISCHEN den Antworten - das provozierte live Rate-Limit-401er und
+kostete einen kompletten Ladevorgang (Paragraph 7). Seit v4.32.0 gilt:
+
+- Der Takt (`gap`, Start bei 300ms) misst den Abstand zwischen den STARTS
+  zweier Requests, nicht zwischen Antwort und naechstem Start - die
+  Serverzeit zaehlt mit, schnelle Antworten beschleunigen den Lauf nicht
+  ueber das Limit.
+- Jeder Fehlversuch ERHOEHT den Takt selbsttaetig (Selbstbremse) - er wird
+  nie wieder auf einen festen kleineren Wert gesetzt.
+- Die Seitengroesse kalibriert sich an der ersten Antwort (Kappung durch den
+  Server wird uebernommen und im Report vermerkt).
+
+Getestet in `solver-test.js` ueber die echte Funktions-Simulation
+(Kalibrierung, Rate-Limit-Retry, Selbstbremsen-Gap, Diagnose-Report).

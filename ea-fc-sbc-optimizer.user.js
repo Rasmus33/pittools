@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.48.0
+// @version      4.49.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.48.0';
+    const VERSION = '4.49.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -91,6 +91,7 @@
             rarityConstraints: [],       // [{ label, ids, count }]
             playerLevelConstraints: [],  // [{ label, minRating, count }]
             reqDump: [],                 // alle erkannten Requirement-Knoten
+            scopesSeen: [],              // ALLE erkannten Scope-Strings, ungefiltert (Whitelist-Gegenprobe)
             apiPrefix: 'sbs',            // beobachtetes Pfad-Präfix (sbs oder sbc)
             entity: null                 // via services.SBC.loadChallenge erfasst
         },
@@ -130,7 +131,8 @@
             submitChallengeVia: null, // welcher Controller-/Service-Weg beim Abgeben gegriffen hat
             submitWithoutResponseCount: 0, // wie oft submitChallengeToEa ohne auswertbare Response als Erfolg durchging (LEARNINGS §9, v4.36.0: offen, ob Abgabe wirklich bestätigt war)
             submitConfirmations: null, // Post-Submit-Plausibilisierung im "ohne Response"-Zweig: via/hadResponse/squadEmptyAfter/ms je Versuch (reine Beobachtung, kein Abbruchkriterium)
-            lastTap: null            // letzter simulierter Tap: Events/Position/Abdeckung/Popup
+            lastTap: null,           // letzter simulierter Tap: Events/Position/Abdeckung/Popup
+            scanStats: null          // Traversal-Metriken (visitedCount/depthCapped/budgetExhausted) von deepScan/findNode/collectNodes - reine Beobachtung, kein Abbruchkriterium (LEARNINGS 37)
         }
     };
     function log(...args) { try { console.log(LOG_PREFIX, ...args); } catch (e) {} }
@@ -380,7 +382,7 @@
         const ids = o.eligibilityValues || o.values || o.rarityIds || [];
         return Array.isArray(ids) ? ids.map(Number).filter(n => !isNaN(n)) : [];
     }
-    function reqCount(o, parents) {
+    function reqCountRaw(o, parents) {
         // EA hängt den Count ("Min. 4") oft an das ELTERN-Objekt der
         // Requirement-KV-Paare (UTSBCEligibilityRequirement.count), nicht an
         // das Wert-Objekt selbst - deshalb die Eltern-Kette mitprüfen.
@@ -390,11 +392,13 @@
             if (!node || typeof node !== 'object') continue;
             for (const k of keys) {
                 const c = parseInt(node[k], 10);
-                if (!isNaN(c) && c >= 1 && c <= 11) return c;
+                if (!isNaN(c) && c >= 1 && c <= 11) return { count: c, defaulted: false };
             }
         }
-        return 1;
+        return { count: 1, defaulted: true };
     }
+    function reqCount(o, parents) { return reqCountRaw(o, parents).count; }
+    function reqCountDefaulted(o, parents) { return reqCountRaw(o, parents).defaulted; }
     function isDomOrWindow(o) {
         try {
             return (typeof Node !== 'undefined' && o instanceof Node) ||
@@ -406,15 +410,28 @@
      * Team-Rating- und Rarity-Anforderungen sowie squadId.
      */
     function deepScanChallenge(root) {
-        const out = { target: null, rarity: [], squadId: null, slots: null, playerLevel: [], quality: [], rare: [], reqs: [] };
+        const out = { target: null, rarity: [], squadId: null, slots: null, playerLevel: [], quality: [], rare: [], reqs: [], scopesSeen: [] };
         if (!root || typeof root !== 'object') return out;
         const seen = new Set();
         const queue = [{ o: root, d: 0, par: [] }];
         let visited = 0;
+        // JEDER erkannte Scope-String landet hier, unabhaengig von der
+        // reqDump-Whitelist unten (:490-497) - macht eine komplett neue
+        // EA-Scope-Familie sichtbar, statt spurlos zu verschwinden (siehe
+        // docs/roadmap/gaps/sbc-vorgaben-erkennung.md, Mangel 1). Deckel bei
+        // 40 Eintraegen, analog zum bestehenden out.reqs.length < 25-Deckel.
+        const scopesSeenSet = new Set();
+        // Wird true, sobald die Tiefengrenze (d > 7) selbst einen Knoten
+        // aussortiert - anders als seen.has(o)/isDomOrWindow(o), die
+        // strukturell unverdaechtige Knoten ueberspringen, zeigt das
+        // tatsaechliches Abschneiden des Traversals an (siehe
+        // docs/roadmap/gaps/sbc-vorgaben-erkennung.md, Mangel 2).
+        let depthSkipped = false;
         while (queue.length && visited < 20000) {
             const cur = queue.shift();
             const o = cur.o, d = cur.d, par = cur.par;
-            if (!o || typeof o !== 'object' || seen.has(o) || d > 7 || isDomOrWindow(o)) continue;
+            if (!o || typeof o !== 'object' || seen.has(o) || isDomOrWindow(o)) continue;
+            if (d > 7) { depthSkipped = true; continue; }
             seen.add(o);
             visited++;
             // squadId nur aus explizit benannten Feldern
@@ -423,6 +440,7 @@
             }
             const scope = scopeString(o);
             if (scope) {
+                if (scopesSeenSet.size < 40) scopesSeenSet.add(scope);
                 const v = reqValue(o);
                 // matchedAs zeigt, welcher der unten folgenden, sich
                 // gegenseitig ausschliessenden Zweige tatsaechlich griff -
@@ -451,7 +469,7 @@
                      scope.indexOf('LEVEL') > -1) &&
                     scope.indexOf('CHEM') === -1;
                 if (isPlayerLevel && v != null && v >= 40 && v <= 99) {
-                    out.playerLevel.push({ label: scope, minRating: v, count: reqCount(o, par) });
+                    out.playerLevel.push({ label: scope, minRating: v, count: reqCount(o, par), countDefaulted: reqCountDefaulted(o, par) });
                     matchedAs = 'PLAYER_LEVEL';
                 }
                 // Qualitäts-Vorgabe (Tausch-/Upgrade-SBCs ohne Team-Rating):
@@ -466,7 +484,7 @@
                 const isQualityScope = scope.indexOf('QUALITY') > -1 ||
                     (scope.indexOf('LEVEL') > -1 && scope.indexOf('CHEM') === -1);
                 if (isQualityScope && v != null && v >= 1 && v <= 3) {
-                    out.quality.push({ label: scope, quality: Number(v), count: reqCount(o, par) });
+                    out.quality.push({ label: scope, quality: Number(v), count: reqCount(o, par), countDefaulted: reqCountDefaulted(o, par) });
                     matchedAs = 'PLAYER_QUALITY';
                 }
                 // KEIN Substring-Match auf "RARE" hier! Das hat live
@@ -479,6 +497,7 @@
                         label: scope,
                         ids: reqIds(o),
                         count: reqCount(o, par),
+                        countDefaulted: reqCountDefaulted(o, par),
                         // Bei RARITY_GROUP ist der Wert die Gruppen-ID -
                         // Karten matchen über ihr "groups"-Feld.
                         groupId: (scope.indexOf('GROUP') > -1 && v != null) ? v : null
@@ -492,7 +511,7 @@
                      scope.indexOf('LEVEL') > -1 || scope.indexOf('QUALITY') > -1 ||
                      scope.indexOf('CLUB') > -1 || scope.indexOf('LEAGUE') > -1 ||
                      scope.indexOf('NATION') > -1 || scope.indexOf('CHEM') > -1)) {
-                    out.reqs.push({ scope: scope, value: v, ids: reqIds(o), count: reqCount(o, par), matchedAs: matchedAs });
+                    out.reqs.push({ scope: scope, value: v, ids: reqIds(o), count: reqCount(o, par), matchedAs: matchedAs, countDefaulted: reqCountDefaulted(o, par) });
                 }
             }
             // Slot-Anzahl (manche SBCs haben < 11 Spieler)
@@ -532,6 +551,14 @@
         out.rare = dedupe(out.rare || [], r => r.label + '|' + r.count);
         out.quality = dedupe(out.quality, q => q.label + '|' + q.quality + '|' + q.count);
         out.reqs = dedupe(out.reqs, r => r.scope + '|' + r.value + '|' + r.count + '|' + r.ids.join(','));
+        out.scopesSeen = Array.from(scopesSeenSet);
+        // Reines Beobachtungsfeld (siehe docs/LEARNINGS.md 37) - KEIN
+        // Abbruch-/Warnungskriterium. budgetExhausted/depthCapped bedeuten
+        // NICHT zwingend, dass eine Vorgabe fehlt: die BFS kann sie laengst
+        // gefunden haben, bevor Budget/Tiefe ausgeschoepft war.
+        out.visitedCount = visited;
+        out.depthCapped = depthSkipped;
+        out.budgetExhausted = (visited >= 20000 && queue.length > 0);
         return out;
     }
     // [SBCSCAN-END]
@@ -550,27 +577,41 @@
         STATE.sbc.otherScopes = [];
         STATE.sbc.rareConstraints = [];
         STATE.sbc.reqDump = [];
+        STATE.sbc.scopesSeen = [];
         STATE.sbc.formationSlots = 11;
         STATE.sbc.squadSlotTotal = null;
         STATE.sbc.usableSlots = null;
         refreshSbcInfoUI();
     }
     // Im Challenge-Listen-JSON den Knoten der aktuell geöffneten Challenge finden.
-    function findChallengeNode(root, cid) {
+    // statsOut (additiv, optional): schreibt statsOut.findNode = { visitedCount,
+    // depthCapped, budgetExhausted } - reines Beobachtungsfeld, siehe
+    // docs/LEARNINGS.md 37. Bestehende Aufrufe ohne dritten Parameter bleiben
+    // unveraendert funktionsfaehig.
+    function findChallengeNode(root, cid, statsOut) {
         if (!root || typeof root !== 'object' || cid == null) return null;
         const seen = new Set();
         const queue = [{ o: root, d: 0 }];
         let visited = 0;
+        let depthCapped = false;
+        function writeStats() {
+            if (statsOut) {
+                statsOut.findNode = { visitedCount: visited, depthCapped: depthCapped,
+                    budgetExhausted: (visited >= 20000 && queue.length > 0) };
+            }
+        }
         while (queue.length && visited < 20000) {
             const cur = queue.shift();
             const o = cur.o, d = cur.d;
-            if (!o || typeof o !== 'object' || seen.has(o) || d > 6 || isDomOrWindow(o)) continue;
+            if (!o || typeof o !== 'object' || seen.has(o) || isDomOrWindow(o)) continue;
+            if (d > 6) { depthCapped = true; continue; }
             seen.add(o);
             visited++;
             const oid = (o.challengeId != null) ? o.challengeId : o.id;
             // Nur Knoten akzeptieren, die wie eine Challenge aussehen
             if (oid != null && String(oid) === String(cid) &&
                 (o.elgReq || o.requirements || o.eligibilityRequirements || o.name || o.challengeId != null)) {
+                writeStats();
                 return o;
             }
             if (Array.isArray(o)) {
@@ -585,6 +626,7 @@
                 }
             }
         }
+        writeStats();
         return null;
     }
     /**
@@ -592,17 +634,21 @@
      * bestimmten ID). Wird gebraucht, um nach einem 404/475 die frische Instanz
      * derselben SBC zu finden: wiederholbare SBCs bekommen pro Durchlauf eine
      * neue challengeId, und die Ansicht steht danach auf der verbrauchten.
+     * statsOut (additiv, optional): schreibt statsOut.collectNodes = { visitedCount,
+     * depthCapped, budgetExhausted }, analog zu findChallengeNode().
      */
-    function collectChallengeNodes(root) {
+    function collectChallengeNodes(root, statsOut) {
         const out = [];
         if (!root || typeof root !== 'object') return out;
         const seen = new Set();
         const queue = [{ o: root, d: 0 }];
         let visited = 0;
+        let depthCapped = false;
         while (queue.length && visited < 20000) {
             const cur = queue.shift();
             const o = cur.o, d = cur.d;
-            if (!o || typeof o !== 'object' || seen.has(o) || d > 6 || isDomOrWindow(o)) continue;
+            if (!o || typeof o !== 'object' || seen.has(o) || isDomOrWindow(o)) continue;
+            if (d > 6) { depthCapped = true; continue; }
             seen.add(o);
             visited++;
             if (o.challengeId != null &&
@@ -620,6 +666,10 @@
                     if (child && typeof child === 'object') queue.push({ o: child, d: d + 1 });
                 }
             }
+        }
+        if (statsOut) {
+            statsOut.collectNodes = { visitedCount: visited, depthCapped: depthCapped,
+                budgetExhausted: (visited >= 20000 && queue.length > 0) };
         }
         return out;
     }
@@ -639,7 +689,8 @@
         let json = null;
         try { json = await apiGet('sbs/setId/' + setId + '/challenges'); }
         catch (e) { warn('Frische Challenge holen fehlgeschlagen:', e && e.message); return null; }
-        const nodes = collectChallengeNodes(json);
+        STATE.diag.scanStats = STATE.diag.scanStats || {};
+        const nodes = collectChallengeNodes(json, STATE.diag.scanStats);
         STATE.diag.staleRecover = { setId: setId, oldId: oldId, nodes: nodes.length,
                                     wantTarget: wantTarget, wantSlots: wantSlots };
         const cands = [];
@@ -665,11 +716,21 @@
     // Anforderungen der aktuellen Challenge aus der gecachten Set-Liste ziehen.
     function applyFromSetChallenges() {
         if (!STATE.lastSetChallenges || STATE.sbc.challengeId == null) return;
-        const node = findChallengeNode(STATE.lastSetChallenges, STATE.sbc.challengeId);
+        STATE.diag.scanStats = STATE.diag.scanStats || {};
+        const node = findChallengeNode(STATE.lastSetChallenges, STATE.sbc.challengeId, STATE.diag.scanStats);
         if (node) {
             const scan = deepScanChallenge(node);
             applyScan(scan, 'Set-Challenges');
         }
+    }
+    // Traversal-Metriken von deepScanChallenge() (Aktion 2, LEARNINGS 37) in
+    // denselben STATE.diag.scanStats-Zweig wie findChallengeNode()/
+    // collectChallengeNodes() uebernehmen - reine Beobachtung, kein
+    // Abbruchkriterium.
+    function recordDeepScanStats(scan) {
+        STATE.diag.scanStats = STATE.diag.scanStats || {};
+        STATE.diag.scanStats.deepScan = { visitedCount: scan.visitedCount,
+            depthCapped: scan.depthCapped, budgetExhausted: scan.budgetExhausted };
     }
     function parseSbcChallenge(json, url) {
         const u = String(url);
@@ -705,6 +766,7 @@
             }
         } catch (e) {}
         const scan = deepScanChallenge(json);
+        recordDeepScanStats(scan);
         applyScan(scan, 'Netzwerk');
         // Response selbst enthielt keinen Ziel-OVR (z.B. nur das Squad)?
         // -> Anforderungen aus der gecachten Challenge-Liste des Sets holen.
@@ -740,11 +802,17 @@
             }
         } catch (e) {}
         const scan = deepScanChallenge(challenge);
+        recordDeepScanStats(scan);
         applyScan(scan, 'App-Service');
         if (STATE.sbc.targetOVR == null) applyFromSetChallenges();
     }
     function applyScan(scan, source) {
         let changed = false;
+        // UNGEGATED (nicht hinter dem scan.reqs.length-Gate unten): ein neuer
+        // Scope kann auftreten, ohne dass scan.reqs etwas enthaelt - genau
+        // die Whitelist-Luecke aus docs/roadmap/gaps/sbc-vorgaben-erkennung.md,
+        // Mangel 1.
+        STATE.sbc.scopesSeen = scan.scopesSeen || [];
         if (scan.target != null) { STATE.sbc.targetOVR = scan.target; changed = true; }
         if (scan.squadId != null) { STATE.sbc.squadId = scan.squadId; changed = true; }
         // usableSlots (aus playerRequirements) ist präziser als jeder
@@ -4101,6 +4169,19 @@
                 // Scopes ohne Wert, die NICHT zur Standard-Boilerplate gehoeren -
                 // rein informativ (siehe applyScan: daraus folgt NICHTS).
                 otherScopes: STATE.sbc.otherScopes || [],
+                // ALLE erkannten Scope-Strings, ungefiltert - Gegenprobe gegen
+                // die reqDump-Whitelist (bereits auf 40 gedeckelt, LEARNINGS 37).
+                scopesSeenCount: (STATE.sbc.scopesSeen || []).length,
+                scopesSeenSample: STATE.sbc.scopesSeen || [],
+                // Wie oft griff der reqCount()-1-Fallback (kein bekannter
+                // Count-Key in der Eltern-Kette)? Reine Beobachtung.
+                countDefaultedTotal: [].concat(STATE.sbc.reqDump || [], STATE.sbc.rarityConstraints || [],
+                    STATE.sbc.playerLevelConstraints || [], STATE.sbc.qualityConstraints || [])
+                    .filter(c => c && c.countDefaulted === true).length,
+                // Traversal-Metriken (visitedCount/depthCapped/budgetExhausted) je
+                // Scanner - KEIN Abbruch-/Warnungskriterium (der v4.34.0-Fehlalarm
+                // aus einer Strukturindiz-Warnung ist die Anti-Vorlage, LEARNINGS 37).
+                scanStats: STATE.diag.scanStats || null,
                 staleRecover: STATE.diag.staleRecover || null,
                 entityCaptured: !!STATE.sbc.entity,
                 setChallengesCached: !!STATE.lastSetChallenges

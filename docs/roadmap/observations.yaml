@@ -30,8 +30,16 @@
 #                 consume-seeds`) — NICHT bei iteration-done geleert. Ersetzt
 #                 das deprecatete gitignored `iteration-seeds.yaml` (ADR #78).
 schema_version: 1.4.0
-iteration: null
-entries: []
+iteration: 5
+entries:
+- at: '2026-08-15T15:05:08Z'
+  issue: 52
+  po_class: null
+  surprises: []
+  reasoning: 'Letzter benannter Rest aus iter4 geschlossen: onRunClick lehnt Klicks
+    waehrend eines Pool-Refreshs sauber ab (gleicher Stil wie onLoadClick), statt
+    gegen einen Uebergangs-Pool zu loesen. v4.54.0, 494/494. Main-verifiziert (Mini-Task,
+    Diff = 1 Guard + Test + Doku).'
 discoveries:
   pattern_candidates: []
   antipattern_candidates: []

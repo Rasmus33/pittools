@@ -4196,6 +4196,110 @@ function mulberry32(a) {
     }
 }
 
+// ========== 52. Ticket #62: Brute-Force-Fuzzing MIT Spieler-Level-Vorgabe
+// (playerLevelConstraints) - bestaetigt den Verdacht aus LEARNINGS 41 ==========
+// LEARNINGS 41 vermutete per Analogie (nicht brute-force-verifiziert), dass
+// die Spieler-Level-Reservierung in solveCore() (plList-Schleife, Zeile
+// ~2293-2307, "min. Nx X+") denselben Kosten-zuerst-Aufbau hat wie der in
+// Ticket #57/#60 gefixte Rarity-Pfad. Analog zu Section 46 (Rarity)
+// generalisiert bruteBest() gegen Configs MIT playerLevelConstraints - anders
+// als bei der Rarity-Gruppe ist die Quote hier ein "mindestens", quotaOk
+// prueft daher ">=" statt "===".
+{
+    const rand = mulberry32(62006200);
+    let allMatch = true, detail = '';
+    for (let t = 0; t < 30; t++) {
+        // Genug Fuellkarten (nNormal >= 11 >= max. Slots), damit der Solver
+        // nicht aus Mangel an Alternativen auf die Vorgabe-Kandidaten
+        // zurueckgreifen muss - wie in Section 46.
+        const nNormal = 11 + Math.floor(rand() * 3);
+        const nHigh = 2 + Math.floor(rand() * 3);
+        const minRatingC = 83 + Math.floor(rand() * 6); // 83..88
+        const need = 1 + Math.floor(rand() * Math.min(3, nHigh));
+        const pool = [];
+        for (let i = 0; i < nNormal; i++) {
+            pool.push(P(70 + Math.floor(rand() * Math.max(1, minRatingC - 70)), { storage: rand() < 0.3 }));
+        }
+        for (let i = 0; i < nHigh; i++) {
+            pool.push(P(minRatingC + Math.floor(rand() * 10), { storage: rand() < 0.5 }));
+        }
+        const target = 78 + Math.floor(rand() * 8);
+        const c = cfg(target, {
+            maxOvershoot: Math.floor(rand() * 4) / 10,
+            scarcityWeight: 18, storageBonus: 2,
+            ratingCostSpec: SolverCore.DEFAULT_RATING_COST_SPEC,
+            playerLevelConstraints: [{ label: 'PLAYER_RATING', minRating: minRatingC, count: need }]
+        });
+        const res = SolverCore.solve(pool, c);
+        const quotaOk = (team) => team.filter(p => p.rating >= minRatingC).length >= need;
+        const bb = bruteBest(pool, c, quotaOk);
+        if (bb === null) {
+            if (res.ok) { allMatch = false; detail = 't' + t + ': brute (mind. ' + need + 'x ' + minRatingC + '+) unloesbar, solver ok'; break; }
+        } else {
+            if (!res.ok) { allMatch = false; detail = 't' + t + ': brute loesbar (vMin=' + bb.vMin + '), solver nicht: ' + res.reason; break; }
+            const gotHigh = res.players.filter(p => p.rating >= minRatingC).length;
+            if (gotHigh < need) {
+                allMatch = false; detail = 't' + t + ': solver liefert ' + gotHigh + ' Karten >= ' + minRatingC + ' statt mind. ' + need; break;
+            }
+            const obj = solverObjective(res, pool, c, bb.vMin);
+            if (Math.abs(obj - bb.bestObj) > 1e-6) {
+                allMatch = false; detail = 't' + t + ': brute=' + bb.bestObj + ' solver=' + obj; break;
+            }
+            if (SolverCore.squadRating(res.players.map(p => p.rating)) < target) {
+                allMatch = false; detail = 't' + t + ': Team erreicht Ziel nicht!'; break;
+            }
+        }
+    }
+    // BEKANNTER, VERIFIZIERTER DEFEKT (Regel-Hierarchie aus CLAUDE.md: das
+    // "Max. Rating-Ueberschuss"-Fenster hat Vorrang - Kosten entscheiden NUR
+    // innerhalb davon, "kein Rating verschenken"): die Spieler-Level-
+    // Reservierung in solveCore() (plList-Schleife) waehlt die Vorgabe-
+    // Karte(n) ausschliesslich nach
+    // "(costOf(a) - costOf(b)) || (a.rating - b.rating)" - strukturell
+    // identisch zum in Ticket #57/#60 gefixten Rarity-Pfad, aber ohne dessen
+    // reserveRarityWindowAware()-Gegenstueck. Dreifach verifiziert (Ticket
+    // #62, Protokoll wie #57): (1) bruteBest() oben (Rueckwaertssuche ueber
+    // alle N-Kombinationen des per Fuzzing gefundenen 14-Karten-Falls t2);
+    // (2) eine zweite, unabhaengig implementierte Bitmask-Enumeration auf
+    // demselben t2-Pool (alle C(14,11)-Kombinationen ueber Ausschluss-Indizes
+    // statt Rueckwaertssuche) UND eine vollstaendige manuelle Auflistung
+    // aller C(6,4)=15 Kombinationen des Minimal-Repros unten - beide
+    // bestaetigen exakt dieselben vMin/bestObj-Werte, kein Fehler in der
+    // Referenz; (3) Code-Lesen der plList-Schleife bestaetigt den Mechanismus:
+    // costOf() einer Storage-Karte (93, Kosten 13) ist niedriger als costOf()
+    // einer Vereins-Karte (92, Kosten 22) - die Reservierung waehlt die 93er,
+    // obwohl die 92er zusammen mit demselben Rest-Pool das kleinere, im
+    // Fenster liegende globale V-Minimum erreicht haette (ovrExact 84.13/
+    // waste 6.13 statt der gelieferten 84.56/waste 6.56).
+    // Dieser Check PINNT das heutige IST-Ergebnis, damit main gruen bleibt,
+    // OHNE den Befund zu verstecken (Workaround-Ausnahme Q2): wer diesen
+    // Defekt behebt (z.B. analog zu reserveRarityWindowAware()), MUSS den
+    // Check auf die korrekte Erwartung drehen (ovrExact === 84.13,
+    // waste === 6.13 - die im selben Pool erreichbare, fensterkonforme
+    // Alternative, siehe LEARNINGS 41).
+    const minRepro = (function () {
+        const A = P(92, {});                 // Vereins-Karte, teurer, aber fenster-optimal
+        const B = P(93, { storage: true });  // Storage-Karte, guenstiger, aber Ueberschuss
+        const fillers = many(4, 78, {});
+        const pool = [A, B].concat(fillers);
+        const c = cfg(78, {
+            slots: 4, maxOvershoot: 0,
+            scarcityWeight: 18, storageBonus: 2,
+            ratingCostSpec: SolverCore.DEFAULT_RATING_COST_SPEC,
+            playerLevelConstraints: [{ label: 'PLAYER_RATING', minRating: 88, count: 1 }]
+        });
+        return SolverCore.solve(pool, c);
+    })();
+    check('BEKANNTER BEFUND (Spieler-Level-Reservierung ignoriert Overshoot-Fenster, ' +
+        'LEARNINGS 41): Minimal-Repro (4 Slots, maxOvershoot 0, "mind. 1x 88+") liefert heute ' +
+        'ovrExact 84.56 (waste 6.56) statt der im selben Pool erreichbaren 84.13 (waste 6.13) - ' +
+        '30x-Fuzzing (Seed 62006200) findet dieselbe Ursache bei t2',
+        minRepro.ok && minRepro.ovrExact === 84.56 && minRepro.waste === 6.56 &&
+        !allMatch && /t2:/.test(detail),
+        'minRepro.ok=' + minRepro.ok + ' ovrExact=' + (minRepro.ok && minRepro.ovrExact) +
+        ' waste=' + (minRepro.ok && minRepro.waste) + ' fuzzDetail=' + detail);
+}
+
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt
 // process.exit() die Loader-Tests, bevor sie laufen - sie zählten dann nicht mit
 // und ein Fehler dort wäre unbemerkt geblieben.

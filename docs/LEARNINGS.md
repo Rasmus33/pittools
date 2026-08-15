@@ -1646,6 +1646,23 @@ vier neue, brute-force- bzw. `costOf()`-verifizierte Einzelfaelle ergaenzen
 sie: Cap-Ueberschreitung, `need` > 1, Storage-Praeferenz innerhalb des
 Fensters, Gegenprobe ohne `target`. `node solver-test.js`: alle Tests gruen.
 
+**Ist-Stand (Ticket #62): der Verdacht ist bestaetigt, nicht mehr nur
+Analogie.** 30x-Fuzzing (Section 52, Seed `62006200`) gegen die
+`playerLevelConstraints`-Reservierung (plList-Schleife, dieselbe Datei,
+Zeile ~2293-2307) findet bei `t2` eine Abweichung von der Brute-Force-
+Referenz, dreifach verifiziert (Rueckwaertssuche + unabhaengige
+Bitmask-Enumeration + Code-Lesen - Protokoll wie #57): Minimal-Repro (4
+Slots, `maxOvershoot 0`, "mind. 1x 88+") reserviert die guenstigere,
+aber hoeher geratete Storage-Karte (93, Kosten 13) statt der teureren,
+aber naeher an der Vorgabe liegenden Vereins-Karte (92, Kosten 22) und
+liefert `ovrExact 84.56` (waste 6.56) statt der im selben Pool
+erreichbaren `84.13` (waste 6.13) - derselbe Kosten-vor-Fenster-Fehler wie
+bei der Rarity-Reservierung, nur ohne deren `reserveRarityWindowAware()`-
+Gegenstueck. Ticket #62 war TEST-ONLY: der Befund ist als BEKANNTER
+BEFUND in Section 52 gepinnt (main-Gate bleibt gruen), NICHT behoben -
+Folge-Ticket-Kandidat fuer den eigentlichen Fix (analog zu
+`reserveRarityWindowAware()`).
+
 ## 42. Der Vorgaben-Scan kann im Belohnungs-Ast ertrinken - Anforderungs-Aeste zuerst
 
 Live-Fall (Gold-Challenge, Set 1337, Report v4.56.0): der Challenge-Knoten

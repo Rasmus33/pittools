@@ -30,32 +30,8 @@
 #                 consume-seeds`) — NICHT bei iteration-done geleert. Ersetzt
 #                 das deprecatete gitignored `iteration-seeds.yaml` (ADR #78).
 schema_version: 1.4.0
-iteration: 7
-entries:
-- at: '2026-08-15T19:24:10Z'
-  issue: 62
-  po_class: null
-  surprises:
-  - 'Der §41-Verdacht war KEIN Fehlalarm: dieselbe Fehlerklasse (Kosten-zuerst-Reservierung
-    ignoriert das Fenster) sitzt auch im playerLevel-Pfad — das Analogie-Argument
-    aus dem Rarity-Fund hat sich als verlaesslicher Bug-Detektor erwiesen.'
-  reasoning: 'Fuzzing-Verifikation nach #57-Protokoll: Diskrepanz gefunden, dreifach
-    verifiziert (bruteBest + unabhaengige Bitmask-Enumeration + Code-Lesen), als Charakterisierungstest
-    gepinnt (559/559). Fix folgt als eigenes Ticket (#60-Analogon).'
-- at: '2026-08-15T20:03:57Z'
-  issue: 64
-  po_class: null
-  surprises:
-  - Zweiter Fix derselben Fehlerklasse in 24h — die Generalisierung (reserveWindowAware
-    mit Kandidaten-Praedikat) verhinderte eine Code-Kopie; der Validator bewies die
-    Rarity-Pfad-Neutralitaet ueber Byte-Vergleich der Kandidaten-Filter + unveraenderte
-    Sections 46/50.
-  - Beim Testbau entdeckte der Implementer eine vorbestehende Architektur-Grenze (keine
-    Joint-Optimierung ueber Constraint-TYPEN hinweg) und dokumentierte sie als Bekannte
-    Grenze in §41 statt sie im Test zu verstecken.
-  reasoning: 'playerLevel-Reservierung respektiert jetzt das Ueberschuss-Fenster (Fix
-    zum #62-Befund, #60-Muster generalisiert). v4.61.0, 563/563, Validator-PARTIAL
-    nur wegen eines veralteten Konstanten-Kommentars — vor dem Publish behoben.'
+iteration: null
+entries: []
 discoveries:
   pattern_candidates: []
   antipattern_candidates: []

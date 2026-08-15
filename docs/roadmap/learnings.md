@@ -212,3 +212,29 @@ Kumulativ. Git-Log ist die History.
 - Validator: #56 PASS, #60 PASS (Formel byte-identisch verifiziert); #57 Main-verifiziert + Befund-Pinning beauftragt.
 - Bewusst offen: playerLevelConstraints-Verdacht (erst fuzzen, dann fixen — §41), LEARNINGS-§30-Formulierung (Politur).
 - Eskalationen: 0. Force-Push auf Ticket-Branch nach Rebase als PO-Handgriff etabliert (--force-with-lease).
+
+## Iteration 7 — 2026-08-15
+
+## Iteration 7 — 2026-08-15
+
+### Score-Bewegung
+- Wartezeit-Runde wurde zur Deckel-Runde: rating-solver 94→95 (= structural_max). Der einzige offene Verdacht des Portfolios (§41: playerLevel-Reservierung) wurde per Fuzzing BEWIESEN (#62, Diskrepanz dreifach verifiziert, als Charakterisierungstest gepinnt) und noch in derselben Runde gefixt (#64, v4.61.0). Fokus-Verdict: hit.
+- Userscript v4.60.0 → v4.61.0, Tests 559 → 563. **Endstand: 7 von 9 Features exakt auf structural_max**, pool 84/85 und diagnose 84/85 mit dokumentierten Restgründen.
+
+### Methodische Erkenntnisse
+- Das Verdacht→Fuzzing→Pin→Fix-Protokoll ist jetzt zweimal durchlaufen und trägt: ein Analogie-Verdacht („strukturell gleicher Aufbau wie der gefixte Pfad") ist ein verlässlicher Bug-Detektor, aber erst das Fuzzing mit unabhängiger Referenz macht daraus einen beweisbaren Befund — und erst der Beweis rechtfertigt den Kern-Eingriff.
+- Zweiter Fix derselben Klasse = Generalisierungs-Gelegenheit: statt reserveRarityWindowAware zu kopieren, wurde es zu reserveWindowAware(stillNeed, cands, describeCard, canShareBandCache) verallgemeinert — der Validator bewies die Neutralität des erst tags zuvor gefixten Rarity-Pfads über Byte-Vergleich der Kandidaten-Filter plus unveränderte Beweis-Sections.
+- Ehrliche Test-Scope-Grenzen statt vorgetäuschter Abdeckung: der kombinierte Rarity+playerLevel-Fuzz hält die Kandidaten-Bereiche bewusst disjunkt, weil beim Testbau eine VORBESTEHENDE Architektur-Grenze auffiel (sequenzielle Reservierung optimiert nicht gemeinsam über Constraint-Typen). Die Grenze steht als „Bekannte Grenze" in §41 und als gesammeltes Debt — nicht im Test versteckt.
+- Validator-PARTIAL wegen eines veralteten Konstanten-Kommentars: der dritte Fall der Serie „Doku-Drift durch die eigene Pipeline" (nach §40-Label und §25-Liste) — Kommentare an Deklarationsstellen altern schneller als Funktions-Docs, weil Refactorings sie nicht anfassen. Vor dem Publish behoben (Alle-Commits-vor-Review-Regel hielt zum fünften Mal).
+
+### Patterns ergänzt / verändert
+- Keine neuen Pattern-Docs. Das Charakterisierungstest-Muster (iter6) hat seinen Zyklus geschlossen: Befund-Pin aus #62 wurde in #64 planmäßig auf „FIX verifiziert" gedreht.
+
+### Shared-Items
+- Keine.
+
+### PO-Entscheidungen
+- Klasse C: 1 — Konstanten-Kommentar-Fix als PO-Commit im Worktree vor dem Publish (Validator-Fund).
+- Validator: #64 PASS/PARTIAL-kosmetisch (Rarity-Neutralität byte-verifiziert); #62 Main-verifiziert (test-only).
+- Architektur-Debt „Joint-Optimierung über Constraint-Typen" bewusst NICHT angegangen: relevant erst bei SBCs mit mehreren gleichzeitigen Vorgabe-Typen UND engen Fenstern; erst fuzzen/Live-Fall abwarten.
+- Eskalationen: 0.

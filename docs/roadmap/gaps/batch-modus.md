@@ -1,12 +1,12 @@
 ---
 feature: batch-modus
 analyzed_at: 2026-08-15
-iteration: 1
+iteration: 5
 regression: false
 score_current:
-  RA: 65
-score_target:
   RA: 69
+score_target:
+  RA: 70
 ---
 
 # Gap-Report — Batch-Modus (Mehrfach-Abgabe)
@@ -15,160 +15,29 @@ score_target:
 
 ### RA — Robust Architecture
 
-**Wert:** 65 / 70
-**Schwellwert:** 49
+**Wert:** 69 / 70 (structural_max)
+**Schwellwert:** 49 (70 × 0.7)
 **Status:** pass
-**Begründung (Provenance: audit-evaluator, post-iter-0):** Anker scharf
-(`matchesPlannedSbc` liest korrekt `formationSlots`, kein No-Op mehr),
-echter Integrationstest inkl. transientem Brick-Slot-Fenster
-(`solver-test.js:1929-1993`), Orchestrierung statisch abgesichert
-(`solver-test.js:1996-2025`), zwei neue Diagnose-Zähler
-(`batchStuckCount`, `submitWithoutResponseCount`), Q7-Fix und
-`reportError`-Adoption. Unter dem Ziel 67 geblieben, weil die aktive
-Abgabe-Plausibilisierung (Iter-0-Lift-Aktion 4) nur als
-Häufigkeits-Zähler geliefert wurde — die Frage, ob eine Abgabe „ohne
-Response" wirklich griff, bleibt offen, nur messbar statt geprüft.
+**Begründung:** `audit/batch-modus.md` (Iteration 4) bestätigt alle 4 zuvor geplanten Aktionen als exakt umgesetzt (echte Verhaltenstests statt String-Grep, `usedChallengeIds`-Sperre + Submit-Plausibilisierung additiv, Abbruch-Philosophie unangetastet) und benennt den verbleibenden 1 Punkt explizit als „EA-Wandel-Toleranz bewusst nicht adressiert". Diese Iteration prüft genau diesen Rest unter der EA-Wandel-Linse (Tap-Navigation: `clickSetTile`/`clickAllFilter`/`clickChallengeRow`/`clickBackButton`, `openNextInstance`).
 
-## Mängel (≥ 3 pro Dimension — M1)
+**Vorab-Befund zur Abbruch-Disziplin selbst:** Sie hält. `openNextInstance()` (ea-fc-sbc-optimizer.user.js:4802-4923) bricht bei DOM-Totalausfall (z.B. `.ut-sbc-set-tile-view` liefert 0 Treffer, weil EA die Klasse umbenennt) nach dem vollen 60×300ms-Fenster mit `exhausted`-Klassifizierung + `steps`-Dump ab; `onBatchRunClick()` (5301-5392) wirft daraufhin eine erklärende Meldung („Die nächste Runde liess sich nicht öffnen (Diagnose schicken: batchSteps)." bzw. die freundlichere Set-erschöpft-Variante), verbraucht den Plan im `finally` und zeigt „`done` von `n`". Popup-Erkennung läuft bereits über eine generische Wildcard (`[class*="dialog"],[class*="popup"],[class*="overlay"],[class*="modal"]`, popupState():4610-4644) plus einen strukturellen Kanal (`gPopupClickShield`), nicht über hartkodierte Einzelklassen — das ist genau die Art Fehlertoleranz, die die RA-Rubric positiv bewertet. Der reale Rest-Gap liegt NICHT in der Abbruch-Disziplin, sondern in einer einzelnen, konkret lokalisierbaren Stelle, an der EAs DOM-Wandel NICHT zu einem Abbruch führt, sondern zu einem unauffälligen Fallback-Treffer.
 
-### RA — Robust Architecture
+## Mängel (RA)
 
-1. **Post-Submit-Plausibilisierung bleibt ein reiner Zähler, keine aktive Prüfung:**
-   `ea-fc-sbc-optimizer.user.js:4529-4539` — im „ohne Response"-Zweig von
-   `submitChallengeToEa()` wird `STATE.diag.submitWithoutResponseCount` nur
-   hochgezählt (`:4537`) und der Aufruf gilt sofort als Erfolg
-   (`return { via: 'controller' }`, `:4539`). Es folgt keine Nachprüfung, ob
-   EA die Abgabe tatsächlich registriert hat (z.B. erneutes Lesen von
-   `liveSquad.isSquadEmpty()`, das derselbe Code in `openNextInstance`
-   bereits für einen anderen Zweck nutzt, `:4603-4606`). `onBatchRunClick`
-   (`:5090-5092`) übernimmt das Ergebnis ungeprüft und zählt `done++`
-   weiter — genau der im Audit benannte Rest-Mangel (SEED dieser Iteration).
-2. **`usedChallengeIds` wird geführt, aber nie als Sperre durchgesetzt:**
-   `plan.usedChallengeIds` wird in `onBatchRunClick` befüllt
-   (`ea-fc-sbc-optimizer.user.js:5079-5081`, `push(String(STATE.sbc.challengeId))`)
-   und in der `stuck`-Diagnose nur zur Anzeige gelesen
-   (`:4622-4624`, `usedInstance: (plan.usedChallengeIds || []).indexOf(...)`).
-   Die eigentliche Match-Bedingung in `openNextInstance`
-   (`:4607`, `if (ctrl && sq && matchesPlannedSbc(plan) && empty !== false)`)
-   prüft nicht, ob die gerade gefundene `STATE.sbc.challengeId` bereits in
-   `plan.usedChallengeIds` steckt. Die Betriebsregel „jede Wiederholung hat
-   eine eigene `challengeId`" (`docs/roadmap/vision/features/batch-modus.md:29`)
-   wird damit nur beobachtet, nicht erzwungen — ein Sicherheitsnetz existiert
-   dem Namen nach, greift aber an keiner Stelle.
-3. **Stuck-Recovery-Zweig (`clickBackButton`, v4.36.0) nur per String-Grep getestet:**
-   `solver-test.js:2019-2024` prüft ausschließlich Text-Vorkommen im
-   Quellcode (`nextFn.indexOf('i === 5 || i === 25') > -1 &&
-   nextFn.indexOf('clickBackButton()') > -1`), nicht das tatsächliche
-   Verhalten der Fallunterscheidung in `openNextInstance`
-   (`ea-fc-sbc-optimizer.user.js:4636-4640`): dass `wentBack` bei
-   `b.ok === true` gesetzt wird und die Schleife danach per `continue`
-   neu bewertet (statt sofort weiterzuklicken). Anders als Abschnitt 21
-   (`solver-test.js:1953-1993`), das die echte extrahierte Funktion mit
-   synthetischem `STATE` ausführt, bleibt der Stuck-Pfad bei einem reinen
-   Text-Match — Rasmus' einziger Beleg für die Zuverlässigkeit des
-   Rückwärts-Klicks ist weiterhin der eine dokumentierte Live-Vorfall
-   (`:4611-4617`), kein deterministischer Test.
-4. **`batchSteps`-Ringpuffer verliert frühe Runden bei längeren Batches:**
-   `ea-fc-sbc-optimizer.user.js:5098-5100` —
-   `STATE.diag.batchSteps = (...).concat([...]).slice(-6)` behält nur die
-   letzten 6 Runden. Bricht ein Batch mit mehr als 6 geplanten
-   Wiederholungen erst spät ab (z.B. Runde 9 von 12), sind die
-   Diagnosedaten der ersten problematischen Runde bereits überschrieben —
-   widerspricht der RA-Rubrik „Beobachtbarkeit: jedes bekannte Fehlerbild
-   hat ein Diagnose-Feld" (`docs/roadmap/vision/score-criteria.md:15-16`),
-   wenn gerade die früheste (oft aufschlussreichste) Information verloren
-   geht, bevor der Abbruch überhaupt gemeldet wird.
+1. **`clickSetTile()`s Titel-Fallback reaktiviert die 2023 gefixte "falsche Kachel"-Klasse, wenn EA nur die INNEREN Elemente umbaut** (ea-fc-sbc-optimizer.user.js:5069-5073, Nutzung 5074-5099): `titleOf(t)` sucht `.tileTitle, .tileHeader, h1`; existiert keines dieser drei (Klasse umbenannt, Markup umstrukturiert — die Kachel selbst `.ut-sbc-set-tile-view` bleibt aber bestehen), fällt die Funktion auf `t.textContent` zurück — den GESAMTEN Kachel-Text inkl. Beschreibung und Belohnungen. Genau dieses Verhalten war laut LEARNINGS §9 (v4.23.0) live der Fehler ("Teilstring-Matching trifft die falsche SBC"), der Anlass für die dreistufige exakt→Anfang→Teilstring-Reihenfolge UND die Beschränkung auf `.tileTitle`/`.tileHeader` war. Der Fallback bricht NICHT ab und liefert `ok: true` — es wird eine Kachel angeklickt, ohne dass unterscheidbar ist, ob der Treffer über den echten Titel oder über den degradierten Volltext zustande kam.
+2. **Dieser Fallback-Pfad ist ungetestet** (solver-test.js — Grep auf `titleOf`/`tileTitle` findet nur den vorhandenen Kommentar-Treffer bei :1859, keinen Testfall; :2736 stubbt `clickSetTile` komplett weg statt seine interne Matching-Logik zu prüfen). Getestet sind `matchesPlannedSbc`, `isFreshMatchingInstance`, `shouldTryBack` und die Orchestrierung um `openNextInstance` (solver-test.js:1976-2145, 2646-2760) — nicht aber `clickSetTile`s eigene Titel-Vergleichslogik. Die „Testbarkeit"-Rubric-Spalte ist damit ausgerechnet für den EA-Wandel-relevantesten Codeteil eine Lücke.
+3. **Kein Häufigkeits-Diagnosefeld für Popup-Dismiss-Aktivität während eines Batch-Laufs** (dismissRewardPopup():4645-4676, Aufruf in der 300ms-Schleife bei 4825): `popupState()`s generische Erkennung ist bereits robust (s.o.), aber es wird nirgends gezählt, WIE OFT `dismissRewardPopup()` in einem Lauf tatsächlich etwas geschlossen hat — nur der letzte Snapshot landet im `exhausted`-Zweig (4918-4920). Tritt ein NEUER, wiederkehrender Popup-Typ auf, der die generische Erkennung zwar korrekt schliesst, aber wiederholt neu erscheint (und dadurch Takt/Zeit des 18s-Fensters auffrisst, ohne das Set als erschöpft zu markieren), unterscheidet der Report „kein Popup-Problem" nicht von „Popup X-mal aufgetreten und geschlossen" — anders als bei den bereits mit genau diesem Muster geschützten Fällen `batchStuckCount` (§27) und `submitWithoutResponseCount` (§27/§9).
 
-## Lift-Aktionen (≥ 3 pro Dimension — M1)
+## Lift-Aktionen (RA)
 
-### RA — Robust Architecture
+1. **`titleSource`-Flag an `clickSetTile()`s Rückgabe ergänzen** (additiv, ea-fc-sbc-optimizer.user.js:5069-5099): neben dem bestehenden `how` ('exakt'/'Anfang'/'enthalten') zusätzlich mitgeben, ob `h` (das Titel-Sub-Element) gefunden wurde oder der Volltext-Fallback griff — z.B. `titleSource: 'sub-element' | 'full-tile'`. Ändert NICHTS an der Klick-Entscheidung selbst, macht aber im Report sofort sichtbar, wenn ein Treffer über den fragilen Fallback statt über den echten Titel zustande kam. Erwarteter Gain: +1 Pt RA (Beobachtbarkeit — schliesst die vom Audit benannte Lücke direkt an der einen konkret gefundenen Stelle).
+2. **Testfall für `titleOf()`s Fallback-Zweig in solver-test.js ergänzen** (Muster analog `setLooksRepeatable`-Source-Slice-Tests): DOM-Mock ohne `.tileTitle`/`.tileHeader`/`h1`, prüft dass `clickSetTile` auf Volltext zurückfällt UND (nach Aktion 1) `titleSource: 'full-tile'` meldet. Reine Testbarkeits-Absicherung, keine Verhaltensänderung. Erwarteter Gain: +0,5-1 Pt RA (Testbarkeit).
+3. **`STATE.diag.popupDismissCount` nach dem Vorbild von `batchStuckCount`/`submitWithoutResponseCount` (§27/§37) ergänzen**: Zähler in `dismissRewardPopup()`, jedes Mal wenn `closed` auf `true` gesetzt wird; in `buildDiagReport()` mitgeführt. Rein additiv (kein Kontrollfluss-Eingriff), macht die Häufigkeit eines potenziell neuen/wiederkehrenden Popup-Typs über die Laufzeit sichtbar statt nur den letzten Snapshot. Erwarteter Gain: +0,5 Pt RA (Beobachtbarkeit, schwächster der drei Befunde — die generische Erkennung selbst funktioniert bereits, hier fehlt nur die Häufigkeits-Historie).
 
-1. **Additive Post-Submit-Plausibilisierung (SEED, oberste Priorität):**
-   nach dem „ohne Response"-Zweig in `submitChallengeToEa()`
-   (`ea-fc-sbc-optimizer.user.js:4529-4539`) zusätzlich — additiv, ohne den
-   bestehenden Rückgabewert/Erfolgspfad zu ändern — kurz warten
-   (`await batchWait(400)`) und `liveSquad.isSquadEmpty()` erneut lesen;
-   Ergebnis in ein neues Feld `STATE.diag.submitConfirmations` schreiben
-   (Schema analog `batchSteps`: `{via, hadResponse: false, squadEmptyAfter,
-   ms}`, Ring auf z.B. 6 Einträge). Kein `throw`/Retry allein aufgrund von
-   `squadEmptyAfter === false` — reine Beobachtbarkeit, wie im SEED
-   gefordert ("KEINE Retry-/Abbruch-Änderung ohne klare Fail-Safe-Analyse").
-   Pflicht-Testfall: extrahierte Funktion mit Mock-`liveSquad` sowohl für
-   `isSquadEmpty() === true` als auch `=== false` durchspielen (Technik aus
-   `solver-test.js:1953-1993`, Abschnitt 21). Erwarteter Gain: **+3 bis +4 Pt**
-   (Beobachtbarkeit) — schließt exakt die im Audit benannte Restlücke.
-2. **`usedChallengeIds` als echte Sperre in die Match-Bedingung aufnehmen:**
-   in `openNextInstance` (`ea-fc-sbc-optimizer.user.js:4607`) die Bedingung
-   um `(plan.usedChallengeIds || []).indexOf(String(STATE.sbc.challengeId)) === -1`
-   ergänzen, damit eine fälschlich als „passend" erkannte, aber bereits
-   abgegebene Instanz nicht ein zweites Mal für eine Team-Zuweisung
-   akzeptiert wird. Das ist eine Verhaltensänderung (schärft eine bisher
-   wirkungslose Bedingung) → Pflicht-Testfall nach Muster Abschnitt 21:
-   echte extrahierte Funktion, synthetisches `STATE` mit einer
-   `challengeId`, die bereits in `plan.usedChallengeIds` steht, erwartet
-   `false` trotz sonst passendem `targetOVR`/`formationSlots`; zusätzlich
-   ein Testfall für den unveränderten Normalfall (frischer Plan, leere
-   Liste, erwartet weiterhin `true`), damit kein neuer False-Negative am
-   allerersten Batch-Schritt entsteht. Erwarteter Gain: **+5 bis +6 Pt**
-   (schließt eine bislang nur beobachtete, nie erzwungene
-   Abbruch-Disziplin-Lücke am Kern-Anker).
-3. **Verhaltenstest statt String-Grep für den Stuck-Recovery-Zweig:**
-   die Bedingungslogik „soll bei diesem `i` zurückgeklickt werden" aus
-   `openNextInstance` (`:4636-4640`) in eine kleine, separat testbare
-   Helper-Funktion extrahieren (z.B. `shouldTryBack(i)` →
-   `i === 5 || i === 25`), OHNE die Ablaufsemantik zu ändern (reine
-   Extraktion einer Bedingung, kein Verhaltensunterschied) — mit
-   Vorher/Nachher-Testfall, der zeigt, dass sich am Kontrollfluss nichts
-   ändert. Danach in `solver-test.js` echte Assertions statt Text-Suche:
-   `shouldTryBack(5) === true`, `shouldTryBack(6) === false`, plus ein
-   Test, der die extrahierte `openNextInstance`-Schleife mit einem
-   Mock-`clickBackButton` (liefert `{ok: true}`) ausführt und prüft, dass
-   `wentBack` gesetzt wird. Erwarteter Gain: **+2 bis +3 Pt** (Testbarkeit).
-4. **`batchSteps`-Aufbewahrung um Fehler-Runden erweitern:**
-   additiv zur bestehenden `slice(-6)` (`ea-fc-sbc-optimizer.user.js:5098-5100`)
-   zusätzlich jede Runde mit `!next.ok` dauerhaft behalten (z.B. getrennte
-   Ablage `STATE.diag.batchFailedSteps` ohne Ringpuffer-Limit oder mit
-   höherem Limit), damit ein später Abbruch nicht die früheste
-   problematische Runde überschreibt. Kein Verhaltenswechsel der
-   Batch-Logik selbst, nur der Diagnose-Menge. Pflicht-Testfall: Array mit
-   mehr als 6 Runden simulieren, davon eine früh fehlgeschlagen, prüfen
-   dass die fehlgeschlagene Runde nach der Kürzung weiterhin auffindbar
-   ist. Erwarteter Gain: **+1 bis +2 Pt** (Beobachtbarkeit bei langen Batches).
+## Edge-Cases (mind. 1)
 
-## Edge-Cases (mind. 1 — M1)
-
-- **Additive Plausibilisierung darf keine neue Abbruchquelle werden:** die
-  Post-Submit-Prüfung aus Lift 1 darf, solange kein zweiter Live-Beleg
-  vorliegt, dass `isSquadEmpty() === false` nach einem „ohne Response"-
-  Submit tatsächlich einen Fehlschlag bedeutet, NICHT selbst zu einem
-  `throw`/Retry führen (SEED-Vorgabe explizit übernommen) — sonst könnte
-  ein False Positive (z.B. Netzwerk-Race, Squad-Objekt noch nicht
-  aktualisiert) einen bislang erfolgreichen Batch-Lauf unnötig stoppen und
-  die „2 von 5 fertig ist besser als falsch abgegeben"-Philosophie ins
-  Gegenteil verkehren (jetzt bricht ein Lauf ab, der ohne die neue Prüfung
-  durchgelaufen wäre). Leicht zu übersehen, weil "mehr prüfen" intuitiv nach
-  "sicherer" klingt.
-- **`usedChallengeIds`-Sperre (Lift 2) darf den allerersten Plan-Schritt
-  nicht blockieren:** wird `plan.usedChallengeIds` beim Planen nicht sauber
-  auf `[]` zurückgesetzt (z.B. bei einem Re-Plan nach vorherigem Abbruch,
-  `onBatchPlanClick` setzt `plan.usedChallengeIds = []` bei
-  `ea-fc-sbc-optimizer.user.js:4975`), könnte die neue Sperre eine an sich
-  passende erste Instanz fälschlich ablehnen. Pflicht-Testfall aus Lift 2
-  muss diesen Normalfall (leere Liste) explizit mitprüfen, nicht nur den
-  Sperr-Fall.
+- **Lokalisierungs-Inkonsistenz innerhalb derselben Datei:** `clickAllFilter()` (ea-fc-sbc-optimizer.user.js:5049-5050) behandelt bereits explizit deutsche UI-Texte (`t === 'all' || t === 'alle'`), während `setLooksRepeatable()` (5166, 5173) NUR die englischen Wörter "repeatable"/"complete" erkennt. Kein Korruptions-Risiko (nicht erkannter Text fällt sicher auf `repeatable: null` zurück → kein Abbruch, es wird wie bisher weiterversucht), aber bei einem nicht-englischen Client verschwindet die freundliche „Set nicht mehr wiederholbar"-Abbruchmeldung leise zugunsten der generischen „liess sich nicht öffnen"-Meldung. Leicht zu übersehen, weil alle bisherigen Live-Reports (LEARNINGS §9/§21/§27/§35) aus einem englischsprachigen Client stammen und diese Asymmetrie deshalb nie auffiel.
 
 ## Lift-Empfehlung
 
-Vorsichtiger Stil, kein Big-Bang: Lift 1 und 2 sind die einzigen Aktionen
-mit echtem Verhaltensrisiko (neue Beobachtung bzw. neue Sperr-Bedingung am
-Kern-Anker) und brauchen je einen eigenen, vorher/nachher verifizierten
-Testfall nach der in `solver-test.js` Abschnitt 21 etablierten Technik
-(echte extrahierte Funktion + synthetisches `STATE`, kein Brute-Force
-nötig). Lift 3 ist eine reine Extraktion ohne Verhaltensänderung
-(Testbarkeit erhöhen, ohne die Abbruch-Philosophie anzufassen). Lift 4 ist
-risikoarme Diagnose-Erweiterung. Priorität nach Gain UND Risiko: 2 (Sperre
-durchsetzen) vor 1 (Plausibilisierung additiv, aber mit Fail-Safe-Disziplin)
-vor 3 vor 4. Kein Mid-Iter-SI nötig — alle Funde sind feature-lokal
-(`batch-modus`), kein zweiter Konsument betroffen. Submit-Weg 0
-(`UTItemEntityFactory`/`saveChallenge`) und die Abbruch-Philosophie selbst
-bleiben in allen vier Aktionen unangetastet.
+Vorsichtig, additiv, sehr klein geschnitten — passend zu einem 1-Punkt-Rest-Gap. Alle drei Aktionen sind reine Diagnose-/Test-Ergänzungen ohne Eingriff in die funktionierende Tap-Navigation oder die Abbruch-Philosophie; Aktion 1+2 gehören zusammen (derselbe Fund: Fallback-Pfad sichtbar machen, dann testen) und sind die einzigen mit greifbarer Substanz, Aktion 3 ist bewusst als die schwächste der drei benannt. Kein Mid-Iter-SI nötig — Einzelfeature-Umfang, kein Cross-Feature-Bezug. Sollte der Lift-Planner nur 1-2 der drei umsetzen wollen, sind Aktion 1+2 die Priorität.

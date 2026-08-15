@@ -238,3 +238,27 @@ Kumulativ. Git-Log ist die History.
 - Validator: #64 PASS/PARTIAL-kosmetisch (Rarity-Neutralität byte-verifiziert); #62 Main-verifiziert (test-only).
 - Architektur-Debt „Joint-Optimierung über Constraint-Typen" bewusst NICHT angegangen: relevant erst bei SBCs mit mehreren gleichzeitigen Vorgabe-Typen UND engen Fenstern; erst fuzzen/Live-Fall abwarten.
 - Eskalationen: 0.
+
+## Iteration 8 — 2026-08-15
+
+## Iteration 8 — 2026-08-15
+
+### Score-Bewegung
+- Finale Mikro-Runde: spieler-pool 84→85 (removeFromPool erstmals verhaltensgetestet, §30 in Ist-Form — beide iter6-Restpunkte PO-direkt geschlossen), diagnose-werkzeuge 84→85 (Doppelzählungs-Korrektur: der inhärente Lag war bereits im Deckel eingepreist; der Krisenabend lieferte den stärksten Live-Beleg). Fokus-Verdict: hit.
+- **PORTFOLIO KOMPLETT: alle 9 Features exakt auf structural_max** — solver 95/95, pool 85/85, diagnose 85/85, bedienpanel 85/85, sbc-erkennung 80/80, android 80/80, ea-app 75/75, team-eintragen 75/75, batch 70/70. Tests: 568. Script v4.61.0.
+
+### Methodische Erkenntnisse
+- Doppelzählung zwischen Deckel-Begründung und Score-Abzug erkennen: wenn dieselbe Eigenschaft (inhärenter Lag) sowohl structural_max < 100 begründet ALS AUCH den Score unter den Deckel drückt, wird sie doppelt bestraft — der Re-Scorer hat das am Rubric-Text auseinandergezogen.
+- Live-Bewährung ist Evidenz erster Klasse: der Krisenabend (6 Reports → 4 Hotfixes < 3h, jede Wurzelursache per Diagnose-Feld benannt, Lag-Zyklus zweimal unter einer Stunde) hat für diagnose-werkzeuge mehr bewiesen als jeder konstruierte Test es könnte.
+- Präzise benannte Re-Score-Restpunkte bleiben die billigste Ticket-Quelle: die zwei Pool-Punkte kosteten als PO-Direktarbeit unter einer halben Stunde inklusive aller Gates.
+
+### Patterns ergänzt / verändert
+- Keine.
+
+### Shared-Items
+- Keine.
+
+### PO-Entscheidungen
+- Beide Restpunkte PO-direkt (test-/docs-only, kein Version-Bump, alle 5 Gates je Commit) statt Ticket-Maschinerie — Proportionalität.
+- Damit endet die Lift-Phase des Projekts: weitere Punkte gäbe es nur über Cap-Revisionen (neue Erkenntnisse, EA-Wandel, Live-Befunde), nicht über weitere Lifts. Offen außerhalb der Scores: Joint-Optimierungs-Debt (anlassgebunden), APK-1.8.0-Installation, Live-Bewährung v4.60/v4.61.
+- Eskalationen: 0.

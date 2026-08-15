@@ -11,6 +11,13 @@
  * (gleiches Prinzip wie solver-test.js beim Userscript) und in einem Fake-DOM
  * durchgespielt.
  *
+ * Zwei Extraktionsprinzipien bestehen bewusst nebeneinander: extractGuard()
+ * (Marker-primär, Fragment-Literale als Fallback) für den Wächter selbst und
+ * extractBraceBlock() (Signatur + Klammer-Balance) für alle übrigen Checks.
+ * Der Wächter ist ein anonymer IIFE-Ausdruck ohne feste Methoden-Signatur -
+ * extractBraceBlock passt darauf strukturell nicht 1:1, deshalb keine
+ * Migration auf ein einziges Prinzip (Q4).
+ *
  * Keine Dependencies.
  */
 'use strict';
@@ -43,18 +50,60 @@ function literalsFromJavaBlock(block) {
     return lits.map(unescapeJava).join('');
 }
 
-function extractGuard() {
-    const src = fs.readFileSync(JAVA, 'utf8');
+// Vier Anker, die in JEDEM vollständigen Wächter-Extrakt vorkommen müssen -
+// eine verschobene/entfernte Marker- oder Literal-Grenze verkürzt den Block
+// sonst STILL, ohne dass ein Test das bemerkt (Gap-Report Mangel 3).
+const GUARD_ANCHORS = ['HARD=', 'exec(', 'miss()', '__pt_status'];
+
+function missingAnchors(guardCode) {
+    return GUARD_ANCHORS.filter((a) => guardCode.indexOf(a) < 0);
+}
+
+// Primärer Weg: dedizierte Marker-Kommentare, immun gegen Reformats der
+// Fragment-Literale darunter.
+function extractGuardViaMarkers(src) {
+    const startMark = '// [PALE-GUARD-BEGIN]';
+    const endMark = '// [PALE-GUARD-END]';
+    const start = src.indexOf(startMark);
+    const end = src.indexOf(endMark, start < 0 ? 0 : start);
+    if (start < 0 || end < 0) {
+        return { ok: false, reason: 'Marker nicht gefunden (' + (start < 0 ? 'BEGIN' : 'END') + ' fehlt)' };
+    }
+    const guard = literalsFromJavaBlock(src.slice(start, end + endMark.length));
+    const missing = missingAnchors(guard);
+    if (missing.length) {
+        return { ok: false, reason: 'Marker gefunden, Extrakt unvollständig (fehlende Anker: ' + missing.join(', ') + ')' };
+    }
+    return { ok: true, guard: guard };
+}
+
+// Fallback: die ursprünglichen Fragment-Literale, solange dieser Weg noch
+// existiert (Aktion 5 hält beide Wege per Byte-Gleichheits-Test synchron).
+function extractGuardViaLiterals(src) {
     const startMark = '"(function(){" +';
     const endMark = '"})()", null);';
     const start = src.indexOf(startMark);
-    const end = src.indexOf(endMark, start);
+    const end = src.indexOf(endMark, start < 0 ? 0 : start);
     if (start < 0 || end < 0) {
-        throw new Error('Wächter-Block in MainActivity.java nicht gefunden - '
-            + 'Markierungen geändert? Gesucht: ' + startMark);
+        return { ok: false, reason: 'Literal-Fragmente nicht gefunden (gesucht: ' + startMark + ')' };
     }
-    const block = src.slice(start, end + '"})()"'.length);
-    return literalsFromJavaBlock(block);
+    const guard = literalsFromJavaBlock(src.slice(start, end + '"})()"'.length));
+    const missing = missingAnchors(guard);
+    if (missing.length) {
+        return { ok: false, reason: 'Literal-Fallback gefunden, Extrakt unvollständig (fehlende Anker: ' + missing.join(', ') + ')' };
+    }
+    return { ok: true, guard: guard };
+}
+
+function extractGuard() {
+    const src = fs.readFileSync(JAVA, 'utf8');
+    const viaMarker = extractGuardViaMarkers(src);
+    if (viaMarker.ok) return viaMarker.guard;
+    const viaLiteral = extractGuardViaLiterals(src);
+    if (viaLiteral.ok) return viaLiteral.guard;
+    throw new Error('Wächter-Block in MainActivity.java nicht extrahierbar - '
+        + 'Marker-Weg: ' + viaMarker.reason + ' | '
+        + 'Literal-Fallback: ' + viaLiteral.reason);
 }
 
 function unescapeJava(s) {
@@ -181,6 +230,24 @@ function ok(name, cond, detail) {
     ok('CRLF-Block: Kommentar-Anführungszeichen bleiben draußen',
         literalsFromJavaBlock(crlfBlock) === 'a(1)',
         JSON.stringify(literalsFromJavaBlock(crlfBlock)));
+
+    // 0b. Byte-Gleichheit Marker- vs. Literal-Pfad (lift-plan android-app-
+    //     wrapper, Aktion 4/5): solange beide Extraktionswege existieren,
+    //     muss ein Reformat, das nur einen der beiden bricht, durch die
+    //     jeweils andere Fehlermeldung auffallen statt eine STILLE
+    //     Divergenz zu erzeugen. Vergleich auf dem bereits normalisierten
+    //     Ergebnis (nach literalsFromJavaBlock/unescapeJava), kein Rohtext-
+    //     Diff über die CRLF-behaftete Java-Quelle selbst.
+    const guardSrc = fs.readFileSync(JAVA, 'utf8');
+    const viaMarker = extractGuardViaMarkers(guardSrc);
+    const viaLiteral = extractGuardViaLiterals(guardSrc);
+    ok('Marker-Pfad liefert ein vollständiges Extrakt', viaMarker.ok, viaMarker.reason);
+    ok('Literal-Pfad liefert ein vollständiges Extrakt', viaLiteral.ok, viaLiteral.reason);
+    ok('Marker- und Literal-Pfad liefern byte-identisches Extrakt',
+        viaMarker.ok && viaLiteral.ok && viaMarker.guard === viaLiteral.guard,
+        viaMarker.ok && viaLiteral.ok
+            ? 'Marker-Länge=' + viaMarker.guard.length + ' Literal-Länge=' + viaLiteral.guard.length
+            : 'einer der beiden Pfade lieferte kein Ergebnis');
 
     const guard = extractGuard();
 

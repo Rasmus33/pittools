@@ -1435,3 +1435,36 @@ Alle drei Felder (`lastErrors`, `utasUnclassified`/`lastUnclassifiedPaths`,
 Skript-Speicher der laufenden Session - ein kurz auftretender unbekannter
 Endpunkt, der vor dem naechsten Diagnose-Klick durch F5/App-Neustart verloren
 geht, bleibt unsichtbar. Konsistent mit dem Rest von `STATE.diag`.
+
+## 39. javac-Compile-Gate ohne Keystore + markerbasierte Waechter-Extraktion
+
+Zwei additive Test-/Tooling-Luecken geschlossen, keine Produktcode-Aenderung
+(§8 Waechter-Timing-Kern und Submit-Weg unangetastet).
+
+**`app/sdk-env.sh` + `app/compile-check.sh`.** Die SDK-/build-tools-/
+Platform-Erkennung aus `build.sh:8-26` ist nach `app/sdk-env.sh` ausgelagert
+(Q4/Q5 - ein Fallback fuer beide Konsumenten statt zwei driftende Kopien);
+`build.sh` sourced sie unveraendert. `app/compile-check.sh` sourced dieselbe
+Datei und fuehrt NUR den `javac`-Aufruf gegen ein eigenes Ausgabeverzeichnis
+(`build/classes-check`) aus - kein `d8`/`aapt2`/`zipalign`/`apksigner`, kein
+Zugriff auf `app/debug.keystore`. Damit laesst sich "kompiliert
+`MainActivity.java` ueberhaupt" isoliert und ohne den (personengebundenen)
+Keystore pruefen, in ~1s. Kein `-Werror`: die schon heute reproduzierbare
+Deprecation-Warnung bleibt wie in `build.sh` kein Fehlschlag.
+
+**`// [PALE-GUARD-BEGIN]`/`// [PALE-GUARD-END]` um den PaleTools-Waechter.**
+`extractGuard()` in `guard-test.js` suchte den Waechter bisher ueber zwei
+inzidentelle Code-Fragmente (`"(function(){" +` / `"})()", null);`) - ein
+Reformat genau dieser zwei Zeilen haette `indexOf` fehlschlagen lassen oder,
+schlimmer, den extrahierten Block STILL verkuerzt. Die Marker sind reine
+Java-Zeilenkommentare (kein Effekt auf `.class`/`.dex`-Bytes, deshalb kein
+`versionCode`/`versionName`-Bump und kein neuer APK-Build fuer diese
+Aenderung). `extractGuard()` sucht jetzt primaer ueber die Marker
+(`extractGuardViaMarkers`), faellt nur auf die Fragment-Literale zurueck
+(`extractGuardViaLiterals`), wenn ein Marker fehlt - beide Wege pruefen das
+Ergebnis gegen vier bekannte Anker (`HARD=`, `exec(`, `miss()`,
+`__pt_status`), schlagen beide fehl, nennt die Fehlermeldung BEIDE
+Suchstrategien und welche wie gescheitert ist. Ein Byte-Gleichheits-Test
+(direkt nach der bestehenden Test-0-CRLF-Regression) ruft beide Wege
+unabhaengig auf und prueft String-Gleichheit des bereits normalisierten
+Extrakts - faengt Marker-Drift ab, solange der Literal-Pfad noch existiert.

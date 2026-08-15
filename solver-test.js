@@ -2234,6 +2234,100 @@ function mulberry32(a) {
         /if \(\/sbc\/i\.test\(n\) && \(c\._squad \|\| \(c\.getSquad && c\.getSquad\(\)\)\)\) \{ ctrl = c; \}/.test(svaFn));
 }
 
+// ========== 25. URL-Klassifikation (detectApiBase/classifyUrl): Anker vor der SBS_SBC_PREFIX_RE_SRC-Migration ==========
+// Bislang keine einzige Assertion fuer detectApiBase/classifyUrl in dieser Datei
+// (Gap-Report ea-app-anbindung, Iteration 0). Extrahiert per [URLCLS-BEGIN]/
+// [URLCLS-END]-Marker (Technik aus patterns/good/eingebetteten-code-exakt-testen.md)
+// und laeuft VOR der (sbs|sbc)-Regex-Zentralisierung gegen den unveraenderten
+// Code gruen, damit die anschliessende SSOT-Migration Call-Site fuer Call-Site
+// als verhaltensneutral belegt ist - ein Fehlgriff wuerde sonst erst live das
+// Response-Routing (Pool-/SBC-Erkennung) stumm falsch befuellen.
+{
+    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
+    const urlClsM = src.match(/\/\/ \[URLCLS-BEGIN\]([\s\S]*?)\/\/ \[URLCLS-END\]/);
+    check('URLCLS-Marker-Block gefunden', !!urlClsM);
+    function buildUrlHelpers() {
+        const STATE = { session: {}, diag: { utasSeen: 0, lastUtasPaths: [] }, sbc: { apiPrefix: 'sbs' } };
+        const helpers = new Function('STATE', 'log', 'refreshDiagUI',
+            urlClsM[1] + '\nreturn { detectApiBase: detectApiBase, classifyUrl: classifyUrl };'
+        )(STATE, function () {}, function () {});
+        return { STATE: STATE, detectApiBase: helpers.detectApiBase, classifyUrl: helpers.classifyUrl };
+    }
+
+    // (a) classifyUrl: alle vier SBC-Endpunktformen, je mit sbs- UND sbc-Praefix,
+    // ueber zwei verschiedene utas-Hosts (Host darf keine Rolle spielen).
+    const hosts = ['utas.mob.v5.prd.futc-ext.gcp.ea.com', 'utas.external.s3.fut.ea.com'];
+    for (const host of hosts) {
+        for (const prefix of ['sbs', 'sbc']) {
+            const base = 'https://' + host + '/ut/game/fc26/' + prefix;
+            const { classifyUrl } = buildUrlHelpers();
+            check('classifyUrl: ' + prefix + '@' + host + ' setId/.../challenges -> sbc-set-challenges',
+                classifyUrl(base + '/setId/1037/challenges') === 'sbc-set-challenges');
+            check('classifyUrl: ' + prefix + '@' + host + ' setId/.../challengeId/... -> sbc-challenge',
+                classifyUrl(base + '/setId/1037/challengeId/3070') === 'sbc-challenge');
+            check('classifyUrl: ' + prefix + '@' + host + ' challenge/{id} -> sbc-challenge',
+                classifyUrl(base + '/challenge/3070') === 'sbc-challenge');
+            check('classifyUrl: ' + prefix + '@' + host + ' sets -> sbc-sets',
+                classifyUrl(base + '/sets') === 'sbc-sets');
+            // "/storage" ohne "challenge"/"sets"-Substring, sonst matcht eine
+            // der vorangehenden sbc-challenge/-sets-Pruefungen zuerst (keine
+            // Endanker in classifyUrl - Reihenfolge/Substring-Treffer zaehlen).
+            check('classifyUrl: ' + prefix + '@' + host + ' /storage -> storage (Fallback-Pfad)',
+                classifyUrl(base + '/storage') === 'storage');
+        }
+    }
+    // (b) classifyUrl: Nicht-SBC-Endpunkte weiterhin korrekt (Regression gegen
+    // die Migration, die diese Zweige NICHT anfasst).
+    {
+        const { classifyUrl } = buildUrlHelpers();
+        check('classifyUrl: club?... -> club',
+            classifyUrl('https://utas.mob.v5.prd.futc-ext.gcp.ea.com/ut/game/fc26/club?sort=desc') === 'club');
+        check('classifyUrl: purchased/items -> unassigned',
+            classifyUrl('https://utas.mob.v5.prd.futc-ext.gcp.ea.com/ut/game/fc26/purchased/items') === 'unassigned');
+        check('classifyUrl: storagepile?... -> storage (direkter Pfad, nicht der sbs|sbc-Fallback)',
+            classifyUrl('https://utas.mob.v5.prd.futc-ext.gcp.ea.com/ut/game/fc26/storagepile?count=10') === 'storage');
+    }
+    // (c) classifyUrl: Fremd-URLs und Beinahe-Treffer (Segment-Grenze "/sbs/"
+    // bzw. "/sbc/" muss exakt sein, kein Teilstring-Treffer) -> null.
+    {
+        const { classifyUrl } = buildUrlHelpers();
+        check('classifyUrl: fremde Domain ohne EA-Pfad -> null',
+            classifyUrl('https://example.com/foo/bar') === null);
+        check('classifyUrl: "sbsx"-Segment (kein exaktes sbs/sbc) -> null',
+            classifyUrl('https://utas.mob.v5.prd.futc-ext.gcp.ea.com/ut/game/fc26/sbsx/sets') === null);
+        check('classifyUrl: "ssbc"-Segment (kein exaktes sbs/sbc) -> null',
+            classifyUrl('https://utas.mob.v5.prd.futc-ext.gcp.ea.com/ut/game/fc26/ssbc/sets') === null);
+    }
+
+    // (d) detectApiBase: Host-Variante + sbs/sbc-Praefix-Erkennung landet in
+    // STATE.session.apiBase bzw. STATE.sbc.apiPrefix, unabhaengig vom Host.
+    for (const host of hosts) {
+        for (const prefix of ['sbs', 'sbc']) {
+            const { STATE, detectApiBase } = buildUrlHelpers();
+            const url = 'https://' + host + '/ut/game/fc26/' + prefix + '/sets';
+            detectApiBase(url);
+            check('detectApiBase: apiBase erkannt fuer Host ' + host,
+                STATE.session.apiBase === 'https://' + host + '/ut/game/fc26/', STATE.session.apiBase);
+            check('detectApiBase: apiPrefix "' + prefix + '" erkannt fuer Host ' + host,
+                STATE.sbc.apiPrefix === prefix, STATE.sbc.apiPrefix);
+        }
+    }
+    // (e) detectApiBase: kaputte/fremde URL wirft nicht (eigener try/catch).
+    {
+        const { detectApiBase } = buildUrlHelpers();
+        let threw = false;
+        try { detectApiBase(null); } catch (e) { threw = true; }
+        check('detectApiBase: null-URL wirft nicht', !threw);
+    }
+    // (f) Statische Regression: kein "(sbs|sbc)"-Regex-Literal mehr dupliziert
+    // (SSOT-Migration, core-Phase) - alle sieben ehemaligen Call-Sites leiten
+    // jetzt aus SBS_SBC_PREFIX_RE_SRC ab.
+    check('Kein "(sbs|sbc)"-Regex-Literal mehr im Quelltext (SSOT via SBS_SBC_PREFIX_RE_SRC)',
+        (src.match(/\(sbs\|sbc\)/g) || []).length === 0);
+    check('SBS_SBC_PREFIX_RE_SRC genau einmal definiert',
+        (src.match(/const SBS_SBC_PREFIX_RE_SRC = /g) || []).length === 1);
+}
+
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt
 // process.exit() die Loader-Tests, bevor sie laufen - sie zählten dann nicht mit
 // und ein Fehler dort wäre unbemerkt geblieben.

@@ -151,6 +151,16 @@ discoveries:
     note: severity=P3; ROADMAP.md Punkt 1b beschreibt Batch-Navigation als ungeloest
       (Stand v4.18.1), obwohl clickSetTile/clickChallengeRow laengst funktionieren
       — Q7-Drift, Kandidat Audit-Sammelticket.
+  - slug: code-geography-nicht-resolver-kompatibel
+    evidence:
+    - docs/roadmap/vision/features/batch-modus.md
+    - docs/roadmap/vision/features/rating-solver.md
+    issues:
+    - 5
+    note: severity=P3; code_geography der Userscript-Features nutzt beschreibende
+      Eintraege (Datei — Funktionsliste), die der Beleg-/Scorer-Resolver nicht als
+      Datei aufloest (candidate_files=0) — pattern add-beleg fuer diese Features unmoeglich.
+      Vision-Docs beim Audit auf reine Pfade/Globs umstellen.
 seeds_next:
   seeded_at: null
   patterns: []

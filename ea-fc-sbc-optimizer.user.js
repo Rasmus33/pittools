@@ -798,7 +798,7 @@
                 }
                 return true;
             }
-        } catch (e) { warn('SBC-Sync fehlgeschlagen:', e.message); }
+        } catch (e) { reportError('syncSbcWithOpenChallenge', e); }
         return false;
     }
     // ========================================================================

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.30.0
+// @version      4.45.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.30.0';
+    const VERSION = '4.45.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -102,13 +102,33 @@
         cancelLoad: false,
         lastChallengeRaw: null,      // letzte SBC-Response (fürs Debugging)
         lastSetChallenges: null,     // gecachte Challenge-Liste des geöffneten Sets
+        // Offene Ablage fuer Laufzeitzustand, den buildDiagReport() kopiert -
+        // jedes tatsaechlich verwendete Feld MUSS hier deklariert sein
+        // (solver-test.js prueft das symmetrisch: gelesen <-> deklariert <->
+        // zugewiesen), sonst bleibt es im Report unbemerkt bei seinem
+        // Initialwert stehen (siehe uiScan-Vorfall).
         diag: {
             fetchSeen: 0,
             xhrSeen: 0,
             utasSeen: 0,
             lastUtasPaths: [],       // letzte utas-Pfade (IDs maskiert)
             lastErrors: [],          // letzte Fehlermeldungen (ohne Tokens)
-            evoExcluded: 0           // ausgeschlossene Evolution-Karten
+            evoExcluded: 0,          // ausgeschlossene Evolution-Karten
+            lastSquadPutBody: null,  // letzter PUT-Body an den Squad (fuers 460-Debugging)
+            staleRecover: null,      // Erholungsversuch bei veralteter challengeId
+            locks: null,             // PaleTools-Sperrliste: Anzahl + Beispiel-IDs
+            clubLoad: null,          // Club-Ladelauf: Seitengroesse/Takt/Seiten/Retries/Dauer
+            submitVia: null,         // welcher Submit-Weg zuletzt gegriffen hat (app/http/services)
+            lastEligible: null,      // isSBCSquadEligible()-Ergebnis bei 403
+            refreshLog: null,        // Protokoll des View-Refresh nach dem Abgeben
+            uiScan: null,            // Panel/FAB/inSbcView-Snapshot zum Diagnose-Klick
+            batchSteps: null,        // letzte Batch-Runden: ok/steps beim Oeffnen der naechsten Instanz
+            batchStuckCount: 0,      // wie oft der stuck-Diagnosezweig in openNextInstance auslöste (v4.36.0-Vorfall über mehrere Läufe hinweg messbar statt anekdotisch)
+            lastTeam: null,          // zuletzt vom Solver geliefertes Team (ok/reason/cards/usedAssetsCount)
+            submitCandidates: null,  // Controller.Methode-Kandidaten fuers Abgeben
+            submitChallengeVia: null, // welcher Controller-/Service-Weg beim Abgeben gegriffen hat
+            submitWithoutResponseCount: 0, // wie oft submitChallengeToEa ohne auswertbare Response als Erfolg durchging (LEARNINGS §9, v4.36.0: offen, ob Abgabe wirklich bestätigt war)
+            lastTap: null            // letzter simulierter Tap: Events/Position/Abdeckung/Popup
         }
     };
     function log(...args) { try { console.log(LOG_PREFIX, ...args); } catch (e) {} }
@@ -119,6 +139,14 @@
             arr.push(String(msg).slice(0, 300));
             if (arr.length > 24) arr.shift();
         } catch (e) {}
+    }
+    // warn() + diagError() in einem Aufruf - fuer reportwuerdige eigene Fehler.
+    // NICHT fuer die bewusst stillen Catches an der EA-Grenze (Fremd-Objekte,
+    // deren Fehlschlag folgenlos bleibt - siehe
+    // patterns/good/stille-catches-nur-an-der-ea-grenze.md).
+    function reportError(label, e) {
+        warn(label + ':', e);
+        diagError(label + ': ' + ((e && e.message) || String(e)));
     }
     // ========================================================================
     //  1. FETCH / XHR INTERCEPTION  (ab document-start)
@@ -163,6 +191,20 @@
         if (route) s.route = route;
         if (nucleus) s.nucleusId = nucleus;
     }
+    // [URLCLS-BEGIN]
+    // EA nutzt wahlweise "sbs" oder "sbc" als API-Pfad-Segment (LEARNINGS,
+    // Abschnitt "API-Zugriff") - alle sieben URL-Klassifikationen unten leiten
+    // ihre Regex aus DIESER EINEN Quelle ab statt das Wissen erneut zu
+    // literalisieren. Einmalig kompiliert: kein new RegExp() im heissen
+    // fetch/XHR-Interception-Pfad.
+    const SBS_SBC_PREFIX_RE_SRC = 'sbs|sbc';
+    const RE_SBS_SBC_PREFIX_PATH = new RegExp('\\/ut\\/game\\/[^/]+\\/(' + SBS_SBC_PREFIX_RE_SRC + ')\\/', 'i');
+    const RE_SBC_SET_CHALLENGES = new RegExp('\\/(' + SBS_SBC_PREFIX_RE_SRC + ')\\/setId\\/\\d+\\/challenges', 'i');
+    const RE_SBC_CHALLENGE_BY_SET = new RegExp('\\/(' + SBS_SBC_PREFIX_RE_SRC + ')\\/setId\\/\\d+\\/challengeId\\/\\d+', 'i');
+    const RE_SBC_CHALLENGE_BY_ID = new RegExp('\\/(' + SBS_SBC_PREFIX_RE_SRC + ')\\/challenge\\/\\d+', 'i');
+    const RE_SBC_SETS = new RegExp('\\/(' + SBS_SBC_PREFIX_RE_SRC + ')\\/sets', 'i');
+    const RE_SBC_STORAGE_FALLBACK = new RegExp('\\/(' + SBS_SBC_PREFIX_RE_SRC + ')\\/[^?]*storage', 'i');
+    const RE_SBC_SQUAD_PUT = new RegExp('\\/(' + SBS_SBC_PREFIX_RE_SRC + ')\\/challenge\\/\\d+\\/squad', 'i');
     // API-Base aus einer URL ableiten. Marker ist "/ut/game/{spiel}/" –
     // der Host kann variieren (utas.mob.v1.fut.ea.com, utas.external..., ...).
     function detectApiBase(url) {
@@ -184,7 +226,7 @@
                     if (arr.length > 15) arr.shift();
                 }
                 // sbs- oder sbc-Präfix merken
-                const pm = u.match(/\/ut\/game\/[^/]+\/(sbs|sbc)\//i);
+                const pm = u.match(RE_SBS_SBC_PREFIX_PATH);
                 if (pm) STATE.sbc.apiPrefix = pm[1].toLowerCase();
             }
         } catch (e) {}
@@ -194,17 +236,18 @@
         const u = String(url);
         // Liste aller Challenges eines Sets - HIER stehen die Anforderungen
         // (Ziel-OVR, Rarity) pro Challenge. Live verifiziert (fc26).
-        if (/\/(sbs|sbc)\/setId\/\d+\/challenges/i.test(u)) return 'sbc-set-challenges';
-        if (/\/(sbs|sbc)\/setId\/\d+\/challengeId\/\d+/i.test(u) ||
-            /\/(sbs|sbc)\/challenge\/\d+/i.test(u)) return 'sbc-challenge';
-        if (/\/(sbs|sbc)\/sets/i.test(u)) return 'sbc-sets';
+        if (RE_SBC_SET_CHALLENGES.test(u)) return 'sbc-set-challenges';
+        if (RE_SBC_CHALLENGE_BY_SET.test(u) ||
+            RE_SBC_CHALLENGE_BY_ID.test(u)) return 'sbc-challenge';
+        if (RE_SBC_SETS.test(u)) return 'sbc-sets';
         if (/\/club(\?|$)/i.test(u)) return 'club';
         if (/\/purchased\/items/i.test(u)) return 'unassigned';
         // SBC-Storage - Endpunkt heisst "storagepile". Live verifiziert (fc26).
         if (/\/storagepile(\?|$|\/)/i.test(u)) return 'storage';
-        if (/\/(sbs|sbc)\/[^?]*storage/i.test(u)) return 'storage';
+        if (RE_SBC_STORAGE_FALLBACK.test(u)) return 'storage';
         return null;
     }
+    // [URLCLS-END]
     function handleResponseBody(url, bodyText) {
         const kind = classifyUrl(url);
         if (!kind || !bodyText) return;
@@ -288,7 +331,7 @@
                 // Referenz-Body mitschneiden: So sendet die App selbst einen
                 // SBC-Squad (wenn man manuell einen Spieler einträgt).
                 if (body && this.__sbcMethod === 'PUT' &&
-                    /\/(sbs|sbc)\/challenge\/\d+\/squad/i.test(String(url))) {
+                    RE_SBC_SQUAD_PUT.test(String(url))) {
                     try { STATE.diag.lastSquadPutBody = String(body).slice(0, 3000); } catch (e) {}
                 }
                 if (url && classifyUrl(url)) {
@@ -314,6 +357,7 @@
     //  gesamten Objektgraphen (begrenzt) nach requirement-artigen Objekten.
     //  Funktioniert für Netzwerk-JSON UND für App-interne Entities.
     // ========================================================================
+    // [SBCSCAN-BEGIN]
     function scopeString(o) {
         const cand = [o.scope, o.type, o.key, o.requirementKey, o.name];
         for (const c of cand) {
@@ -378,15 +422,16 @@
             const scope = scopeString(o);
             if (scope) {
                 const v = reqValue(o);
-                // Roh-Dump für Transparenz/Diagnose (max 25 Einträge)
-                if (out.reqs.length < 25 &&
-                    (scope.indexOf('RATING') > -1 || scope.indexOf('RARITY') > -1 ||
-                     scope.indexOf('PLAYER') > -1 || scope.indexOf('OVR') > -1 ||
-                     scope.indexOf('LEVEL') > -1 || scope.indexOf('QUALITY') > -1 ||
-                     scope.indexOf('CLUB') > -1 || scope.indexOf('LEAGUE') > -1 ||
-                     scope.indexOf('NATION') > -1 || scope.indexOf('CHEM') > -1)) {
-                    out.reqs.push({ scope: scope, value: v, ids: reqIds(o), count: reqCount(o, par) });
-                }
+                // matchedAs zeigt, welcher der unten folgenden, sich
+                // gegenseitig ausschliessenden Zweige tatsaechlich griff -
+                // 'unclassified' deckt exakt die Luecke aus dem
+                // PLAYER_LEVEL-Dual-Use-Bug ab (LEARNINGS 6/11): ein Scope wie
+                // PLAYER_LEVEL erfuellt sowohl isPlayerLevel als auch
+                // isQualityScope strukturell, aber nur EIN Wertebereich
+                // (40-99 bzw. 1-3) loest den jeweiligen Zweig unten aus; ein
+                // Wert dazwischen (4-39) faellt durch beide und bleibt sichtbar
+                // 'unclassified' statt lautlos zu verschwinden.
+                let matchedAs = 'unclassified';
                 const isTeamRating =
                     scope.indexOf('TEAM_RATING') > -1 || scope.indexOf('SQUAD_RATING') > -1 ||
                     ((scope.indexOf('RATING') > -1 || scope.indexOf('OVR') > -1) &&
@@ -395,6 +440,7 @@
                     if (v != null && v >= 40 && v <= 99) {
                         // höchste gefundene Team-Rating-Anforderung gewinnt
                         if (out.target == null || v > out.target) out.target = v;
+                        matchedAs = 'TEAM_RATING';
                     }
                 }
                 // Spieler-Level-Vorgabe: "min. N Spieler mit Rating X+"
@@ -404,6 +450,7 @@
                     scope.indexOf('CHEM') === -1;
                 if (isPlayerLevel && v != null && v >= 40 && v <= 99) {
                     out.playerLevel.push({ label: scope, minRating: v, count: reqCount(o, par) });
+                    matchedAs = 'PLAYER_LEVEL';
                 }
                 // Qualitäts-Vorgabe (Tausch-/Upgrade-SBCs ohne Team-Rating):
                 // 1=Bronze, 2=Silber, 3=Gold.
@@ -418,6 +465,7 @@
                     (scope.indexOf('LEVEL') > -1 && scope.indexOf('CHEM') === -1);
                 if (isQualityScope && v != null && v >= 1 && v <= 3) {
                     out.quality.push({ label: scope, quality: Number(v), count: reqCount(o, par) });
+                    matchedAs = 'PLAYER_QUALITY';
                 }
                 // KEIN Substring-Match auf "RARE" hier! Das hat live
                 // SPIELERNAMEN getroffen ("Carrarese Calcio", "Brian Ferrares",
@@ -433,6 +481,16 @@
                         // Karten matchen über ihr "groups"-Feld.
                         groupId: (scope.indexOf('GROUP') > -1 && v != null) ? v : null
                     });
+                    matchedAs = 'RARITY';
+                }
+                // Roh-Dump für Transparenz/Diagnose (max 25 Einträge)
+                if (out.reqs.length < 25 &&
+                    (scope.indexOf('RATING') > -1 || scope.indexOf('RARITY') > -1 ||
+                     scope.indexOf('PLAYER') > -1 || scope.indexOf('OVR') > -1 ||
+                     scope.indexOf('LEVEL') > -1 || scope.indexOf('QUALITY') > -1 ||
+                     scope.indexOf('CLUB') > -1 || scope.indexOf('LEAGUE') > -1 ||
+                     scope.indexOf('NATION') > -1 || scope.indexOf('CHEM') > -1)) {
+                    out.reqs.push({ scope: scope, value: v, ids: reqIds(o), count: reqCount(o, par), matchedAs: matchedAs });
                 }
             }
             // Slot-Anzahl (manche SBCs haben < 11 Spieler)
@@ -474,6 +532,7 @@
         out.reqs = dedupe(out.reqs, r => r.scope + '|' + r.value + '|' + r.count + '|' + r.ids.join(','));
         return out;
     }
+    // [SBCSCAN-END]
     // Wechsel der aktiven Challenge: alte Anforderungen zurücksetzen, damit
     // nichts von der vorherigen SBC hängen bleibt.
     function setCurrentChallenge(cid) {
@@ -486,6 +545,7 @@
         STATE.sbc.rarityConstraints = [];
         STATE.sbc.playerLevelConstraints = [];
         STATE.sbc.qualityConstraints = [];
+        STATE.sbc.otherScopes = [];
         STATE.sbc.rareConstraints = [];
         STATE.sbc.reqDump = [];
         STATE.sbc.formationSlots = 11;
@@ -524,6 +584,81 @@
             }
         }
         return null;
+    }
+    /**
+     * ALLE Challenge-Knoten einer Set-Antwort sammeln (nicht nur den mit einer
+     * bestimmten ID). Wird gebraucht, um nach einem 404/475 die frische Instanz
+     * derselben SBC zu finden: wiederholbare SBCs bekommen pro Durchlauf eine
+     * neue challengeId, und die Ansicht steht danach auf der verbrauchten.
+     */
+    function collectChallengeNodes(root) {
+        const out = [];
+        if (!root || typeof root !== 'object') return out;
+        const seen = new Set();
+        const queue = [{ o: root, d: 0 }];
+        let visited = 0;
+        while (queue.length && visited < 20000) {
+            const cur = queue.shift();
+            const o = cur.o, d = cur.d;
+            if (!o || typeof o !== 'object' || seen.has(o) || d > 6 || isDomOrWindow(o)) continue;
+            seen.add(o);
+            visited++;
+            if (o.challengeId != null &&
+                (o.elgReq || o.requirements || o.eligibilityRequirements || o.name)) {
+                out.push(o);
+            }
+            if (Array.isArray(o)) {
+                for (const child of o) {
+                    if (child && typeof child === 'object') queue.push({ o: child, d: d + 1 });
+                }
+            } else {
+                for (const k of Object.keys(o)) {
+                    let child;
+                    try { child = o[k]; } catch (e) { continue; }
+                    if (child && typeof child === 'object') queue.push({ o: child, d: d + 1 });
+                }
+            }
+        }
+        return out;
+    }
+    /**
+     * Nach einem 404/475 die FRISCHE Instanz derselben SBC finden: Challenge-
+     * Liste des Sets neu holen und den Knoten nehmen, dessen Vorgaben zur
+     * geplanten Signatur passen (Ziel-OVR + Slots) - NICHT einfach den ersten.
+     * Sonst landet das Team in einer fremden SBC.
+     * Liefert die neue challengeId oder null.
+     */
+    async function resolveFreshChallengeId() {
+        const setId = STATE.sbc.setId;
+        const oldId = STATE.sbc.challengeId;
+        const wantTarget = STATE.sbc.targetOVR;
+        const wantSlots = STATE.sbc.formationSlots;
+        if (setId == null) return null;
+        let json = null;
+        try { json = await apiGet('sbs/setId/' + setId + '/challenges'); }
+        catch (e) { warn('Frische Challenge holen fehlgeschlagen:', e && e.message); return null; }
+        const nodes = collectChallengeNodes(json);
+        STATE.diag.staleRecover = { setId: setId, oldId: oldId, nodes: nodes.length,
+                                    wantTarget: wantTarget, wantSlots: wantSlots };
+        const cands = [];
+        for (const n of nodes) {
+            if (String(n.challengeId) === String(oldId)) continue;
+            let scan = null;
+            try { scan = deepScanChallenge(n); } catch (e) { continue; }
+            if (!scan) continue;
+            const okTarget = (wantTarget == null) || (String(scan.target) === String(wantTarget));
+            const okSlots = (wantSlots == null) || (scan.slots == null) ||
+                            (Number(scan.slots) === Number(wantSlots));
+            if (okTarget && okSlots) cands.push(n.challengeId);
+        }
+        STATE.diag.staleRecover.candidates = cands.slice(0, 5);
+        if (cands.length !== 1) {
+            // Mehrdeutig oder nichts gefunden: lieber sauber melden als in die
+            // falsche SBC schreiben.
+            return null;
+        }
+        STATE.lastSetChallenges = json;
+        return cands[0];
     }
     // Anforderungen der aktuellen Challenge aus der gecachten Set-Liste ziehen.
     function applyFromSetChallenges() {
@@ -617,7 +752,30 @@
         if (scan.playerLevel.length) { STATE.sbc.playerLevelConstraints = scan.playerLevel; changed = true; }
         if (scan.quality && scan.quality.length) { STATE.sbc.qualityConstraints = scan.quality; changed = true; }
         if (scan.rare && scan.rare.length) { STATE.sbc.rareConstraints = scan.rare; changed = true; }
-        if (scan.reqs.length) { STATE.sbc.reqDump = scan.reqs; changed = true; }
+        if (scan.reqs.length) {
+            STATE.sbc.reqDump = scan.reqs;
+            // NUR INFORMATIV, KEINE Warnung mehr. In v4.34.0 habe ich Scopes
+            // ohne Wert als "Vorgabe, die wir nicht abdecken" gedeutet und
+            // gewarnt. Das war falsch: "PLAYER" und "CLUB MEMBER" sind die
+            // Eligibility-Scopes, die JEDE SBC hat ("Spieler-Items aus deinem
+            // Verein"). Live bewiesen an einer SBC, die einwandfrei durchlief
+            // (lastErrors leer, lastTeam ok, submitVia app) und trotzdem die
+            // Warnung bekam. Ausserdem enthaelt reqDump je nach gescanntem
+            // Knoten gar nicht die echten Vorgaben - TEAM_RATING fehlte dort,
+            // obwohl das Ziel-OVR erkannt war. Aus dieser Liste laesst sich
+            // "unerfuellbar" also nicht ableiten. Wer das wirklich wissen will,
+            // fragt EA selbst: _squad.isSBCSquadEligible().
+            const BOILERPLATE = ['PLAYER', 'CLUB MEMBER', 'CLUBMEMBER', 'ITEM'];
+            const other = [];
+            for (const r of scan.reqs) {
+                const sc = String(r.scope || '').toUpperCase();
+                if (!sc || r.value != null) continue;
+                if (BOILERPLATE.indexOf(sc) > -1) continue;
+                if (other.indexOf(sc) < 0) other.push(sc.slice(0, 40));
+            }
+            STATE.sbc.otherScopes = other;
+            changed = true;
+        }
         if (changed) {
             log('SBC erkannt (' + source + '):', JSON.stringify({
                 setId: STATE.sbc.setId,
@@ -642,25 +800,20 @@
      */
     function syncSbcWithOpenChallenge() {
         try {
-            for (const c of getControllerChain()) {
-                const n = (c.constructor && c.constructor.name) || '';
-                if (!/sbc/i.test(n)) continue;
-                let ch = null;
-                for (const key of ['_overviewController', 'leftController', '_leftController']) {
-                    const oc = c[key];
-                    if (oc && oc._challenge && typeof oc._challenge === 'object') { ch = oc._challenge; break; }
+            // findLiveChallenge() ist SSOT fuer dieselbe Suche (Q4/Q5, siehe
+            // patterns/bad/helfer-existiert-wird-umgangen.md) - liefert zusaetzlich
+            // STATE.sbc.entity als Fallback (reine Erweiterung: captureChallengeEntity()
+            // no-op bei Nicht-Objekten, kein Verlust eines bestehenden Rueckgabewerts).
+            const ch = findLiveChallenge();
+            if (ch) {
+                const prevId = STATE.sbc.challengeId;
+                captureChallengeEntity(ch);
+                if (STATE.sbc.challengeId !== prevId) {
+                    log('SBC aus offener Ansicht synchronisiert: Challenge', STATE.sbc.challengeId, '(vorher', prevId + ')');
                 }
-                ch = ch || (c._challenge && typeof c._challenge === 'object' ? c._challenge : null);
-                if (ch) {
-                    const prevId = STATE.sbc.challengeId;
-                    captureChallengeEntity(ch);
-                    if (STATE.sbc.challengeId !== prevId) {
-                        log('SBC aus offener Ansicht synchronisiert: Challenge', STATE.sbc.challengeId, '(vorher', prevId + ')');
-                    }
-                    return true;
-                }
+                return true;
             }
-        } catch (e) { warn('SBC-Sync fehlgeschlagen:', e.message); }
+        } catch (e) { reportError('syncSbcWithOpenChallenge', e); }
         return false;
     }
     // ========================================================================
@@ -776,6 +929,12 @@
         const ids = new Set();
         let keysScanned = 0;
         const keyInfo = [];
+        // Bricht die Schleife mitten drin ab, bleibt die Sperrliste unvollstaendig,
+        // OHNE dass der Report das zeigt (CLAUDE.md: gesperrte Karten NIEMALS
+        // verbauen - ein stiller Teilausfall koennte das unterlaufen). scanError
+        // macht das im Report explizit sichtbar statt nur ueber niedrige Zahlen
+        // erraten zu werden.
+        let scanError = null;
         try {
             for (let i = 0; i < localStorage.length; i++) {
                 const k = localStorage.key(i);
@@ -805,13 +964,17 @@
                 else if (/lock/i.test(k)) harvestIds(obj, ids, 0);
                 else findLockBranches(obj, ids, 0);
             }
-        } catch (e) { warn('Locks lesen fehlgeschlagen:', e && e.message); }
+        } catch (e) {
+            scanError = (e && e.message) || String(e);
+            reportError('Locks lesen fehlgeschlagen', e);
+        }
         STATE.diag.locks = {
             keysScanned: keysScanned,
             found: ids.size,
             sample: Array.from(ids).slice(0, 5),
             // Nur noetig, wenn found = 0: daran ist der richtige Key ablesbar.
-            keys: keyInfo.slice(0, 12)
+            keys: keyInfo.slice(0, 12),
+            error: scanError
         };
         return ids;
     }
@@ -998,7 +1161,7 @@
                     if (p) out.push(p);
                 }
             }
-        } catch (e) { warn('Unassigned via App-Service fehlgeschlagen:', e); }
+        } catch (e) { reportError('Unassigned via Service fehlgeschlagen', e); }
         return out;
     }
     async function fetchStorageViaServices() {
@@ -1016,7 +1179,7 @@
                     if (out.length) break;
                 }
             }
-        } catch (e) { warn('Storage via App-Service fehlgeschlagen:', e); }
+        } catch (e) { reportError('Storage via Service fehlgeschlagen', e); }
         return out;
     }
     // ---- Ebene B: direkte HTTP-Calls ----------------------------------------
@@ -1082,6 +1245,16 @@
         warn('Session-Nudge: SID unverändert (Session evtl. noch gültig / Rate-Limit).');
         return false;
     }
+    // apiGet/apiPut bauen dieselbe Nudge->Sleep->Retry-Kaskade absichtlich
+    // JEDER FUER SICH nach statt sie in einen gemeinsamen
+    // apiRequest(method, path, body, _attempt)-Kern zu ziehen: solver-test.js
+    // hat aktuell keine Coverage der 401-Retry-Kaskade selbst (nur eine
+    // Attrappe fuer den Pagination-Loader), eine Extraktion waere also nicht
+    // verhaltensneutral belegbar. Dazu muesste der _attempt-Zaehler PRO
+    // Methode/Pfad zaehlen - ein gemeinsamer Kern liefe sonst Gefahr, einen
+    // laufenden GET- und PUT-Retry denselben Zaehler teilen zu lassen.
+    // Kandidat fuer eine Folge-Iteration, sobald ein Mock-Testharness fuer
+    // apiGet/apiPut existiert (analog zum fetchClubViaHttp-Test).
     async function apiGet(path, _attempt) {
         const url = STATE.session.apiBase + path.replace(/^\//, '');
         let resp;
@@ -1137,13 +1310,31 @@
     async function fetchClubViaHttp(onProgress) {
         let page = 0;
         let found = 0;
-        const count = 91;
+        // GROESSERE SEITEN. 91 war geraten; PaleTools faehrt laut seinen
+        // Settings mit maxItemsCount 150, EA nimmt also mehr als 91. Wir fragen
+        // 175 an und lernen die echte Obergrenze aus der ERSTEN Antwort: liefert
+        // EA weniger Items als angefragt, obwohl laut totalItemCount noch welche
+        // fehlen, ist das die Kappung - dann wird mit diesem Wert weitergefahren.
+        // 8400 Karten: 92 Seiten bei 91, rund 48 bei 175.
+        let count = 175;
+        let calibrated = false;
+        // TAKT statt SCHLAFEN. Vorher wurde NACH jeder Antwort 250ms gewartet,
+        // die Periode war also Latenz + 250ms (~450ms). Jetzt wird der ABSTAND
+        // ZWISCHEN DEN STARTS getaktet, die Latenz laeuft mit. Der Takt ist mit
+        // 300ms bewusst etwas langsamer als die reine Rechnung erlaubt und
+        // wird bei JEDEM Fehlversuch groesser (Rate-Limit-401er haben schon
+        // einmal einen Ladevorgang gekostet, LEARNINGS 7) - der Lauf bremst
+        // sich also selbst ein, statt auf einen festen Wert zu wetten.
+        let gap = 300;
         let total = Infinity;
         let gotAny = false;
         STATE.loadIncomplete = false;
+        STATE.diag.clubLoad = { pageSize: count, gap: gap, pages: 0, retries: 0, ms: 0 };
+        const t0 = Date.now();
         while (page * count < total) {
             if (STATE.cancelLoad) break;
             const start = page * count;
+            const tStart = Date.now();
             const path = 'club?sort=desc&sortBy=value&type=player&count=' + count + '&start=' + start;
             let json = null;
             // Pro Seite bis zu 3 Versuche (apiGet macht bei 401 zusätzlich
@@ -1153,6 +1344,12 @@
                 try { json = await apiGet(path); }
                 catch (e) {
                     warn('Club-Fetch Fehler Seite', page, 'Versuch', attempt + 1, e.message);
+                    // Selbst einbremsen: jeder Fehlversuch erhoeht den Takt
+                    // dauerhaft. Ein Rate-Limit soll den Lauf verlangsamen,
+                    // nicht abbrechen.
+                    gap = Math.min(900, gap + 150);
+                    STATE.diag.clubLoad.retries++;
+                    STATE.diag.clubLoad.gap = gap;
                     if (attempt < 2) await new Promise(r => setTimeout(r, 1200 * (attempt + 1)));
                 }
             }
@@ -1162,14 +1359,22 @@
                 break;
             }
             gotAny = true;
-            // Kurz atmen zwischen den Seiten - zu schnelle Pagination
-            // provoziert Rate-Limit-401er (live bestätigt: 120ms war zu
-            // schnell, Abbruch bei Seite ~55). 250ms ist der bewährte Wert.
-            await new Promise(r => setTimeout(r, 250));
             const items = extractItems(json);
             if (json.totalItemCount != null) total = json.totalItemCount;
             else if (json.total != null) total = json.total;
-            else if (items.length < count) total = start + items.length;
+            // Seitengroesse kalibrieren: kamen weniger Items als angefragt,
+            // obwohl laut total noch welche fehlen, hat EA gekappt. WICHTIG:
+            // das muss VOR dem "weniger Items = fertig"-Schluss stehen, sonst
+            // bricht der Lauf nach der ersten Seite ab.
+            if (!calibrated && items.length > 0 && items.length < count &&
+                total !== Infinity && start + items.length < total) {
+                count = items.length;
+                calibrated = true;
+                STATE.diag.clubLoad.pageSize = count;
+                log('Club-Seitengroesse von EA gekappt auf ' + count + ' - damit weiter.');
+            }
+            calibrated = true;
+            if (total === Infinity && items.length < count) total = start + items.length;
             const players = [];
             for (const it of items) {
                 const p = normalizePlayer(it, false);
@@ -1181,7 +1386,15 @@
             if (items.length === 0) break;
             page++;
             if (page > 300) break;
+            // Rest des Takts abwarten - die Latenz der gerade beantworteten
+            // Seite zaehlt mit, es wird also nicht doppelt gewartet.
+            const restMs = gap - (Date.now() - tStart);
+            if (restMs > 0) await new Promise(r => setTimeout(r, restMs));
         }
+        STATE.diag.clubLoad.pages = page;
+        STATE.diag.clubLoad.ms = Date.now() - t0;
+        log('Verein geladen: ' + found + ' Spieler in ' + page + ' Seiten (' +
+            count + ' pro Seite, ' + STATE.diag.clubLoad.ms + 'ms, Takt ' + gap + 'ms).');
         return found;
     }
     async function fetchUnassignedViaHttp() {
@@ -1192,7 +1405,7 @@
                 const p = normalizePlayer(it, false);
                 if (p) out.push(p);
             }
-        } catch (e) { warn('Unassigned-Fetch Fehler:', e); }
+        } catch (e) { reportError('Unassigned-Fetch Fehler', e); }
         return out;
     }
     async function fetchStorageViaHttp() {
@@ -1204,7 +1417,7 @@
                 const p = normalizePlayer(it, true);
                 if (p) out.push(p);
             }
-        } catch (e) { warn('storagepile-Fetch Fehler:', e.message); }
+        } catch (e) { reportError('storagepile-Fetch Fehler', e); }
         return out;
     }
     // ---- Kombinierter Pool-Load ---------------------------------------------
@@ -1294,6 +1507,21 @@
                 return (counts.get(kb) || 0) - (counts.get(ka) || 0);
             };
         }
+        // Sortier-Komparator "Storage vor Verein -> niedrigstes Rating ->
+        // Kosten -> Tiebreak", an vier Stellen im Solver identisch gebraucht
+        // (Bronze/Silber-Quoten, Rare-ohne-Ziel-Reservierung, Gold-Rare-
+        // Reservierung ohne Ziel-OVR, Auffüll-Karten ohne Ziel-OVR). Der
+        // Tiebreak-Comparator MUSS Parameter bleiben: zwei der vier Stellen
+        // schließen mit makeConsumeCmp(pool) ab, zwei mit makeConsumeCmp(avail)
+        // - unterschiedliche (gefilterte) Kartenmengen. Ein hartkodierter
+        // gemeinsamer Tiebreak würde an zwei Stellen die Reihenfolge
+        // stillschweigend ändern.
+        function makeFillCmp(costOf, tiebreakCmp) {
+            return function (a, b) {
+                return ((b.isStorage ? 1 : 0) - (a.isStorage ? 1 : 0)) ||
+                    (a.rating - b.rating) || (costOf(a) - costOf(b)) || tiebreakCmp(a, b);
+            };
+        }
         /**
          * EXAKTE Squad-Rating-Formel von EA FC (community-verifiziert,
          * gleiche Formel wie im FC26-Solver von Regista6 / EasySBC):
@@ -1364,14 +1592,53 @@
         }
         // TOTW-Karte (Team of the Week / Inform): rareflag 3.
         function isTotw(p) { return Number(p.rareflag) === 3; }
-        // Gewicht der Summen-Überschreitung. Klein => innerhalb des
-        // erlaubten Waste-Fensters entscheiden die KARTEN-Kosten.
-        // Mit Max-Waste = 0 (Standard) ist das Fenster {stMin}, d.h. die
-        // minimale Summe ist die harte Prämisse und die Karten-Kosten
-        // brechen nur Gleichstände AUF der Minimalsumme. Erst wer Max-Waste
-        // erhöht, erlaubt bewusst etwas mehr Summe, um teure Karten
-        // (96er/93+) zu schonen.
-        const WASTE_WEIGHT = 0.05;
+        // Kartenkosten (Band + persönliche Scarcity, Storage-Bonus, Rarity-
+        // Schutz-Aufschlag, Untradeable-Rabatt) als modul-weite Factory statt
+        // einer Closure innerhalb von solveCore: solver-test.js baut damit
+        // dieselbe Formel per SolverCore.makeCostOf() auf, statt sie als
+        // eigenständige cardCostFn() nachzubilden (SSOT, vorher nur per
+        // Kommentar "MUSS synchron bleiben" abgesichert).
+        function makeCostOf(pool, cfg) {
+            const bandFn = (typeof cfg.ratingCostFn === 'function')
+                ? cfg.ratingCostFn
+                : parseRatingCosts(cfg.ratingCostSpec != null ? cfg.ratingCostSpec : DEFAULT_RATING_COST_SPEC);
+            let alpha = cfg.scarcityWeight != null ? cfg.scarcityWeight : 18;
+            let beta = cfg.storageBonus != null ? cfg.storageBonus : 2;
+            if (alpha <= 0) alpha = 1e-6;
+            if (beta <= 0) beta = 1e-7;
+            const countByRating = new Map();
+            for (const p of pool) countByRating.set(p.rating, (countByRating.get(p.rating) || 0) + 1);
+            // RARITY-SCHUTZ: Karten, die Requirement-Rarities erfüllen können
+            // (TOTW/TOTS/FOF/FUTTIES = Rarity-Gruppe 83), sind wertvoller als
+            // ihr Rating - sie werden für künftige SBC-Vorgaben gebraucht.
+            // Sie bekommen einen festen Kosten-Aufschlag: ohne Vorgabe meidet
+            // der Solver sie, mit Vorgabe wird GENAU die geforderte Anzahl
+            // reserviert und der Rest trotzdem gemieden. Der Aufschlag wirkt
+            // NACH dem Storage-Rabatt (wird also nicht halbiert).
+            const guardGroups = Array.isArray(cfg.protectedGroups) && cfg.protectedGroups.length
+                ? cfg.protectedGroups.map(Number) : [83];
+            const guardCost = Math.max(0, cfg.rarityGuardCost != null ? Number(cfg.rarityGuardCost) : 8);
+            function isProtectedRarity(p) {
+                if (!guardCost || !Array.isArray(p.groups) || !p.groups.length) return false;
+                for (const g of guardGroups) if (p.groups.indexOf(g) > -1) return true;
+                return false;
+            }
+            // UNTRADEABLE bevorzugen: solche Karten lassen sich nicht
+            // verkaufen, sind für SBCs aber vollwertig - sie zuerst zu
+            // verbauen spart echte Coins. Rabatt wirkt wie der Rarity-Aufschlag
+            // NACH dem Storage-Rabatt (wird also nicht halbiert).
+            const untrBonus = Math.max(0, cfg.untradeableBonus != null
+                ? Number(cfg.untradeableBonus) : 3);
+            function costOf(p) {
+                const n = countByRating.get(p.rating) || 1;
+                const base = alpha / n + bandFn(p.rating);
+                return (p.isStorage ? (base / 2 - beta) : base) +
+                       (isProtectedRarity(p) ? guardCost : 0) -
+                       (p.untradeable ? untrBonus : 0);
+            }
+            costOf.isProtectedRarity = isProtectedRarity;
+            return costOf;
+        }
         function matchesRarity(p, c) {
             if (!c) return p.isSpecial;
             // EXAKTES Matching über Rarity-GRUPPEN (live verifiziert, fc26):
@@ -1715,8 +1982,21 @@
             const reserveCmp = makeConsumeCmp(pool);
             // Jede Reservierung MUSS hierueber laufen: sie fuehrt used und
             // usedAssets zusammen nach. Zwei Karten desselben Spielers im Team
-            // sind HTTP 460 (LEARNINGS 6).
+            // sind HTTP 460 (LEARNINGS 6). Anker und manueller Rarity-Pick
+            // liefen frueher inline an reserve() vorbei (usedAssets blieb fuer
+            // sie leer) - das war folgenlos, weil die SPIELER-EINDEUTIGKEIT
+            // weiter oben pool/poolAll schon vorab pro assetId dedupliziert.
+            // Seit hier BEIDE Pfade ueber reserve() laufen, haengt die
+            // Kollisions-Sperre nicht mehr zusaetzlich von dieser upstream-
+            // Dedupe ab, falls sie ein zukuenftiger Umbau je lockert.
             function reserve(p) {
+                if (p.assetId != null && p.assetId !== 0 && usedAssets.has(String(p.assetId))) {
+                    // Sollte durch die SPIELER-EINDEUTIGKEIT oben strukturell
+                    // unerreichbar sein - falls doch, ist das hier die einzige
+                    // Stelle, die es je sichtbar macht (vorher keine Log-Spur).
+                    warnings.push('Interne Warnung: ' + (p.name || p.assetId) +
+                        ' wurde durch Anker/Rarity-Pick ein zweites Mal reserviert (gleicher Spieler) - bitte Diagnose schicken.');
+                }
                 used.add(p.id);
                 if (p.assetId != null && p.assetId !== 0) usedAssets.add(String(p.assetId));
                 reserved.push(p);
@@ -1728,47 +2008,14 @@
             // ---- Kartenkosten (Band + persönliche Scarcity, Storage-Bonus) ----
             // VOR den Reservierungen definiert: auch Vorgabe-Karten werden
             // nach KOSTEN gewählt (87er TOTW mit Kosten 2 schlägt 85er mit 5).
-            const bandFn = (typeof cfg.ratingCostFn === 'function')
-                ? cfg.ratingCostFn
-                : parseRatingCosts(cfg.ratingCostSpec != null ? cfg.ratingCostSpec : DEFAULT_RATING_COST_SPEC);
-            let alpha = cfg.scarcityWeight != null ? cfg.scarcityWeight : 18;
-            let beta = cfg.storageBonus != null ? cfg.storageBonus : 2;
-            if (alpha <= 0) alpha = 1e-6;
-            if (beta <= 0) beta = 1e-7;
-            const countByRating = new Map();
-            for (const p of pool) countByRating.set(p.rating, (countByRating.get(p.rating) || 0) + 1);
-            // RARITY-SCHUTZ: Karten, die Requirement-Rarities erfüllen können
-            // (TOTW/TOTS/FOF/FUTTIES = Rarity-Gruppe 83), sind wertvoller als
-            // ihr Rating - sie werden für künftige SBC-Vorgaben gebraucht.
-            // Sie bekommen einen festen Kosten-Aufschlag: ohne Vorgabe meidet
-            // der Solver sie, mit Vorgabe wird GENAU die geforderte Anzahl
-            // reserviert und der Rest trotzdem gemieden. Der Aufschlag wirkt
-            // NACH dem Storage-Rabatt (wird also nicht halbiert).
-            const guardGroups = Array.isArray(cfg.protectedGroups) && cfg.protectedGroups.length
-                ? cfg.protectedGroups.map(Number) : [83];
-            const guardCost = Math.max(0, cfg.rarityGuardCost != null ? Number(cfg.rarityGuardCost) : 8);
-            function isProtectedRarity(p) {
-                if (!guardCost || !Array.isArray(p.groups) || !p.groups.length) return false;
-                for (const g of guardGroups) if (p.groups.indexOf(g) > -1) return true;
-                return false;
-            }
-            // UNTRADEABLE bevorzugen: solche Karten lassen sich nicht
-            // verkaufen, sind für SBCs aber vollwertig - sie zuerst zu
-            // verbauen spart echte Coins. Rabatt wirkt wie der Rarity-Aufschlag
-            // NACH dem Storage-Rabatt (wird also nicht halbiert).
-            const untrBonus = Math.max(0, cfg.untradeableBonus != null
-                ? Number(cfg.untradeableBonus) : 3);
-            function costOf(p) {
-                const n = countByRating.get(p.rating) || 1;
-                const base = alpha / n + bandFn(p.rating);
-                return (p.isStorage ? (base / 2 - beta) : base) +
-                       (isProtectedRarity(p) ? guardCost : 0) -
-                       (p.untradeable ? untrBonus : 0);
-            }
+            // makeCostOf() ist die modul-weite SSOT-Factory (nahe parseRatingCosts) -
+            // solver-test.js ruft dieselbe Funktion statt sie nachzubilden.
+            const costOf = makeCostOf(pool, cfg);
+            const isProtectedRarity = costOf.isProtectedRarity;
             // ---- Anker ----
             if (cfg.anchorId != null && cfg.anchorId !== '') {
                 const anchor = pool.find(p => String(p.id) === String(cfg.anchorId));
-                if (anchor) { used.add(anchor.id); reserved.push(anchor); }
+                if (anchor) reserve(anchor);
                 else {
                     const inAll = poolAll.find(p => String(p.id) === String(cfg.anchorId));
                     warnings.push(inAll
@@ -1791,8 +2038,7 @@
                     }
                 }
                 if (pick) {
-                    used.add(pick.id);
-                    reserved.push(pick);
+                    reserve(pick);
                     forcedPickId = pick.id;
                     warnings.push('Rarity-Vorgabe: ' + pick.name + ' (' + pick.rating + ') manuell gesetzt.');
                 } else {
@@ -1816,8 +2062,7 @@
                     while (have < t.count) {
                         const cand = pool
                             .filter(p => freeCard(p) && p.rating >= t.lo && p.rating <= t.hi)
-                            .sort((a, b) => ((b.isStorage ? 1 : 0) - (a.isStorage ? 1 : 0)) ||
-                                (a.rating - b.rating) || (costOf(a) - costOf(b)) || reserveCmp(a, b))[0];
+                            .sort(makeFillCmp(costOf, reserveCmp))[0];
                         if (!cand) {
                             return { ok: false, reason: 'Qualitaets-Vorgabe "' + t.count + 'x ' +
                                 t.label + '" nicht erfuellbar - nur ' + have +
@@ -1931,8 +2176,7 @@
                                 (!cfg.specialOnlyFromStorage || p.isStorage || !p.isSpecial || isTotw(p)));
                     }
                     const cand = cands.sort((!target && isRareGroup)
-                        ? ((a, b) => ((b.isStorage ? 1 : 0) - (a.isStorage ? 1 : 0)) ||
-                            (a.rating - b.rating) || (costOf(a) - costOf(b)) || reserveCmp(a, b))
+                        ? makeFillCmp(costOf, reserveCmp)
                         : ((a, b) => (costOf(a) - costOf(b)) || (a.rating - b.rating) || reserveCmp(a, b))
                     )[0];
                     if (!cand) {
@@ -2004,7 +2248,7 @@
                 if (bad) {
                     return { ok: false, reason: 'Interner Fehler: ' + bad +
                         '. Nichts eingetragen - bitte Diagnose schicken.',
-                        warnings: warnings, teamDump: dump };
+                        warnings: warnings, teamDump: dump, usedAssetsCount: usedAssets.size };
                 }
                 const sum = team.reduce((s, p) => s + p.rating, 0);
                 const rats = team.map(p => p.rating);
@@ -2023,6 +2267,12 @@
                     target: target || null,
                     poolInfo: poolInfo,
                     teamDump: dump,
+                    // Beobachtbarkeit fuer den reserve()-Funnel (Anker/Rarity-
+                    // Pick/Vorgaben): Anzahl der ueber reserve() als distinkte
+                    // Spieler (assetId) gezaehlten Karten - haette vorher (Anker
+                    // und Rarity-Pick liefen inline an reserve() vorbei) keine
+                    // verlaessliche Aussagekraft gehabt.
+                    usedAssetsCount: usedAssets.size,
                     reason: (target && ovr < target) ? ('Erreichter OVR ' + ovr + ' < Ziel ' + target + '.') : null,
                     warnings: warnings
                 };
@@ -2055,8 +2305,7 @@
                     for (let need = needRare; need > 0; need--) {
                         const cand = avail
                             .filter(p => freeCard(p) && p.isRare && p.rating <= maxRare)
-                            .sort((a, b) => ((b.isStorage ? 1 : 0) - (a.isStorage ? 1 : 0)) ||
-                                (a.rating - b.rating) || (costOf(a) - costOf(b)) || cmp(a, b))[0];
+                            .sort(makeFillCmp(costOf, cmp))[0];
                         if (!cand) break;
                         reserve(cand);
                         gotRare++;
@@ -2102,10 +2351,7 @@
                 // Die Kosten duerfen NICHT vor dem Rating stehen: 75-77 liegen
                 // alle in der Stufe "0-80: 0", also gewinnt sonst ueber
                 // alpha/anzahl die HAEUFIGERE Karte.
-                const fillers = fillPool.filter(freeCard).sort(
-                    (a, b) => ((b.isStorage ? 1 : 0) - (a.isStorage ? 1 : 0)) ||
-                        (a.rating - b.rating) || (costOf(a) - costOf(b)) || cmp(a, b)
-                ).slice(0, k2);
+                const fillers = fillPool.filter(freeCard).sort(makeFillCmp(costOf, cmp)).slice(0, k2);
                 if (reserved.length + fillers.length < N) {
                     return { ok: false, reason: 'Zu wenige passende Karten für die Vorgabe (' + (reserved.length + fillers.length) + '/' + N + ').', warnings: warnings };
                 }
@@ -2298,10 +2544,9 @@
             squadRating: squadRating,
             squadRatingExact: squadRatingExact,
             squadV: squadV,
-            priorityOf: priorityOf,
             parseRatingCosts: parseRatingCosts,
             DEFAULT_RATING_COST_SPEC: DEFAULT_RATING_COST_SPEC,
-            WASTE_WEIGHT: WASTE_WEIGHT
+            makeCostOf: makeCostOf
         };
     })();
     // [SOLVER-END]
@@ -2373,6 +2618,10 @@
         for (let i = 0; i < total; i++) {
             players.push({ index: i, itemData: { id: byIndex.get(i) || 0, dream: false } });
         }
+        // Bewusst NICHT aus SBS_SBC_PREFIX_RE_SRC abgeleitet: dort steckt eine
+        // Alternation zum MATCHEN einer URL, hier nur ein Default-STRING fuer
+        // den Fall, dass noch kein Praefix beobachtet wurde - andere Semantik,
+        // kein Regex-Duplikat (dasselbe gilt fuer verifySquadCount unten).
         const pfx = STATE.sbc.apiPrefix || 'sbs';
         await apiPut(pfx + '/challenge/' + STATE.sbc.challengeId + '/squad', { players: players });
         return true;
@@ -2412,7 +2661,13 @@
         const sbcSvc = window.services && window.services.SBC;
         if (!sbcSvc || typeof sbcSvc.saveChallenge !== 'function')
             throw new Error('services.SBC.saveChallenge nicht verfügbar.');
-        // Live-Controller der offenen SBC-Ansicht suchen
+        // Live-Controller der offenen SBC-Ansicht suchen. Bewusst NICHT
+        // findSbcController(): dies ist Submit-Weg 0 (LEARNINGS §5, CLAUDE.md
+        // "Nicht anfassen ohne Grund", der einzige Weg ohne F5) - die Duplikation
+        // der "letzter Treffer gewinnt"-Traversal ist hier gewollt, ein Umbau auf
+        // den Helfer wuerde das Regressionsrisiko am kritischsten Pfad erhoehen,
+        // ohne einen Fehler zu beheben (siehe
+        // patterns/bad/helfer-existiert-wird-umgangen.md, Abschnitt "Pattern").
         let ctrl = null;
         for (const c of getControllerChain()) {
             const n = (c.constructor && c.constructor.name) || '';
@@ -2422,7 +2677,9 @@
         const liveSquad = ctrl._squad || (ctrl.getSquad && ctrl.getSquad());
         if (!liveSquad || typeof liveSquad.setPlayers !== 'function')
             throw new Error('Live-Squad hat kein setPlayers().');
-        // Die Challenge, an der die Ansicht hängt (PaleTools: _leftController._challenge)
+        // Die Challenge, an der die Ansicht hängt (PaleTools: _leftController._challenge).
+        // Bewusst NICHT findLiveChallenge(): dieselbe Weg-0-Ausnahme wie oben -
+        // Submit-Weg 0 bleibt unangetastet, siehe LEARNINGS §5.
         let challenge = null;
         for (const key of ['_overviewController', 'leftController', '_leftController']) {
             const oc = ctrl[key];
@@ -2453,7 +2710,7 @@
             throw new Error('saveChallenge abgelehnt (Status ' + (resp && resp.status) + ').');
         return true;
     }
-    async function submitToSbc(result) {
+    async function submitToSbc(result, _retried) {
         if (!result || !result.players || result.players.length === 0)
             throw new Error('Kein Ergebnis zum Eintragen.');
         const need = result.players.length;
@@ -2484,9 +2741,47 @@
         // Ansicht/der Cache noch auf der alten Instanz steht.
         const msg = String((lastErr && lastErr.message) || '');
         if (/\b(404|475)\b/.test(msg)) {
-            throw new Error('Die SBC-Instanz ist veraltet (Status aus ' + msg + '). ' +
-                'Wiederholbare SBCs bekommen pro Durchlauf eine neue ID - bitte die ' +
-                'SBC im Spiel einmal schliessen und neu öffnen, dann erneut optimieren.');
+            // ERHOLUNG statt Handarbeit: die verbrauchte Instanz gegen die
+            // frische desselben Sets tauschen und EINMAL neu versuchen. Der
+            // Tausch passiert nur, wenn GENAU EINE Challenge zur geplanten
+            // Signatur (Ziel-OVR + Slots) passt - sonst landet das Team in einer
+            // fremden SBC, und das wäre schlimmer als ein Abbruch.
+            if (!_retried) {
+                const fresh = await resolveFreshChallengeId();
+                if (fresh != null) {
+                    log('SBC-Instanz war veraltet - weiter mit frischer ID ' + fresh + '.');
+                    setCurrentChallenge(fresh);
+                    applyFromSetChallenges();
+                    return await submitToSbc(result, true);
+                }
+            }
+            throw new Error('Die SBC-Instanz ist veraltet (Status aus ' + msg + ') und ' +
+                'liess sich nicht eindeutig ersetzen. Wiederholbare SBCs bekommen pro ' +
+                'Durchlauf eine neue ID - bitte die SBC im Spiel einmal schliessen und ' +
+                'neu öffnen, dann erneut optimieren.');
+        }
+        // 403 heisst NICHT "veraltet", sondern "EA nimmt das so nicht an" -
+        // meist eine Vorgabe, die der Solver nicht abdeckt (live: reqDump mit
+        // scope PLAYER und CLUB MEMBER, also "dieser Spieler"/"Vereinsmitglied").
+        if (/\b403\b/.test(msg)) {
+            // Kein Rateschluss auf die reqDump-Scopes mehr (v4.34.0, war
+            // falsch). Stattdessen EA selbst fragen: haelt die App den Squad
+            // fuer abgabefaehig? Das ist dieselbe Pruefung, die der Batch vor
+            // dem Abgeben benutzt.
+            let eligible = null;
+            try {
+                const c = findSbcController();
+                const sq = c && (c._squad || (c.getSquad && c.getSquad()));
+                if (sq && typeof sq.isSBCSquadEligible === 'function') eligible = sq.isSBCSquadEligible();
+            } catch (e) {}
+            STATE.diag.lastEligible = eligible;
+            throw new Error('EA hat das Eintragen abgelehnt (403).' +
+                (eligible === false
+                    ? ' Die App haelt den Squad nicht fuer abgabefaehig - im Spiel steht ' +
+                      'noch eine Vorgabe rot, die der Solver nicht abdeckt (nur Rating und ' +
+                      'Rarity werden erfuellt).'
+                    : ' Meist ist die geoeffnete Instanz nicht mehr aktuell - SBC im Spiel ' +
+                      'einmal schliessen und neu oeffnen, dann erneut optimieren.'));
         }
         throw lastErr || new Error('Eintragen fehlgeschlagen (Server bestätigt ' + Math.max(0, confirmed) + '/' + need + ').');
     }
@@ -2512,6 +2807,7 @@
         return p.raw || { id: p.id };
     }
     // View-Controller-Kette der App einsammeln (Root -> aktiver Controller).
+    // [CTRL-BEGIN]
     function getControllerChain() {
         const out = [];
         try {
@@ -2537,33 +2833,23 @@
         } catch (e) {}
         return out;
     }
+    // [CTRL-END]
     // CONTROLLER-SCAN: läuft die View-Controller-Kette der App entlang und
     // sammelt Klassennamen, squad-bezogene Methoden und SBC-Felder des
     // aktiven Controllers - die Landkarte für gezielte UI-Refreshes.
     function controllerScan() {
         const out = [];
         try {
-            let cur = (typeof window.getAppMain === 'function') ? window.getAppMain() : null;
-            if (!cur) return ['getAppMain fehlt'];
-            const chainFns = ['getRootViewController', 'getPresentedViewController', 'getCurrentViewController', 'getCurrentController'];
-            const visited = new Set();
-            let depth = 0;
-            while (cur && depth < 12 && !visited.has(cur)) {
-                visited.add(cur);
-                out.push(((cur.constructor && cur.constructor.name) || '?'));
-                let next = null;
-                for (const fn of chainFns) {
-                    if (typeof cur[fn] === 'function') {
-                        try {
-                            const cand = cur[fn]();
-                            if (cand && typeof cand === 'object' && !visited.has(cand)) { next = cand; break; }
-                        } catch (e) {}
-                    }
-                }
-                if (!next) break;
-                cur = next;
-                depth++;
-            }
+            // Traversal ueber getControllerChain() statt eigenem Nachbau (Q4/Q5 -
+            // SSOT, siehe patterns/bad/helfer-existiert-wird-umgangen.md). Bewusste
+            // Angleichung: diese Funktion begrenzte vorher auf depth<12,
+            // getControllerChain() auf depth<14 - jetzt einheitlich depth<14 (zwei
+            // Ebenen mehr Toleranz, kein Verlust), abgesichert durch den
+            // Tiefe-13-Testfall in solver-test.js.
+            const chain = getControllerChain();
+            if (!chain.length) return ['getAppMain fehlt'];
+            for (const c of chain) out.push(((c.constructor && c.constructor.name) || '?'));
+            const cur = chain[chain.length - 1];
             if (cur) {
                 const methods = [];
                 let proto = cur;
@@ -2635,28 +2921,11 @@
         const report = [];
         let ok = false;
         try {
-            let cur = (typeof window.getAppMain === 'function') ? window.getAppMain() : null;
-            if (!cur) { STATE.diag.refreshLog = ['getAppMain fehlt']; return false; }
-            const chainFns = ['getRootViewController', 'getPresentedViewController', 'getCurrentViewController', 'getCurrentController'];
-            const visited = new Set();
-            const controllers = [];
-            let depth = 0;
-            // Controller-Kette einsammeln
-            while (cur && depth < 14 && !visited.has(cur)) {
-                visited.add(cur);
-                controllers.push(cur);
-                let next = null;
-                for (const fn of chainFns) {
-                    if (typeof cur[fn] === 'function') {
-                        try {
-                            const c = cur[fn]();
-                            if (c && typeof c === 'object' && !visited.has(c)) { next = c; break; }
-                        } catch (e) {}
-                    }
-                }
-                if (!next) break;
-                cur = next; depth++;
-            }
+            // Traversal ueber getControllerChain() statt eigenem Nachbau (Q4/Q5 -
+            // SSOT, siehe patterns/bad/helfer-existiert-wird-umgangen.md) - war
+            // hier bereits depth<14 wie der Helfer, keine Divergenz zu harmonisieren.
+            const controllers = getControllerChain();
+            if (!controllers.length) { STATE.diag.refreshLog = ['getAppMain fehlt']; return false; }
             function viewOf(o) {
                 try { return (typeof o.getView === 'function') ? o.getView() : o._view; }
                 catch (e) { return null; }
@@ -2922,6 +3191,7 @@
             font-size:13px; line-height:1;
         }
         .sbc-opt-bandrow.sbc-opt-dragover { outline:2px dashed #00e0b8; border-radius:6px; }
+        .sbc-opt-bandrow.sbc-opt-bandinvalid { outline:2px solid #ff5470; border-radius:6px; }
         #sbc-opt-toast-wrap {
             position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%);
             z-index: 1000000; display:flex; flex-direction:column; gap:8px; align-items:center;
@@ -3180,24 +3450,38 @@
     }
     // ---- Rating-Kosten Band-Editor ------------------------------------------
     let ratingBands = [];
+    // [BANDS-BEGIN]
+    // Leitet die Reset-Bänder aus SolverCore.DEFAULT_RATING_COST_SPEC ab (SSOT,
+    // siehe LEARNINGS §10) statt sie als zweites Literal zu pflegen: eine
+    // Bandgrenze entsteht überall dort, wo sich der geparste Kostenwert ändert.
     function defaultBands() {
-        return [
-            { lo: 0, hi: 80, cost: 0 },
-            { lo: 81, hi: 83, cost: 2 },
-            { lo: 84, hi: 84, cost: 1 },
-            { lo: 85, hi: 86, cost: 5 },
-            { lo: 87, hi: 88, cost: 2 },
-            { lo: 89, hi: 90, cost: 3 },
-            { lo: 91, hi: 92, cost: 4 },
-            { lo: 93, hi: 99, cost: 12 }
-        ];
+        const costOf = SolverCore.parseRatingCosts(SolverCore.DEFAULT_RATING_COST_SPEC);
+        const bands = [];
+        let lo = 0, cost = costOf(0);
+        for (let r = 1; r <= 99; r++) {
+            const c = costOf(r);
+            if (c !== cost) {
+                bands.push({ lo: lo, hi: r - 1, cost: cost });
+                lo = r; cost = c;
+            }
+        }
+        bands.push({ lo: lo, hi: 99, cost: cost });
+        return bands;
     }
+    // Kehrfunktion zu parseRatingCosts(): die Kurzformen (lo===hi bzw. hi===99)
+    // sind Pflicht, damit bandsToSpec(defaultBands()) exakt den Wortlaut von
+    // DEFAULT_RATING_COST_SPEC ergibt (Drift-Wächter in solver-test.js).
     function bandsToSpec(bands) {
         return bands
             .filter(b => b.lo != null && b.hi != null && b.cost != null)
-            .map(b => b.lo + '-' + b.hi + ':' + b.cost)
+            .map(function (b) {
+                if (b.lo === b.hi) return b.lo + ':' + b.cost;
+                if (b.hi >= 99) return b.lo + '+:' + b.cost;
+                return b.lo + '-' + b.hi + ':' + b.cost;
+            })
             .join(', ');
     }
+    // [BANDS-END]
     function saveBands() {
         try { localStorage.setItem('sbcOptRatingBands', JSON.stringify(ratingBands)); } catch (e) {}
     }
@@ -3224,6 +3508,7 @@
         ratingBands.forEach(function (band, i) {
             const row = document.createElement('div');
             row.className = 'sbc-opt-bandrow';
+            if (band.lo > band.hi) row.classList.add('sbc-opt-bandinvalid');
             // Drag-Handle zum Umsortieren der Zeilen
             const handle = document.createElement('span');
             handle.className = 'sbc-opt-draghandle';
@@ -3266,6 +3551,15 @@
                 band.hi = Math.max(0, Math.min(99, parseInt(hi.value, 10) || 0));
                 band.cost = Math.max(0, parseFloat(String(cost.value).replace(',', '.')) || 0);
                 saveBands();
+                // parseRatingCosts() überspringt lo>hi lautlos (die Schleife
+                // läuft dann nie) - eigene Fachentscheidung, keine EA-Grenze,
+                // also sichtbares Feedback statt stillem No-Op.
+                const invalid = band.lo > band.hi;
+                row.classList.toggle('sbc-opt-bandinvalid', invalid);
+                if (invalid) {
+                    warn('Rating-Kosten-Band ' + band.lo + '-' + band.hi + ' ist ungültig (lo>hi) und wirkt nicht.');
+                    toast('Band ' + band.lo + '-' + band.hi + ' ist ungültig (lo>hi) und wird ignoriert.', 'warn');
+                }
             }
             lo.addEventListener('change', upd);
             hi.addEventListener('change', upd);
@@ -3581,18 +3875,38 @@
             uiScan: STATE.diag.uiScan || null,
             // Gesperrte Karten: wurden PaleTools-Locks gefunden und wie viele?
             locks: STATE.diag.locks || null,
+            // Aktive Rating-Kosten-Tabelle: bei "SBC kostet mehr Rare als
+            // erwartet" zeigt das, welche Bänder der Solver tatsächlich
+            // benutzt hat, statt dass es geraten werden muss (LEARNINGS §10).
+            bands: {
+                spec: bandsToSpec(ratingBands),
+                count: ratingBands.length,
+                isDefault: JSON.stringify(ratingBands) === JSON.stringify(defaultBands())
+            },
             // Batch: was hat der Lauf pro Runde gesehen, als er die nächste
             // Instanz öffnen wollte? (Die Abbruchmeldung verweist darauf -
             // in v4.18.0 fehlte das Feld im Report, mein Fehler.)
             batchSteps: STATE.diag.batchSteps || null,
+            // Wie oft loeste der stuck-Zweig oben schon aus? Macht den
+            // v4.36.0-Live-Vorfall ueber mehrere Laeufe hinweg messbar statt
+            // nur aus einem einzelnen LEARNINGS-Eintrag ablesbar.
+            batchStuckCount: STATE.diag.batchStuckCount || 0,
             // Welches Team hat der Solver zuletzt geliefert (id/assetId/rating/
             // storage)? Bei HTTP 460 ist hier direkt zu sehen, ob eine Karte
             // oder ein Spieler doppelt drin war.
             lastTeam: STATE.diag.lastTeam || null,
+            // Wie schnell war das Laden? pageSize/gap/pages/ms/retries - daran
+            // ist zu sehen, ob EA die Seitengroesse kappt und ob der Takt wegen
+            // Rate-Limits hochgegangen ist.
+            clubLoad: STATE.diag.clubLoad || null,
             // Abgeben: welche Controller/Methoden kamen in Frage und welche hat
             // gegriffen? Am Handy heisst der Controller anders als am PC.
             submitCandidates: STATE.diag.submitCandidates || null,
             submitChallengeVia: STATE.diag.submitChallengeVia || null,
+            // Wie oft galt eine Abgabe ohne auswertbare Promise/Observable-Response
+            // trotzdem als Erfolg? (LEARNINGS §9, v4.36.0: offen gelassene Frage,
+            // ob EA die Abgabe wirklich bestaetigt hat.)
+            submitWithoutResponseCount: STATE.diag.submitWithoutResponseCount || 0,
             // Der letzte fehlende Schritt: nach dem Abgeben landet die App im
             // SBC-HUB (mehrfach belegt), und loadChallenge() bringt die Ansicht
             // nicht zurück. Um die SBC wie von Hand anzuklicken, brauche ich die
@@ -3601,27 +3915,23 @@
                 try {
                     const inHub = getControllerChain().some(c =>
                         /hub/i.test((c.constructor && c.constructor.name) || ''));
-                    const out = { inHub: inHub, candidates: [] };
+                    const out = { inHub: inHub, sets: [] };
                     if (!inHub) return out;
-                    // Alles, was nach SBC-Kachel/Set-Eintrag aussieht.
-                    const sel = '[class*="sbc"],[class*="tile"],[class*="set"]';
-                    const els = document.querySelectorAll(sel);
-                    for (let i = 0; i < els.length && out.candidates.length < 40; i++) {
-                        const e = els[i];
-                        // Unsere eigene UI interessiert hier nicht - beim letzten
-                        // Report hat sie die Liste vollgemacht.
-                        if (String(e.className || '').indexOf('sbc-opt') > -1) continue;
+                    // NUR echte Set-Kacheln, eine Zeile pro Set. Vorher standen
+                    // hier auch tileHeader/tileTitle/tileContent/Reward-Liste
+                    // jedes Sets - 40 Eintraege, und der Report wurde zu lang
+                    // zum Kopieren.
+                    const tiles = document.querySelectorAll('.ut-sbc-set-tile-view');
+                    for (let i = 0; i < tiles.length && out.sets.length < 25; i++) {
+                        const e = tiles[i];
                         if (!(e.offsetParent !== null || e.getClientRects().length)) continue;
-                        const txt = (e.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 45);
-                        if (!txt) continue;
-                        const r = e.getBoundingClientRect();
-                        if (r.width < 60 || r.height < 30) continue; // keine Mini-Elemente
-                        out.candidates.push({
-                            tag: e.tagName,
-                            cls: String(e.className || '').slice(0, 70),
-                            txt: txt,
-                            w: Math.round(r.width), h: Math.round(r.height),
-                            clickable: !!(e.onclick || e.getAttribute('role') === 'button')
+                        const t = e.querySelector('.tileTitle, .tileHeader, h1');
+                        // Der Status verraet, ob das Set noch wiederholbar ist
+                        // ("Repeatable: 5 …") oder fuer heute durch ist.
+                        const st = e.querySelector('.sbc-status-container');
+                        out.sets.push({
+                            title: ((t && t.textContent) || '').trim().replace(/\s+/g, ' ').slice(0, 60),
+                            status: ((st && st.textContent) || '').trim().replace(/\s+/g, ' ').slice(0, 60)
                         });
                     }
                     return out;
@@ -3640,7 +3950,10 @@
             })(),
             // Einstiegspunkt-Diagnose: sitzt der Menüpunkt in der EA-Leiste
             // oder fällt die App auf den FAB zurück? tabBarCount zeigt, ob
-            // mehrere (auch unsichtbare) Leisten im DOM stehen.
+            // mehrere (auch unsichtbare) Leisten im DOM stehen. Ueberschneidet
+            // sich bewusst mit STATE.diag.uiScan (panelOpen/fabVisible) - dort
+            // stehen nur die billigsten Basiswerte OHNE den vollen DOM-Scan
+            // hier, siehe Kommentar an der uiScan-Zuweisung in onDiagClick().
             launcher: (function () {
                 function rect(el) {
                     try {
@@ -3707,7 +4020,10 @@
                     // 0 = unser Klick kommt gar nicht an; >0 = Klick kam an
                     // (dann liegt ein "es passiert nichts" am Panel, nicht am Button)
                     launcherClicks: launcherClicks,
-                    visibleButtons: buttonDump,
+                    // Die acht "✕" der Kosten-Tabelle sagen nichts und standen
+                    // in jedem Report - raus, damit er kopierbar bleibt.
+                    visibleButtons: buttonDump.filter(b =>
+                        String(b.txt || '').trim() !== '✕').slice(0, 20),
                     viewport: { w: window.innerWidth, h: window.innerHeight,
                                 dpr: window.devicePixelRatio || 1 },
                     fabVisible: !!(ui.fab && !ui.fab.classList.contains('sbc-opt-hidden')),
@@ -3719,7 +4035,21 @@
             refreshLog: STATE.diag.refreshLog || null,
             submitVia: STATE.diag.submitVia || null,
             controllerScan: controllerScan(),
-            appSquadPutBodySample: STATE.diag.lastSquadPutBody || null,
+            // GEKUERZT: von den 23 Slots sind die meisten leer (id 0) - die
+            // stehen jetzt nur als Anzahl drin. Wichtig ist, WELCHE Karte auf
+            // WELCHEM Slot lag (daran war das HTTP 460 zu sehen, LEARNINGS 16).
+            appSquadPutBodySample: (function () {
+                const raw = STATE.diag.lastSquadPutBody;
+                if (typeof raw !== 'string') return raw || null;
+                try {
+                    const j = JSON.parse(raw);
+                    if (!j || !Array.isArray(j.players)) return raw.slice(0, 800);
+                    const filled = j.players
+                        .filter(p => p && p.itemData && Number(p.itemData.id))
+                        .map(p => p.index + ':' + p.itemData.id);
+                    return { belegt: filled.join(' '), leer: j.players.length - filled.length };
+                } catch (e) { return raw.slice(0, 800); }
+            })(),
             sbc: {
                 setId: STATE.sbc.setId,
                 challengeId: STATE.sbc.challengeId,
@@ -3730,42 +4060,82 @@
                 rarityConstraints: STATE.sbc.rarityConstraints,
                 playerLevelConstraints: STATE.sbc.playerLevelConstraints,
                 qualityConstraints: STATE.sbc.qualityConstraints || [],
-            rareConstraints: STATE.sbc.rareConstraints || [],
                 rareConstraints: STATE.sbc.rareConstraints || [],
                 usableSlots: STATE.sbc.usableSlots || null,
                 reqDump: STATE.sbc.reqDump,
+                // Scopes ohne Wert, die NICHT zur Standard-Boilerplate gehoeren -
+                // rein informativ (siehe applyScan: daraus folgt NICHTS).
+                otherScopes: STATE.sbc.otherScopes || [],
+                staleRecover: STATE.diag.staleRecover || null,
                 entityCaptured: !!STATE.sbc.entity,
                 setChallengesCached: !!STATE.lastSetChallenges
             },
             poolSize: STATE.pool.length,
             // Verteilung der rareflags im Pool - zum Verifizieren der
             // Gold/Special-Klassifizierung
+            // GEKUERZT (der Report muss kopierbar bleiben): das volle Histogramm
+            // waren ~80 Zeilen. Gebraucht werden Common/Rare - und von den
+            // Special-Flags die haeufigsten fuenf plus Restsumme.
             rareflagHistogram: (function () {
                 const m = {};
                 for (const p of STATE.pool) {
                     const key = String(p.rareflag);
                     m[key] = (m[key] || 0) + 1;
                 }
-                return m;
+                const out = { '0_common': m['0'] || 0, '1_rare': m['1'] || 0,
+                              '3_totw': m['3'] || 0 };
+                const rest = Object.keys(m).filter(k => ['0', '1', '3'].indexOf(k) < 0)
+                    .map(k => ({ f: k, n: m[k] }))
+                    .sort((a, b) => b.n - a.n);
+                out.topSpecials = rest.slice(0, 5).map(x => x.f + ':' + x.n).join(' ');
+                out.specialFlags = rest.length;
+                out.specialTotal = rest.reduce((a, x) => a + x.n, 0);
+                return out;
             })(),
             poolSpecialCount: STATE.pool.filter(p => p.isSpecial).length,
             evoExcluded: STATE.diag.evoExcluded,
             // Struktur-Samples hoher Karten: verrät uns die echten Feldnamen,
             // falls Evolutions/Specials noch falsch klassifiziert werden.
+            // GEKUERZT: vorher fuenf Karten mit je bis zu 60 rawKeys - der
+            // groesste Einzelposten im Report. Die Feldnamen sind bekannt
+            // (LEARNINGS 2), rawKeys braucht es nur noch an EINER Probe.
             highCardSamples: STATE.pool
                 .filter(p => p.rating >= 85)
-                .slice(0, 5)
-                .map(function (p) {
-                    return {
+                .slice(0, 3)
+                .map(function (p, i) {
+                    const o = {
                         id: p.id, rating: p.rating, rareflag: p.rareflag,
-                        isSpecial: p.isSpecial, isStorage: p.isStorage,
-                        rawKeys: p.raw ? Object.keys(p.raw).slice(0, 60) : null
+                        isSpecial: p.isSpecial, isStorage: p.isStorage
                     };
+                    if (i === 0 && p.raw) o.rawKeys = Object.keys(p.raw).join(',');
+                    return o;
                 }),
-            challengeResponseSample: challengeSample
+            // GEKUERZT: der Report war zu lang zum Kopieren und brach live mitten
+            // in diesem Feld ab. Der Rest sind ohnehin nur leere Slots (id 0) -
+            // gebraucht werden der Kopf und playerRequirements.
+            challengeResponseSample: (function () {
+                const t = challengeSample;
+                if (typeof t !== 'string') return t;
+                const cut = t.indexOf('"players"');
+                const head = (cut > 0 ? t.slice(0, cut) : t).slice(0, 1500);
+                return head + (t.length > head.length
+                    ? ' …[' + (t.length - head.length) + ' Zeichen leere Slots weggelassen]' : '');
+            })()
         };
     }
     function onDiagClick() {
+        // uiScan: billige, EIGENSTAENDIGE Momentaufnahme in STATE.diag - anders
+        // als das launcher-Sub-Objekt (buildDiagReport() weiter unten, liest
+        // dieselben Basiswerte zusaetzlich zu einem vollen DOM-Scan aller
+        // Buttons/Controller) ist sie ohne den teuren Report-Aufbau lesbar und
+        // bleibt erhalten, selbst wenn ein spaeteres Feld in buildDiagReport()
+        // einmal einen Fehler wirft.
+        STATE.diag.uiScan = {
+            panelOpen: !!(ui.panel && ui.panel.classList.contains('open')),
+            fabVisible: !!(ui.fab && !ui.fab.classList.contains('sbc-opt-hidden')),
+            inSbcView: inSbcView(),
+            btnAttached: !!document.getElementById(BTN_ID)
+        };
         const report = buildDiagReport();
         console.log(LOG_PREFIX + ' ===== DIAGNOSE-REPORT (bitte komplett kopieren) =====');
         console.log(JSON.stringify(report, null, 2));
@@ -3916,6 +4286,11 @@
             toast('Pool leer. Bitte zuerst "Spieler laden".', 'error');
             return;
         }
+        // KEINE Vorab-Warnung aus reqDump-Scopes (war v4.34.0 und ist wieder
+        // raus): "PLAYER"/"CLUB MEMBER" stehen bei JEDER SBC drin, die Warnung
+        // kam also auch bei SBCs, die tadellos liefen. Ob EA das Team annimmt,
+        // sagt nach dem Eintragen isSBCSquadEligible() - das ist die einzige
+        // verlaessliche Quelle.
         if (STATE.loadIncomplete) {
             toast('ACHTUNG: Der Pool ist unvollständig geladen (' + STATE.pool.length +
                 ' Karten) - das Ergebnis kann schlechter oder unlösbar sein. Am besten erst "Spieler laden" erneut ausführen.', 'warn');
@@ -4017,13 +4392,65 @@
         }, ok ? 2600 : 5000);
     }
     /** Belohnungs-Dialog wegräumen (EAs eigener Popup-Manager). */
+    /**
+     * Liegt noch ein Dialog/Shield oben? EAs Kachel-Handler sind registriert,
+     * reagieren aber nicht, solange die App einen Popup-Zustand hat - genau das
+     * Bild aus dem Live-Report: Tap kommt an (touchHandled true), Kachel oeffnet
+     * nicht, nach einem Neustart geht es wieder.
+     * Ausgelesen wird beides: der Shield der App UND was tatsaechlich an der
+     * Tap-Stelle liegt (elementFromPoint) - ein synthetisch verschickter Event
+     * umgeht Hit-Testing, EA prueft die Ueberdeckung aber womoeglich selbst.
+     */
+    function popupState() {
+        const st = { shield: null, overlays: 0, top: null };
+        try {
+            const sh = window.gPopupClickShield;
+            if (sh) {
+                st.shield = {
+                    up: !!(sh.isShieldUp ? sh.isShieldUp() : (sh._shieldUp || sh.visible)),
+                    hasClose: typeof sh.closeActivePopup === 'function'
+                };
+            }
+        } catch (e) {}
+        try {
+            // Alles, was bildschirmfuellend obendrauf liegt.
+            const sel = '.ut-click-shield,[class*="click-shield"],[class*="dialog"],' +
+                        '[class*="popup"],[class*="overlay"],[class*="modal"]';
+            const els = document.querySelectorAll(sel);
+            const seen = [];
+            for (let i = 0; i < els.length; i++) {
+                const e = els[i];
+                if (String(e.className || '').indexOf('sbc-opt') > -1) continue;
+                const r = e.getBoundingClientRect();
+                if (r.width < window.innerWidth * 0.5 || r.height < window.innerHeight * 0.3) continue;
+                if (!(e.offsetParent !== null || e.getClientRects().length)) continue;
+                st.overlays++;
+                if (seen.length < 3) seen.push(String(e.className || '').slice(0, 50));
+            }
+            if (seen.length) st.overlayCls = seen.join(' | ');
+        } catch (e) {}
+        try {
+            const chain = getControllerChain();
+            st.top = (chain.length && chain[chain.length - 1].constructor &&
+                      chain[chain.length - 1].constructor.name) || null;
+        } catch (e) {}
+        return st;
+    }
     function dismissRewardPopup() {
         let closed = false;
         try {
             const shield = window.gPopupClickShield;
             if (shield && typeof shield.closeActivePopup === 'function') {
-                shield.closeActivePopup();
-                closed = true;
+                // MEHRFACH: nach dem Abgeben koennen mehrere Overlays
+                // hintereinander kommen (Belohnung, dann "Set abgeschlossen").
+                // Vorher wurde genau einmal geschlossen - und `closed` wurde
+                // auch dann gemeldet, wenn gar nichts offen war.
+                for (let k = 0; k < 3; k++) {
+                    const before = popupState();
+                    if (!before.overlays && !(before.shield && before.shield.up)) break;
+                    shield.closeActivePopup();
+                    closed = true;
+                }
             }
         } catch (e) {}
         // Zweiter Weg: ist der oberste präsentierte Controller ein Dialog,
@@ -4099,7 +4526,16 @@
                     problems.push(cand.w + '.' + cand.m + ': Status ' + resp.status);
                     continue;
                 }
-                STATE.diag.submitChallengeVia = cand.w + '.' + cand.m;
+                // Kam gar keine auswertbare Response (r weder Promise noch
+                // Observable), gilt der Aufruf trotzdem als Erfolg - aber der
+                // Report soll das unterscheiden koennen: beim 4/5-Abbruch
+                // blieb die App danach im Squad-View haengen, und ob EA die
+                // Abgabe wirklich bestaetigt hatte, war nicht ablesbar.
+                STATE.diag.submitChallengeVia = cand.w + '.' + cand.m +
+                    (resp ? '' : ' (ohne Response)');
+                if (!resp) {
+                    STATE.diag.submitWithoutResponseCount = (STATE.diag.submitWithoutResponseCount || 0) + 1;
+                }
                 return { via: 'controller' };
             } catch (e) {
                 problems.push(cand.w + '.' + cand.m + ': ' + (e && e.message || e));
@@ -4140,6 +4576,16 @@
      */
     async function openNextInstance(plan) {
         const steps = [];
+        // Bevor mehrfach auf eine Kachel getippt wird, die gar nicht mehr
+        // aufgeht: sagt der Hub, dass das Set fuer heute durch ist, wird sofort
+        // und mit KLARER Begruendung aufgehoert. Live lief die Silber-SBC 5/5,
+        // die Gold-SBC brach nach der ersten Runde ab - drei Taps kamen an und
+        // die App blieb im Hub.
+        const rep0 = setLooksRepeatable(plan.setName || '');
+        if (rep0.repeatable === false) {
+            steps.push({ ms: 0, setState: rep0, why: 'Set laut Hub nicht mehr wiederholbar' });
+            return { ok: false, exhausted: true, status: rep0.status, steps: steps };
+        }
         const t0 = Date.now();
         let clicked = false;
         // Alle 300ms nachsehen statt jede Sekunde, und den Set-Klick SOFORT
@@ -4149,6 +4595,7 @@
         // offen (seen.detailsView war 1, rowView 0).
         // requestChallengesForSet ist raus: es lieferte freshId null und wird
         // nicht gebraucht, weil der Klick-Weg die frische Instanz mitbringt.
+        let wentBack = false;
         for (let i = 0; i < 60; i++) {          // 60 x 300ms = max ~18s
             dismissRewardPopup();
             syncSbcWithOpenChallenge();
@@ -4161,10 +4608,49 @@
                 steps.push({ ms: Date.now() - t0, done: true, clicked: clicked });
                 return { ok: true, steps: steps };
             }
+            // Die App blieb nach dem Abgeben im SQUAD-VIEW haengen (live,
+            // 4/5-Abbruch): der Controller war die ganzen 18s da, der Squad
+            // noch voll - und weil ALLE Zweige unten nur im Hub (!ctrl)
+            // arbeiten, wurde weder etwas geloggt noch etwas unternommen.
+            // Deshalb: den Zustand protokollieren und zurueck zum Hub
+            // navigieren - von dort kennt der Kachel-Klick den Weg, und die
+            // Erschoepfungs-Erkennung kann den Kachel-Status ueberhaupt lesen.
+            if (ctrl && (i === 2 || i === 20 || i === 45)) {
+                STATE.diag.batchStuckCount = (STATE.diag.batchStuckCount || 0) + 1;
+                steps.push({ ms: Date.now() - t0, stuck: {
+                    top: (ctrl.constructor && ctrl.constructor.name) || null,
+                    challengeId: STATE.sbc.challengeId,
+                    usedInstance: (plan.usedChallengeIds || [])
+                        .indexOf(String(STATE.sbc.challengeId)) > -1,
+                    matches: matchesPlannedSbc(plan),
+                    // Verlauf des Namensdrift-Ankers: setCurrentChallenge() setzt
+                    // formationSlots bei jedem Challenge-Wechsel auf den Default 11
+                    // zurueck, bevor die Brick-Slot-Korrektur (parseSbcChallenge)
+                    // nachliefert - "matches: false" kann in diesem Fenster
+                    // transient sein statt eine echte Diskrepanz zu sein.
+                    formationSlots: STATE.sbc.formationSlots,
+                    planSlots: plan.slots,
+                    empty: empty
+                } });
+            }
+            if (ctrl && (i === 5 || i === 25)) {
+                const b = clickBackButton();
+                steps.push({ ms: Date.now() - t0, back: b });
+                if (b.ok) { wentBack = true; await batchWait(900); continue; }
+            }
             // Im Hub: Set-Kachel anklicken. Erster Versuch sofort, danach
             // gelegentlich nachfassen (die Kachelliste braucht manchmal einen
             // Moment, bis sie gerendert ist).
             if (!ctrl && (!clicked || i === 20 || i === 40)) {
+                // Vor dem Tap aufraeumen: liegt noch ein Dialog oben, ignoriert
+                // EA den Kachel-Tap (Live-Bild: touchHandled true, nichts
+                // passiert, nach Neustart ging es wieder).
+                const pop = popupState();
+                if (pop.overlays || (pop.shield && pop.shield.up)) {
+                    dismissRewardPopup();
+                    steps.push({ ms: Date.now() - t0, popupClosed: pop });
+                    await batchWait(500);
+                }
                 let s1 = clickSetTile(plan);
                 // Nicht gefunden? Dann versteckt der Hub-Filter sie vielleicht
                 // (live: "Favourites" aktiv, gesuchte SBC nicht dabei).
@@ -4172,6 +4658,19 @@
                     const f = clickAllFilter();
                     steps.push({ ms: Date.now() - t0, filter: f });
                     if (f.ok) { await batchWait(900); s1 = clickSetTile(plan); }
+                }
+                // Kachel GEFUNDEN und getippt, aber schon zweimal ohne Wirkung?
+                // Dann die Liste ueber den Filter neu aufbauen lassen und noch
+                // einmal tippen - eine stale View ist die wahrscheinlichste
+                // Erklaerung, wenn der Tap nachweislich ankommt.
+                if (s1.ok && clicked && (i === 20 || i === 40)) {
+                    const f2 = clickAllFilter();
+                    steps.push({ ms: Date.now() - t0, rerender: f2 });
+                    if (f2.ok) {
+                        await batchWait(900);
+                        const s3 = clickSetTile(plan);
+                        steps.push({ ms: Date.now() - t0, setTileAfterRerender: s3 });
+                    }
                 }
                 if (s1.ok) {
                     clicked = true;
@@ -4182,15 +4681,20 @@
                 if (i === 3 || i === 20) steps.push({ ms: Date.now() - t0, setTile: s1 });
             }
             // Nur falls das Set MEHRERE Challenges hat, steht eine Zeilenliste
-            // offen - dann die erste anklicken.
-            if (!ctrl && clicked && (i === 10 || i === 25)) {
+            // offen - dann die erste anklicken. Auch nach einem Zurueck-Klick:
+            // der landet u.U. in der Challenge-Liste des Sets statt im Hub.
+            if (!ctrl && (clicked || wentBack) && (i === 10 || i === 25)) {
                 const s2 = clickChallengeRow();
                 if (s2.ok) { steps.push({ ms: Date.now() - t0, chRow: s2 }); await batchWait(500); }
                 else if (i === 10) steps.push({ ms: Date.now() - t0, chRow: s2 });
             }
             await batchWait(300);
         }
-        return { ok: false, steps: steps };
+        const repEnd = setLooksRepeatable(plan.setName || '');
+        steps.push({ setState: repEnd, popup: popupState(),
+                     why: 'Status der Kachel nach den Versuchen' });
+        return { ok: false, exhausted: repEnd.repeatable === false,
+                 status: repEnd.status, steps: steps };
     }
     /**
      * Im HUB die SBC wieder aufmachen - der Weg, den Rasmus von Hand geht.
@@ -4276,11 +4780,24 @@
             fire('click', MouseEvent);
         }
         try {
+            // Was liegt an der Tap-Stelle GANZ OBEN? Ist das nicht die Kachel
+            // selbst (oder ein Kind davon), deckt etwas sie ab - im Live-Report
+            // kam der Tap an und die Kachel oeffnete trotzdem nicht.
+            let covered = null, topCls = null;
+            try {
+                const top = document.elementFromPoint(x, y);
+                if (top) {
+                    topCls = String(top.className || top.tagName || '').slice(0, 60);
+                    covered = !(top === el || el.contains(top) || top.contains(el));
+                }
+            } catch (e2) {}
             STATE.diag.lastTap = {
                 events: sent.join(','), touchHandled: touchHandled,
                 x: x, y: y,
                 inViewport: (y >= 0 && y <= (window.innerHeight || 0) &&
-                             x >= 0 && x <= (window.innerWidth || 0))
+                             x >= 0 && x <= (window.innerWidth || 0)),
+                covered: covered, topAtPoint: topCls,
+                popup: popupState()
             };
         } catch (e) {}
         return sent.length > 0;
@@ -4372,10 +4889,68 @@
         // Die erste Zeile ist die noch offene Wiederholung.
         return { ok: clickLike(rows[0]), why: rows.length + ' Zeile(n), erste geklickt' };
     }
+    /**
+     * Den Zurueck-Pfeil der App-Kopfleiste klicken. Gebraucht, wenn die App
+     * nach dem Abgeben im Squad-View haengen bleibt (live beim 4/5-Abbruch):
+     * es gibt keinen gefundenen Weg, eine Challenge programmatisch zu OEFFNEN
+     * (LEARNINGS 9), aber ZURUECK geht per DOM - .ut-navigation-button-control
+     * ist der Pfeil oben links (dieselbe EA-Klasse, die auch Community-Scripte
+     * fuer "Back" nutzen). Harmlos: das Team ist zu diesem Zeitpunkt bereits
+     * abgegeben, der Klick verlaesst nur die Ansicht. Geklickt wird NUR, wenn
+     * kein Overlay offen ist - nie blind in einen Dialog.
+     */
+    function clickBackButton() {
+        const pop = popupState();
+        if (pop.overlays || (pop.shield && pop.shield.up)) {
+            return { ok: false, why: 'Overlay offen - kein Zurueck-Klick', popup: pop };
+        }
+        const cands = visibleAll('.ut-navigation-button-control')
+            .concat(visibleAll('.ut-navigation-bar-view .btn-navigation'));
+        if (!cands.length) return { ok: false, why: 'kein Zurueck-Button gefunden' };
+        const el = cands[0];
+        return { ok: clickLike(el), why: 'Zurueck geklickt',
+                 cls: String(el.className || el.tagName || '').slice(0, 60) };
+    }
+    /**
+     * Laesst sich das Set ueberhaupt noch wiederholen? Gelesen wird der
+     * Status-Text der Kachel im Hub ("Repeatable", "Repeatable: 5 …",
+     * "Complete"/"Completed"). Rueckgabe:
+     *   { repeatable: true|false|null, status: '<Text>' }
+     * null heisst "nicht ablesbar" - dann wird NICHT abgebrochen, sondern wie
+     * bisher weiter versucht. Eine Fehldiagnose darf keinen laufenden Batch
+     * abwuergen.
+     */
+    function setLooksRepeatable(want) {
+        try {
+            const tiles = visibleAll('.ut-sbc-set-tile-view');
+            const norm = (x) => String(x || '').toLowerCase().replace(/\s+/g, ' ').trim();
+            const target = norm(want);
+            for (const e of tiles) {
+                const t = e.querySelector('.tileTitle, .tileHeader, h1');
+                const title = norm(t && t.textContent);
+                if (!title || (title !== target && title.indexOf(target) < 0)) continue;
+                const st = e.querySelector('.sbc-status-container');
+                const raw = ((st && st.textContent) || '').trim().replace(/\s+/g, ' ');
+                if (!raw) return { repeatable: null, status: '' };
+                const low = raw.toLowerCase();
+                // "Repeatable: 5 …" / "Repeatable …" -> geht noch.
+                if (low.indexOf('repeatable') > -1) {
+                    // Explizite 0 kommt vor - dann ist Schluss.
+                    const m = raw.match(/Repeatable:\s*(\d+)/i);
+                    if (m && Number(m[1]) === 0) return { repeatable: false, status: raw };
+                    return { repeatable: true, status: raw };
+                }
+                // Kein "Repeatable", aber "Complete(d)" -> fuer heute durch.
+                if (low.indexOf('complete') > -1) return { repeatable: false, status: raw };
+                return { repeatable: null, status: raw };
+            }
+        } catch (e) {}
+        return { repeatable: null, status: '' };
+    }
     /** Passt die offene SBC zu dem, wofuer geplant wurde? (Vorgaben, nicht ID) */
     function matchesPlannedSbc(plan) {
         if (String(STATE.sbc.targetOVR || '') !== String(plan.targetOVR || '')) return false;
-        if (Number(STATE.sbc.slots || 0) !== Number(plan.slots || 0)) return false;
+        if (Number(STATE.sbc.formationSlots || 0) !== Number(plan.slots || 0)) return false;
         return true;
     }
     async function onBatchPlanClick() {
@@ -4396,7 +4971,7 @@
             // sich pro Wiederholung und taugt nicht als Vergleich.
             plan.setId = STATE.sbc.setId;
             plan.targetOVR = STATE.sbc.targetOVR;
-            plan.slots = STATE.sbc.slots;
+            plan.slots = STATE.sbc.formationSlots;
             plan.usedChallengeIds = [];
             // Set-NAME: damit die richtige Kachel im Hub wiedergefunden wird
             // (der Controller haelt das Set als UTSBCSetEntity).
@@ -4413,7 +4988,7 @@
             setStatus(plan.planned + ' von ' + want + ' Teams geplant');
         } catch (e) {
             toast('Batch-Planung fehlgeschlagen: ' + e.message, 'error');
-            warn(e);
+            reportError('Batch-Planung fehlgeschlagen', e);
         } finally { ui.batchPlan.disabled = false; }
     }
     /** Kurzbezeichnung der Rarity. Die rareflag-NUMMER bleibt sichtbar -
@@ -4496,7 +5071,7 @@
                 }
                 if (!matchesPlannedSbc(plan)) {
                     throw new Error(tag + ': die offene SBC passt nicht zum Plan ' +
-                        '(Ziel ' + STATE.sbc.targetOVR + '/' + STATE.sbc.slots + ' statt ' +
+                        '(Ziel ' + STATE.sbc.targetOVR + '/' + STATE.sbc.formationSlots + ' statt ' +
                         plan.targetOVR + '/' + plan.slots + '). Nichts eingetragen.');
                 }
                 // Die JETZT offene Instanz merken - sie ist nach dem Abgeben
@@ -4524,6 +5099,14 @@
                         round: i + 1, ok: next.ok, steps: next.steps
                     }]).slice(-6);
                     if (!next.ok) {
+                        if (next.exhausted) {
+                            // Kein Fehler, sondern eine Auskunft: EA laesst das
+                            // Set gerade nicht mehr wiederholen. Der Rest des
+                            // Plans ist damit gegenstandslos.
+                            throw new Error('"' + (plan.setName || 'Das Set') + '" lässt sich nicht ' +
+                                'mehr wiederholen' + (next.status ? ' (' + next.status + ')' : '') +
+                                ' - die bereits abgegebenen Runden sind aber durch.');
+                        }
                         throw new Error('Die nächste Runde liess sich nicht öffnen ' +
                             '(Diagnose schicken: batchSteps).');
                     }
@@ -4555,23 +5138,32 @@
         }
     }
     // ---- Helfer, die auch die Diagnose nutzt -------------------------------
-    // Der Lauf "mehrere SBCs automatisch abgeben" ist ausgebaut (siehe
-    // LEARNINGS 9 und ROADMAP). Diese zwei Helfer bleiben, weil der
-    // Diagnose-Report mit ihnen zeigt, ob eine Challenge offen ist.
+    // findLiveChallenge/findSbcController werden vom aktiven, automatischen
+    // Batch-Lauf (onBatchRunClick, siehe CLAUDE.md "Batch-Modus darf abgeben")
+    // UND vom Diagnose-Report genutzt, um zu pruefen, ob eine Challenge offen ist.
+    // [SBCCTRL-BEGIN]
     function findLiveChallenge() {
         for (const c of getControllerChain()) {
             const n = (c.constructor && c.constructor.name) || '';
             if (!/sbc/i.test(n)) continue;
             for (const key of ['_overviewController', 'leftController', '_leftController']) {
                 const oc = c[key];
-                if (oc && oc._challenge) return oc._challenge;
+                // typeof-Objekt-Guard: eine truthy, aber nicht-objekthafte
+                // _challenge (z.B. eine rohe ID statt der Challenge-Entity)
+                // darf die Suche nicht vorzeitig mit einem unbrauchbaren Fund
+                // beenden - captureChallengeEntity() erwartet ein echtes Objekt.
+                if (oc && oc._challenge && typeof oc._challenge === 'object') return oc._challenge;
             }
-            if (c._challenge) return c._challenge;
+            if (c._challenge && typeof c._challenge === 'object') return c._challenge;
         }
         return STATE.sbc.entity || null;
     }
     /** Der SBC-Controller der offenen Ansicht (mit Squad). */
     function findSbcController() {
+        // "Letzter Treffer gewinnt" ist bewusst - siehe
+        // patterns/bad/helfer-existiert-wird-umgangen.md, Abschnitt "Edge-Cases":
+        // beim PC-Split-View-Stack sind mehrere /sbc/i-Controller gleichzeitig
+        // sichtbar, der zuletzt gefundene ist der tatsaechlich aktive.
         let found = null;
         for (const c of getControllerChain()) {
             const n = (c.constructor && c.constructor.name) || '';
@@ -4579,6 +5171,7 @@
         }
         return found;
     }
+    // [SBCCTRL-END]
     async function submitCurrentResult() {
         const res = STATE.lastResult;
         if (!res || !res.ok) {
@@ -4709,7 +5302,11 @@
             STATE.diag.lastTeam = {
                 ok: !!res.ok,
                 reason: res.ok ? null : res.reason,
-                cards: res.teamDump || null
+                cards: res.teamDump || null,
+                // Beobachtbarkeit fuer den reserve()-Funnel (Anker/Rarity-Pick/
+                // Vorgaben): Anzahl distinkter Spieler (assetId), die ueber
+                // reserve() reserviert wurden - siehe SolverCore reserve().
+                usedAssetsCount: res.usedAssetsCount != null ? res.usedAssetsCount : null
             };
         } catch (e) {}
         return res;

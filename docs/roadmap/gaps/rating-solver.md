@@ -1,190 +1,184 @@
 ---
 feature: rating-solver
 analyzed_at: 2026-08-15
-iteration: 1
+iteration: 6
 regression: false
 score_current:
-  RA: 89
+  RA: 92
 score_target:
-  RA: 90
+  RA: 92
 ---
 
-# Gap-Report — Rating-Solver (Team-Optimierung)
+# Gap-Report — Rating-Solver (Team-Optimierung) — Iteration 6 (Verifikations-Runde)
+
+**Auftrag dieser Runde:** die Iteration-5-Begründung ("Rest zum Deckel 95 bleibt
+strukturell — reverse-engineerte Formel") verifizieren oder widerlegen, kein
+künstlicher Lift-Zwang. Ergebnis vorweg: die Formel-Begründung selbst hält
+stand, ABER auf dem Weg dorthin wurde ein echter, unabhängig von der Formel
+stehender Coverage-Fund gemacht (M1-M3 unten) — er wird ehrlich gemeldet statt
+unter "strukturell" verbucht.
 
 ## Ist-Stand pro Dimension
 
 ### RA — Robust Architecture
 
-**Wert:** 89 / 95
+**Wert:** 92 / 95
 **Schwellwert:** 66.5
 **Status:** pass
-**Begründung:** Post-Iteration-0-Audit (`docs/roadmap/audit/rating-solver.md`):
-alle vier Struktur-Refactorings live verifiziert — `reserve()`-Funnel jetzt an
-jedem Reservierungspfad (inkl. Anker/Rarity-Pick), Komparator-Factory
-(`makeFillCmp`) statt viermaliger Wort-Duplikation, `makeCostOf()` als
-mechanische SSOT (Test ruft denselben Code statt `cardCostFn()` nachzubilden),
-`WASTE_WEIGHT`/`priorityOf`-Export als verifiziert-toter Code entfernt. Distanz
-zum strukturellen Maximum 95: laut `vision/features/rating-solver.md` bleiben
-"die letzten 5 Punkte offen, weil die Rating-Formel selbst reverse-engineered
-ist" — der realistische Deckel für rein strukturelle/prozessuale Verbesserungen
-liegt damit bei ca. 90, nicht bei 95. Iteration 0 hatte selbst als Ziel 90
-gesetzt und 89 erreicht (91.7% Reach).
+**Begründung:** Live verifiziert mit v4.55.0 (`node --check` sauber,
+`node solver-test.js` → 503/503 grün, `@version`/`VERSION` identisch). Die
+Iteration-5-Bereinigungen sind im Code sichtbar angekommen: der tote
+Duplikat-Stapel-Tiebreak ist aus `makeConsumeCmp()` entfernt (nur noch
+`priorityOf`-Differenz, `ea-fc-sbc-optimizer.user.js:1596-1600`, Kommentar
+`:1590-1595` erklärt das WARUM statt ein totes Verhalten zu behaupten), die
+Suchgrenzen `1300`/`stHardCap = stLow + 900` tragen jetzt einen
+Herleitungs-Kommentar (`:2549-2551`/`:2556`), und ein eigenes `warnings`-Signal
+("Internes Suchfenster ausgeschöpft…", `:2613`) unterscheidet echte
+Unlösbarkeit von Suchfenster-Erschöpfung — mit Gegenprobe-Testpaar
+abgesichert.
 
-Diese Gap-Analyse (Iteration 1) wurde mit v4.45.0 des Userscripts live
-verifiziert (Datei gelesen, `node solver-test.js` ausgeführt: 354/354 grün;
-zusätzlich eine gezielte Reproduktion außerhalb der Testsuite, siehe M1/M2).
+**Prüffrage 2 (Formel-Drift-Beobachtbarkeit) — WIDERLEGT als offene Lücke:**
+Es gibt keine DOM-/API-Rückkopplung, die `squadRatingExact()` gegen ein von
+EA selbst anzeigtes Live-Rating vergleicht (keine Fundstelle für
+"currentRating"/"teamRating"-Scraping im ganzen Modul). Das ist aber kein
+unbeobachtetes Risiko: `liveSquad.isSBCSquadEligible()` — EAs EIGENE
+Abgabefähigkeits-Prüfung (inkl. Rating) — wird in `submitChallengeToEa()`
+VOR jedem echten Abgabe-Aufruf befragt und bricht bei `eligible === false`
+hart ab, BEVOR `submitChallenge()`/`_submitChallenge()` überhaupt aufgerufen
+wird (`ea-fc-sbc-optimizer.user.js:4702-4712`). Für den reaktiven 403-Pfad
+(Einzel-Eintragen) gilt dieselbe Quelle (`:2877-2894`, "das ist die einzige
+verlässliche Quelle", LEARNINGS §33: `lastEligible` ist im Report dreiwertig
+sichtbar). Ein Formel-Drift würde also NICHT unbemerkt zu einer falsch
+abgegebenen SBC führen — EAs eigener Gate wirft vorher. Damit ist die
+Iteration-5-Prämisse ("Rest ist reine Formel-Unsicherheit") für den
+Batch-Pfad tatsächlich durch Architektur abgesichert, nicht nur behauptet.
+
+**Aber:** genau dieser Gate — der einzige Mechanismus, der Formel-Drift ODER
+einen Solver-Bug im automatisierten Batch-Pfad abfangen würde — ist selbst
+UNGETESTET (siehe M1). Das ist kein Formel-Problem, sondern eine
+Testbarkeits-Lücke an der Stelle, die genau die Frage aus Prüffrage 2
+beantworten soll.
 
 ## Mängel (≥ 3 — M1)
 
 ### RA — Robust Architecture
 
-1. **Toter Duplikat-Stapelgrößen-Tiebreak in `makeConsumeCmp`, an zwei Stellen
-   fälschlich als lebendiges Verhalten dokumentiert
-   (`ea-fc-sbc-optimizer.user.js:1493-1509`, `:1677`):**
-   `makeConsumeCmp(list)` zählt pro `assetId` (Fallback `p.name`) die
-   Stapelgröße in `list` und nutzt sie als zweiten Tiebreak nach der
-   Prioritäts-Reihenfolge ("vom GRÖSSTEN Stapel zuerst", Kommentar
-   `:1493-1495`; wortgleich wiederholt bei `:1677` in `buildDp`). Beide
-   Aufrufer — `makeConsumeCmp(pool)` bei `:1982` und `makeConsumeCmp(avail)`
-   bei `:2212` (`avail` ist ein reiner Teilmengen-Filter von `pool`, `:2200`)
-   — bekommen jedoch garantiert eine bereits pro `assetId` deduplizierte
-   Liste: die SPIELER-EINDEUTIGKEIT (`:1930-1953` für `pool`, `:1960-1978`
-   für `poolAll`) lässt strukturell genau eine Karte pro `assetId` übrig,
-   *bevor* `makeConsumeCmp` je aufgerufen wird — und für echte Spielerdaten
-   ist `assetId` nie `null` (Fallback auf die eindeutige `id`, `:859`:
-   `assetId: raw.assetId || raw.definitionId || raw.resourceId || id`), der
-   `p.name`-Fallback-Zweig in `makeConsumeCmp` (`:1499`, `:1505-1506`) ist
-   damit für Produktionsdaten ebenfalls unerreichbar. `counts.get(k)` ist
-   also für jeden Schlüssel in jeder Aufruf-Liste konstant `1` — die
-   Differenz `counts.get(kb) - counts.get(ka)` ist immer `0`, der Tiebreak
-   fällt strukturell nie ins Gewicht. **Live-Beleg (Reproduktion außerhalb
-   der Testsuite, identischer Solver-Aufruf wie `solver-test.js:220-231`):**
-   ein Pool mit 10 Karten desselben Spielers (`assetId 111`, alle Rating 88)
-   plus 15 weiteren Karten liefert `res.poolInfo.count === 17` statt `26` —
-   die Dedupe kollabiert die 10 Duplikate VOR jeder Tiebreak-Entscheidung auf
-   1 Eintrag. Zwei Kommentarstellen behaupten weiterhin unwidersprochen ein
-   Verhalten, das strukturell nicht eintreten kann (Q6/Q7-Verstoß) — ein
-   Muster, das dieselbe Iteration bei `WASTE_WEIGHT`/`priorityOf`
-   (LEARNINGS §28) bereits einmal korrekt als tot erkannt und entfernt hat,
-   hier aber nicht mitgezogen wurde.
+1. **Der `isSBCSquadEligible()`-Abbruchpfad in `submitChallengeToEa()` hat
+   keinen einzigen Test, der `false` liefert
+   (`ea-fc-sbc-optimizer.user.js:4705-4712`, `solver-test.js:2598-2599`):**
+   Der einzige Test, der diese Funktion überhaupt ausführt (Abschnitt 27,
+   `solver-test.js:2581-2644`), mockt den Squad fest mit
+   `isSBCSquadEligible: () => true` (Zeile 2599) — der `if (eligible ===
+   false) throw …`-Zweig bei `:4708-4711` wird in der gesamten Suite NIE
+   erreicht. Der zweite Fundort, Abschnitt 26 (`solver-test.js:1400-1401`),
+   prüft nur per Regex, dass die STRINGS `lastEligible`/`isSBCSquadEligible`
+   im Quelltext vorkommen — keine Verhaltensprüfung. Ein Refactoring, das die
+   Prüfung versehentlich hinter den `submitChallenge()`-Aufruf verschiebt,
+   die Bedingung invertiert oder den `try{}catch(e){}` so verändert, dass
+   `eligible` nie `false` werden kann, würde von KEINEM der 503 Tests
+   bemerkt — genau der Fall, den Prüffrage 1 sucht: ein Solver-/Submit-naher
+   Pfad, dessen Bruch unbemerkt eine falsche (nicht bloß suboptimale) Abgabe
+   zulassen würde. Dieser Fund ist unabhängig von der Rating-Formel selbst
+   (reiner Kontrollfluss-Test), widerlegt also punktuell die Einordnung
+   "Rest ist nur Formel-Unsicherheit".
 
-2. **`solver-test.js:220-231` ("Duplikat-Stapel: vom größten Stapel zuerst")
-   prüft nicht, was der Titel behauptet — die Assertion ist vakuum-wahr:**
-   Der Test baut `many(10, 88, {storage:true, assetId:111})` +
-   `[P(88, {storage:true, assetId:222})]` und prüft
-   `used88.every(p => p.assetId === 111)`. Wegen der SPIELER-EINDEUTIGKEIT
-   (siehe M1) bleibt von den 10 Karten mit `assetId 111` nach der Dedupe nur
-   noch EINE übrig — die Assertion ist damit trivial erfüllt, unabhängig
-   davon, ob der Stapelgrößen-Tiebreak je feuert. Der Test würde also auch
-   dann grün bleiben, wenn `makeConsumeCmp`s Tiebreak-Zweig komplett entfernt
-   oder invertiert würde — er verifiziert de facto nur die (bereits an
-   anderer Stelle getestete, `solver-test.js:820-855`/`:857-919`)
-   Spieler-Eindeutigkeits-Dedupe, nicht die im Namen versprochene
-   Stapelgrößen-Präferenz. Verstößt gegen den Testbarkeits-Grundsatz "keine
-   geratenen/vakuumen Erwartungswerte" aus CLAUDE.md und dem Pattern
-   [[eingebetteten-code-exakt-testen]].
+2. **Die randomisierte 40x-Brute-Force-Parität (Test 4, `solver-test.js:224-258`)
+   ist per eigenem Code-Kommentar explizit auf Configs OHNE Reservierungen
+   beschränkt (`solver-test.js:115`: "Nur für Configs OHNE Reservierungen
+   korrekt"):** `bruteBest()` kennt weder `rarityConstraints` noch
+   Qualitäts-Quoten noch `anchorId`/`rarityPickId` — es enumeriert reine
+   Ziel-OVR-Teams. Damit hat GENAU der Solver-Zweig, der laut CLAUDE.md
+   ("Bei Solver-Änderungen: … Erwartungswerte NIE aus dem Kopf — immer per
+   Brute-Force verifiziert") am striktesten abgesichert sein soll, für seine
+   reservierungs-basierten Pfade (Rarity-Quoten, Bronze/Silber-Quoten,
+   Anker/Rarity-Pick-Override) KEINEN randomisierten Fuzz-Test — nur
+   deterministische Einzelszenarien mit von Hand konstruierten Pools
+   (Abschnitte 8, 8b2, 8d2, 8d3, 8b4). Die Einzelszenarien sind selbst
+   sauber (explizite `BANDS`-Konstanten statt Rate-Werte, `bestWithProtected()`
+   in 8b2 als partielle Brute-Force-Schranke, `solver-test.js:547-566`), aber
+   sie decken keine Breite ab — ein Regressions-Bug, der nur bei
+   Kombinationen außerhalb der ca. 10 handgebauten Pools auftritt (z.B.
+   Kosten-Tiebreak zwischen zwei Rarity-Kandidaten bei ungewöhnlichem
+   Storage-/Untradeable-Mix), würde unbemerkt bleiben.
 
-3. **Hardcodierte Solver-Suchgrenzen ohne WARUM-Kommentar/Live-Beleg und ohne
-   Diagnose-Unterscheidung bei Erschöpfung
-   (`ea-fc-sbc-optimizer.user.js:2405-2406`, `:2455`, `:2504`):**
-   `sMaxLow`/`sMaxHigh` sind bei `:2405-2406` hart auf `1300` gedeckelt
-   (`Math.min(k * 99, 1300)`), die Summensuche bei `:2455` auf
-   `stHardCap = stLow + 900`. Beide Zahlen tragen — anders als praktisch
-   jeder andere magische Wert im selben Modul (Club-Lade-Takt `300ms` mit
-   LEARNINGS-§7-Verweis bei `:1247-1253`, Rarity-Aufschlag `+8` mit
-   Rechenbeispiel bei `:1758-1764`, Untradeable-Bonus `3` mit Begründung bei
-   `:1626-1631`) — keinen Kommentar, der herleitet, warum `900`/`1300`
-   ausreichen (Pattern [[warum-kommentare-mit-live-belegen]] wird hier nicht
-   angewandt, obwohl es exakt für diese Art Stelle im selben Feature
-   dokumentiert ist). Wird `stHardCap` je erreicht, ohne dass eine Lösung
-   gefunden wurde, liefert `:2504` ausnahmslos "Ziel-OVR X ist mit dem
-   aktuellen Pool nicht erreichbar" — der Fehlertext unterscheidet nicht
-   zwischen "SBC ist mit diesem Pool tatsächlich unlösbar" und "internes
-   Suchfenster ausgeschöpft, echtes Optimum evtl. außerhalb". Für die
-   aktuell einzige Aufrufer-Konfiguration (Gold-Zielrating, `N ≤ 11`, üblicher
-   Rating-Bereich 75-99) bleibt die Suchfläche zwar rechnerisch weit
-   innerhalb der Grenzen (max. Spannweite ≈ `11 × 24 = 264 ≪ 900`), aber genau
-   diese Herleitung steht nirgends im Code — ein späterer Refactor (z.B.
-   größere Formationen, weiterer Rating-Bereich) könnte die Grenze
-   stillschweigend unterschreiten, ohne dass der Report das je unterscheiden
-   könnte.
+3. **`planBatch()` (Abschnitt 8b4, `solver-test.js:638-679`) erbt dieselbe
+   Lücke eine Ebene höher:** Batch-Planung mit Rarity-Vorgabe wird nur mit
+   zwei knappen, handgebauten Pools geprüft (`futties`/`golds`-Konstruktion,
+   `:662-678`) — keine randomisierte Mehrrunden-Fuzzing-Schleife prüft, dass
+   `usedIds` über viele zufällige Pool-/Quoten-Kombinationen hinweg
+   tatsächlich disjunkt bleibt und jede Runde kostenoptimal ist. Bei
+   Formationsgrößen/Rating-Bereichen außerhalb des aktuell einzigen
+   Aufrufer-Rahmens (siehe bereits dokumentierte Herleitung `:2549-2551`)
+   wäre auch hier kein Fuzz-Netz vorhanden.
 
 ## Lift-Aktionen (≥ 3 — M1)
 
 ### RA — Robust Architecture
 
-1. **Toten Tiebreak bereinigen ODER als bewusst-tot dokumentieren
-   (`ea-fc-sbc-optimizer.user.js:1493-1509`, `:1677`, `:1982`, `:2212`):**
-   Da beide Aufrufer nachweislich (strukturell + per Reproduktion, siehe M1)
-   ausschließlich assetId-deduplizierte Listen erhalten, folgt die
-   naheliegende Aktion demselben Muster wie `WASTE_WEIGHT`/`priorityOf`
-   (LEARNINGS §28): den `counts`-Block aus `makeConsumeCmp` entfernen und die
-   beiden Kommentare (`:1493-1495`, `:1677`) auf die tatsächlich lebendige
-   Prioritäts-Reihenfolge kürzen. Pflicht dabei (CLAUDE.md-Workflow):
-   `node solver-test.js` muss vor UND nach dem Schnitt grün bleiben, neuer
-   Testfall statt des angepassten Test 6 (siehe Aktion 2), Erwartungswerte
-   nie aus dem Kopf. Alternative, falls ein Aufrufer mit nicht-dedupliziertem
-   Input für denkbar gehalten wird: den Tiebreak stehen lassen, aber mit
-   einem WARUM-Kommentar nach dem Vorbild der `reserve()`-Kollisionswarnung
-   (LEARNINGS §28, "aktuell folgenlos, weil ... strukturell ungeschützt")
-   explizit als Defense-in-Depth kennzeichnen. Erwarteter Gain: +1 Pt RA
-   (schließt einen live-verifizierten Q6/Q7-Verstoß an zwei Stellen).
+1. **Verhaltenstest für den `isSBCSquadEligible()`-Abbruch in
+   `submitChallengeToEa()` ergänzen (Ziel: `solver-test.js`, Abschnitt 27
+   erweitern oder neuer Abschnitt direkt danach):** Mock-Squad mit
+   `isSBCSquadEligible: () => false` bauen (analog zum bestehenden Mock,
+   `:2592-2617`), Erwartung: die Funktion wirft VOR jedem Aufruf von
+   `submitChallenge`/`_submitChallenge` (per Spy/Zähler auf `ctrl.submitChallenge`
+   nachweisen, dass er NIE aufgerufen wurde) und die Fehlermeldung enthält
+   "NICHT abgegeben". Zusätzlich einen Test für `eligible === null` (Methode
+   wirft oder existiert nicht) — muss weiterhin normal abgeben, wie es der
+   bestehende `try{}catch(e){}` bei `:4707` vorsieht. Rein additiv, keine
+   Verhaltensänderung am Code. Erwarteter Gain: +1-2 Pt RA (schließt die
+   einzige echte "unbemerkt falsch abgegeben"-Lücke, die diese
+   Verifikations-Runde gefunden hat — direkt einschlägig für die
+   RA-Rubrik "Testbarkeit" und "Abbruch-Disziplin").
 
-2. **Test 6 (`solver-test.js:220-231`) umbauen, damit er etwas Reales prüft:**
-   Entweder den Test auf die tatsächlich lebendige `dupeScore`-Priorität der
-   SPIELER-EINDEUTIGKEIT (`ea-fc-sbc-optimizer.user.js:1932-1952`) umstellen —
-   z.B. zwei Duplikate desselben Spielers mit unterschiedlichem
-   Storage-/Rating-Status konstruieren und brute-force-frei, aber gezielt
-   prüfen, dass `dupeScore` die dokumentierte Rangfolge (Anker/Rarity-Pick >
-   Rarity-Match > Storage > Rating > kleinste id) tatsächlich durchsetzt
-   (aktuell nur indirekt über `solver-test.js:820-855`/`:857-919`
-   mitgetestet) — oder, falls Aktion 1 den Doku-Pfad wählt, den Testnamen/
-   -kommentar so anpassen, dass er explizit als Regressionswächter für den
-   (aktuell unerreichbaren) Fallback-Zweig gekennzeichnet ist, statt
-   fälschlich ein lebendiges Verhalten zu suggerieren. Erwarteter Gain:
-   +0.5-1 Pt RA (Testbarkeit: keine vakuum-wahren Assertions mehr im Solver-
-   Suite).
+2. **`bruteBest()` auf `rarityConstraints`-Reservierungen generalisieren und
+   in eine neue randomisierte Fuzz-Schleife einbauen (Ziel: `solver-test.js`,
+   neuer Abschnitt nach 8b2 analog zu Abschnitt 4):** Die Brute-Force-Rekursion
+   (`solver-test.js:119-152`) um eine Nebenbedingung erweitern, die pro Team
+   die Anzahl Gruppe-83-Karten zählt und nur Teams mit exakt `count`
+   akzeptiert (kleine Pools wie in Test 4, ~15-19 Karten, bleiben
+   rechenbar). Randomisiert (fester Seed wie `mulberry32(1234567)`) über
+   20-40 Läufe mit variabler Rarity-Quote, Storage-/Untradeable-Mix und
+   Ziel-OVR laufen lassen, Vergleich gegen `SolverCore.solve()` wie in Test 4.
+   Erwarteter Gain: +1 Pt RA (schließt die von CLAUDE.md selbst verlangte,
+   aber bisher nur für den Basispfad eingelöste Brute-Force-Pflicht für
+   Solver-Änderungen).
 
-3. **WARUM-Kommentar + Diagnose-Unterscheidung für die Suchgrenzen
-   (`ea-fc-sbc-optimizer.user.js:2405-2406`, `:2455`, `:2504`):**
-   Einen Kommentar nach dem Muster von [[warum-kommentare-mit-live-belegen]]
-   ergänzen, der herleitet, warum `1300`/`900` für die aktuelle Formations-
-   größe (`N ≤ 11`) und den praktischen Rating-Bereich ausreichen (rein
-   additiv, keine Verhaltensänderung, `solver-test.js` bleibt unverändert
-   grün). Zusätzlich bei Erreichen von `stHardCap` ohne Lösung ein
-   `warnings`-Flag setzen, das `finishTeam`/der Fehlerpfad bei `:2504` in den
-   Diagnose-Report durchreicht ("internes Suchfenster ausgeschöpft" statt
-   unspezifisch "nicht erreichbar") — analog zum bereits etablierten Muster
-   der `reserve()`-Kollisionswarnung. Kein Eingriff in die geschützte
-   Rating-Formel selbst (CLAUDE.md "Nicht anfassen ohne Grund"), rein additive
-   Beobachtbarkeit. Erwarteter Gain: +1 Pt RA (Beobachtbarkeit/
-   Fehlertoleranz-Rubrik: aktuell einziger unbelegter Magic-Number-Fall im
-   sonst durchgängig belegten Modul).
+3. **Dieselbe Generalisierung auf Bronze/Silber-Qualitäts-Quoten anwenden
+   (Ziel: `solver-test.js`, Ergänzung zu Abschnitt 8d2/`:681-`):** Analog zu
+   Aktion 2, aber mit `qualityConstraints`/Quoten-Bändern statt
+   `rarityConstraints` — Brute-Force-Nebenbedingung prüft pro Stufe
+   (Bronze/Silber) die Mindestanzahl statt der Rarity-Gruppe. Erwarteter
+   Gain: +0.5-1 Pt RA (schließt dieselbe Lücke für den zweiten
+   reservierungsbasierten Vorgabetyp; niedrigerer Gain als Aktion 2, weil
+   Bronze/Silber strukturell einfacher ist — niedrigstes Rating zuerst,
+   LEARNINGS §15 — und damit von Natur aus weniger Fehlerfläche hat als der
+   kosten-getriebene Rarity-Pfad).
 
 ## Edge-Cases (mind. 1 — M1)
 
-- **Beim Umbau von Test 6 (Aktion 2) nicht versehentlich Deckung verlieren:**
-  Test 6 testet aktuell — unbeabsichtigt, aber faktisch — auch ein Stück der
-  SPIELER-EINDEUTIGKEIT-Dedupe (10 Duplikate kollabieren korrekt auf 1). Wird
-  der Test ersatzlos gestrichen statt umgebaut, bleibt zwar
-  `solver-test.js:820-855`/`:857-919` als explizite Dedupe-Abdeckung übrig —
-  vor dem Streichen sollte trotzdem geprüft werden (Diff der Test-Coverage),
-  dass keine Kombination (z.B. Dedupe-Verhalten OHNE Rarity-Vorgabe/Anker,
-  nur reine Mengen-Reduktion wie in Test 6) durch den Wegfall unbeobachtet
-  wird. CLAUDE.md verlangt an dieser Stelle ohnehin einen neuen/angepassten
-  Testfall statt eines stillen Wegfalls.
+- **Bei Aktion 1 nicht versehentlich den bestehenden 403-Reaktivpfad
+  (`:2877-2894`) mittesten wollen und dabei den Unterschied verwischen:**
+  Der 403-Pfad fragt `isSBCSquadEligible()` NACH einem gescheiterten
+  Eintragen zu Diagnosezwecken ab (informativ, kein Abbruch — das Eintragen
+  ist zu diesem Zeitpunkt schon fehlgeschlagen), während `submitChallengeToEa()`
+  proaktiv VOR der echten Abgabe abbricht (Kontrollfluss-Gate). Beide
+  brauchen eigene Tests mit eigener Semantik; ein gemeinsamer Test würde die
+  Unterscheidung "informativ vs. abbrechend" verlieren, die LEARNINGS §33
+  bewusst getroffen hat.
 
 ## Lift-Empfehlung
 
-Vorsichtig, kleinteilig: Das Feature steht bei 89 von einem strukturell
-durch die reverse-engineered Rating-Formel auf ~90 gedeckelten Maximum (siehe
-`vision/features/rating-solver.md`) — nach ehrlicher Prüfung existieren für
-diese Iteration nur die drei oben genannten, eng verwandten Hygiene-Funde
-(ein toter Tiebreak, ein dadurch vakuum-wahrer Test, ein unbelegtes
-Magic-Number-Paar), keine weiteren substanziellen RA-Lücken. Alle drei
-Aktionen sind additiv/entfernend ohne Eingriff in die geschützte
-Kern-Formel, brauchen aber trotzdem den vollen CLAUDE.md-Workflow
-(Brute-Force-Verifikation, `node solver-test.js` grün, Versions-Bump) — kein
-Mid-Iter-SI, kein aggressiver Lift-Plan gerechtfertigt. `score_target: 90`
-ist bewusst konservativ (nur +1 gegenüber 89) und spiegelt den dokumentierten
-Deckel wider, nicht mangelnden Ehrgeiz.
+Der Iteration-5-Rahmen ("Rest ist strukturell, weil die Formel
+reverse-engineered ist") hält der Verifikation im Kern stand — die
+Beobachtbarkeits-Sorge aus Prüffrage 2 ist bereits durch
+`isSBCSquadEligible()` architektonisch beantwortet, nicht nur behauptet.
+Trotzdem hat diese Runde EINEN echten, formel-unabhängigen Fund gemacht: der
+Gate selbst ist ungetestet, und die CLAUDE.md-Pflicht "Erwartungswerte immer
+per Brute-Force" ist für reservierungsbasierte Solver-Pfade bisher nur
+teilweise eingelöst. Das ist kein künstlicher Lift-Zwang — alle drei
+Aktionen sind additive Tests ohne jeden Eingriff in Formel/V-Maß/DP-Kern,
+adressieren aber eine reale Lücke zwischen dem, was CLAUDE.md verlangt, und
+dem, was aktuell getestet ist. `score_target: 92` bleibt bewusst gleich dem
+Ist-Wert (Verifikations-Runde, kein Lift-Auftrag) — die drei Aktionen sind
+als Kandidaten für eine SPÄTERE Iteration dokumentiert, nicht als Forderung
+für diese.

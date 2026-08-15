@@ -1,140 +1,208 @@
 ---
 feature: spieler-pool
-analyzed_at: 2026-08-14
-iteration: 0
+analyzed_at: 2026-08-15
+iteration: 6
 regression: false
 score_current:
-  RA: 70
+  RA: 83
 score_target:
-  RA: 78
+  RA: 83-84
 ---
 
-# Gap-Report — Spieler-Pool (Laden, Normalisierung, Sperren)
+# Gap-Report — Spieler-Pool (Laden, Normalisierung, Sperren) — Iteration 6 (Verifikations-Runde)
 
-## Ist-Stand pro Dimension
+## Auftrag dieser Runde
 
-### RA — Robust Architecture
+Iteration 5 hält RA bei 83/85 (Deckel 85) mit der Begründung "Fehlertoleranz/
+Abbruch-Disziplin bewusst nicht angefasst". Diese Runde prüft NUR, ob in den
+verbleibenden 2 Punkten etwas additiv Behebbares steckt — ohne den
+Club-Lade-Takt (`fetchClubViaHttp`, LEARNINGS §7/§30, CLAUDE.md
+"Nicht anfassen ohne Grund") zu berühren. Ergebnis: ja, drei konkrete,
+additive Beobachtbarkeits-Lücken entlang der drei Prüffragen — keine davon
+verlangt einen Eingriff in Takt, Solver oder Submit-Logik.
 
-**Wert:** 70 / 85
-**Schwellwert:** 59.5 (85 × 0.7)
-**Status:** pass
-**Begründung:** Der `audit-evaluator` bewertet die Fallback-Kette an der EA-Grenze
-(`loadPool()`, `fetchClubViaHttp`) als solide — gerade der fragilste Teil (Club-Lade-Takt,
-LEARNINGS §7/§23) ist über eine echte Funktionssimulation abgedeckt
-(`solver-test.js:1034-1116`). Zwei strukturelle Lücken drücken den Wert unter das
-strukturelle Maximum: (1) Beobachtbarkeit ist inkonsistent — mehrere reportwürdige
-Catches in Pool-Lade- und Lock-Pfaden rufen nur `warn()`, kein `diagError()`
-(`ea-fc-sbc-optimizer.user.js:1334`, `:1346`, `:907`); (2) Testbarkeit ist für die
-Normalisierungs- und Lock-Harvest-Logik nicht eingelöst — `normalizePlayer`/`isEvolution`
-werden nirgends direkt getestet, `readPaletoolsLocks`/`harvestIds`/`findLockBranches`
-nur in einem isolierten Teilaspekt (`looksLikeItemId`).
-
-## Mängel (≥ 3 pro Dimension — M1)
+## Ist-Stand
 
 ### RA — Robust Architecture
 
-1. **Fehlende `diagError` an reportwürdigen Pool-Catches (Antipattern
-   `fehler-unsichtbar-verschluckt`):** `ea-fc-sbc-optimizer.user.js:1334`
-   (`fetchUnassignedViaHttp`) und `:1346` (`fetchStorageViaHttp`) rufen bei einem
-   fehlgeschlagenen Fetch nur `warn(...)`. `loadPool()` löst bei leerem Storage bereits
-   einen Toast aus (`:1391-1394` — "ACHTUNG: Pool evtl. unvollständig geladen"), aber die
-   URSACHE (HTTP-Fehler, Statuscode) landet nicht in `STATE.diag.lastErrors` und damit
-   nicht im kopierbaren Report — am Gerät ist sie für Rasmus unsichtbar (kein DevTools).
-2. **`readPaletoolsLocks`-Gesamtcatch ohne `diagError`:** `ea-fc-sbc-optimizer.user.js:907`
-   fängt die gesamte `localStorage`-Scan-Schleife mit nur `warn('Locks lesen
-   fehlgeschlagen:', ...)`. Ein Abbruch mitten in der Schleife hinterließe eine
-   unvollständige Sperrliste, ohne dass der Report das zeigt — sicherheitsrelevant, weil
-   CLAUDE.md gesperrte Karten "NIEMALS verbauen" verlangt und ein stiller Teilausfall
-   genau das unterlaufen könnte.
-3. **`normalizePlayer`/`isEvolution` ungetestet gegen rohe EA-Objektformen:**
-   `solver-test.js:27-47` (Helper `P()`) erzeugt Testkarten direkt im NORMALISIERTEN
-   Zielschema (`isGold`, `isRare`, `isStorage`, …) — kein Testblock extrahiert und ruft
-   die echte, aus der Datei stammende `normalizePlayer`/`isEvolution`
-   (`ea-fc-sbc-optimizer.user.js:770-823`) mit rohen Feldern (`academyId`, `loans`,
-   `concept`, `itemType`, fehlendes `rating`/`id`) auf. Die in LEARNINGS §2 (Zeile 37-59)
-   dokumentierten Ausschlussregeln (Evolutions, Leihspieler, Konzept-Spieler) sind damit
-   nicht per Test abgesichert, obwohl sie eine harte Produktregel sind.
-4. **`readPaletoolsLocks`/`harvestIds`/`findLockBranches` nicht end-to-end getestet:**
-   `solver-test.js:1237-1269` prüft nur `looksLikeItemId` isoliert (per String-Slice +
-   `eval`) sowie den Pack-Ausschluss als reinen TEXT-Vorhandensein-Check
-   (`/pack\/i\.test\(k\)/.test(src)` bei Zeile 1263-1265) statt als Verhalten gegen einen
-   simulierten `localStorage` mit mehreren `paletools:*`-Keys, `lockedItems` als Array
-   UND als Objekt-Keys, sowie `lockedPacks` parallel zu echten Lock-Zweigen. Die
-   eigentliche Traversierung (`findLockBranches`, verschachtelte Zweige,
-   `harvestIds`-Rekursionstiefe) bleibt ungetestet.
-5. **LEARNINGS.md fehlt §23, obwohl referenziert:** `CLAUDE.md` ("Der Club-Lade-Takt
-   (LEARNINGS §7 und §23)…") und `docs/roadmap/vision/features/spieler-pool.md`
-   (`code_geography`: "docs/LEARNINGS.md — §2, §7, §12, §16, §23") verweisen auf einen
-   Abschnitt §23; `docs/LEARNINGS.md` endet aber bei §22 (`docs/LEARNINGS.md:823-858`,
-   Gesamtlänge 858 Zeilen, kein `## 23.` vorhanden). Die "Dokumentierte
-   Begründung"-Anforderung der RA-Rubric ist für die jüngste Takt-Verfeinerung
-   (Kommentar `ea-fc-sbc-optimizer.user.js:1247-1253` referenziert im Text nur §7) nicht
-   eingelöst — die Referenz zeigt ins Leere.
+**Wert:** 83 / 85 (Deckel). **Status:** pass.
+**Begründung:** Iteration 5 hat den `reportError`-Wrapper an allen 7
+Pool-/Lock-/Batch-Catches nachgezogen und die Normalisierungs-/Lock-Logik
+end-to-end abgesichert (`solver-test.js` Abschnitte 8b-5/8b-6). Diese
+Verifikations-Runde findet daneben drei ENGERE, bisher unadressierte
+Beobachtbarkeits-Lücken, die exakt in die vom Audit benannte
+Fehlertoleranz-/Abbruch-Disziplin-Kategorie fallen, aber additiv (kein
+Logik-Umbau) behebbar sind.
 
-## Lift-Aktionen (≥ 3 pro Dimension — M1)
+## Prüffrage 1 — Club-Load-Selbstbremse eskaliert bis Timeout: sichtbar & batch-sicher?
 
-### RA — Robust Architecture
+**Befund: teilweise nein.**
 
-1. **`diagError` additiv an den drei Catch-Stellen ergänzen:**
-   `ea-fc-sbc-optimizer.user.js:1334`, `:1346` und `:907` je um einen zusätzlichen
-   `diagError(...)`-Aufruf NEBEN dem bestehenden `warn(...)` erweitern (Pfad:
-   `ea-fc-sbc-optimizer.user.js`), analog zum bereits vorbildlichen Muster im
-   Services-Fallback von `loadPool` (`:1372-1379`) und in `apiGet`/`apiPut`
-   (`:1190,1202,1218,1231`). Rein additiv, kein Verhaltens-Umbau, keine Regression.
-   Erwarteter Gain: +3 bis +5 Punkte (schließt die vom Bad-Pattern-Dokument
-   `fehler-unsichtbar-verschluckt` explizit für `spieler-pool` benannte Lücke,
-   Kriterium "Beobachtbarkeit").
-2. **Testblock für `normalizePlayer`/`isEvolution` per Marker-Extraktion (Pfad:
-   `solver-test.js`, neuer Abschnitt nach dem Vorbild `8b-2h` bei Zeile 1027-1118):**
-   die echte Funktion via `indexOf('function normalizePlayer')` /
-   `indexOf('function isEvolution')` aus der ausgelieferten Datei extrahieren (Muster
-   `eingebetteten-code-exakt-testen`, wie bereits für `fetchClubViaHttp` gemacht) und mit
-   rohen Fixtures durchspielen: `loans>0`, `concept===true`, `academyId>0`,
-   `tradableBeforeAcademy` gesetzt, `itemType!=='player'`, fehlendes `rating`/`id`.
-   Erwartungswerte gegen die in LEARNINGS §2 (Zeile 37-59) dokumentierten Live-Flags
-   verifizieren, nicht aus dem Kopf. Erwarteter Gain: +4 bis +6 Punkte (Kriterium
-   "Testbarkeit" für die harte NIEMALS-verbauen-Regel bei Evolutions).
-3. **Testblock für `readPaletoolsLocks`/`harvestIds`/`findLockBranches` end-to-end
-   (Pfad: `solver-test.js`, Erweiterung von Abschnitt `8b-4` bei Zeile 1237-1269):**
-   die drei Funktionen zusammen extrahieren, einen simulierten `localStorage`
-   (Objekt mit `getItem`/`length`/`key`) mit mehreren `paletools:*`-Keys bauen —
-   `lockedItems` als Array (`[100664921, 190871, ...]`) UND als Objekt-Keys-Variante,
-   `lockedPacks` mit Pack-IDs parallel dazu, sowie einen verschachtelten Zweig für
-   `findLockBranches`. Erwartungswerte aus der in LEARNINGS §12 (Zeile 543-563)
-   dokumentierten Live-Struktur ableiten. Erwarteter Gain: +4 bis +6 Punkte (schließt
-   die im SCORE_RESULT explizit benannte Lücke "Lock-Harvest-Logik ungetestet").
-4. **LEARNINGS.md um §23 ergänzen (Pfad: `docs/LEARNINGS.md`, rein additive Doku, kein
-   Code-Umbau):** den bereits im Code-Kommentar (`ea-fc-sbc-optimizer.user.js:1247-1253`)
-   und in `CLAUDE.md` referenzierten Club-Lade-Takt-Sachverhalt (Takt zwischen den
-   Starts statt Schlafen danach, Selbstbremse bei Fehlversuchen; Commits `bb76012`,
-   `27275df`) als eigenen Abschnitt `## 23.` nachtragen, damit die Referenz in `CLAUDE.md`
-   und `vision/features/spieler-pool.md` nicht ins Leere zeigt. Erwarteter Gain: +2 bis
-   +3 Punkte (Kriterium "Dokumentierte Begründung").
+- `STATE.loadIncomplete` wird bei einem dauerhaften Fehlschlag mitten in der
+  Club-Pagination gesetzt (`ea-fc-sbc-optimizer.user.js:1453`, im
+  `while`-Loop von `fetchClubViaHttp`) — der Takt/die Selbstbremse selbst
+  bleiben dabei unangetastet (nur der resultierende Zustand wird geprüft).
+- Der einzige Weg, wie das den Nutzer erreicht, ist ein `toast(...)`-Aufruf
+  (`ea-fc-sbc-optimizer.user.js:1560-1563` in `loadPool()` und erneut
+  `:4509-4511` in `onRunClick()`). `toast()` (`:3323-3336`) manipuliert
+  ausschließlich das DOM — es ruft an keiner Stelle `console.*` auf.
+- Damit ist die Warnung in BEIDEN offiziellen Debug-Kanälen unsichtbar:
+  nicht im Script-Diagnose-JSON (`buildDiagReport()`, `:4014-4400+`, enthält
+  `clubLoad: STATE.diag.clubLoad` mit Seiten/Takt/Retries, aber KEIN Feld
+  für `STATE.loadIncomplete` selbst), und nicht im App-Log-Ringpuffer
+  (`SbcChromeClient.onConsoleMessage`, `app/java/.../MainActivity.java:805`,
+  fängt nur echte `console.*`-Aufrufe ab — ein reiner DOM-Toast erzeugt
+  keinen).
+- `onBatchPlanClick()` (`:5227-5264`) prüft vor dem Planen nur, ob der Pool
+  LEER ist (`:5235`) — anders als `onRunClick()` (`:4509-4511`) gibt es dort
+  KEINE `STATE.loadIncomplete`-Prüfung. Ein Batch lässt sich also auf einem
+  durch Rate-Limit-Abbruch unvollständigen Pool planen und abgeben, ohne
+  dass an dieser Stelle irgendein Hinweis (auch kein flüchtiger Toast)
+  erscheint — der ursprüngliche Toast aus dem vorangegangenen "Spieler
+  laden" ist zu diesem Zeitpunkt (oft mehrere Minuten später) längst
+  verschwunden (4,3s Anzeigedauer, `:3334-3335`).
 
-## Edge-Cases (mind. 1 — M1)
+## Prüffrage 2 — removeFromPool: Doppelverplanung sichtbar?
 
-- Reihenfolge-Falle bei neuen `normalizePlayer`-Tests: ein Fixture mit SOWOHL `loans>0`
-  ALS AUCH gültigem `rating` muss weiterhin ausgeschlossen werden — der Test darf die
-  Check-Reihenfolge in der Funktion nicht durch eine vereinfachte Fixture-Form umgehen;
-  ebenso muss `isEvolution` weiterhin VOR jeder Rare/Gold-Einstufung greifen, damit ein
-  Evolutions-Item nie versehentlich mit gültiger `rareflag` in `mergeIntoPool` landet.
-- Koexistenz-Falle bei `readPaletoolsLocks`-Tests: `lockedPacks` und `lockedItems` müssen
-  in DERSELBEN simulierten `localStorage`-Instanz nebeneinander vorkommen (nicht nur
-  isoliert getestet) — sonst könnte ein künftiger Fix für den Pack-Ausschluss
-  versehentlich brauchbare Item-Locks mitverwerfen (Regression zu LEARNINGS §12).
-- Club-Lade-Takt (LEARNINGS §7/§23, CLAUDE.md "Nicht anfassen ohne Grund") darf durch
-  keine der obigen Aktionen berührt werden: neue Marker-Extraktionen müssen exakt an den
-  bestehenden Funktionsgrenzen (`indexOf('async function fetchClubViaHttp')` /
-  `indexOf('async function fetchUnassignedViaHttp')`) ansetzen, sonst bricht der bereits
-  grüne Test `solver-test.js:1034-1118`.
+**Befund: der Erfolgsfall ist korrekt gegen Doppelverplanung abgesichert,
+der Fehlerfall ist im JSON-Report unsichtbar.**
 
-## Lift-Empfehlung
+- `removeFromPool()` (`:1131-1144`) wird in beiden Abgabe-Pfaden erst NACH
+  einer vom SERVER bestätigten Übernahme aufgerufen
+  (`submitCurrentResult():5481`, nach `verifySquadCount(...) >= need` in
+  `submitToSbc()`; Batch-Loop `:5374`, nach erfolgreichem `submitToSbc`).
+  Schlägt das Eintragen selbst fehl, bleibt die Karte im Pool — das ist
+  KORREKT (Karte wurde nicht verbaut).
+- ABER: `removeFromPool()`s eigener Catch (`:1143`,
+  `catch (e) { warn('removeFromPool:', e.message); }`) ruft nur `warn()`,
+  nicht `reportError()`/`diagError()` — im Unterschied zu allen anderen
+  Pool-Catches, die Iteration 5 laut Audit konsistent auf `reportError()`
+  umgestellt hat (`fetchUnassignedViaHttp`, `fetchStorageViaHttp`,
+  Gesamt-Catch von `readPaletoolsLocks`, LEARNINGS §29). Ein Fehlschlag
+  HIER (z.B. während `refreshSbcInfoUI()`, `:3961-3976`, das `ui.rarity`/
+  `ui.poolcount` ungeschützt anspricht) landet zwar im App-Log
+  (`console.warn` wird von `onConsoleMessage` erfasst), aber NICHT in
+  `STATE.diag.lastErrors` und damit nicht im kopierbaren Script-Diagnose-
+  Report — dem Kanal, den Rasmus laut CLAUDE.md primär nutzt. Die
+  tatsächliche Konsequenz ist begrenzt (die Karte bleibt fälschlich im
+  Pool, ein erneutes Verplanen würde beim nächsten Abgabeversuch mit dem
+  bekannten 460/400-Hinweis "Pool veraltet, Spieler laden" auffallen,
+  `:5490-5491`) — aber der ROOT CAUSE (der ursprüngliche removeFromPool-
+  Fehlschlag) bliebe im JSON-Report unbelegt, nur im App-Log auffindbar.
 
-Vorsichtig-additiv: alle vier Aktionen sind rein additive Ergänzungen (neue
-`diagError`-Aufrufe, neue Testblöcke, ein neuer LEARNINGS-Abschnitt) ohne Eingriff in
-bestehende Lade-/Normalisierungs-Logik oder den Club-Lade-Takt. Reihenfolge:
-`diagError`-Ergänzungen zuerst (Aktion 1, geringstes Risiko, sofortiger Beobachtbarkeits-
-Gewinn), danach die beiden Testblöcke (Aktionen 2+3, je nach Vorbild
-`fetchClubViaHttp`-Test bei `solver-test.js:1034-1116`), zuletzt die LEARNINGS-Ergänzung
-(Aktion 4, reine Doku). Kein Mid-Iter-SI nötig — keine der Aktionen hat Konsumenten
-außerhalb von `spieler-pool`.
+## Prüffrage 3 — readPaletoolsLocks: vollständig sichtbar oder stille Zweige?
+
+**Befund: stille Zweige vorhanden — der iter5-Audit-Satz "locks.error macht
+sicherheitsrelevante Teilausfälle sichtbar" stimmt nur für den
+GESAMT-Abbruch der Schleife, nicht für Teilausfälle pro Schlüssel.**
+
+- `readPaletoolsLocks()` (`:1023-1075`) hat einen äußeren Try/Catch um die
+  gesamte `for`-Schleife (`:1034-1065`), der bei einem Abbruch mitten in der
+  Traversierung `scanError` setzt und `reportError()` ruft (`:1062-1064`)
+  — das ist getestet (`solver-test.js:1634-1655`, `brokenLocalStorage` wirft
+  in `localStorage.key(i)`).
+- ZWEI innere Try/Catches greifen aber VOR diesem äußeren Catch und
+  verschlucken PRO SCHLÜSSEL still, ohne `reportError`/`diagError` UND ohne
+  einen Zähler im `STATE.diag.locks`-Objekt:
+  - `:1047`, `try { raw = localStorage.getItem(k); } catch (e) { continue; }`
+    — schlägt `getItem` für genau diesen einen Key fehl, wird der Key
+    komplett übersprungen (kein Lock-Fund aus ihm), `keysScanned` wurde
+    bereits hochgezählt, aber nichts zeigt, dass er nicht ausgewertet wurde.
+  - `:1050`, `try { obj = JSON.parse(raw); } catch (e) { continue; }` — ein
+    Wert, der kein valides JSON ist (z.B. ein beschädigter oder aus einer
+    anderen PaleTools-Version stammender `paletools:*`-Key), wird ebenso
+    still übersprungen.
+- `solver-test.js` Abschnitt 8b-6 (`:1572-1656`) deckt beide Zweige NICHT
+  ab: der einzige negative Testfall ist der Gesamt-Loop-Abbruch
+  (`localStorage.key()` wirft), keiner simuliert einen einzelnen kaputten
+  `paletools:*lock*`-Wert (nicht-JSON) oder einen key-spezifischen
+  `getItem`-Fehler.
+- Sicherheitsrelevanz: CLAUDE.md verlangt "Per PaleTools gesperrte Karten
+  (Schloss) NIEMALS verbauen". Ein einzelner unlesbarer/korrupter Lock-Key
+  bedeutet HEUTE: die darin enthaltenen gesperrten Spieler werden STILL
+  NICHT als gesperrt erkannt, ohne jede Spur im Report — exakt der
+  Fehlerklasse, die der äußere Catch laut eigener Begründung (`:1027-1031`)
+  verhindern sollte, aber nur für den Loop-Abbruch tatsächlich abdeckt.
+
+## Mängel (M1)
+
+1. **`STATE.loadIncomplete` fehlt komplett in `buildDiagReport()`**
+   (`ea-fc-sbc-optimizer.user.js:4014-4400`, kein `loadIncomplete`-Key im
+   Rückgabeobjekt) — der einzige Träger der Information ist ein
+   nicht-loggender `toast()` (`:1560-1563`, `:4509-4511`, `:3323-3336`).
+2. **`onBatchPlanClick()` prüft `STATE.loadIncomplete` nicht**
+   (`:5227-5264`, Kontrast zu `onRunClick():4509-4511`) — ein Batch kann auf
+   einem durch Rate-Limit-Abbruch unvollständigen Pool geplant und
+   abgegeben werden, ohne jede erneute Warnung an dieser Stelle.
+3. **`removeFromPool()`s Catch nutzt nur `warn()`, nicht `reportError()`**
+   (`:1143`) — inkonsistent zum in Iteration 5 etablierten Muster (LEARNINGS
+   §29: alle Pool-/Lock-Catches über `reportError()`), macht einen
+   Fehlschlag im Script-Diagnose-JSON unsichtbar (nur im App-Log via
+   `console.warn` auffindbar).
+4. **`readPaletoolsLocks()`: zwei innere Catches (`:1047`, `:1050`)
+   verschlucken Pro-Key-Fehler still**, ohne Zähler/Feld in
+   `STATE.diag.locks` und ohne `reportError`/`diagError` — nur der
+   Gesamt-Loop-Abbruch ist sichtbar/getestet (`:1062-1064`,
+   `solver-test.js:1634-1655`), nicht der wahrscheinlichere Fall eines
+   einzelnen kaputten `paletools:*lock*`-Werts.
+
+## Lift-Aktionen (M1, alle additiv, kein Eingriff in Club-Lade-Takt/Solver/Submit)
+
+1. **`buildDiagReport()` um `poolLoadIncomplete: !!STATE.loadIncomplete`
+   ergänzen** (Pfad: `ea-fc-sbc-optimizer.user.js`, ein neuer Key neben
+   `poolSize`/`clubLoad` in der bestehenden Rückgabe, `:4283` als
+   Einfügepunkt). Rein additiv, kein Verhaltens-Umbau. Erwarteter Gain:
+   +2 bis +3 Punkte (schließt exakt die von Prüffrage 1 benannte Lücke:
+   der Teil-Pool-Zustand wird im kopierbaren Report sichtbar, ohne den
+   Takt anzufassen).
+2. **`onBatchPlanClick()` um dieselbe `STATE.loadIncomplete`-Warnung
+   ergänzen, die `onRunClick()` bereits hat** (Pfad:
+   `ea-fc-sbc-optimizer.user.js:5227-5235`, unmittelbar nach dem
+   Pool-leer-Check, analog zu `:4509-4511`). Additiv, non-blocking (nur ein
+   zusätzlicher `toast()`-Aufruf plus, in Kombination mit Aktion 1, ein
+   `diagError`-Eintrag), lässt "Batch darf abgeben" unangetastet. Erwarteter
+   Gain: +2 bis +3 Punkte.
+3. **`removeFromPool()`s Catch auf `reportError()` umstellen** (Pfad:
+   `ea-fc-sbc-optimizer.user.js:1143`, `warn('removeFromPool:', e.message)`
+   → `reportError('removeFromPool', e)`), exakt das in LEARNINGS §29
+   etablierte Muster auf die vierte, bisher inkonsistente Stelle
+   ausgedehnt. Ein-Zeilen-Änderung, keine Logik-Änderung. Erwarteter Gain:
+   +1 bis +2 Punkte (DRY/SSOT-Konsistenz, Q4/Q5).
+4. **`readPaletoolsLocks()`s zwei innere Catches zählen statt nur
+   `continue`n** (Pfad: `ea-fc-sbc-optimizer.user.js:1047`, `:1050`): pro
+   Fehlschlag einen Zähler erhöhen (z.B. `unreadableKeys`/`parseErrors`) und
+   in `STATE.diag.locks` (`:1066-1073`) mit ausgeben, plus je einen
+   `reportError()`-Aufruf mit dem betroffenen Key-Namen. Dazu zwei neue
+   Testfälle in `solver-test.js` Abschnitt 8b-6 (Vorbild: der bestehende
+   `brokenLocalStorage`-Block, `:1638-1655`) — ein Key mit nicht-JSON-Wert
+   und ein Key, dessen `getItem` wirft. Erwarteter Gain: +2 bis +3 Punkte
+   (schließt die von Prüffrage 3 aufgedeckte Lücke in der als "vollständig
+   getestet" geltenden Lock-Erkennung, sicherheitsrelevant wegen der
+   NIEMALS-verbauen-Regel).
+
+## Edge-Case (M1)
+
+- Aktion 2 (Batch-Warnung) darf NICHT zu einem Abbruch/Block werden — CLAUDE.md
+  gibt dem Batch explizit die Freigabe abzugeben ("Batch darf abgeben"); die
+  Warnung muss wie bei `onRunClick()` rein informativ bleiben (Toast +
+  Diagnose-Feld), sonst würde ein unvollständiger, aber für die konkrete SBC
+  ausreichender Pool blockiert, wo vorher gar keine Prüfung existierte —
+  das wäre eine Verschlechterung, keine Verbesserung.
+- Aktion 4 darf den bestehenden, bereits grünen Test für den
+  Gesamt-Loop-Abbruch (`solver-test.js:1634-1655`) nicht verändern — die
+  neuen Zähler müssen NEBEN `scanError`/`error` stehen, nicht ihn ersetzen,
+  sonst verliert der Report den bereits funktionierenden "kompletter
+  Abbruch"-Fall zugunsten des neuen "einzelner Key kaputt"-Falls.
+
+## Honest Verdict
+
+**Substanz.** Alle drei Prüffragen dieser Runde haben einen konkreten,
+mit `file:line` belegten Befund ergeben — keiner davon verlangt einen
+Eingriff in den Club-Lade-Takt, den Solver oder die Submit-Wege. Die vier
+Lift-Aktionen sind rein additiv (ein neues Report-Feld, eine übernommene
+Warnung an einer zweiten Stelle, ein Catch-Umbau auf ein bereits etabliertes
+Muster, zwei neue Zähler + Tests) und tragen zusammen schätzungsweise +7 bis
++11 Punkte — genug, um RA von 83 auf den in dieser Iteration angepeilten
+Bereich 83-84 zu heben, ohne die Nicht-anfassen-Zone zu berühren. "Nichts
+Actionables" wäre hier NICHT die ehrliche Antwort gewesen — die drei
+Beobachtbarkeits-Lücken waren real und bisher unadressiert.

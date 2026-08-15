@@ -919,6 +919,12 @@
         const ids = new Set();
         let keysScanned = 0;
         const keyInfo = [];
+        // Bricht die Schleife mitten drin ab, bleibt die Sperrliste unvollstaendig,
+        // OHNE dass der Report das zeigt (CLAUDE.md: gesperrte Karten NIEMALS
+        // verbauen - ein stiller Teilausfall koennte das unterlaufen). scanError
+        // macht das im Report explizit sichtbar statt nur ueber niedrige Zahlen
+        // erraten zu werden.
+        let scanError = null;
         try {
             for (let i = 0; i < localStorage.length; i++) {
                 const k = localStorage.key(i);
@@ -948,13 +954,17 @@
                 else if (/lock/i.test(k)) harvestIds(obj, ids, 0);
                 else findLockBranches(obj, ids, 0);
             }
-        } catch (e) { reportError('Locks lesen fehlgeschlagen', e); }
+        } catch (e) {
+            scanError = (e && e.message) || String(e);
+            reportError('Locks lesen fehlgeschlagen', e);
+        }
         STATE.diag.locks = {
             keysScanned: keysScanned,
             found: ids.size,
             sample: Array.from(ids).slice(0, 5),
             // Nur noetig, wenn found = 0: daran ist der richtige Key ablesbar.
-            keys: keyInfo.slice(0, 12)
+            keys: keyInfo.slice(0, 12),
+            error: scanError
         };
         return ids;
     }

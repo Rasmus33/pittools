@@ -1,175 +1,181 @@
 ---
 feature: ea-app-anbindung
-analyzed_at: 2026-08-14
-iteration: 0
+analyzed_at: 2026-08-15
+iteration: 3
 regression: false
 score_current:
-  RA: 64
+  RA: 74
 score_target:
-  RA: 70
+  RA: 75
 ---
 
 # Gap-Report — EA-Web-App-Anbindung (Session & API-Zugriff)
+
+**Linse dieser Iteration:** EA-Wandel-Toleranz — nur additive Toleranz-Fallbacks,
+Früherkennungs-Diagnose, Degradations-Pfade. Keine Umbauten an fetch/XHR-Wrapper,
+Session-Header-Absorption oder 401-Retry-Kaskade (Vertrag).
 
 ## Ist-Stand pro Dimension
 
 ### RA — Robust Architecture
 
-**Wert:** 64 / 75 (structural_max)
-**Schwellwert:** 52.5 (75 × 0.7)
+**Wert:** 74 / 75 (structural_max)
+**Schwellwert:** 52.5
 **Status:** pass
-**Begründung:** Der `audit-evaluator` bewertet die doppelt abgesicherte
-Fremd-Grenze (Netzwerk-Interception UND App-Services, siehe
-`ea-fc-sbc-optimizer.user.js:1236-1253`, `:1184-1235`) sowie disziplinierte
-Fehlermeldungen und WARUM-Kommentare mit Live-Belegen (`:187`, `:1100`)
-positiv. Dem steht ein klar nachweisbares Cluster aus SSOT-/DRY-Verstößen
-gegenüber: duplizierte `sbs`/`sbc`-Regex, duplizierte 401-Retry-Logik,
-duplizierte Controller-Traversal statt Helfer-Nutzung, sowie
-Beobachtbarkeits-Lücken im Services-Fallback ohne `diagError`
-(`ea-fc-sbc-optimizer.user.js:4986-5006`). `pass`, aber mit klarem
-Verbesserungsspielraum bis zum strukturellen Maximum (EA-API ist
-undokumentiert — 75 ist bereits der branchen-/produktbedingte Deckel, siehe
-`vision/features/ea-app-anbindung.md`).
+**Begründung:** `docs/roadmap/audit/ea-app-anbindung.md` (Iteration 2) begründet
+den Wert mit der abgeschlossenen `SBS_SBC_PREFIX_RE_SRC`-SSOT-Migration (alle
+sieben Call-Sites, ~35 neue Assertions in `solver-test.js` Block 25), der
+strukturellen Schließung der Beobachtbarkeit über `reportError()` und der
+Q2-konformen `apiRequest`-Dokumentation. Nur **1 Punkt Luft** bis zum
+strukturellen Maximum von 75 — der Deckel selbst ist durch die undokumentierte,
+jederzeit änderbare EA-API begründet (`vision/features/ea-app-anbindung.md`).
+Unter der EA-Wandel-Linse bestätigt sich dieses Bild: die drei größten
+Fremd-Grenzen (URL-Klassifikation, API-Base-Erkennung, Service-Objekt-Zugriff)
+sind bereits mit Fallback-Ketten UND teilweiser Diagnose abgesichert — die
+verbleibenden Lücken sind an EINZELNEN Stellen konkret, aber klein.
 
-## Mängel (≥ 3 pro Dimension — M1)
-
-### RA — Robust Architecture
-
-1. **`sbs`/`sbc`-Präfix-Wissen fünffach als Regex-Literal dupliziert (Q5/SSOT):**
-   `ea-fc-sbc-optimizer.user.js:187` (`detectApiBase`), `:197`, `:198`, `:200`,
-   `:205` (`classifyUrl`, vier eigenständige `(sbs|sbc)`-Alternationen) und
-   `:291` (XHR-Wrapper, PUT-Body-Erkennung) — dieselbe fachliche Tatsache
-   (EA nutzt wahlweise `sbs`/`sbc` als API-Präfix, LEARNINGS §3) ohne
-   gemeinsame Konstante/Helper. Pattern-Ref: `wissens-duplikate-ohne-ssot`.
-   Ändert EA das Präfix-Schema oder kommt ein drittes Präfix hinzu, müssen
-   alle sechs Stellen synchron nachgezogen werden — bislang keine
-   Cross-Validation, die eine vergessene Stelle sichtbar macht.
-2. **401-Retry-Kaskade in `apiGet`/`apiPut` wortgleich dupliziert (Q4/DRY):**
-   `ea-fc-sbc-optimizer.user.js:1184-1206` (`apiGet`) und `:1207-1235`
-   (`apiPut`) bauen dieselbe Nudge→Sleep(3000)→rekursiver-Retry-Kaskade
-   (Grenze `_attempt<2`) unabhängig voneinander nach — inklusive derselben
-   Kommentar-Begründung. Pattern-Ref: `helfer-existiert-wird-umgangen`. Ein
-   künftiger Fix an der Retry-Logik (z.B. Cooldown-Anpassung nach einem
-   neuen Rate-Limit-Vorfall wie LEARNINGS §7/§23) muss an zwei Stellen
-   identisch nachgezogen werden — genau die Fehlerklasse, die den
-   Club-Lade-Takt schon einmal getroffen hat.
-3. **Controller-Traversal (`getControllerChain`-Konsument) dreifach inline
-   nachgebaut statt über `findSbcController`/`findLiveChallenge` (Q4/DRY):**
-   `ea-fc-sbc-optimizer.user.js:4986-5006` (`findLiveChallenge`/
-   `findSbcController`, explizit als "Helfer, die auch die Diagnose nutzt"
-   kommentiert) vs. `:742-763` (`syncSbcWithOpenChallenge`) und `:2554-2571`
-   (`submitViaApp`) — beide bauen dieselbe Such-Schleife über
-   `_overviewController`/`leftController`/`_leftController` Zeile für Zeile
-   erneut. Pattern-Ref: `helfer-existiert-wird-umgangen`. Ändert sich die
-   EA-Controller-Struktur (neuer Key, umbenannter Controller — genau das
-   Fehlerbild, das RA laut Rubric "Fehlertoleranz gegen EA-Wandel" misst),
-   muss die Anpassung an drei statt an einer Stelle erfolgen; die Diagnose-
-   Helfer (`findLiveChallenge`) könnten dann sogar einen anderen (veralteten)
-   Stand zeigen als der tatsächlich benutzte Submit-Pfad.
-4. **Beobachtbarkeits-Lücke im Services-Fallback (Rubric-Kriterium
-   "Beobachtbarkeit"):** `ea-fc-sbc-optimizer.user.js:1100`
-   (`fetchUnassignedViaServices`) und `:1118` (`fetchStorageViaServices`)
-   fangen Service-Fehler nur mit `warn()`, ohne `diagError()` — anders als
-   der strukturell gleichwertige HTTP-Fallback in `apiGet`/`apiPut`
-   (`:1190`, `:1202`, `:1218`, `:1231`), der jeden Fehler zusätzlich in
-   `STATE.diag.lastErrors` einträgt. Pattern-Ref:
-   `fehler-unsichtbar-verschluckt`. Schlägt Ebene A (Services) fehl, sieht
-   Rasmus im Copy-Paste-Report nur das nachgelagerte Symptom ("Storage ist
-   leer"), nie die Ursache — obwohl die Diagnose-Infrastruktur dafür bereits
-   existiert und an der Nachbarstelle auch genutzt wird.
-5. **`syncSbcWithOpenChallenge` meldet Fehlschläge nur über `warn()`, nicht
-   über `diagError()`:** `ea-fc-sbc-optimizer.user.js:762` — ein Fehlschlag
-   bedeutet laut Kommentar (`:735-740`), dass die SBC-Erkennung auf
-   veraltetem Stand weiterläuft (LEARNINGS §6 nennt genau dieses
-   Veraltungsrisiko als wiederkehrende Fehlerquelle bei dieser
-   Fremd-Grenze), landet aber nicht im Report. Pattern-Ref:
-   `fehler-unsichtbar-verschluckt`.
-
-## Lift-Aktionen (≥ 3 pro Dimension — M1)
+## Mängel (≥ 3 — M1)
 
 ### RA — Robust Architecture
 
-1. **`diagError` in den zwei Services-Fallback-Catches ERGÄNZEN (additiv,
-   kein Verhaltens-Umbau):** In `fetchUnassignedViaServices`
-   (`ea-fc-sbc-optimizer.user.js:1100`) und `fetchStorageViaServices`
-   (`:1118`) je einen `diagError('Unassigned via Service: ' + ...)` bzw.
-   `diagError('Storage via Service: ' + ...)`-Aufruf NEBEN das bestehende
-   `warn()` setzen — reine Ergänzung, ändert keinen Kontrollfluss, kein
-   neuer Testfall zur Verhaltensprüfung nötig (nur `node --check` +
-   `node solver-test.js` grün halten). Gleiches additiv für
-   `syncSbcWithOpenChallenge` (`:762`). Erwarteter Gain: +4-6 Pt für RA
-   (schließt die "Beobachtbarkeits-Lücken im Services-Fallback"-Kritik aus
-   der Score-Begründung direkt).
-2. **`(sbs|sbc)`-Regex hinter eine benannte Konstante/Helper ziehen, Call-Sites
-   EINZELN umziehen:** Eine Konstante `const SBS_SBC_PREFIX_RE_SRC =
-   'sbs|sbc';` (oder eine `matchesSbcPath(url, suffixRe)`-Helper-Funktion)
-   einführen, dann NACHEINANDER `detectApiBase` (`:187`), die vier
-   Vorkommen in `classifyUrl` (`:197-205`) und den XHR-Wrapper (`:291`)
-   umstellen — jede Umstellung einzeln mit `node solver-test.js` (95/95 grün)
-   verifizieren, da `classifyUrl` das Response-Routing steuert und ein
-   Fehlgriff hier den Pool/die SBC-Erkennung stumm falsch befüllen würde.
-   Erwarteter Gain: +3-5 Pt für RA (SSOT-Kritik direkt adressiert, macht
-   künftige Präfix-Änderungen EA-seitig an einer Stelle robust statt an
-   sechs).
-3. **`apiRequest(method, path, body, _attempt)`-Kern extrahieren, `apiGet`/
-   `apiPut` darauf umstellen:** Die identische Nudge→Sleep→Retry-Kaskade aus
-   `apiGet` (`:1184-1206`) und `apiPut` (`:1207-1235`) in eine gemeinsame
-   private Funktion ziehen, die Methode/Body als Parameter nimmt; `apiGet`
-   und `apiPut` werden zu dünnen Wrappern. Verhaltensneutral, da Diff nur
-   die Kaskade selbst betrifft — vorher/nachher mit `node solver-test.js`
-   und einem manuellen 401-Smoke-Test (Diagnose-Report vor/nach Vergleich)
-   absichern. Erwarteter Gain: +3-4 Pt für RA (DRY-Kritik behoben, sichert
-   zugleich, dass ein künftiger Rate-Limit-Fix wie LEARNINGS §7/§23 nur an
-   EINER Stelle nachgezogen werden muss).
-4. **Diagnose-Helfer `findLiveChallenge`/`findSbcController` tatsächlich in
-   `syncSbcWithOpenChallenge` und `submitViaApp` NUTZEN statt die
-   Controller-Traversal erneut zu inlinen:** Da beide Aufrufer laut
-   `helfer-existiert-wird-umgangen`-Pattern ("Nicht anfassen ohne Grund"-Pfad
-   `submitViaApp`) mit Vorsicht zu behandeln sind, additiv vorgehen: zuerst
-   `findSbcController()`/`findLiveChallenge()` um die in `submitViaApp`
-   benötigten Zusatzfelder (`_squad`/`getSquad()`) ERGÄNZEN, dann NUR
-   `syncSbcWithOpenChallenge` (unkritischer, da reine Diagnose-Synchronisation)
-   auf den Helfer umstellen und mit `node solver-test.js` grün verifizieren;
-   `submitViaApp` als Live-verifizierter Submit-Weg 0 zunächst NICHT anfassen,
-   sondern die Duplikation mit einem WARUM-Kommentar (Q6) explizit als
-   bewusst begründen (Verweis auf CLAUDE.md "Nicht anfassen ohne Grund").
-   Erwarteter Gain: +2-3 Pt für RA (reduziert eine von drei Duplikationsstellen
-   ohne den kritischsten Pfad zu risikieren).
-5. **LEARNINGS.md §3/§4 um die 401-Retry-Symmetrie und das Präfix-Wissen als
-   EINE dokumentierte Quelle ergänzen:** Sobald Aktion 2/3 umgesetzt sind,
-   einen Verweis in LEARNINGS §3 ("API-Zugriff") ergänzen, dass
-   `sbs`/`sbc`-Erkennung und Retry-Kaskade jetzt zentral in
-   `apiRequest`/der Präfix-Konstante liegen — macht die "Dokumentierte
-   Begründung fragiler Stellen"-Rubrik (score-criteria.md) direkt greifbar
-   für künftige Bearbeiter. Erwarteter Gain: +1-2 Pt für RA (Doku-Kriterium
-   der Rubric, geringer eigenständiger Gain, aber Voraussetzung dafür, dass
-   Aktion 2/3 nicht erneut auseinanderdriften).
+1. **JSON-Parse-Fehlschlag in `handleResponseBody` ist komplett stumm, der
+   zweite Catch nur `warn()` ohne `diagError()`:**
+   `ea-fc-sbc-optimizer.user.js:257-258` — `try { json = JSON.parse(bodyText); }
+   catch (e) { return; }` läuft OHNE jeden Log-/Report-Aufruf; ändert EA das
+   Response-Format eines bereits klassifizierten SBC-Endpunkts (z.B. anderes
+   Encoding, BOM, HTML-Fehlerseite statt JSON), verschwindet die Requirement-
+   Erkennung lautlos — Rasmus sieht am Handy nichts. Der zweite Catch
+   (`:277-279`, `warn('Fehler beim Verarbeiten einer Response:', e)`) ruft
+   ebenfalls kein `diagError()` — anders als der sonst durchgängig befolgte
+   Zweikanal-Standard (`apiGet`/`apiPut`, `submitToSbc`). Neuer, bisher nicht
+   in `patterns/bad/fehler-unsichtbar-verschluckt.md` gelisteter Beleg für
+   genau dieses Antipattern, direkt an der EA-Antwort-Grenze.
+2. **Kein getrennter Zähler für unklassifizierte `/ut/game/`-URLs
+   (Leitfrage 1):** `ea-fc-sbc-optimizer.user.js:221-234` (`detectApiBase`)
+   und `:237-251` (`classifyUrl`) — `classifyUrl(url) === null` (neuer,
+   unbekannter SBC-relevanter Endpunkt) hinterlässt KEIN eigenes Signal.
+   `STATE.diag.lastUtasPaths` (`:224-229`) ist ein 15-Slot-Ring, der ALLE
+   `/ut/game/`-Pfade unabhängig von ihrer Klassifikation aufnimmt und nur
+   gegen den unmittelbar VORHERIGEN Eintrag dedupliziert — häufiger bekannter
+   Traffic (Club-Pagination, Storage-Laden) kann einen seltenen neuen,
+   unklassifizierten Pfad aus dem Ring verdrängen, bevor je ein Diagnose-Report
+   gezogen wird. `solver-test.js` Block 25 (Z. 2396-2406) testet zwar, dass
+   `classifyUrl` für Fremd-URLs/Beinahe-Treffer `null` liefert — aber nirgends,
+   dass dieser Fall auch GEZÄHLT/SICHTBAR wird.
+3. **`detectApiBase`-Fehlschlag selbst ist still (Leitfrage 2):**
+   `ea-fc-sbc-optimizer.user.js:212-235` — matcht der Marker-Regex
+   `/^(https?:\/\/[^/]+\/ut\/game\/[^/]+\/)/i` bei einer neuen Host-/
+   Pfad-Struktur nicht mehr, bleibt `STATE.session.apiBase` dauerhaft `null`.
+   `buildDiagReport()` (`:3876-3891`) liefert zwar `apiBaseDetected: null` UND
+   `counts.utasSeen` getrennt — aber kein abgeleitetes Flag, das genau DIESEN
+   Fall ("utas-Traffic beobachtet, aber kein Marker-Match") von "noch gar kein
+   Traffic" unterscheidet. Rasmus müsste das manuell aus zwei Zahlen im Report
+   kombinieren.
+4. **`installServicesHooks()` pollt ohne Zeit-/Versuchszähler auf
+   `window.services.SBC` (Leitfrage 3):** `ea-fc-sbc-optimizer.user.js:5307-5324`,
+   Intervall bei `:5356` (`setInterval(installServicesHooks, 1000)`) — bleibt
+   `.SBC` dauerhaft aus (EA benennt den Service um), gibt es anders als beim
+   strukturell analogen Club-Ladelauf (`STATE.diag.clubLoad.retries`, `:1353`)
+   oder dem Batch-Stuck-Zähler (`STATE.diag.batchStuckCount`, Deklaration
+   `:127`) KEINEN Zähler, der einen dauerhaften Hook-Fehlschlag von "App noch
+   nicht vollständig gestartet" unterscheidet. `servicesKeys`
+   (`buildDiagReport`, `:3864-3868`/`:3884`) listet zwar die vorhandenen
+   Top-Level-Keys von `window.services` — aber ohne Abgleich/Warnung, wenn
+   `SBC` darunter fehlt; Rasmus müsste die Liste selbst durchsuchen.
+5. **`rareflagHistogram` kann einen neuen, seltenen rareflag-Wert verdecken
+   (Leitfrage 4):** `ea-fc-sbc-optimizer.user.js:4114-4129` — "Specials"
+   werden auf die Top-5 nach Häufigkeit gekürzt, der Rest landet nur
+   aggregiert in `specialTotal`/`specialFlags` (Anzahl DISTINCT-Werte, aber
+   ohne deren konkrete Zahlenwerte). Ein von EA neu eingeführter, zunächst
+   seltener rareflag (neues Promo-Special mit wenigen Karten im Pool) kann von
+   häufigeren bestehenden Specials aus den Top-5 verdrängt werden und bleibt
+   damit ohne seinen konkreten Wert im Report unsichtbar — nur die Zählung
+   `specialFlags` steigt unauffällig mit.
+
+## Lift-Aktionen (≥ 3 — M1)
+
+### RA — Robust Architecture
+
+1. **`diagError` bei JSON-Parse-Fehlschlag ergänzen:** in `handleResponseBody`
+   (`ea-fc-sbc-optimizer.user.js:257-258` und `:277-279`) additiv
+   `diagError('handleResponseBody(' + kind + '): ' + (e.message || e))` in
+   BEIDE Catches aufnehmen (analog zum bestehenden `reportError()`-Muster,
+   `:149-152`) — reiner Diagnose-Zusatz, keine Verhaltensänderung am
+   Interception-Pfad selbst. Neuer Testfall in `solver-test.js` Block 25:
+   `handleResponseBody` mit einem klassifizierten URL + kaputtem JSON-Body
+   aufrufen, Assertion auf einen neuen Eintrag in `STATE.diag.lastErrors`.
+   Gain: schließt die konkreteste "Fehler unsichtbar verschluckt"-Lücke im
+   Anbindungscode, stärkt Rubrik-Kriterium "Beobachtbarkeit" direkt; +0.3-0.5.
+2. **Eigener Unclassified-Zähler + kleiner Sample-Ring für `/ut/game/`-Traffic:**
+   additiv zwei neue Felder in `STATE.diag` (`:110-134`-Deklaration ergänzen,
+   damit die dort dokumentierte Deklarations-Symmetrie-Prüfung nicht bricht):
+   `utasUnclassified` (Zähler) + `lastUnclassifiedPaths` (eigener 5er-Ring,
+   NUR Pfade mit `classifyUrl(url) === null`, IDs maskiert wie beim
+   bestehenden `lastUtasPaths`). Füllung an der bestehenden `classifyUrl`-
+   Aufrufstelle im fetch-/XHR-Wrapper (`:296-300` bzw. `:339`), OHNE die
+   Wrapper-Struktur selbst zu verändern — nur ein zusätzlicher Zweig im
+   bereits vorhandenen `try {} catch (e) {}`. In `buildDiagReport()`
+   (`:3886-3891`) zwei Felder ergänzen. Neuer Test in `solver-test.js`
+   Block 25 mit einer synthetischen, unbekannten SBC-ähnlichen URL. Gain:
+   adressiert Leitfrage 1 direkt und ist der wirksamste der vier Hebel für
+   "Fehlertoleranz gegen EA-Wandel" (echte Früherkennung eines neuen
+   Endpunkts statt Zufallstreffer im generischen Ring); +0.5-1.
+3. **Abgeleitetes `apiBaseDetectionStuck`-Flag im Report:** additiv in
+   `buildDiagReport()` (`:3876-3891`) ein berechnetes Feld
+   `apiBaseDetectionStuck: (STATE.diag.utasSeen > 20 && !STATE.session.apiBase)`
+   ergänzen (Schwelle als benannte Konstante mit Warum-Kommentar, kein Eingriff
+   in `detectApiBase` selbst nötig, da rein aus zwei bereits vorhandenen
+   Werten abgeleitet). Neuer Test in `solver-test.js` Block 25 mit einer
+   Fake-Host-URL, die den Marker-Regex nicht trifft, prüft dass das Flag
+   korrekt kippt, sobald `utasSeen` künstlich über die Schwelle gesetzt wird.
+   Gain: macht Leitfrage 2 explizit "sichtbar" statt "still"; **dünn** — sehr
+   kleiner, unmittelbarer Effekt (+0.1-0.3), da der Fall in der Praxis selten
+   ist (ein Host-Match-Fehlschlag bei laufendem `utasSeen`-Zähler wäre ein
+   fundamentaler URL-Schema-Bruch durch EA).
+4. **Zeit-/Versuchszähler für den `services.SBC`-Hook-Fehlschlag:** additiv,
+   ohne den Hook-Mechanismus selbst (`installServicesHooks`, `:5307-5324`) zu
+   verändern, einen Tick-Zähler nach dem Vorbild von `STATE.diag.clubLoad.retries`
+   einführen (z.B. `STATE.diag.sbcHookMisses`), der bei jedem erfolglosen
+   Intervall-Durchlauf hochzählt, SOBALD `window.services` bereits existiert
+   ABER `.SBC` fehlt (unterscheidet "App startet noch" von "Service dauerhaft
+   weg/umbenannt"). Report ergänzt um ein daraus abgeleitetes
+   `sbcServiceMissingAfterBoot`-Flag ab einer Schwelle (z.B. 30 Ticks = 30s).
+   Neuer Test in `solver-test.js` mit einer Attrappe für `window.services`
+   ohne `.SBC` über mehrere simulierte Intervall-Ticks. Gain: adressiert
+   Leitfrage 3 (Existenz-Guard + Report-Signal) für den bisher unbeobachteten
+   Dauerausfall-Fall; +0.3-0.5.
 
 ## Edge-Cases (mind. 1 — M1)
 
-- **Club-Lade-Takt ist "Nicht anfassen ohne Grund" (LEARNINGS §7/§23,
-  CLAUDE.md):** Keine der obigen Lift-Aktionen darf den Zeittakt zwischen
-  den Club-Seiten-Starts (300ms, wächst bei Fehlversuch selbst) anfassen —
-  auch nicht "im Vorbeigehen" bei der `apiRequest`-Extraktion. Der Takt lebt
-  in `fetchClubViaHttp` (`:1236-1253`), NICHT in `apiGet`/`apiPut` selbst,
-  ist also von Aktion 3 baulich nicht betroffen — das muss beim Refactoring
-  aber explizit geprüft werden (Diff darf `gap`/`clubLoad`-Logik nicht
-  berühren), da ein Merge-Fehler hier laut CLAUDE.md ein Live-Ausfallrisiko
-  ist. Zusätzlicher, leicht übersehener Edge-Case: `nudgeSession()` wird
-  aktuell nur aus `apiGet`/`apiPut` heraus aufgerufen — bei einer
-  `apiRequest`-Extraktion muss der `_attempt`-Zähler weiterhin PRO
-  Methode/Pfad-Aufruf zählen (nicht global), sonst würde ein GET- und ein
-  parallel laufender PUT-Retry sich gegenseitig den Zähler kaputt machen.
+- **In-Memory-Zähler überleben keinen Reload:** Alle vier oben vorgeschlagenen
+  Diagnosefelder (`utasUnclassified`, `apiBaseDetectionStuck`,
+  `sbcHookMisses`, `lastUnclassifiedPaths`) liegen wie der Rest von
+  `STATE.diag` nur im Skript-Speicher. Tritt ein neuer, unbekannter Endpunkt
+  NUR kurz während eines laufenden Batch-Laufs auf und wird das Script danach
+  neu geladen (F5, App-Neustart, Absturz), bevor Rasmus "Diagnose in Konsole
+  schreiben" klickt, ist genau das Ereignis wieder verloren, das die neue
+  Diagnose eigentlich einfangen sollte — kein anderer Diagnose-Kanal
+  (`STATE.diag`-Felder) übersteht das aktuell, das ist konsistent mit dem
+  Rest der Datei, sollte aber im Lift-Schritt nicht übersehen werden (z.B.
+  durch einen Hinweis im Report-Kommentar, dass diese Felder NUR die laufende
+  Session abdecken).
+- **`STATE.diag`-Symmetrie-Prüfung:** Jedes neue Feld MUSS gemäß dem
+  Kommentar an der `STATE.diag`-Deklaration (`ea-fc-sbc-optimizer.user.js:105-109`)
+  gleichzeitig deklariert, gelesen UND zugewiesen werden, sonst schlägt die in
+  `solver-test.js` bestehende symmetrische Prüfung fehl (bzw. das Feld bleibt
+  bei seinem Initialwert unbemerkt stehen, siehe `uiScan`-Vorfall in
+  LEARNINGS). Bei der Umsetzung der vier additiven Felder oben ist das
+  explizit einzuplanen, nicht nachträglich.
 
 ## Lift-Empfehlung
 
-Vorsichtig, additiv, kleine Diffs — passend zur "keine Regression"-Regel
-und zur strukturellen Nähe zum Live-verifizierten Submit-Weg 0
-(`submitViaApp`). Reihenfolge: zuerst die beiden reinen `diagError`-Ergänzungen
-(Aktion 1, null Risiko), dann die Regex-Zentralisierung (Aktion 2, Call-Sites
-einzeln mit Tests), dann `apiRequest`-Extraktion (Aktion 3, mit explizitem
-401-Smoke-Test), erst zuletzt und mit Vorsicht die Controller-Helfer-Nutzung
-(Aktion 4) — `submitViaApp` bleibt vorerst unangetastet und wird stattdessen
-kommentiert begründet. Kein Kandidat für einen aggressiven Lift-Plan in einer
-Iteration; eher zwei kleine Iterationen mit Testlauf dazwischen. Mid-Iter-SI
-ist kein Thema, da alle Aktionen genau ein Feature betreffen.
+Vorsichtig, additiv, in kleinen Diffs — passend zur knappen 1-Punkt-Luft bis
+zum strukturellen Maximum: kein Umbau, nur vier unabhängige
+Diagnose-Ergänzungen (je eigener Commit möglich), jede mit eigenem
+`solver-test.js`-Fall. Aktion 3 ist ehrlich als **dünn** markiert (kleiner
+Gain, seltener Praxisfall) — falls die Iteration nur Kapazität für zwei bis
+drei Aktionen hat, zuerst Aktion 1 (JSON-Parse-Diagnose) und Aktion 2
+(Unclassified-Zähler) umsetzen, die adressieren die unter der
+EA-Wandel-Linse konkretesten und am ehesten live auftretenden Lücken. Kein
+Mid-Iter-SI nötig — alle vier Aktionen sind Einzelfeatures ohne
+Cross-Feature-Abhängigkeit.

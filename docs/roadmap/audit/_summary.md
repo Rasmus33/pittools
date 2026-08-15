@@ -1,6 +1,6 @@
-# Audit-Summary — Iteration 4
+# Audit-Summary — Iteration 5
 
-**Stand:** 2026-08-15T14:36:40Z
+**Stand:** 2026-08-15T15:22:57Z
 **Features:** 9 · **Dimensionen:** 1
 **Coverage:** 9 / 9 Rubric-Zellen
 
@@ -10,10 +10,10 @@
 |---------|---|---|---|---|
 | `android-app-wrapper` | 80.0 / 80 / 0.0 |
 80.0 | 80 | 0.0 |
-| `batch-modus` | 69.0 / 69 / 0.0 |
-69.0 | 69 | 0.0 |
-| `bedienpanel-ui` | 84.0 / 84 / 0.0 |
-84.0 | 84 | 0.0 |
+| `batch-modus` | 70.0 / 69 / 1.0 |
+70.0 | 69 | 1.0 |
+| `bedienpanel-ui` | 85.0 / 84 / 1.0 |
+85.0 | 84 | 1.0 |
 | `diagnose-werkzeuge` | 84.0 / 82 / 2.0 |
 84.0 | 82 | 2.0 |
 | `ea-app-anbindung` | 75.0 / 75 / 0.0 |
@@ -29,9 +29,9 @@
 
 ## Aggregat
 
-- **Σ Ist** über alle Features: 723.0
+- **Σ Ist** über alle Features: 725.0
 - **Σ Soll**: 709
-- **Σ Gain**: 6.0 (120.0%)
+- **Σ Gain**: 8.0 (160.0%)
 - **Features mit Regression** (Ist < vorherige Iter): 0
 - **Features unter Target**: 0 / 9
 

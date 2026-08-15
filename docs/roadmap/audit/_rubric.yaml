@@ -15,32 +15,26 @@ android-app-wrapper:
 batch-modus:
   RA:
     evidence:
-    - ea-fc-sbc-optimizer.user.js:5029-5032
-    - ea-fc-sbc-optimizer.user.js:4590-4600
-    - ea-fc-sbc-optimizer.user.js:5124-5133
-    - solver-test.js:2599-2652
-    - solver-test.js:2542-2597
-    iteration_scored: 1
-    reasoning: 'Alle 4 Aktionen exakt umgesetzt — echte Verhaltenstests statt String-Grep,
-      Sperre + Plausibilisierung additiv, Abbruch-Philosophie unangetastet. Rest zum
-      Max 70: EA-Wandel-Toleranz bewusst nicht adressiert, LEARNINGS-Eintrag offen
-      (Scope-Grenze).'
-    score: 69.0
-    source: audit-evaluator
+    - ea-fc-sbc-optimizer.user.js:5087-5131
+    - ea-fc-sbc-optimizer.user.js:4692
+    - solver-test.js:3282-3350
+    - docs/LEARNINGS.md:986-998
+    notes: 'Post-iter5: titleSource macht den §9-Volltext-Fallback sichtbar, Tap-Pfad
+      erstmals getestet (Block 41), popupDismissCount nach batchStuckCount-Muster.
+      Structural_max 70 erreicht — der iter1-EA-Wandel-Restpunkt ist ehrlich adressiert.'
+    score: 70.0
+    source: user-manual
     updated_at: '2026-08-15'
 bedienpanel-ui:
   RA:
     evidence:
-    - ea-fc-sbc-optimizer.user.js:3836-3870
-    - ea-fc-sbc-optimizer.user.js:4498-4510
-    - solver-test.js:3108-3227
-    - docs/LEARNINGS.md:1476-1506
-    notes: 'Post-iter4: Launcher-Fallback-Kette (Primaerpfad strukturell vorrangig,
-      3 Testfaelle), readConfig im onRunClick-Catch (Stil wie onBatchPlanClick), 3
-      stille localStorage-Catches -> reportError. Restluecken: STATE.loading-Guard
-      (duenn, deferred), readConfig ohne eigenen Guard (Q4-Entscheidung, aufruferseitig
-      gedeckt).'
-    score: 84.0
+    - ea-fc-sbc-optimizer.user.js:4479-4490
+    - solver-test.js:3230-3279
+    - docs/LEARNINGS.md:1522-1526
+    notes: 'Post-iter5: STATE.loading-Guard in onRunClick (#52) schliesst die letzte
+      iter4-Restluecke; readConfig-Q4-Entscheidung bleibt dokumentiert. Structural_max
+      85 erreicht.'
+    score: 85.0
     source: user-manual
     updated_at: '2026-08-15'
 diagnose-werkzeuge:

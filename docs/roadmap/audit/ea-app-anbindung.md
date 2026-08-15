@@ -1,6 +1,6 @@
-# Audit — `ea-app-anbindung` — Iteration 4
+# Audit — `ea-app-anbindung` — Iteration 5
 
-**Stand:** 2026-08-15T14:36:41Z
+**Stand:** 2026-08-15T15:22:57Z
 ## Score-Stand
 
 | Dim | Ist (raw) | Capped (struct_max) | Schwellwert | Status | Provenance |
@@ -18,7 +18,7 @@
 
 ## Regression / Effektivität
 
-🟢 Keine Regression — Σ Ist 75.0 (≥ 74.0 Iter 3).
+🟢 Keine Regression — Σ Ist 75.0 (≥ 74.0 Iter 4).
 
 **Effektivität:** in-range
 (1.0 von 1.0 = 100.0% Reach über 1 Fokus-Dim)

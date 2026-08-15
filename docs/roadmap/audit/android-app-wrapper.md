@@ -1,6 +1,6 @@
-# Audit — `android-app-wrapper` — Iteration 4
+# Audit — `android-app-wrapper` — Iteration 5
 
-**Stand:** 2026-08-15T14:36:40Z
+**Stand:** 2026-08-15T15:22:57Z
 ## Score-Stand
 
 | Dim | Ist (raw) | Capped (struct_max) | Schwellwert | Status | Provenance |
@@ -18,7 +18,7 @@
 
 ## Regression / Effektivität
 
-🟢 Keine Regression — Σ Ist 80.0 (≥ 79.0 Iter 3).
+🟢 Keine Regression — Σ Ist 80.0 (≥ 79.0 Iter 4).
 
 **Effektivität:** in-range
 (1.0 von 1.0 = 100.0% Reach über 1 Fokus-Dim)

@@ -1,19 +1,19 @@
-# Iteration-Effektivität — Iteration 4 (M6)
+# Iteration-Effektivität — Iteration 5 (M6)
 
-**Stand:** 2026-08-15T14:36:40Z
+**Stand:** 2026-08-15T15:22:57Z
 
 ## Kennzahlen
 
 > Gain-Kennzahlen zählen nur die in dieser Iteration (re-)gescorten **Fokus-Features**
-> (4 von 9). 5 voll-gehaltene
+> (5 von 9). 4 voll-gehaltene
 > Feature(s) sind ausgeschlossen — ihr Alt-Gewinn wird nicht erneut gezählt (ADR #98).
 
-- **avg_score_gain** über die Fokus-Features: **1.5**
-- **median_score_gain**: 1.5
-- **stdev_score_gain**: 0.6
-- **under_expectation_ratio**: **0.0%** (0 / 4 Fokus-Features unter 70 % des erwarteten Gains)
+- **avg_score_gain** über die Fokus-Features: **1.6**
+- **median_score_gain**: 1.0
+- **stdev_score_gain**: 0.9
+- **under_expectation_ratio**: **0.0%** (0 / 5 Fokus-Features unter 70 % des erwarteten Gains)
 - **worst_feature**: `android-app-wrapper` (Gain: 1.0)
-- **best_feature**: `bedienpanel-ui` (Gain: 2.0)
+- **best_feature**: `bedienpanel-ui` (Gain: 3.0)
 
 ## Bewertung
 
@@ -27,7 +27,8 @@ Post − Pre == Tatsächlicher Gain. Absolute Σ-Scores stehen in `_summary.md`.
 | Feature | Pre Σ | Post Σ | Target Σ | Tatsächlicher Gain | Erwarteter Gain | Reach % |
 |---------|-------|--------|----------|---------------------|------------------|---------|
 | `android-app-wrapper` | 79.0 | 80.0 | 80 | 1.0 | 1.0 | 100.0% |
-| `bedienpanel-ui` | 82.0 | 84.0 | 84 | 2.0 | 2.0 | 100.0% |
+| `batch-modus` | 69.0 | 70.0 | 69 | 1.0 | 0.0 | 100.0% |
+| `bedienpanel-ui` | 82.0 | 85.0 | 84 | 3.0 | 2.0 | 150.0% |
 | `ea-app-anbindung` | 74.0 | 75.0 | 75 | 1.0 | 1.0 | 100.0% |
 | `sbc-vorgaben-erkennung` | 78.0 | 80.0 | 79 | 2.0 | 1.0 | 200.0% |
 
@@ -36,7 +37,6 @@ Post − Pre == Tatsächlicher Gain. Absolute Σ-Scores stehen in `_summary.md`.
 Diese Features hatten in dieser Iteration keine re-gescorte Fokus-Zelle — ihr Gain
 ist **N/A** (kein Alt-Gewinn doppelt gezählt, ADR #98).
 
-- `batch-modus` — 1 Dim(s) held, gain N/A
 - `diagnose-werkzeuge` — 1 Dim(s) held, gain N/A
 - `rating-solver` — 1 Dim(s) held, gain N/A
 - `spieler-pool` — 1 Dim(s) held, gain N/A

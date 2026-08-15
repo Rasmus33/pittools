@@ -1,38 +1,36 @@
-# Audit — `batch-modus` — Iteration 4
+# Audit — `batch-modus` — Iteration 5
 
-**Stand:** 2026-08-15T14:36:40Z
+**Stand:** 2026-08-15T15:22:57Z
 ## Score-Stand
 
 | Dim | Ist (raw) | Capped (struct_max) | Schwellwert | Status | Provenance |
 |-----|-----------|----------------------|-------------|--------|------------|
-| **RA** | 69.0 | 69.0 / 70 | 49.0 | pass | audit-evaluator |
+| **RA** | 70.0 | 70.0 / 70 | 49.0 | pass | user-manual |
 
 ## Pre / Post / Gain
 
 | Dim | Pre | Post | Gain | Target | Reach % |
 |-----|-----|------|------|--------|---------|
-| **RA** | 65.0 | 69.0 | N/A (held iter1) | 69 | — |
+| **RA** | 69.0 | 70.0 | 1.0 | 69 | 100.0% |
 
 > Held-Dimensionen (in dieser Iteration nicht re-gescored, ADR #98) zeigen `N/A` —
 > ihr Gain wird nicht gegen eine veraltete Baseline gerechnet.
 
 ## Regression / Effektivität
 
-🟢 Keine Regression — Σ Ist 69.0 (≥ 0.0 Iter 3).
+🟢 Keine Regression — Σ Ist 70.0 (≥ 69.0 Iter 4).
 
-**Effektivität:** all-held
-(0.0 von 0.0 = 0.0% Reach über 0 Fokus-Dim, 1 Dim held)
+**Effektivität:** in-range
+(1.0 von 0.0 = 100.0% Reach über 1 Fokus-Dim)
 
 ## Evidence + Reasoning pro Dim
 
 ### RA — Robust Architecture
 
-**Begründung:** Alle 4 Aktionen exakt umgesetzt — echte Verhaltenstests statt String-Grep, Sperre + Plausibilisierung additiv, Abbruch-Philosophie unangetastet. Rest zum Max 70: EA-Wandel-Toleranz bewusst nicht adressiert, LEARNINGS-Eintrag offen (Scope-Grenze).
 **Evidence:**
 
-- `ea-fc-sbc-optimizer.user.js:5029-5032`
-- `ea-fc-sbc-optimizer.user.js:4590-4600`
-- `ea-fc-sbc-optimizer.user.js:5124-5133`
-- `solver-test.js:2599-2652`
-- `solver-test.js:2542-2597`
+- `ea-fc-sbc-optimizer.user.js:5087-5131`
+- `ea-fc-sbc-optimizer.user.js:4692`
+- `solver-test.js:3282-3350`
+- `docs/LEARNINGS.md:986-998`
 

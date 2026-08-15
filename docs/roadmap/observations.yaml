@@ -38,18 +38,8 @@ discoveries:
   shared_item_candidates: []
   cross_feature_smells: []
 seeds_next:
-  seeded_at: '2026-08-15T10:26:58Z'
+  seeded_at: null
   patterns: []
   shared_items: []
-  features:
-  - 'batch-modus: LEARNINGS-Eintrag zur usedChallengeIds-Sperre + submitConfirmations
-    nachziehen (Debt aus #32)'
-  - EA-Wandel-Toleranz-Achse wurde in iter0/iter1 bewusst nie angefasst — Kandidat,
-    falls eine Iteration sie heben soll
-  discoveries:
-  - 'Cleanup-Kinder #25 (App 304-Zweig), #27 (ROADMAP.md-Drift), #28 (code_geography-Format),
-    #29 (classifyUrl-Fallback) im Sammelticket #30 weiterhin offen — Kandidaten fuer
-    eine Doku-/Kleinkram-Runde'
-  - 'Auto-Merge + Nachtrag-Commit erzeugt verwaiste Post-Squash-PRs (2x passiert:
-    #20, #36) — Prozess-Kandidat: Review erst nach letztem Commit ODER automerge erst
-    beim Merge-Schritt armieren'
+  features: []
+  discoveries: []

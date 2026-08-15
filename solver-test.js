@@ -47,9 +47,9 @@ function extractFunction(src, functionName) {
     return src.slice(key, close + 1);
 }
 
-const m = src.match(/\/\/ \[SOLVER-BEGIN\]([\s\S]*?)\/\/ \[SOLVER-END\]/);
-if (!m) { console.error('SOLVER-Block nicht gefunden!'); process.exit(1); }
-const SolverCore = new Function(m[1] + '\nreturn SolverCore;')();
+const solverBlock = extractMarkerBlock(src, '// [SOLVER-BEGIN]', '// [SOLVER-END]');
+if (!solverBlock) { console.error('SOLVER-Block nicht gefunden!'); process.exit(1); }
+const SolverCore = new Function(solverBlock + '\nreturn SolverCore;')();
 
 let failures = 0;
 let tests = 0;
@@ -886,11 +886,10 @@ function mulberry32(a) {
         res.ok ? res.players.map(p => p.id).join(',') : res.reason);
 
     // Die Endkontrolle muss ein kaputtes Team melden statt es einzutragen.
-    const srcJs = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
     check('Endkontrolle gegen doppelte Karten ist im Code',
-        /doppelt im Team/.test(srcJs) && /Nichts eingetragen/.test(srcJs));
+        /doppelt im Team/.test(src) && /Nichts eingetragen/.test(src));
     check('Endkontrolle liefert einen teamDump fuer die Diagnose',
-        /teamDump/.test(srcJs));
+        /teamDump/.test(src));
 }
 
 // ========== 8b-2e. reserve()-Funnel: Anker + manueller Rarity-Pick mit
@@ -1095,7 +1094,6 @@ function mulberry32(a) {
     // _submitChallenge - am PC ist es der UTSBCSquadSplitViewController mit
     // beiden. Der Code schaute nur auf EINEN Controller und nur auf den
     // oeffentlichen Namen.
-    const src = require("fs").readFileSync(__dirname + "/ea-fc-sbc-optimizer.user.js", "utf8");
     const fn = src.slice(src.indexOf("async function submitChallengeToEa"),
                          src.indexOf("async function openNextInstance"));
     check("Submit sucht auch _submitChallenge", fn.indexOf("_submitChallenge") > -1);
@@ -1120,7 +1118,6 @@ function mulberry32(a) {
     // UTSBCHubViewController). clickLike schickte nur pointer+mouse, ohne
     // Koordinaten - die schmale EA-Ansicht haengt ihre Tap-Handler an
     // touchstart/touchend.
-    const src = require("fs").readFileSync(__dirname + "/ea-fc-sbc-optimizer.user.js", "utf8");
     const fn = src.slice(src.indexOf("function clickLike"),
                          src.indexOf("function visibleAll"));
     check("Tap schickt touchstart/touchend",
@@ -1138,7 +1135,6 @@ function mulberry32(a) {
 
 // ========== 8b-2g. Report-Groesse und Set-Status ==========
 {
-    const src = require("fs").readFileSync(__dirname + "/ea-fc-sbc-optimizer.user.js", "utf8");
     // Rasmus konnte den Report nicht mehr komplett kopieren - er brach mitten
     // in challengeResponseSample ab (zig KB, fast nur leere Slots id 0).
     check("challengeResponseSample wird gekuerzt",
@@ -1176,7 +1172,6 @@ function mulberry32(a) {
 // heisst normalerweise "fertig" - bei einer Kappung aber NICHT. Darum hier eine
 // echte Simulation der Funktion, nicht nur ein Textcheck.
 {
-    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
     const a = src.indexOf('async function fetchClubViaHttp');
     const b = src.indexOf('async function fetchUnassignedViaHttp');
     const fnSrc = src.slice(a, b);
@@ -1267,7 +1262,6 @@ function mulberry32(a) {
     // nicht auf. Der Tap kam dreimal an (touchHandled true, inViewport true),
     // das Set hatte laut Kachel noch 19 Wiederholungen offen. Nach einem
     // Neustart lief es wieder -> es hing ein Zustand, kein Selektor.
-    const src = require("fs").readFileSync(__dirname + "/ea-fc-sbc-optimizer.user.js", "utf8");
     const ps = src.slice(src.indexOf("function popupState"), src.indexOf("function dismissRewardPopup"));
     check("popupState liest den App-Shield", /gPopupClickShield/.test(ps) && /isShieldUp/.test(ps));
     check("popupState zaehlt bildschirmfuellende Overlays",
@@ -1298,7 +1292,6 @@ function mulberry32(a) {
     // (wiederholbare SBCs bekommen pro Durchlauf eine neue ID), 403 heisst
     // "EA nimmt das so nicht an" - im reqDump standen scope PLAYER und
     // CLUB MEMBER, also Vorgaben, die der Solver bewusst nicht abdeckt.
-    const src = require("fs").readFileSync(__dirname + "/ea-fc-sbc-optimizer.user.js", "utf8");
     const rf = src.slice(src.indexOf("async function resolveFreshChallengeId"),
                          src.indexOf("// Anforderungen der aktuellen Challenge"));
     check("Frische Instanz wird aus der Set-Liste geholt",
@@ -1339,7 +1332,6 @@ function mulberry32(a) {
     // Funktion, die es nie gab. `node --check` sieht das nicht (die Syntax ist
     // gueltig), es haette erst am Handy geknallt. Dieselbe Fehlerklasse wie der
     // log2()-Tippfehler von damals.
-    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
     const defined = new Set();
     let m;
     const defRe = /function\s+([A-Za-z_$][\w$]*)\s*\(/g;
@@ -1364,7 +1356,6 @@ function mulberry32(a) {
     // Live-Fehler (v4.24.0): ein Substring-Match auf "RARE" im Scope-Namen hat
     // SPIELERNAMEN getroffen - "Carrarese Calcio", "Brian Ferrares",
     // "Rareș Ilie/Gal/Pop" - und Phantom-Rare-Vorgaben erzeugt.
-    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
     check('Parser: kein Substring-Match auf RARE (traf Spielernamen)',
         src.indexOf("indexOf('RARE')") === -1,
         src.indexOf("indexOf('RARE')") > -1 ? 'indexOf(RARE) ist zurueck' : '');
@@ -1383,7 +1374,6 @@ function mulberry32(a) {
     // Live-Report: paletools:2026:...:lockedItems = [100664921, 190871, 225733,
     // 50332136, ...] - KEINE 12-stelligen Item-IDs. Die alte Schwelle 1e11 hat
     // alles verworfen (found: 0), obwohl der Key da war.
-    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
     const a = src.indexOf('function looksLikeItemId');
     const b = src.indexOf('\n    }', a) + 6;
     check('looksLikeItemId ist vorhanden', a > -1 && b > a);
@@ -1418,7 +1408,6 @@ function mulberry32(a) {
     // Zielschema - die eigentliche Ausschlusslogik fuer Leihspieler/Konzept-
     // Karten/Evolutions (LEARNINGS SS2, Zeile 37-59) lief nie gegen die echten,
     // rohen EA-Feldnamen (academyId, loans, concept, itemType, ...).
-    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
     const isNormalCardSrc = src.slice(src.indexOf('function isNormalCard'), src.indexOf('const STATE = {'));
     const poolSrc = src.slice(src.indexOf('function isEvolution'), src.indexOf('// ---- Gesperrte Karten'));
     // Jeder Aufruf bekommt eine frische STATE.diag.evoExcluded - sonst wuerden
@@ -1506,7 +1495,6 @@ function mulberry32(a) {
     // reinen Text-Vorhandensein-Check - die eigentliche Traversierung (Array-
     // Form, Objekt-Form, Pack-Ausschluss NEBENEINANDER in DERSELBEN
     // localStorage-Instanz, verschachtelte Zweige) lief nie als Verhalten durch.
-    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
     const a = src.indexOf('function looksLikeItemId');
     const b = src.indexOf('// ---- Namen zur ANZEIGEZEIT');
     const fnSrc = src.slice(a, b);
@@ -1738,7 +1726,6 @@ function mulberry32(a) {
 
 // ========== 16. reportError-Helfer: existiert und bedient beide Kanaele ==========
 {
-    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
     const a = src.indexOf('function reportError');
     check('reportError ist direkt neben diagError definiert', a > -1);
     const b = src.indexOf('\n    }', a) + 6;
@@ -1753,7 +1740,6 @@ function mulberry32(a) {
     // buildDiagReport() liest, aber das nirgends deklariert ist, liefert
     // dauerhaft null, ohne dass ein Fehler auffaellt - und umgekehrt ein
     // deklariertes Feld, das nirgends befuellt wird, ist tote Deklaration.
-    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
     function matchingBrace(openIdx) {
         let depth = 0;
         for (let i = openIdx; i < src.length; i++) {
@@ -1816,7 +1802,6 @@ function mulberry32(a) {
     // Regressionstest zum entfernten rareConstraints-Duplikat (Copy-Paste-Rest,
     // v4.37.0): zur Laufzeit harmlos (letzter Wert gewinnt), verschluckt aber
     // bei zwei tatsaechlich verschieden gemeinten Feldern eines davon lautlos.
-    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
     const fnKey = src.indexOf('function buildDiagReport');
     const sbcKey = src.indexOf('sbc: {', fnKey);
     check('sbc-Objekt-Literal in buildDiagReport() gefunden', sbcKey > -1);
@@ -1847,7 +1832,6 @@ function mulberry32(a) {
 // + Klammerzaehlung (wie looksLikeItemId oben), deepScanChallenge ueber den
 // [SBCSCAN-BEGIN]/[SBCSCAN-END]-Marker.
 {
-    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
     function extractFn(name) {
         let key = src.indexOf('function ' + name);
         check('Funktion ' + name + ' gefunden', key > -1);
@@ -1860,9 +1844,9 @@ function mulberry32(a) {
         }
         return src.slice(key, close + 1);
     }
-    const scanM = src.match(/\/\/ \[SBCSCAN-BEGIN\]([\s\S]*?)\/\/ \[SBCSCAN-END\]/);
-    check('SBCSCAN-Marker-Block gefunden', !!scanM);
-    const scanExports = new Function(scanM[1] + '\nreturn { deepScanChallenge: deepScanChallenge, isDomOrWindow: isDomOrWindow };')();
+    const scanBlock = extractMarkerBlock(src, '// [SBCSCAN-BEGIN]', '// [SBCSCAN-END]');
+    check('SBCSCAN-Marker-Block gefunden', !!scanBlock);
+    const scanExports = new Function(scanBlock + '\nreturn { deepScanChallenge: deepScanChallenge, isDomOrWindow: isDomOrWindow };')();
     const collectSrc = extractFn('collectChallengeNodes');
     const resolveSrc = extractFn('resolveFreshChallengeId');
 
@@ -1913,10 +1897,9 @@ function mulberry32(a) {
 // Hier laeuft der ECHTE, ausgelieferte Parser gegen konstruierte EA-Response-
 // Objekte, die die Live-Bugs aus LEARNINGS 6/11 nachstellen.
 {
-    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
-    const scanM = src.match(/\/\/ \[SBCSCAN-BEGIN\]([\s\S]*?)\/\/ \[SBCSCAN-END\]/);
-    check('SBCSCAN-Marker-Block gefunden (20)', !!scanM);
-    const deepScanChallenge = new Function(scanM[1] + '\nreturn deepScanChallenge;')();
+    const scanBlock = extractMarkerBlock(src, '// [SBCSCAN-BEGIN]', '// [SBCSCAN-END]');
+    check('SBCSCAN-Marker-Block gefunden (20)', !!scanBlock);
+    const deepScanChallenge = new Function(scanBlock + '\nreturn deepScanChallenge;')();
 
     // (a) PLAYER_RARITY_GROUP=4 (echte Rare-Vorgabe) neben einem Namens-Scope
     // mit RARE-Substring ("Carrarese Calcio", LEARNINGS 11) - der Namens-Scope
@@ -1977,7 +1960,6 @@ function mulberry32(a) {
 // obwohl die offene SBC eigentlich die geplante ist - failsafe (kein falscher
 // Treffer), aber ohne diesen Test unentdeckt geblieben.
 {
-    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
     function extractFn(name) {
         const key = src.indexOf('function ' + name);
         check('Funktion ' + name + ' gefunden (21)', key > -1);
@@ -2040,7 +2022,6 @@ function mulberry32(a) {
 // bemerkt - genau der Mangel, der erklaert, warum der Slots-No-Op (Abschnitt 19)
 // unbemerkt blieb.
 {
-    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
     const runFn = src.slice(src.indexOf('async function onBatchRunClick'),
                              src.indexOf('function findLiveChallenge'));
     check('onBatchRunClick wirft bei fehlender Pool-Karte',
@@ -2067,13 +2048,13 @@ function mulberry32(a) {
 // Extrahiert defaultBands()/bandsToSpec() per Marker (analog zum SOLVER-Block,
 // Pattern eingebetteten-code-exakt-testen) statt sie hier nachzubilden.
 {
-    const bandsMatch = src.match(/\/\/ \[BANDS-BEGIN\]([\s\S]*?)\/\/ \[BANDS-END\]/);
-    if (!bandsMatch) {
+    const bandsBlock = extractMarkerBlock(src, '// [BANDS-BEGIN]', '// [BANDS-END]');
+    if (!bandsBlock) {
         tests++; failures++;
         console.error('FAIL  BANDS-Block nicht gefunden!');
     } else {
         const Bands = new Function('SolverCore',
-            bandsMatch[1] + '\nreturn { defaultBands: defaultBands, bandsToSpec: bandsToSpec };')(SolverCore);
+            bandsBlock + '\nreturn { defaultBands: defaultBands, bandsToSpec: bandsToSpec };')(SolverCore);
 
         // Drift-Wächter: der Reset-Pfad muss wortgleich zur Solver-Konstante
         // bleiben - der eigentliche Regressionsschutz fuer die SSOT-Ableitung.
@@ -2133,15 +2114,14 @@ function mulberry32(a) {
 // aus patterns/good/eingebetteten-code-exakt-testen.md), analog zum PC-/Handy-
 // Unterschied aus LEARNINGS §19.
 {
-    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
-    const ctrlM = src.match(/\/\/ \[CTRL-BEGIN\]([\s\S]*?)\/\/ \[CTRL-END\]/);
-    const sbcCtrlM = src.match(/\/\/ \[SBCCTRL-BEGIN\]([\s\S]*?)\/\/ \[SBCCTRL-END\]/);
-    check('CTRL-Marker-Block gefunden (24)', !!ctrlM);
-    check('SBCCTRL-Marker-Block gefunden (24)', !!sbcCtrlM);
+    const ctrlBlock = extractMarkerBlock(src, '// [CTRL-BEGIN]', '// [CTRL-END]');
+    const sbcCtrlBlock = extractMarkerBlock(src, '// [SBCCTRL-BEGIN]', '// [SBCCTRL-END]');
+    check('CTRL-Marker-Block gefunden (24)', !!ctrlBlock);
+    check('SBCCTRL-Marker-Block gefunden (24)', !!sbcCtrlBlock);
 
     function loadHelpers(fakeWindow, STATE) {
         return new Function('window', 'STATE',
-            ctrlM[1] + '\n' + sbcCtrlM[1] +
+            ctrlBlock + '\n' + sbcCtrlBlock +
             '\nreturn { getControllerChain: getControllerChain, findSbcController: findSbcController, findLiveChallenge: findLiveChallenge };'
         )(fakeWindow, STATE);
     }
@@ -2282,13 +2262,12 @@ function mulberry32(a) {
 // als verhaltensneutral belegt ist - ein Fehlgriff wuerde sonst erst live das
 // Response-Routing (Pool-/SBC-Erkennung) stumm falsch befuellen.
 {
-    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
-    const urlClsM = src.match(/\/\/ \[URLCLS-BEGIN\]([\s\S]*?)\/\/ \[URLCLS-END\]/);
-    check('URLCLS-Marker-Block gefunden', !!urlClsM);
+    const urlClsBlock = extractMarkerBlock(src, '// [URLCLS-BEGIN]', '// [URLCLS-END]');
+    check('URLCLS-Marker-Block gefunden', !!urlClsBlock);
     function buildUrlHelpers() {
         const STATE = { session: {}, diag: { utasSeen: 0, lastUtasPaths: [] }, sbc: { apiPrefix: 'sbs' } };
         const helpers = new Function('STATE', 'log', 'refreshDiagUI',
-            urlClsM[1] + '\nreturn { detectApiBase: detectApiBase, classifyUrl: classifyUrl };'
+            urlClsBlock + '\nreturn { detectApiBase: detectApiBase, classifyUrl: classifyUrl };'
         )(STATE, function () {}, function () {});
         return { STATE: STATE, detectApiBase: helpers.detectApiBase, classifyUrl: helpers.classifyUrl };
     }

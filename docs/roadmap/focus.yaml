@@ -81,4 +81,20 @@ history:
       Deckel 80 fast erreicht). Gehaltene 8 Features per Konstruktion unveraendert
       (kein Produkt-Code-Touch ausser app/). Zusaetzlich als Main-Doku-Runde: Cleanup-Kinder
       #25/#27/#28 geschlossen, LEARNINGS §35+§36, Batch-LEARNINGS-Schuld getilgt.'
+- iteration: 3
+  decided_at: '2026-08-15T12:32:07Z'
+  dimensions:
+  - RA
+  features:
+  - sbc-vorgaben-erkennung
+  - ea-app-anbindung
+  - android-app-wrapper
+  phases: []
+  mode: soft-regression-guard
+  rationale: 'Thematische Runde EA-Wandel-Toleranz (Seed aus iter0-2, nie adressiert):
+    sbc-vorgaben-erkennung (78/80) und ea-app-anbindung (74/75) sind die EA-zugewandten
+    Slices mit Restluft — nur additive Toleranz/Diagnose, keine Umbauten an live-verifizierten
+    Pfaden. android-app-wrapper (79/80) nur als Infra-Traeger: javac-Gate + markerbasierte
+    guard-test-Extraktion (reine Test-/Tooling-Arbeit). Alle uebrigen Features halten.'
+  effectiveness: {}
 pending_suggestion: null

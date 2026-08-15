@@ -111,3 +111,19 @@ Der PaleTools-Status sagt, woran es liegt:
   d8-Build (ohne Gradle) stolpert sonst über das InnerClasses-Attribut.
 - `res/` wird per `aapt2 compile --dir res` gebaut und mit `-R` gelinkt — ohne
   das findet `aapt2` das im Manifest referenzierte `@mipmap/ic_launcher` nicht.
+- `reportNetError` (Fehler, `[net]`-Präfix) und `reportNetNote` (Nicht-Fehler
+  wie 304/Cache-aktuell, `[net-ok]`-Präfix) sind die einzigen zwei
+  Log-Choke-Points für Netz-/Cache-Vorgänge — getrennte Präfixe halten echte
+  Fehler von erwarteten Zuständen im App-Log auseinander.
+- `scriptSbc`/`scriptPale`/`paleSource` laufen ausschließlich über
+  `setLoadedScripts(sbc, pale, source)` — analog zu den Zustands-Settern
+  `setScriptsReady`/`setPaleStatus`/`setPaleInjected`, loggt nur bei
+  tatsächlicher Änderung.
+- `SbcWebViewClient` loggt Main-Frame-Ladefehler (`onReceivedError`/
+  `onReceivedHttpError`) mit `[webview]`-Präfix — die einzige Fremd-Grenze
+  der App (DNS/TLS/Serverfehler beim initialen Laden von `WEB_APP_URL`), die
+  sonst nur die eigene WebView-Fehlerseite zeigt, ohne dass Log-Ringpuffer
+  oder Script-Report davon etwas sehen. Subressourcen-Fehler laufen über die
+  Konsole und damit `SbcChromeClient.onConsoleMessage`.
+- `fetchUrl`/`fetchUrlIfChanged` prüfen den gelesenen Body auf `isEmpty()`,
+  nicht auf `null` — `readStream` liefert laut Signatur nie `null`, nur `""`.

@@ -55,6 +55,15 @@ entries:
     fuer die Sperre noch offen (Debt, Audit-Buendel).'
   reasoning: Validator PASS am fragilsten Pfad — Erfolgs-Pfad byte-identisch bewiesen.
     v4.46.0 geht live.
+- at: '2026-08-15T09:53:41Z'
+  issue: 33
+  po_class: null
+  surprises:
+  - '#33: lastEligible mit echtem Tri-State im Report, Symmetrie-Test jetzt 3 Richtungen
+    mit FAKTISCH verifizierten Ausnahmen (lastTap via batchSteps, lastErrors/lastUtasPaths
+    alias-mutiert), Diagnose-Tool selbst gehaertet (Minimal-Report-Fallback ueber
+    denselben Copy-Pfad). Deckt Cleanup-Kind #24.'
+  reasoning: Validator PASS. v4.47.0 geht live.
 discoveries:
   pattern_candidates: []
   antipattern_candidates: []

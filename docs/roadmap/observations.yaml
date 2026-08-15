@@ -42,6 +42,20 @@ entries:
   reasoning: 'Fuzzing-Verifikation nach #57-Protokoll: Diskrepanz gefunden, dreifach
     verifiziert (bruteBest + unabhaengige Bitmask-Enumeration + Code-Lesen), als Charakterisierungstest
     gepinnt (559/559). Fix folgt als eigenes Ticket (#60-Analogon).'
+- at: '2026-08-15T20:03:57Z'
+  issue: 64
+  po_class: null
+  surprises:
+  - Zweiter Fix derselben Fehlerklasse in 24h — die Generalisierung (reserveWindowAware
+    mit Kandidaten-Praedikat) verhinderte eine Code-Kopie; der Validator bewies die
+    Rarity-Pfad-Neutralitaet ueber Byte-Vergleich der Kandidaten-Filter + unveraenderte
+    Sections 46/50.
+  - Beim Testbau entdeckte der Implementer eine vorbestehende Architektur-Grenze (keine
+    Joint-Optimierung ueber Constraint-TYPEN hinweg) und dokumentierte sie als Bekannte
+    Grenze in §41 statt sie im Test zu verstecken.
+  reasoning: 'playerLevel-Reservierung respektiert jetzt das Ueberschuss-Fenster (Fix
+    zum #62-Befund, #60-Muster generalisiert). v4.61.0, 563/563, Validator-PARTIAL
+    nur wegen eines veralteten Konstanten-Kommentars — vor dem Publish behoben.'
 discoveries:
   pattern_candidates: []
   antipattern_candidates: []

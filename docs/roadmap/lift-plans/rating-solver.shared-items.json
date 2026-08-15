@@ -1,12 +1,1 @@
-[
-  {
-    "slug": "test-extraktions-helfer",
-    "consumers": ["rating-solver", "android-app-wrapper"],
-    "proposed_target_path": "test-helpers/extract-marker-block.js",
-    "test_paths": ["test-helpers/extract-marker-block.test.js"],
-    "bundle_hint": "test-infra-helpers",
-    "rationale": "solver-test.js (Regex-Marker `// [SOLVER-BEGIN]`/`// [SOLVER-END]`) und app/guard-test.js (feste Java-String-Literale `\"(function(){\" +` … `\"})()\", null);`) implementieren unabhängig voneinander dasselbe Grundprinzip aus dem Pattern eingebetteten-code-exakt-testen: Datei einlesen, Text zwischen zwei Markern herausschneiden, Fragment ausführen. Ein gemeinsamer Low-Level-Helfer (reine String-Slicing-Funktion zwischen zwei Ankern, ohne fs-Zugriff) würde beide Extraktionen tragen und die in aspect-tests.md (Iteration 0) dokumentierte Doppelimplementierung auflösen.",
-    "priority": "P2-normal",
-    "effort": "S"
-  }
-]
+[]

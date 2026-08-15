@@ -1738,3 +1738,38 @@ eligibilityValue: 83}`, `{type: "TEAM_RATING_1_TO_100", eligibilityValue:
 3. Nach dem Nachladen bewusst KEIN erneutes syncSbcWithOpenChallenge -
    der Entity-Scan koennte die frisch gefundenen elgReq-Vorgaben sonst
    wieder ueberdecken.
+
+## 44. Ticket #66: "Max. teure Spieler" durch harten Pool-Filter ersetzt, Panel gruppiert
+
+Rasmus' O-Ton: "der max teure spieler filter funktioniert nicht wirklich und
+ist mittlerweile unnoetig". Der Grund liegt im Design: der Filter griff erst
+INNERHALB der DP-Suche (als `exp`-Dimension neben Rating/Kosten) und lockerte
+sich bei Unloesbarkeit an ZWEI Stellen selbst (Budget-Ueberschreitung durch
+reservierte Karten, und wenn die Suche selbst mit Grenze scheiterte) - beides
+mit Warnung, aber ohne Abbruch. Ein Filter, der sich unbemerkt selbst
+aufhebt, fuehlt sich fuer den Nutzer wie "tut nichts" an, auch wenn er
+technisch korrekt arbeitete.
+
+"Max. Rating pro Spieler" (v4.62.0) ersetzt ihn bewusst NICHT additiv,
+sondern als dokumentierte Ausnahme von "additiv statt Ersatz" (expliziter
+User-Auftrag): ein HARTER Pool-Vorfilter direkt am Eingang von `solve()`,
+VOR jeder Reservierung und Suche - keine Karte ueber der Grenze existiert
+fuer den restlichen Lauf ueberhaupt noch, auch nicht fuer Vorgaben-
+Reservierungen. `planBatch()` bekommt den Filter automatisch mit, weil es
+`solve()` intern pro Runde aufruft (SSOT, ein einziger Anwendungspunkt statt
+zweier synchron zu haltender Kopien in `onRunClick`/`onBatchPlanClick`).
+Scheitert die Suche mit aktivem Filter, wird das NICHT gelockert, sondern die
+Grenze steht klar in der Meldung ("Mit Max-Rating 85 nicht loesbar - Filter
+lockern?") - der Nutzer entscheidet, nicht der Solver.
+
+Die Panel-"Erweiterte Einstellungen" waren mit der Zeit auf 12 Zeilen ohne
+Struktur gewachsen (ebenfalls Rasmus' Beschwerde: "sehr lang und
+unuebersichtlich"). Vier benannte Abschnitte (Kartenwahl / Schonen &
+Verbrauchen / Rating-Kosten / Vorgabe-Karte uebersteuern) gruppieren sie neu,
+ohne IDs oder readConfig-Felder zu aendern - reines Markup/CSS.
+
+Die generische `exp`/`expDims`-Dimension in `buildDp()`/`searchTeam()` bleibt
+dabei unangetastet (DP-Kern) und wird seit v4.62.0 an allen vier Call-Sites
+nur noch mit `null` belegt - sie war die DP-interne Umsetzung des entfernten
+Filters und steht als Mechanismus fuer einen moeglichen kuenftigen "hoechstens
+N Karten ab Rating X"-Filter weiter bereit.

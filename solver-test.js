@@ -102,7 +102,7 @@ function cfg(target, extra) {
     return Object.assign({
         targetOVR: target, slots: 11, minRating: 0,
         specialOnlyFromStorage: false,
-        maxExpensiveEnabled: false, maxExpensiveCount: 0, expensiveThreshold: 99,
+        maxRatingEnabled: false, maxRating: 0,
         scarcityWeight: 0, storageBonus: 0,
         maxOvershoot: 0.10, applyRarity: true,
         ratingCostSpec: '0-99:0',
@@ -1816,15 +1816,73 @@ function mulberry32(a) {
         res4.ok ? res4.players.map(p => p.rating).join(',') : res4.reason);
 }
 
-// ========== 10. Max. teure Spieler ==========
+// ========== 10. Ticket #66: Max. Rating pro Spieler - harter Pool-Filter ==========
+// Ersetzt den fruehereren "Max. teure Spieler"-Filter (per User-Auftrag
+// ersatzlos entfernt, siehe LEARNINGS §44/CLAUDE.md): dieser Filter lockert
+// sich NIE selbst, sondern meldet die Grenze im Fehlerfall.
 {
-    const pool = [].concat(many(5, 90), many(20, 80));
-    const res = SolverCore.solve(pool, cfg(81, { maxOvershoot: 1, maxExpensiveEnabled: true, maxExpensiveCount: 1, expensiveThreshold: 90 }));
-    const exp = res.players.filter(p => p.rating >= 90).length;
-    check('MaxExp eingehalten: höchstens 1x 90er', res.ok && exp <= 1, 'exp=' + exp);
-    const res2 = SolverCore.solve(pool, cfg(85, { maxOvershoot: 2, maxExpensiveEnabled: true, maxExpensiveCount: 0, expensiveThreshold: 90 }));
-    check('MaxExp unerfüllbar: gelockert mit Warnung', (!res2.ok) ||
-        (res2.ok && res2.warnings.some(w => /nicht einhaltbar/.test(w))));
+    // (a) Harte Grenze: kein Team-Mitglied ueber maxRating, auch wenn 90er
+    // im Pool billiger zum Ziel fuehren wuerden. Brute-Force-Gegenprobe
+    // gegen den manuell vorgefilterten Pool - GENAU das, was der Filter tut.
+    // Kleine Slot-Zahl (6), damit die Brute-Force-Enumeration handhabbar bleibt.
+    const pool = [].concat(many(3, 90), many(6, 85), many(8, 80));
+    const filterCfg = cfg(84, { slots: 6, maxOvershoot: 1, maxRatingEnabled: true, maxRating: 85 });
+    const res = SolverCore.solve(pool, filterCfg);
+    check('MaxRating: kein Team-Mitglied ueber der Grenze', res.ok &&
+        res.players.every(p => p.rating <= 85),
+        res.ok ? res.players.map(p => p.rating).join(',') : res.reason);
+    const filteredPool = pool.filter(p => p.rating <= 85);
+    const baseCfg = cfg(84, { slots: 6, maxOvershoot: 1 });
+    const bb = bruteBest(filteredPool, baseCfg);
+    check('MaxRating: Solver trifft das Brute-Force-Optimum des vorgefilterten Pools',
+        res.ok && bb && Math.abs(solverObjective(res, filteredPool, baseCfg, bb.vMin) - bb.bestObj) < 1e-6,
+        'team=' + (res.ok ? res.players.map(p => p.rating).join(',') : res.reason));
+
+    // (b) Unloesbar MIT Filter: KEINE stille Lockerung (der Kardinalfehler des
+    // alten Filters) - ok:false, und die Meldung nennt die Grenze.
+    const res2 = SolverCore.solve(many(20, 80), cfg(95, { maxOvershoot: 0.5, maxRatingEnabled: true, maxRating: 85 }));
+    check('MaxRating unloesbar: ok:false (keine stille Lockerung)', !res2.ok);
+    check('MaxRating unloesbar: Meldung nennt die Grenze (Max-Rating 85)',
+        (res2.reason && /Max-Rating 85/.test(res2.reason)) ||
+        (res2.warnings || []).some(w => /Max-Rating 85/.test(w)),
+        JSON.stringify(res2));
+
+    // (c) Filter aus: byte-gleiches Ergebnis zur Baseline ohne die Felder.
+    const resOff = SolverCore.solve(pool, cfg(84, { maxOvershoot: 1 }));
+    const resExplicitOff = SolverCore.solve(pool, cfg(84, { maxOvershoot: 1, maxRatingEnabled: false, maxRating: 85 }));
+    check('MaxRating aus: identisch zur Baseline ohne die Felder',
+        JSON.stringify(resOff) === JSON.stringify(resExplicitOff));
+
+    // (d) Entfernungs-Regression: kein maxExpensive/expensiveThreshold-Bezug
+    // mehr im SOLVER-Block.
+    check('SOLVER-Block: kein maxExpensive/expensiveThreshold-Bezug mehr (Ticket #66)',
+        solverBlock.indexOf('maxExpensive') === -1 && solverBlock.indexOf('expensiveThreshold') === -1);
+    check('Panel-HTML: kein sbc-opt-maxexp-Element mehr (Ticket #66 Entfernung)',
+        src.indexOf('sbc-opt-maxexp') === -1);
+
+    // (e) Validator-Fund: Vorgabe-über-Filter-Interaktion. Der Filter gilt
+    // laut Ticket #66 AUCH für Vorgaben-Reservierungen (nicht nur die
+    // Auffuellung) - eine Spieler-Level-Vorgabe "min. 2x 90+" darf mit
+    // MaxRating 85 NICHT still erfuellt/ignoriert werden, sondern muss
+    // ehrlich scheitern. Gegenprobe ohne Filter: derselbe Pool/dieselbe
+    // Vorgabe ist trivial loesbar (3x 90er stehen bereit).
+    const plExtra = {
+        slots: 11, maxOvershoot: 2,
+        playerLevelConstraints: [{ label: 'PLAYER_RATING', minRating: 90, count: 2 }]
+    };
+    const plPool = [].concat(many(3, 90), many(20, 84));
+    const withFilter = SolverCore.solve(plPool, cfg(84, Object.assign({}, plExtra,
+        { maxRatingEnabled: true, maxRating: 85 })));
+    check('Vorgabe ueber Filter: 2x 90+ mit MaxRating 85 -> ok:false (keine stille Lockerung)',
+        !withFilter.ok, JSON.stringify(withFilter));
+    check('Vorgabe ueber Filter: Meldung benennt die unerfuellbare 90+-Vorgabe ehrlich',
+        /90\+/.test(withFilter.reason || ''), JSON.stringify(withFilter));
+    check('Vorgabe ueber Filter: zusaetzlich nennt eine Warnung die Max-Rating-Grenze',
+        (withFilter.warnings || []).some(w => /Max-Rating 85/.test(w)), JSON.stringify(withFilter));
+    const withoutFilter = SolverCore.solve(plPool, cfg(84, plExtra));
+    check('Gegenprobe ohne Filter: dieselbe Vorgabe ist loesbar (trivial: 3x 90er im Pool)',
+        withoutFilter.ok && withoutFilter.players.filter(p => p.rating >= 90).length >= 2,
+        JSON.stringify(withoutFilter));
 }
 
 // ========== 11. Filter ==========
@@ -4493,6 +4551,62 @@ function mulberry32(a) {
         check('removeFromPool: Fehler landet in reportError (genau 1x), nichts wirft nach aussen',
             !threw && t.calls.reportError === 1);
     }
+}
+
+// ========== 55. Ticket #66: readConfig() liest maxRatingEnabled/maxRating, altes maxexp-UI schadet nicht ==========
+{
+    const readConfigSrc = extractFunction(src, 'readConfig');
+    check('Funktion readConfig gefunden (55)', !!readConfigSrc);
+
+    function makeUi(overrides) {
+        return Object.assign({
+            minrating: { value: '75' },
+            maxwaste: { value: '0.00' },
+            applyrarity: { checked: true },
+            specialstorage: { checked: true },
+            maxRatingEn: { checked: false },
+            maxRatingVal: { value: '85' },
+            scarcity: { value: '18' },
+            storagebonus: { value: '2' },
+            untradeable: { value: '3' },
+            useLocks: { checked: false },
+            maxRare: { value: '77' },
+            maxCommon: { value: '77' },
+            rarityguard: { value: '8' },
+            rarityPick: { value: '' }
+        }, overrides || {});
+    }
+    function runReadConfig(uiOverrides) {
+        const ui = makeUi(uiOverrides);
+        const STATE = { sbc: { targetOVR: 84, formationSlots: 11 } };
+        const sandbox = {
+            STATE: STATE, ui: ui,
+            ratingBands: [],
+            bandsToSpec: () => '0-99:0',
+            readPaletoolsLocks: () => new Set()
+        };
+        const keys = Object.keys(sandbox);
+        const fn = new Function(keys.join(','), readConfigSrc + '\nreturn readConfig;')
+            .apply(null, keys.map(k => sandbox[k]));
+        return fn();
+    }
+
+    const off = runReadConfig();
+    check('readConfig: maxRatingEnabled=false ohne Haekchen', off.maxRatingEnabled === false);
+    const on = runReadConfig({ maxRatingEn: { checked: true }, maxRatingVal: { value: '83' } });
+    check('readConfig: maxRatingEnabled/maxRating werden gelesen',
+        on.maxRatingEnabled === true && on.maxRating === 83, JSON.stringify(on));
+    check('readConfig: kein maxExpensive*-Feld mehr im Ergebnis (Ticket #66 Entfernung)',
+        !('maxExpensiveEnabled' in on) && !('maxExpensiveCount' in on) && !('expensiveThreshold' in on));
+
+    // Alt-Config-Vertraeglichkeit: ein DOM-Rest mit den alten maxexp-Feldern
+    // (z.B. aus einem Zwischenzustand) darf readConfig() nicht zum Absturz
+    // bringen - die Funktion referenziert sie schlicht nicht mehr.
+    const legacy = runReadConfig({
+        maxexpEn: { checked: true }, maxexpCount: { value: '4' }, maxexpTh: { value: '88' }
+    });
+    check('readConfig: alte maxexp-UI-Reste im Objekt werfen keinen Fehler',
+        legacy.maxRatingEnabled === false && legacy.minRating === 75);
 }
 
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt

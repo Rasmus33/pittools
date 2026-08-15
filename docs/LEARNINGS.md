@@ -1366,7 +1366,11 @@ Solver-Suchfenster-Erschoepfung in §34 (dort per unabhaengiger `vBound`-
 Gegenrechnung als ECHTE Ursache belegt, deshalb dort zu Recht ein
 `warnings`-Eintrag) gibt es hier keine unabhaengige Bestaetigung, dass eine
 Kappung tatsaechlich eine Vorgabe verschluckt hat - `scanStats` bleibt
-deshalb ein reines Report-Feld.
+deshalb ein reines Report-Feld. `recordDeepScanStats(scan)` folgt an JEDER
+Stelle, die `deepScanChallenge()` aufruft, direkt danach - auch im
+Fallback-Scan in `applyFromSetChallenges()` (Response ohne Ziel-OVR), sodass
+`STATE.diag.scanStats.deepScan` immer den zuletzt tatsaechlich massgeblichen
+Scan zeigt statt der Metriken eines frueheren Aufrufs.
 
 **`reqCountDefaulted` gegen den unsichtbaren `return 1`-Fallback.**
 `reqCount(o, parents)` durchsucht Objekt + Eltern-Kette nach fuenf moeglichen

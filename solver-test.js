@@ -1373,6 +1373,177 @@ function mulberry32(a) {
         r.ok ? 'drin' : r.reason);
 }
 
+// ========== 8b-5. normalizePlayer/isEvolution gegen rohe EA-Rohdaten ==========
+{
+    // 8b-4 und der P()-Helfer oben testen nur das bereits NORMALISIERTE
+    // Zielschema - die eigentliche Ausschlusslogik fuer Leihspieler/Konzept-
+    // Karten/Evolutions (LEARNINGS SS2, Zeile 37-59) lief nie gegen die echten,
+    // rohen EA-Feldnamen (academyId, loans, concept, itemType, ...).
+    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
+    const isNormalCardSrc = src.slice(src.indexOf('function isNormalCard'), src.indexOf('const STATE = {'));
+    const poolSrc = src.slice(src.indexOf('function isEvolution'), src.indexOf('// ---- Gesperrte Karten'));
+    // Jeder Aufruf bekommt eine frische STATE.diag.evoExcluded - sonst wuerden
+    // die Zaehler-Checks unten von vorherigen Fixtures verfaelscht.
+    function fresh() {
+        const STATE = { diag: { evoExcluded: 0 } };
+        const mod = new Function('STATE', isNormalCardSrc + '\n' + poolSrc +
+            '\nreturn { isEvolution: isEvolution, normalizePlayer: normalizePlayer, resolvePlayerName: resolvePlayerName };')(STATE);
+        mod.STATE = STATE;
+        return mod;
+    }
+
+    // Leihspieler (loans > 0) - nie in den Pool, ungeachtet gueltigen Ratings.
+    check('Leihspieler ausgeschlossen', fresh().normalizePlayer({ loans: 1, rating: 84, id: 1 }) === null);
+    // Reihenfolge-Falle (Gap-Report): SOWOHL loans>0 ALS AUCH ein sonst
+    // vollstaendig gueltiges Item (rating, id, rareflag, assetId) - ein
+    // kuenftiger Refactor darf die Check-Reihenfolge nicht so umbauen, dass
+    // eine geliehene Karte durch eine "einfachere" Fixture-Form durchrutscht.
+    check('Leihspieler bleibt ausgeschlossen trotz sonst vollstaendig gueltiger Felder',
+        fresh().normalizePlayer({ loans: 2, rating: 88, id: 7, rareflag: 1, assetId: 7 }) === null);
+
+    // Konzept-Spieler - mehrere dokumentierte Flag-Varianten (LEARNINGS SS2).
+    check('Konzept ueber concept===true', fresh().normalizePlayer({ concept: true, rating: 84, id: 1 }) === null);
+    check('Konzept ueber isConcept===true', fresh().normalizePlayer({ isConcept: true, rating: 84, id: 1 }) === null);
+    check('Konzept ueber conceptItem===true', fresh().normalizePlayer({ conceptItem: true, rating: 84, id: 1 }) === null);
+    check('Konzept ueber isConcept()-Funktion',
+        fresh().normalizePlayer({ isConcept: () => true, rating: 84, id: 1 }) === null);
+
+    // Evolutions - mehrere Flag-Varianten (isEvolution), keine darf durchrutschen.
+    const evoFixtures = [
+        ['academyId', { academyId: 5, rating: 84, id: 1 }],
+        ['academyItemId', { academyItemId: 9, rating: 84, id: 1 }],
+        ['academyAttributes als Array', { academyAttributes: [{ a: 1 }], rating: 84, id: 1 }],
+        ['academyAttributes als Objekt', { academyAttributes: { boost: 1 }, rating: 84, id: 1 }],
+        ['evolutionId', { evolutionId: 3, rating: 84, id: 1 }],
+        ['evolutionData', { evolutionData: {}, rating: 84, id: 1 }],
+        ['evoPath', { evoPath: {}, rating: 84, id: 1 }],
+        ['isEvo===true', { isEvo: true, rating: 84, id: 1 }],
+        ['isAcademy===true', { isAcademy: true, rating: 84, id: 1 }],
+        // Live verifiziert (fc26): Evos tragen tradableBeforeAcademy, auch wenn false.
+        ['tradableBeforeAcademy===false', { tradableBeforeAcademy: false, rating: 84, id: 1 }],
+        ['isAcademyItem()-Funktion', { isAcademyItem: () => true, rating: 84, id: 1 }]
+    ];
+    for (const [label, raw] of evoFixtures) {
+        const mod = fresh();
+        check('Evolution ausgeschlossen: ' + label, mod.normalizePlayer(raw) === null);
+        check('Evolution zaehlt in STATE.diag.evoExcluded: ' + label, mod.STATE.diag.evoExcluded === 1,
+            'evoExcluded=' + mod.STATE.diag.evoExcluded);
+    }
+    // Leihspieler/Konzept sind KEINE Evolutions - der Zaehler darf dafuer nicht steigen.
+    check('evoExcluded bleibt bei Leihspieler auf 0', (() => {
+        const m = fresh(); m.normalizePlayer({ loans: 1, rating: 84, id: 1 }); return m.STATE.diag.evoExcluded === 0;
+    })());
+
+    // Kein Spieler-Item (itemType/type ungleich 'player').
+    check('itemType!=="player" ausgeschlossen',
+        fresh().normalizePlayer({ itemType: 'club', rating: 84, id: 1 }) === null);
+    check('type!=="player" ausgeschlossen (Alt-Feldname)',
+        fresh().normalizePlayer({ type: 'kit', rating: 84, id: 1 }) === null);
+
+    // Fehlendes Pflichtfeld.
+    check('fehlendes rating -> null', fresh().normalizePlayer({ id: 1 }) === null);
+    check('fehlende id -> null', fresh().normalizePlayer({ rating: 84 }) === null);
+    check('kein Objekt -> null', fresh().normalizePlayer(null) === null);
+
+    // Gueltige Karte: normalisiertes Zielschema mit korrektem isRare/isGold/isCommon.
+    const valid = fresh().normalizePlayer({ id: 42, rating: 84, rareflag: 1, assetId: 42 });
+    check('gueltige Karte liefert Objekt statt null', valid !== null);
+    check('gueltige Karte: isGold true bei rareflag 1', valid && valid.isGold === true);
+    check('gueltige Karte: isRare true bei rareflag 1', valid && valid.isRare === true);
+    check('gueltige Karte: isCommon false bei rareflag 1', valid && valid.isCommon === false);
+
+    const common = fresh().normalizePlayer({ id: 43, rating: 84, rareflag: 0, assetId: 43 });
+    check('rareflag 0: isCommon true, isRare false',
+        common && common.isCommon === true && common.isRare === false);
+
+    const special = fresh().normalizePlayer({ id: 44, rating: 84, rareflag: 24, assetId: 44 });
+    check('rareflag >=2: isSpecial true, isGold false',
+        special && special.isSpecial === true && special.isGold === false);
+}
+
+// ========== 8b-6. readPaletoolsLocks/harvestIds/findLockBranches End-to-End ==========
+{
+    // 8b-4 testete nur looksLikeItemId isoliert und den Pack-Ausschluss als
+    // reinen Text-Vorhandensein-Check - die eigentliche Traversierung (Array-
+    // Form, Objekt-Form, Pack-Ausschluss NEBENEINANDER in DERSELBEN
+    // localStorage-Instanz, verschachtelte Zweige) lief nie als Verhalten durch.
+    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
+    const a = src.indexOf('function looksLikeItemId');
+    const b = src.indexOf('// ---- Namen zur ANZEIGEZEIT');
+    const fnSrc = src.slice(a, b);
+
+    function makeLocalStorage(map) {
+        const keys = Object.keys(map);
+        return {
+            get length() { return keys.length; },
+            key: (i) => keys[i],
+            getItem: (k) => (k in map ? map[k] : null)
+        };
+    }
+    // Live-Struktur (LEARNINGS SS12, Zeile 543-563): kurze Zahlen (assetId/
+    // resourceId statt 12-stelliger Item-ID), lockedItems als Array UND
+    // lockedItemsMap als Objekt-Keys, lockedPacks (Pack-IDs, KEINE Karten)
+    // koexistierend in DERSELBEN Instanz, plus ein verschachtelter Zweig fuer
+    // findLockBranches' Rekursion.
+    const map = {
+        'paletools:locks:lockedItems': JSON.stringify([100664921, 190871, 225733]),
+        'paletools:profile:lockedItemsMap': JSON.stringify({ '50332136': true, '83923656': false }),
+        'paletools:packs:lockedPacks': JSON.stringify([1030, 20038]),
+        'paletools:misc:state': JSON.stringify({ meta: { nested: { locked: [700123456] } } })
+    };
+    const localStorage = makeLocalStorage(map);
+    const STATE = { diag: {} };
+    const errors = [];
+    function reportError(label) { errors.push(label); }
+    const mod = new Function('localStorage', 'STATE', 'reportError',
+        fnSrc + '\nreturn { looksLikeItemId: looksLikeItemId, readPaletoolsLocks: readPaletoolsLocks };')(
+        localStorage, STATE, reportError);
+
+    const ids = mod.readPaletoolsLocks();
+    const idArr = Array.from(ids).sort();
+
+    check('Array-Form (lockedItems) liefert alle drei IDs',
+        ['100664921', '190871', '225733'].every(id => ids.has(id)), idArr.join(','));
+    check('Objekt-Form (lockedItemsMap): true-Eintrag zaehlt', ids.has('50332136'), idArr.join(','));
+    check('Objekt-Form: false-Eintrag zaehlt NICHT als gesperrt', !ids.has('83923656'), idArr.join(','));
+    check('lockedPacks wird komplett uebersprungen (keine Pack-ID gilt als Lock)',
+        !ids.has('1030') && !ids.has('20038'), idArr.join(','));
+    check('verschachtelter Zweig wird ueber findLockBranches gefunden', ids.has('700123456'), idArr.join(','));
+    check('genau 5 IDs gefunden (keine Packs, kein false-Eintrag)', ids.size === 5, idArr.join(','));
+
+    check('STATE.diag.locks.found stimmt', STATE.diag.locks && STATE.diag.locks.found === 5,
+        JSON.stringify(STATE.diag.locks));
+    check('STATE.diag.locks.keysScanned zaehlt alle vier paletools-Keys',
+        STATE.diag.locks && STATE.diag.locks.keysScanned === 4,
+        JSON.stringify(STATE.diag.locks));
+    check('kein Scan-Fehler -> STATE.diag.locks.error bleibt null',
+        STATE.diag.locks && STATE.diag.locks.error === null && errors.length === 0);
+    check('Gegenprobe: Pack-Zahlen erfuellen looksLikeItemId (der Ausschluss ist der Key-Filter, nicht die Zahl selbst)',
+        mod.looksLikeItemId(1030) && mod.looksLikeItemId(20038));
+
+    // Abbruch MITTEN in der Schleife (z.B. localStorage.key() wirft) - der
+    // Diagnose-Report muss das zeigen statt nur ueber niedrige Zahlen zu
+    // erraten (CLAUDE.md: gesperrte Karten NIEMALS verbauen - ein stiller
+    // Teilausfall waere sicherheitsrelevant).
+    const brokenLocalStorage = {
+        length: 2,
+        key: (i) => { if (i === 1) throw new Error('SecurityError (simuliert)'); return 'paletools:locks:lockedItems'; },
+        getItem: () => JSON.stringify([100664921])
+    };
+    const STATE2 = { diag: {} };
+    const errors2 = [];
+    function reportError2(label, e) { errors2.push(label + ': ' + (e && e.message)); }
+    const mod2 = new Function('localStorage', 'STATE', 'reportError',
+        fnSrc + '\nreturn { readPaletoolsLocks: readPaletoolsLocks };')(brokenLocalStorage, STATE2, reportError2);
+    const ids2 = mod2.readPaletoolsLocks();
+    check('Abbruch in der Schleife setzt STATE.diag.locks.error sichtbar',
+        STATE2.diag.locks && /SecurityError/.test(STATE2.diag.locks.error || ''),
+        JSON.stringify(STATE2.diag.locks));
+    check('Abbruch ruft reportError auf (nicht nur einen stillen Catch)',
+        errors2.length === 1, errors2.join(','));
+    check('bereits gefundene IDs vor dem Abbruch bleiben erhalten',
+        ids2.has('100664921'), Array.from(ids2).join(','));
+}
 
 // ========== 8c. Spieler-Eindeutigkeit (EA: gleiche assetId nur 1x pro Squad) ==========
 {

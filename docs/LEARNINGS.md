@@ -1767,3 +1767,9 @@ Struktur gewachsen (ebenfalls Rasmus' Beschwerde: "sehr lang und
 unuebersichtlich"). Vier benannte Abschnitte (Kartenwahl / Schonen &
 Verbrauchen / Rating-Kosten / Vorgabe-Karte uebersteuern) gruppieren sie neu,
 ohne IDs oder readConfig-Felder zu aendern - reines Markup/CSS.
+
+Die generische `exp`/`expDims`-Dimension in `buildDp()`/`searchTeam()` bleibt
+dabei unangetastet (DP-Kern) und wird seit v4.62.0 an allen vier Call-Sites
+nur noch mit `null` belegt - sie war die DP-interne Umsetzung des entfernten
+Filters und steht als Mechanismus fuer einen moeglichen kuenftigen "hoechstens
+N Karten ab Rating X"-Filter weiter bereit.

@@ -1859,6 +1859,30 @@ function mulberry32(a) {
         solverBlock.indexOf('maxExpensive') === -1 && solverBlock.indexOf('expensiveThreshold') === -1);
     check('Panel-HTML: kein sbc-opt-maxexp-Element mehr (Ticket #66 Entfernung)',
         src.indexOf('sbc-opt-maxexp') === -1);
+
+    // (e) Validator-Fund: Vorgabe-über-Filter-Interaktion. Der Filter gilt
+    // laut Ticket #66 AUCH für Vorgaben-Reservierungen (nicht nur die
+    // Auffuellung) - eine Spieler-Level-Vorgabe "min. 2x 90+" darf mit
+    // MaxRating 85 NICHT still erfuellt/ignoriert werden, sondern muss
+    // ehrlich scheitern. Gegenprobe ohne Filter: derselbe Pool/dieselbe
+    // Vorgabe ist trivial loesbar (3x 90er stehen bereit).
+    const plExtra = {
+        slots: 11, maxOvershoot: 2,
+        playerLevelConstraints: [{ label: 'PLAYER_RATING', minRating: 90, count: 2 }]
+    };
+    const plPool = [].concat(many(3, 90), many(20, 84));
+    const withFilter = SolverCore.solve(plPool, cfg(84, Object.assign({}, plExtra,
+        { maxRatingEnabled: true, maxRating: 85 })));
+    check('Vorgabe ueber Filter: 2x 90+ mit MaxRating 85 -> ok:false (keine stille Lockerung)',
+        !withFilter.ok, JSON.stringify(withFilter));
+    check('Vorgabe ueber Filter: Meldung benennt die unerfuellbare 90+-Vorgabe ehrlich',
+        /90\+/.test(withFilter.reason || ''), JSON.stringify(withFilter));
+    check('Vorgabe ueber Filter: zusaetzlich nennt eine Warnung die Max-Rating-Grenze',
+        (withFilter.warnings || []).some(w => /Max-Rating 85/.test(w)), JSON.stringify(withFilter));
+    const withoutFilter = SolverCore.solve(plPool, cfg(84, plExtra));
+    check('Gegenprobe ohne Filter: dieselbe Vorgabe ist loesbar (trivial: 3x 90er im Pool)',
+        withoutFilter.ok && withoutFilter.players.filter(p => p.rating >= 90).length >= 2,
+        JSON.stringify(withoutFilter));
 }
 
 // ========== 11. Filter ==========

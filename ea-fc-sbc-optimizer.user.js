@@ -1860,6 +1860,15 @@
          * Bounded-Knapsack-DP mit Kartenkosten.
          * Liefert für jedes (Anzahl j, exp-Zähler e, Summe s) die minimalen
          * Kosten und kann die konkreten Spieler rekonstruieren.
+         *
+         * exp: generische dritte DP-Dimension (Zähler + Budget für Karten ab
+         * einer Schwelle) - seit v4.62.0 an ALLEN Call-Sites null, war die
+         * Dimension des entfernten "Max. teure Spieler"-Filters (Ticket #66,
+         * LEARNINGS §44: der Filter lockerte sich bei Unlösbarkeit selbst,
+         * "Max. Rating pro Spieler" ersetzt ihn als harter Pool-Vorfilter vor
+         * solveCore statt als DP-Dimension). Bleibt als Mechanismus stehen,
+         * weil der DP-Kern laut Vorgabe nicht angefasst wird - ein künftiger
+         * "höchstens N Karten ab Rating X"-Filter könnte hier wieder andocken.
          */
         function buildDp(players, kMax, sMax, costOf, exp, cmp) {
             const groups = new Map();
@@ -2297,6 +2306,8 @@
             // reserveWindowAware() dieselbe Suche fuer probeweise reservierte
             // Kandidaten-Kombinationen aufrufen kann, BEVOR die eigentliche
             // Reservierung feststeht (Schritt 4 im Lift-Plan).
+            // expDims: durchgereicht an buildDp()'s "exp"-Parameter (siehe
+            // dessen Docblock) - seit v4.62.0 an allen vier Call-Sites null.
             function searchTeam(reservedArr, availArr, expDims, sharedBandCache, vMinFloor) {
                 const kLocal = N - reservedArr.length;
                 // Beim echten (finalen) Aufruf ist das bereits vorher geprueft

@@ -9,6 +9,15 @@ const fs = require('fs');
 
 const src = fs.readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
 
+// ---- Test-Extraktions-Helfer -------------------------------------------
+// Gemeinsame Bausteine fuer jeden Testblock unten, der Code aus der oben
+// EINMAL gelesenen `src` herausschneidet, um GENAU den ausgelieferten Stand
+// zu pruefen (kein separat gepflegtes Duplikat, Pattern
+// eingebetteten-code-exakt-testen). Siehe
+// docs/roadmap/shared-items/test-extraktions-helfer.md fuer Konsumenten und
+// den Migrations-Vertrag (Testblock 26 haelt beide Helfer byte-gleich gegen
+// die urspruenglichen Einzel-Implementierungen).
+
 // Schneidet den Text zwischen zwei Kommentar-Markern aus (z.B. "// [SOLVER-BEGIN]"
 // / "// [SOLVER-END]"), EXKLUSIVE beider Marker - genau das Format, das
 // new Function(...) als kompilierbaren Codeblock braucht.

@@ -1881,6 +1881,55 @@
             // Fallback-Heuristik ohne Gruppen-Info: irgendeine Special-Karte
             return p.isSpecial;
         }
+        // Kandidaten-Eligibility fuer eine Rarity-Vorgabe - SSOT fuer die
+        // Reservierung IN solveCore (drei Call-Sites, vorher identischer Code
+        // dreimal) UND die Panel-Anzeige "N verfuegbar" (computeRarityAvailability
+        // unten, Ticket #68): freeCard/inQualityBand kommen als Parameter, weil
+        // sie in solveCore von used/usedAssets bzw. der aktiven Qualitaets-
+        // Vorgabe abhaengen - die Anzeige braucht diese Einschraenkungen nicht
+        // und nutzt die Defaults (immer frei, jedes Rating im Fenster).
+        function reservationCandidates(poolAll, rc, cfg, opts) {
+            opts = opts || {};
+            const freeCard = opts.freeCard || function () { return true; };
+            const inQualityBand = opts.inQualityBand || function () { return true; };
+            const lo = opts.lo != null ? opts.lo : 0;
+            const hi = opts.hi != null ? opts.hi : 99;
+            return poolAll.filter(function (p) {
+                return p.rating >= lo && p.rating <= hi && freeCard(p) && inQualityBand(p) &&
+                    matchesRarity(p, rc) &&
+                    (!cfg.specialOnlyFromStorage || p.isStorage || !p.isSpecial || isTotw(p));
+            });
+        }
+        // PaleTools sperrt den SPIELER, nicht die einzelne Karte: in
+        // lockedItems stehen kurze Zahlen (assetId/resourceId), keine
+        // 12-stelligen Item-IDs. Deshalb alle drei Spalten vergleichen.
+        function isLockedOut(p, lockedSet) {
+            return lockedSet.has(String(p.id)) ||
+                (p.assetId != null && lockedSet.has(String(p.assetId))) ||
+                (p.raw && p.raw.resourceId != null && lockedSet.has(String(p.raw.resourceId))) ||
+                (p.resourceId != null && lockedSet.has(String(p.resourceId)));
+        }
+        // Gesperrte Karten (z.B. per PaleTools-Schloss) fliegen komplett raus -
+        // wer eine Karte sperrt, will sie behalten. SSOT fuer solveCore UND die
+        // Panel-Verfuegbarkeits-Anzeige (Ticket #68), die denselben Bestand
+        // sehen muss wie eine tatsaechliche Reservierung.
+        function filterLockedCards(poolAll, cfg, warnings) {
+            if (!cfg.lockedIds || !cfg.lockedIds.length) return poolAll;
+            const locked = new Set(cfg.lockedIds.map(String));
+            const before = poolAll.length;
+            const out = poolAll.filter(function (p) { return !isLockedOut(p, locked); });
+            const removed = before - out.length;
+            if (removed && warnings) warnings.push(removed + ' gesperrte Karte(n) ausgeschlossen.');
+            return out;
+        }
+        // Max. Rating pro Spieler (Ticket #66): HARTER Pool-Vorfilter, SSOT
+        // fuer solve() UND die Panel-Verfuegbarkeits-Anzeige (Ticket #68) -
+        // beide muessen dieselbe Karte ab derselben Grenze ausschliessen.
+        function applyMaxRatingFilter(poolAll, cfg) {
+            return (cfg.maxRatingEnabled && cfg.maxRating)
+                ? poolAll.filter(function (p) { return p.rating <= cfg.maxRating; })
+                : poolAll;
+        }
         /**
          * Bounded-Knapsack-DP mit Kartenkosten.
          * Liefert für jedes (Anzahl j, exp-Zähler e, Summe s) die minimalen
@@ -2001,9 +2050,7 @@
             // verwendet, auch nicht fuer Vorgaben. Anders als die Rarity-Sperre
             // oben lockert sich dieser Filter NIE selbst; Unloesbarkeit wird
             // unten explizit gemeldet (LEARNINGS §44).
-            if (cfg.maxRatingEnabled && cfg.maxRating) {
-                poolAll = poolAll.filter(p => p.rating <= cfg.maxRating);
-            }
+            poolAll = applyMaxRatingFilter(poolAll, cfg);
             const strict = solveCore(poolAll, cfg, true);
             if (strict && strict.ok) return strict;
             const loose = solveCore(poolAll, cfg, false);
@@ -2120,24 +2167,7 @@
             // raus - wer eine Karte sperrt, will sie behalten. Bewusst VOR
             // allem anderen, damit sie auch nicht als Vorgabe-Karte oder Anker
             // reserviert werden kann.
-            let lockedOut = 0;
-            if (cfg.lockedIds && cfg.lockedIds.length) {
-                const locked = new Set(cfg.lockedIds.map(String));
-                const before = poolAll.length;
-                // PaleTools sperrt den SPIELER, nicht die einzelne Karte:
-                // in lockedItems stehen kurze Zahlen (assetId/resourceId), keine
-                // 12-stelligen Item-IDs. Deshalb alle drei Spalten vergleichen.
-                poolAll = poolAll.filter(p => !(
-                    locked.has(String(p.id)) ||
-                    (p.assetId != null && locked.has(String(p.assetId))) ||
-                    (p.raw && p.raw.resourceId != null && locked.has(String(p.raw.resourceId))) ||
-                    (p.resourceId != null && locked.has(String(p.resourceId)))
-                ));
-                lockedOut = before - poolAll.length;
-                if (lockedOut) {
-                    warnings.push(lockedOut + ' gesperrte Karte(n) ausgeschlossen.');
-                }
-            }
+            poolAll = filterLockedCards(poolAll, cfg, warnings);
             // Bei gemischten Vorgaben ist das erlaubte Fenster NICHT
             // durchgehend (Bronze 0-64 + Gold 75-99 laesst Silber aus), darum
             // ein Praedikat statt eines Bereichs.
@@ -2733,9 +2763,8 @@
             // deklariert (SSOT, siehe dort) - beide Vorgaben-Arten teilen sich
             // dieselbe fensterbewusste Reservierungs-Maschinerie.
             function reserveRarityForConstraint(rc, stillNeed) {
-                const cands = poolAll.filter(p => p.rating >= minRating && freeCard(p) &&
-                    inQualityBand(p) && matchesRarity(p, rc) &&
-                    (!cfg.specialOnlyFromStorage || p.isStorage || !p.isSpecial || isTotw(p)));
+                const cands = reservationCandidates(poolAll, rc, cfg,
+                    { freeCard: freeCard, inQualityBand: inQualityBand, lo: minRating, hi: 99 });
                 // Geteilter Band-Cache ist nur sicher, wenn KEINER der Kandidaten
                 // je in "avail" landen koennte (siehe reserveWindowAware()) -
                 // bei einer Rarity-Vorgabe trifft das zu, wenn ALLE Kandidaten
@@ -2775,20 +2804,16 @@
                     const rareCap = (!target && isRareGroup && cfg.maxRareRating > 0)
                         ? cfg.maxRareRating : 99;
                     const lowMin = (!target && isRareGroup) ? 0 : minRating;
-                    let cands = poolAll
-                        .filter(p => p.rating >= lowMin && p.rating <= rareCap && freeCard(p) &&
-                            inQualityBand(p) && matchesRarity(p, rc) &&
-                            (!cfg.specialOnlyFromStorage || p.isStorage || !p.isSpecial || isTotw(p)));
+                    let cands = reservationCandidates(poolAll, rc, cfg,
+                        { freeCard: freeCard, inQualityBand: inQualityBand, lo: lowMin, hi: rareCap });
                     // Die Rating-Obergrenze ist eine PRAEFERENZ (Panel) und darf
                     // fallen; das Qualitaets-Fenster ist eine SBC-Vorgabe und
                     // bleibt in jedem Fall stehen.
                     if (!cands.length && rareCap < 99) {
                         warnings.push('Keine Rare-Karte bis Rating ' + rareCap +
                             ' mehr frei - Grenze wird fuer diese SBC gelockert.');
-                        cands = poolAll
-                            .filter(p => p.rating >= lowMin && freeCard(p) &&
-                                inQualityBand(p) && matchesRarity(p, rc) &&
-                                (!cfg.specialOnlyFromStorage || p.isStorage || !p.isSpecial || isTotw(p)));
+                        cands = reservationCandidates(poolAll, rc, cfg,
+                            { freeCard: freeCard, inQualityBand: inQualityBand, lo: lowMin, hi: 99 });
                     }
                     const cand = cands.sort((!target && isRareGroup)
                         ? makeFillCmp(costOf, reserveCmp)
@@ -3042,6 +3067,48 @@
                 usedIds: Array.from(usedIds)
             };
         }
+        /**
+         * Panel-Anzeige "N verfügbar" neben dem Pool (Ticket #68): pro
+         * erkannter Rarity-Vorgabe, wie viele Karten sie JETZT erfüllen
+         * könnten - über dieselbe Eligibility wie die echte Reservierung
+         * (reservationCandidates(), KEINE Zweitlogik). Max-Rating-Filter und
+         * Locks laufen als derselbe Vorfilter wie am solve()-Eingang
+         * (applyMaxRatingFilter/filterLockedCards), damit die Anzeige nie
+         * Karten mitzählt, die eine echte Reservierung gar nicht sehen würde.
+         * Reine Funktion (kein STATE-Zugriff) - direkt per SolverCore
+         * testbar, ohne den Panel-DOM zu stubben.
+         */
+        function computeRarityAvailability(poolAll, cfg, rarityConstraints) {
+            let pool = applyMaxRatingFilter(poolAll, cfg);
+            pool = filterLockedCards(pool, cfg);
+            function tally(cands) {
+                return {
+                    available: cands.length,
+                    totwClub: cands.filter(function (p) { return isTotw(p) && !p.isStorage; }).length,
+                    totwStorage: cands.filter(function (p) { return isTotw(p) && p.isStorage; }).length,
+                    specialsStorage: cands.filter(function (p) {
+                        return p.isSpecial && p.isStorage && !isTotw(p);
+                    }).length
+                };
+            }
+            const perConstraint = (rarityConstraints || []).map(function (rc) {
+                const t = tally(reservationCandidates(pool, rc, cfg));
+                t.constraint = rc;
+                t.needed = rc.count || 1;
+                return t;
+            });
+            // Gruppe-83-Dauerzeile (TOTW/TOTS/FOF/FUTTIES), unabhaengig von
+            // einer aktiven Vorgabe - Rasmus' Ausgangsfrage ("wie viele TOTW +
+            // Storage-Specials habe ich noch"). {groupId:83} ist dieselbe
+            // Vorgabe-Form wie eine von EA erkannte Gruppe-83-Vorgabe -
+            // reservationCandidates() braucht keine Sonderbehandlung dafuer.
+            const g83 = tally(reservationCandidates(pool, { groupId: 83 }, cfg));
+            return {
+                perConstraint: perConstraint,
+                totw: g83.totwClub + g83.totwStorage,
+                specialsStorage: g83.specialsStorage
+            };
+        }
         return {
             solve: solve,
             planBatch: planBatch,
@@ -3050,7 +3117,9 @@
             squadV: squadV,
             parseRatingCosts: parseRatingCosts,
             DEFAULT_RATING_COST_SPEC: DEFAULT_RATING_COST_SPEC,
-            makeCostOf: makeCostOf
+            makeCostOf: makeCostOf,
+            reservationCandidates: reservationCandidates,
+            computeRarityAvailability: computeRarityAvailability
         };
     })();
     // [SOLVER-END]
@@ -3613,6 +3682,10 @@
             padding:8px 10px; margin-bottom:12px; line-height:1.6;
         }
         .sbc-opt-info b { color:#00e0b8; }
+        #sbc-opt-availability { font-size:12px; margin-top:4px; color:#9db2c8; }
+        /* Gleiche Warnfarbe wie .sbc-opt-warn/Toast-Warnungen - kein neues
+           Farbschema fuer "verfuegbar < gefordert". */
+        #sbc-opt-availability .low { color:#ffcf4d; font-weight:700; }
         .sbc-opt-debug { color:#7d93ab; font-size:11px; margin-top:4px; }
         .sbc-opt-row { margin-bottom:12px; }
         .sbc-opt-row label { display:block; margin-bottom:4px; color:#9db2c8; font-size:12px; }
@@ -3782,6 +3855,7 @@
                     Vorgaben: <b id="sbc-opt-rarity">keine</b><br>
                     Spieler im Pool: <b id="sbc-opt-poolcount">0</b><br>
                     Status: <b id="sbc-opt-status">bereit</b>
+                    <div id="sbc-opt-availability"></div>
                     <div class="sbc-opt-debug" id="sbc-opt-debug">API: – · SID: – · Services: –</div>
                 </div>
                 <button class="sbc-opt-btn ghost" id="sbc-opt-load">Spieler laden</button>
@@ -3927,6 +4001,7 @@
             target: panel.querySelector('#sbc-opt-target'),
             rarity: panel.querySelector('#sbc-opt-rarity'),
             poolcount: panel.querySelector('#sbc-opt-poolcount'),
+            availability: panel.querySelector('#sbc-opt-availability'),
             status: panel.querySelector('#sbc-opt-status'),
             debug: panel.querySelector('#sbc-opt-debug'),
             minrating: panel.querySelector('#sbc-opt-minrating'),
@@ -4399,6 +4474,35 @@
         }
         ui.rarity.textContent = parts.length ? parts.join(', ') : 'keine';
         ui.poolcount.textContent = STATE.pool.length;
+        refreshAvailabilityUI();
+    }
+    // Vorgabe-Kandidaten-Verfügbarkeit neben dem Pool (Ticket #68): zählt
+    // dieselben Kandidaten wie eine echte Reservierung
+    // (SolverCore.computeRarityAvailability() -> reservationCandidates(),
+    // SSOT mit solveCore). Eigener Try/Catch, additiv zu den bereits
+    // etablierten Feldern in refreshSbcInfoUI(): ein Fehler hier darf
+    // Ziel-OVR/Vorgaben/Pool-Anzeige nicht mitreissen.
+    function refreshAvailabilityUI() {
+        if (!ui.availability) return;
+        try {
+            const cfg = readConfig();
+            const avail = SolverCore.computeRarityAvailability(
+                STATE.pool, cfg, STATE.sbc.rarityConstraints || []);
+            if (avail.perConstraint.length) {
+                ui.availability.innerHTML = avail.perConstraint.map(function (c) {
+                    const breakdown = (c.totwClub || c.totwStorage || c.specialsStorage)
+                        ? ' (TOTW Verein ' + c.totwClub + ' · TOTW Storage ' + c.totwStorage +
+                          ' · Specials Storage ' + c.specialsStorage + ')'
+                        : '';
+                    const line = escapeHtml(c.constraint.label || 'Rarity') + ': ' +
+                        c.available + ' verfügbar' + escapeHtml(breakdown);
+                    return c.available < c.needed ? '<span class="low">' + line + '</span>' : line;
+                }).join('<br>');
+            } else {
+                ui.availability.textContent = 'TOTW: ' + avail.totw +
+                    ' · Storage-Specials: ' + avail.specialsStorage;
+            }
+        } catch (e) { reportError('Vorgabe-Verfügbarkeit berechnen fehlgeschlagen', e); }
     }
     function refreshDiagUI() {
         if (!ui.debug) return;

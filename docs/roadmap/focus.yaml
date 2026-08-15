@@ -136,4 +136,18 @@ history:
       79->80 (Deckel, via Mini-Fix #48). Ein Validator-Fund (kosmetisches Doppel-Logging)
       noch in derselben Iteration als v4.53.0 bereinigt. Gehaltene 7 Features per
       Konstruktion unveraendert.'
+- iteration: 5
+  decided_at: '2026-08-15T14:56:38Z'
+  dimensions:
+  - RA
+  features:
+  - bedienpanel-ui
+  - batch-modus
+  phases: []
+  mode: soft-regression-guard
+  rationale: 'Vierter expliziter User-Neustart — letzte Polish-Runde: bedienpanel
+    nur fuer den einzigen benannten Rest (STATE.loading-Guard, Mini-Task), batch-modus
+    (69/70) fuer den nie gepruefte EA-Wandel-Punkt der Tap-Navigation (Gap mit Ehrlichkeits-Mandat:
+    duenn = duenn sagen). Alle uebrigen 7 Features an ihren Deckeln — halten.'
+  effectiveness: {}
 pending_suggestion: null

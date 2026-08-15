@@ -1206,3 +1206,56 @@ bei genau dieser Fehlerklasse nicht selbst stumm. `solver-test.js` Abschnitt
 `launcher` je einzeln, dass zwischen deren `(function () {` und `})()` sowohl
 ein Aufruf der EA-Controller-Traversal als auch ein eigener `catch (e)`
 vorkommt.
+
+## 34. Toter Duplikat-Stapel-Tiebreak entfernt, Suchgrenzen belegt, Suchfenster-Erschöpfung als eigenes Diagnose-Signal
+
+`makeConsumeCmp(list)` zählte pro `assetId` (Fallback `p.name`) die
+Stapelgröße in `list` und nutzte sie als zweiten Tiebreak nach der
+Prioritäts-Reihenfolge ("vom GRÖSSTEN Stapel zuerst"). Beide Aufrufer
+(`reserveCmp` am Lösungs-Pool, `cmp` am Rest-Pool nach Reservierung)
+bekommen jedoch ausschließlich pro `assetId` bereits deduplizierte Listen -
+die SPIELER-EINDEUTIGKEIT (§16/§28) läuft strukturell VOR jedem
+`makeConsumeCmp()`-Aufruf und lässt genau eine Karte pro `assetId` übrig.
+`counts.get(k)` war damit für jeden Schlüssel konstant `1`, die Differenz
+immer `0` - ein Reihenfolge-Beweis (Dedupe läuft zeitlich vor dem
+Tiebreak-Aufruf), kein Wahrscheinlichkeitsargument, dieselbe Situation wie
+bei `WASTE_WEIGHT`/`priorityOf` in §28. Die `counts`-Map und das zweite
+Vergleichsglied sind entfernt, `makeConsumeCmp()` braucht keinen
+`list`-Parameter mehr, beide Aufrufer und drei Kommentarstellen (die
+Stapelgröße als lebendiges Verhalten behaupteten) sind korrigiert. Der
+bisherige `solver-test.js`-Test dafür ("Duplikat-Stapel: vom größten Stapel
+zuerst") war vakuum-wahr: die Dedupe kollabierte die 10 konstruierten
+Duplikate schon VOR jeder Tiebreak-Entscheidung auf 1 Eintrag, die Assertion
+prüfte de facto nur das (an anderer Stelle bereits getestete)
+Dedupe-Verhalten. Ersatz: zwei Assertions gegen die tatsächlich lebendige
+`dupeScore`-Rangfolge (Storage ist eine eigene Stufe, kein Ausgleich gegen
+Rating, mit Gegenprobe bei getauschtem Storage-Flag gegen ein
+Reihenfolge-Artefakt) sowie die 10-Duplikate-Kollaps-Reproduktion gegen
+`res.poolInfo.count` statt einer Team-Assertion. `node solver-test.js` blieb
+vor und nach dem Schnitt grün (405/405) - der Pflicht-Neutralitätsbeleg für
+eine als tot bewiesene Codestelle.
+
+Die Solver-Suchgrenzen `Math.min(..., 1300)` (Band-Summen-Deckel) und
+`stHardCap = stLow + 900` (Suchfenster) trugen keinen WARUM-Kommentar. Beide
+sind für die aktuell einzige Aufrufer-Konfiguration reichlich bemessen:
+Formationsgröße `N <= 11` macht `k*99 <= 1089 < 1300` unabhängig vom Rating,
+und die reale Summenspanne im üblichen Gold-Rating-Band 75-99 liegt bei
+höchstens `11 * (99-75) = 264 <<< 900`. Kommentare an beiden Stellen
+belegen das jetzt, ohne die Werte selbst anzufassen.
+
+Wird `stHardCap` erreicht, ohne dass Phase 1 (`vBound`) je eine Lösung fand,
+lieferte der Solver ausnahmslos "Ziel-OVR X ist mit dem aktuellen Pool nicht
+erreichbar" - ununterscheidbar von einer SBC, die mit diesem Pool
+tatsächlich unlösbar ist. Ein zusätzlicher, rein additiver Vergleich
+(`squadV` der `N` bestmöglichen verfügbaren Ratings gegen `NEED`, ohne jede
+Kosten-/Exp-Einschränkung) unterscheidet jetzt beide Fälle: erreicht selbst
+dieses rechnerische Optimum das Ziel nicht, ist der Pool unabhängig vom
+Suchfenster zu schwach; erreicht es das Ziel trotzdem, hat nur das interne
+Suchfenster nicht gereicht, und ein eigener `warnings`-Eintrag ("internes
+Suchfenster ausgeschöpft") macht das im Report sichtbar. `reason`/`ok`
+bleiben dabei unverändert - kein Kontrollfluss-Eingriff, nur ein
+zusätzlicher Beobachtungspunkt. Zwei neue Tests konstruieren beide Fälle
+gezielt: ein Pool, dessen einzig mögliche Lösung außerhalb von `stHardCap`
+liegt (Fenster erschöpft, Flag MUSS erscheinen), und ein Pool, dessen
+bestmögliches Team das Ziel selbst im Optimum nicht erreicht (echte
+Unlösbarkeit, Flag darf NICHT erscheinen).

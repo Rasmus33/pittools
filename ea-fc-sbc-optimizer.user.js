@@ -1760,10 +1760,11 @@
         // wird in localStorage gemerkt - eine Änderung hier greift nur, wenn
         // dort noch nichts gespeichert ist oder "Zurücksetzen" gedrückt wird.
         const DEFAULT_RATING_COST_SPEC = '0-80:0, 81-83:2, 84:1, 85-88:2, 89-90:3, 91-92:4, 93+:12';
-        // Kombinatorik-Schranke fuer reserveRarityWindowAware() (Ticket #60,
-        // LEARNINGS 41): Anzahl der (Rating -> Anzahl)-Aufteilungen, die pro
-        // Rarity-Vorgabe tatsaechlich per DP durchprobiert werden, bevor auf
-        // den Kosten-Greedy zurueckgefallen wird. Konservativ fuer Reaktionszeit
+        // Kombinatorik-Schranke fuer reserveWindowAware() (Ticket #60/#64,
+        // LEARNINGS 41): Anzahl der (Rating -> Anzahl)-Aufteilungen, die PRO
+        // VORGABE (Rarity- UND playerLevel-Reservierung teilen sich die
+        // Schranke) tatsaechlich per DP durchprobiert werden, bevor auf den
+        // Kosten-Greedy zurueckgefallen wird. Konservativ fuer Reaktionszeit
         // am Handy geschaetzt (Lift-Plan), nicht am realen Geraet gemessen -
         // ein spaeterer Live-Befund kann den Wert mit eigenem Beleg anpassen.
         const RARITY_WINDOW_TRIAL_CAP = 200;

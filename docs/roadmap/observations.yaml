@@ -38,17 +38,8 @@ discoveries:
   shared_item_candidates: []
   cross_feature_smells: []
 seeds_next:
-  seeded_at: '2026-08-15T14:36:45Z'
+  seeded_at: null
   patterns: []
   shared_items: []
-  features:
-  - 'Roadmap final konvergiert: sbc 80/80, ea-app 75/75, android 80/80, team 75/75,
-    bedienpanel 84/85, diagnose 84/85, spieler-pool 83/85, batch 69/70, solver 92/95
-    — die Restpunkte sind entweder duenn begruendet (STATE.loading-Guard) oder strukturell
-    (reverse-engineerte Formel, EA-Fragilitaet). Weitere Iterationen nur bei neuem
-    Anlass.'
-  discoveries:
-  - 'readConfig bleibt bewusst ohne eigenen Guard (Q4: eine Fehlerkonvention, aufruferseitig
-    gedeckt an beiden Call-Sites) — dokumentierte Architekturentscheidung, kein Debt'
-  - STATE.loading-Guard in onRunClick (Run waehrend laufendem Pool-Refresh) als einziger
-    benannter duenner Rest offen — Fenster schmal, nicht korruptierend
+  features: []
+  discoveries: []

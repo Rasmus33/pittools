@@ -3713,15 +3713,18 @@
         }
         .sbc-opt-body { padding: 14px 16px; }
         #sbc-opt-advanced { margin: 4px 0 10px; }
-        #sbc-opt-advanced summary {
+        /* Gemeinsame Aufklapp-Optik fuer "Erweiterte Einstellungen" UND die
+           Batch-Team-Details (Ticket #73) - eine Stelle statt zweier
+           synchron zu haltender Kopien. */
+        .sbc-opt-details-toggle summary {
             cursor: pointer; color: #9db2c8; font-weight: 600;
             padding: 8px 10px; background: #131e2b; border: 1px solid #1f2b3a;
             border-radius: 8px; user-select: none; list-style: none;
         }
-        #sbc-opt-advanced summary::-webkit-details-marker { display: none; }
-        #sbc-opt-advanced summary::before { content: '▸ '; color: #00e0b8; }
-        #sbc-opt-advanced[open] summary::before { content: '▾ '; }
-        #sbc-opt-advanced[open] summary { margin-bottom: 10px; }
+        .sbc-opt-details-toggle summary::-webkit-details-marker { display: none; }
+        .sbc-opt-details-toggle summary::before { content: '▸ '; color: #00e0b8; }
+        .sbc-opt-details-toggle[open] summary::before { content: '▾ '; }
+        .sbc-opt-details-toggle[open] summary { margin-bottom: 10px; }
         .sbc-opt-info {
             background:#131e2b; border:1px solid #1f2b3a; border-radius:8px;
             padding:8px 10px; margin-bottom:12px; line-height:1.6;
@@ -3786,11 +3789,12 @@
         .sbc-opt-btn:disabled { opacity:.5; cursor:not-allowed; }
         .sbc-opt-batch { margin-top:12px; padding-top:10px; border-top:1px solid #1f2b3a; }
         #sbc-opt-batch-preview:empty { display:none; }
-        #sbc-opt-batch-preview {
+        #sbc-opt-batch-preview, #sbc-opt-batch-detail-body {
             background:#131e2b; border:1px solid #1f2b3a; border-radius:8px;
             padding:8px 10px; margin-top:8px; font-size:12px; line-height:1.5;
             max-height:340px; overflow-y:auto;
         }
+        #sbc-opt-batch-details { margin-top:8px; }
         .sbc-opt-batch-round { padding:3px 0; border-bottom:1px solid #1b2735; }
         .sbc-opt-batch-round:last-child { border-bottom:none; }
         .sbc-opt-batch-round b { color:#00e0b8; }
@@ -3909,6 +3913,13 @@
                     <input type="number" id="sbc-opt-minrating" value="75" min="1" max="99">
                 </div>
                 <div class="sbc-opt-row">
+                    <label>Max. Rating-Überschuss über Minimum (z.B. 0.10 = bis 84.10 statt 84.00)</label>
+                    <input type="number" id="sbc-opt-maxwaste" value="0.00" min="0" max="2" step="0.01">
+                </div>
+                <details id="sbc-opt-advanced" class="sbc-opt-details-toggle">
+                    <summary>Erweiterte Einstellungen</summary>
+                <div class="sbc-opt-group-title">Kartenwahl</div>
+                <div class="sbc-opt-row">
                     <label class="sbc-opt-toggle">
                         <input type="checkbox" id="sbc-opt-maxrating-en">
                         Max. Rating pro Spieler begrenzen
@@ -3918,13 +3929,6 @@
                         <span style="color:#9db2c8;">OVR</span>
                     </div>
                 </div>
-                <div class="sbc-opt-row">
-                    <label>Max. Rating-Überschuss über Minimum (z.B. 0.10 = bis 84.10 statt 84.00)</label>
-                    <input type="number" id="sbc-opt-maxwaste" value="0.00" min="0" max="2" step="0.01">
-                </div>
-                <details id="sbc-opt-advanced">
-                    <summary>Erweiterte Einstellungen</summary>
-                <div class="sbc-opt-group-title">Kartenwahl</div>
                 <div class="sbc-opt-row">
                     <label class="sbc-opt-toggle">
                         <input type="checkbox" id="sbc-opt-applyrarity" checked>
@@ -4019,10 +4023,17 @@
                                style="width:64px;">
                     </div>
                     <button class="sbc-opt-btn ghost" id="sbc-opt-batch-plan">Teams planen (Vorschau)</button>
+                    <!-- Ticket #73: Zusammenfassung (Confidence + Klartext-Abweichungen)
+                         zuerst, direkt darunter die Freigabe, Kartendetails erst
+                         aufgeklappt - Rasmus scrollte vorher jedes Team einzeln durch. -->
                     <div id="sbc-opt-batch-preview"></div>
                     <button class="sbc-opt-btn danger" id="sbc-opt-batch-run" style="display:none;">
                         Alle eintragen + abgeben
                     </button>
+                    <details id="sbc-opt-batch-details" class="sbc-opt-details-toggle" style="display:none;">
+                        <summary id="sbc-opt-batch-detail-summary">Teams im Detail (0)</summary>
+                        <div id="sbc-opt-batch-detail-body"></div>
+                    </details>
                 </div>
                 <!-- PACK-OPENER Stufe 1 (Ticket #69): nur in der Store-Ansicht
                      sichtbar (syncPackSection()), hoechstens EIN Pack pro Klick -
@@ -4092,6 +4103,9 @@
             batchPlan: panel.querySelector('#sbc-opt-batch-plan'),
             batchPreview: panel.querySelector('#sbc-opt-batch-preview'),
             batchRun: panel.querySelector('#sbc-opt-batch-run'),
+            batchDetails: panel.querySelector('#sbc-opt-batch-details'),
+            batchDetailSummary: panel.querySelector('#sbc-opt-batch-detail-summary'),
+            batchDetailBody: panel.querySelector('#sbc-opt-batch-detail-body'),
             packSection: panel.querySelector('#sbc-opt-packsection'),
             packType: panel.querySelector('#sbc-opt-pack-type'),
             packRefresh: panel.querySelector('#sbc-opt-pack-refresh'),
@@ -5918,7 +5932,12 @@
         ui.batchPlan.disabled = true;
         setStatus('plane ' + want + ' Teams...');
         try {
-            const plan = SolverCore.planBatch(STATE.pool, readConfig(), want);
+            const cfg = readConfig();
+            const plan = SolverCore.planBatch(STATE.pool, cfg, want);
+            // Fuer den Plan-Check (Ticket #73) am Plan festgehalten: derselbe
+            // Stand, mit dem geplant wurde - eine spaetere UI-Aenderung darf
+            // die Auswertung des schon fertigen Plans nicht verfaelschen.
+            plan.cfg = cfg;
             // Anker ist das SET plus die Vorgaben - die challengeId aendert
             // sich pro Wiederholung und taugt nicht als Vergleich.
             plan.setId = STATE.sbc.setId;
@@ -5958,37 +5977,92 @@
         else base = 'Special rf' + rf;
         return base + ((p.groups && p.groups.indexOf(83) > -1) ? ' · Gruppe 83' : '');
     }
+    /**
+     * Plan-Check (Ticket #73): reine Auswertung des von planBatch bereits
+     * fertig geplanten Ergebnisses - kein Solver-Aufruf, keine Aenderung an
+     * der Planung selbst. Rasmus scrollte vorher jedes Team von Hand durch,
+     * um sowas wie 84.xx statt 84 oder doppeltes TOTW zu finden.
+     *
+     * Score-Konvention: bestandene / gesamte Pruefungen (gerundet). Pro
+     * Runde zaehlen IMMER 4 Pruefungen (Waste, Gruppe-83-Anzahl, Min-Rating,
+     * Storage-Anteil), global IMMER 2 (keine doppelte Karten-Id, Pool
+     * vollstaendig geladen) - ein fester Nenner, unabhaengig davon, ob eine
+     * Pruefung im Einzelfall ueberhaupt greift (z.B. Waste ohne Ziel-OVR ist
+     * strukturell 0, Min-Rating bei Bronze/Silber wird auf 0 abgesenkt -
+     * CLAUDE.md: "Min-Rating wird dabei komplett ignoriert"). Damit hat der
+     * Score in jedem Szenario dieselbe Grundlage. "Hinweis" (Storage-Anteil)
+     * zaehlt im Score mit, ist aber separat gelabelt und faerbt wie eine
+     * bestehende Warnung statt wie ein Fehler - "Fehler" nur bei echten
+     * Vorgaben-/Rating-Verstoessen.
+     */
+    function computeBatchPlanCheck(plan, cfg) {
+        const lines = []; // { level: 'error'|'hint', text }
+        let passed = 0, total = 0;
+        function runCheck(level, ok, text) {
+            total++;
+            if (ok) { passed++; return; }
+            lines.push({ level: level, text: text });
+        }
+        const rarityConstraints = (cfg.applyRarity === false) ? [] : (cfg.rarityConstraints || []);
+        const required83 = rarityConstraints
+            .filter(rc => Number(rc.groupId) === 83)
+            .reduce((s, rc) => s + (rc.count || 1), 0);
+        const qualityConstraints = (cfg.applyRarity === false) ? [] : (cfg.qualityConstraints || []);
+        // Deckt sich mit dem qualityLow-Zweig im Solver (Bronze/Silber
+        // ignorieren Min-Rating komplett, Gold nicht) - hier nur, um
+        // festzustellen, ob die Pruefung ueberhaupt greifen soll.
+        const qualityLow = qualityConstraints.some(c => Number(c.quality) === 1 || Number(c.quality) === 2);
+        const effectiveMinRating = qualityLow ? 0 : (cfg.minRating || 0);
+        const maxOvershoot = cfg.maxOvershoot || 0;
+        const seenIds = new Set();
+        let dupeCard = null;
+        (plan.rounds || []).forEach(function (r, i) {
+            const teamNo = i + 1;
+            const waste = r.waste || 0;
+            runCheck('error', waste <= maxOvershoot + 1e-9,
+                'Team ' + teamNo + ': Rating-Überschuss ' + waste.toFixed(2) + ' über dem erlaubten Fenster ' +
+                maxOvershoot.toFixed(2) + ' (exakt ' + r.ovrExact.toFixed(2) + ').');
+            const n83 = r.players.filter(p => p.groups && p.groups.indexOf(83) > -1).length;
+            runCheck('error', n83 === required83,
+                'Team ' + teamNo + ': ' + n83 + 'x Gruppe-83-Karte(n) (TOTW/TOTS/FOF/FUTTIES) statt geforderter ' +
+                required83 + '.');
+            const belowMin = r.players.filter(p => p.rating < effectiveMinRating);
+            runCheck('error', belowMin.length === 0,
+                'Team ' + teamNo + ': ' + belowMin.length + ' Karte(n) unter Min-Rating ' + effectiveMinRating +
+                ' (' + belowMin.map(p => p.rating).join(', ') + ').');
+            const nStore = r.players.filter(p => p.isStorage).length;
+            runCheck('hint', nStore >= 1, 'Team ' + teamNo + ': keine Storage-Karte verbaut (nur Verein).');
+            for (const p of r.players) {
+                const key = String(p.id);
+                if (seenIds.has(key) && !dupeCard) dupeCard = p.name || ('#' + key);
+                seenIds.add(key);
+            }
+        });
+        runCheck('error', !dupeCard, 'Karte "' + dupeCard + '" ist in mehreren Teams verbaut.');
+        runCheck('hint', !plan.poolLoadIncomplete,
+            'Pool war beim Planen unvollständig geladen - Plan kann auf fehlenden Karten beruhen. Vor der Freigabe ggf. "Spieler laden" erneut ausführen und neu planen.');
+        const errors = lines.filter(l => l.level === 'error').length;
+        const hints = lines.filter(l => l.level === 'hint').length;
+        return {
+            score: total ? Math.round(passed / total * 100) : 100,
+            passed: passed, total: total,
+            errors: errors, hints: hints,
+            lines: lines
+        };
+    }
     function renderBatchPreview(plan) {
         const box = ui.batchPreview;
         if (!box) return;
-        let html = '';
-        if (plan.poolLoadIncomplete) {
-            html += '<div class="sbc-opt-batch-round sbc-opt-batch-warn">⚠ Pool war beim Planen unvollständig geladen - Plan kann auf fehlenden Karten beruhen. Vor der Freigabe ggf. "Spieler laden" erneut ausführen und neu planen.</div>';
+        const pc = computeBatchPlanCheck(plan, plan.cfg || {});
+        const parts = [];
+        if (pc.errors) parts.push(pc.errors + ' Fehler');
+        if (pc.hints) parts.push(pc.hints + (pc.hints === 1 ? ' Hinweis' : ' Hinweise'));
+        let html = '<div class="sbc-opt-batch-round"><b>' + plan.planned + ' Team(s) geplant</b> · Confidence <b>' +
+            pc.score + '%</b>' + (parts.length ? ' — ' + parts.join(' + ') : '') + '</div>';
+        for (const l of pc.lines) {
+            html += '<div class="sbc-opt-batch-round ' + (l.level === 'error' ? 'sbc-opt-batch-bad' : 'sbc-opt-batch-warn') + '">' +
+                (l.level === 'error' ? '✗ ' : '⚠ ') + escapeHtml(l.text) + '</div>';
         }
-        plan.rounds.forEach(function (r, i) {
-            const nStore = r.players.filter(p => p.isStorage).length;
-            const nUntr = r.players.filter(p => p.untradeable).length;
-            const nProt = r.players.filter(p => p.groups && p.groups.indexOf(83) > -1).length;
-            html += '<div class="sbc-opt-batch-round"><b>Team ' + (i + 1) + ':</b> OVR ' +
-                r.ovr + ' (' + r.ovrExact.toFixed(2) + ')' +
-                '<br><span style="color:#9db2c8;">Storage ' + nStore +
-                ' · unverkäuflich ' + nUntr +
-                (nProt ? ' · <span class="sbc-opt-batch-warn">geschützt ' + nProt + '</span>' : '') +
-                '</span><div class="sbc-opt-batch-cards">';
-            for (const p of r.players.slice().sort((a, b) => b.rating - a.rating)) {
-                const prot = !!(p.groups && p.groups.indexOf(83) > -1);
-                html += '<div class="sbc-opt-batch-card' + (prot ? ' prot' : '') + '">' +
-                    '<span class="r">' + p.rating + '</span> ' + escapeHtml(displayName(p)) +
-                    ' <span class="src">' + (p.isStorage ? 'Storage' : 'Verein') + '</span>' +
-                    ' <span class="rar">' + escapeHtml(rarityLabel(p)) + '</span>' +
-                    (p.untradeable ? ' <span class="untr">unverkäuflich</span>' : '') + '</div>';
-            }
-            html += '</div>';
-            for (const w of (r.warnings || [])) {
-                html += '<span class="sbc-opt-batch-warn">⚠ ' + escapeHtml(w) + '</span><br>';
-            }
-            html += '</div>';
-        });
         if (plan.stoppedReason) {
             html += '<div class="sbc-opt-batch-round sbc-opt-batch-bad">Nur ' + plan.planned +
                 ' von ' + plan.requested + ' möglich: ' + escapeHtml(plan.stoppedReason) + '</div>';
@@ -5997,6 +6071,36 @@
         ui.batchRun.style.display = plan.planned ? 'block' : 'none';
         ui.batchRun.disabled = false;
         ui.batchRun.textContent = 'Alle ' + plan.planned + ' eintragen + abgeben';
+        if (ui.batchDetails) {
+            let detailHtml = '';
+            plan.rounds.forEach(function (r, i) {
+                const nStore = r.players.filter(p => p.isStorage).length;
+                const nUntr = r.players.filter(p => p.untradeable).length;
+                const nProt = r.players.filter(p => p.groups && p.groups.indexOf(83) > -1).length;
+                detailHtml += '<div class="sbc-opt-batch-round"><b>Team ' + (i + 1) + ':</b> OVR ' +
+                    r.ovr + ' (' + r.ovrExact.toFixed(2) + ')' +
+                    '<br><span style="color:#9db2c8;">Storage ' + nStore +
+                    ' · unverkäuflich ' + nUntr +
+                    (nProt ? ' · <span class="sbc-opt-batch-warn">geschützt ' + nProt + '</span>' : '') +
+                    '</span><div class="sbc-opt-batch-cards">';
+                for (const p of r.players.slice().sort((a, b) => b.rating - a.rating)) {
+                    const prot = !!(p.groups && p.groups.indexOf(83) > -1);
+                    detailHtml += '<div class="sbc-opt-batch-card' + (prot ? ' prot' : '') + '">' +
+                        '<span class="r">' + p.rating + '</span> ' + escapeHtml(displayName(p)) +
+                        ' <span class="src">' + (p.isStorage ? 'Storage' : 'Verein') + '</span>' +
+                        ' <span class="rar">' + escapeHtml(rarityLabel(p)) + '</span>' +
+                        (p.untradeable ? ' <span class="untr">unverkäuflich</span>' : '') + '</div>';
+                }
+                detailHtml += '</div>';
+                for (const w of (r.warnings || [])) {
+                    detailHtml += '<span class="sbc-opt-batch-warn">⚠ ' + escapeHtml(w) + '</span><br>';
+                }
+                detailHtml += '</div>';
+            });
+            ui.batchDetailBody.innerHTML = detailHtml;
+            ui.batchDetailSummary.textContent = 'Teams im Detail (' + plan.planned + ')';
+            ui.batchDetails.style.display = plan.planned ? 'block' : 'none';
+        }
     }
     // Reiner Reducer (keine DOM-/Netzwerkabhaengigkeit, isoliert testbar): pflegt
     // den bestehenden 6er-Ring diag.batchSteps unveraendert UND haelt zusaetzlich
@@ -6094,6 +6198,7 @@
             ui.batchPlan.disabled = false;
             ui.run.disabled = false;
             ui.batchRun.style.display = 'none';
+            if (ui.batchDetails) ui.batchDetails.style.display = 'none';
             STATE.batch = null;   // Plan verbraucht - kein zweites Abgeben
             let html = doneLog.length
                 ? '<div class="sbc-opt-batch-round">' + doneLog.map(escapeHtml).join('<br>') + '</div>' : '';

@@ -8,6 +8,45 @@
 const fs = require('fs');
 
 const src = fs.readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
+
+// Schneidet den Text zwischen zwei Kommentar-Markern aus (z.B. "// [SOLVER-BEGIN]"
+// / "// [SOLVER-END]"), EXKLUSIVE beider Marker - genau das Format, das
+// new Function(...) als kompilierbaren Codeblock braucht.
+function extractMarkerBlock(src, beginMarker, endMarker) {
+    const start = src.indexOf(beginMarker);
+    if (start === -1) return null;
+    const contentStart = start + beginMarker.length;
+    const end = src.indexOf(endMarker, contentStart);
+    if (end === -1) return null;
+    return src.slice(contentStart, end);
+}
+
+// Findet zur oeffnenden Klammer an Position openIdx die zugehoerige
+// schliessende Klammer per Tiefenzaehlung. Ein indexOf(naechste Deklaration)
+// waere bei benachbarten Funktionen/Objekt-Literalen zufaellig richtig, bricht
+// aber bei einer Umstellung der Reihenfolge lautlos.
+function matchingBraceIndex(src, openIdx) {
+    let depth = 0;
+    for (let i = openIdx; i < src.length; i++) {
+        if (src[i] === '{') depth++;
+        else if (src[i] === '}') { depth--; if (depth === 0) return i; }
+    }
+    return -1;
+}
+
+// Schneidet eine benannte Funktion (inkl. "function"/"async function" und
+// Signatur) per Klammer-Zaehlung komplett aus - unabhaengig davon, was im
+// Quelltext auf sie folgt, im Gegensatz zu einem indexOf(naechste Funktion).
+function extractFunction(src, functionName) {
+    let key = src.indexOf('function ' + functionName);
+    if (key === -1) return null;
+    if (src.slice(Math.max(0, key - 6), key) === 'async ') key -= 6;
+    const openBrace = src.indexOf('{', src.indexOf('(', key));
+    const close = matchingBraceIndex(src, openBrace);
+    if (close === -1) return null;
+    return src.slice(key, close + 1);
+}
+
 const m = src.match(/\/\/ \[SOLVER-BEGIN\]([\s\S]*?)\/\/ \[SOLVER-END\]/);
 if (!m) { console.error('SOLVER-Block nicht gefunden!'); process.exit(1); }
 const SolverCore = new Function(m[1] + '\nreturn SolverCore;')();

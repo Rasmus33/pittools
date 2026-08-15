@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.49.0
+// @version      4.50.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.49.0';
+    const VERSION = '4.50.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -132,7 +132,9 @@
             submitWithoutResponseCount: 0, // wie oft submitChallengeToEa ohne auswertbare Response als Erfolg durchging (LEARNINGS §9, v4.36.0: offen, ob Abgabe wirklich bestätigt war)
             submitConfirmations: null, // Post-Submit-Plausibilisierung im "ohne Response"-Zweig: via/hadResponse/squadEmptyAfter/ms je Versuch (reine Beobachtung, kein Abbruchkriterium)
             lastTap: null,           // letzter simulierter Tap: Events/Position/Abdeckung/Popup
-            scanStats: null          // Traversal-Metriken (visitedCount/depthCapped/budgetExhausted) von deepScan/findNode/collectNodes - reine Beobachtung, kein Abbruchkriterium (LEARNINGS 37)
+            scanStats: null,         // Traversal-Metriken (visitedCount/depthCapped/budgetExhausted) von deepScan/findNode/collectNodes - reine Beobachtung, kein Abbruchkriterium (LEARNINGS 37)
+            utasUnclassified: 0,     // /ut/game/-URLs, die classifyUrl() nicht zuordnen konnte (LEARNINGS 38)
+            lastUnclassifiedPaths: [] // 5er-Ring der zugehoerigen Pfade (IDs maskiert)
         }
     };
     function log(...args) { try { console.log(LOG_PREFIX, ...args); } catch (e) {} }
@@ -251,13 +253,31 @@
         if (RE_SBC_STORAGE_FALLBACK.test(u)) return 'storage';
         return null;
     }
-    // [URLCLS-END]
+    // Eigener Zaehler + 5er-Ring fuer /ut/game/-URLs, die classifyUrl() NICHT
+    // zuordnen kann - der generische lastUtasPaths-Ring (15 Slots, ALLER
+    // utas-Traffic) kann einen seltenen neuen Endpunkt durch haeufigen
+    // bekannten Traffic (Club-Pagination, Storage) verdraengen, bevor je ein
+    // Diagnose-Report gezogen wird. Bewusst KEIN warn/diagError: das ist keine
+    // Fehlermeldung, sondern eine reine Beobachtung unbekannten, aber
+    // regulaeren Traffics.
+    function noteUnclassifiedUtas(url) {
+        try {
+            const u = String(url);
+            if (/\/ut\/game\//i.test(u) && classifyUrl(u) === null) {
+                STATE.diag.utasUnclassified = (STATE.diag.utasUnclassified || 0) + 1;
+                const path = u.replace(/^https?:\/\/[^/]+/, '').split('?')[0]
+                    .replace(/\d{4,}/g, '{id}');
+                STATE.diag.lastUnclassifiedPaths.push(path);
+                if (STATE.diag.lastUnclassifiedPaths.length > 5) STATE.diag.lastUnclassifiedPaths.shift();
+            }
+        } catch (e) {}
+    }
     function handleResponseBody(url, bodyText) {
         const kind = classifyUrl(url);
         if (!kind || !bodyText) return;
         let json;
         try { json = (typeof bodyText === 'string') ? JSON.parse(bodyText) : bodyText; }
-        catch (e) { return; }
+        catch (e) { reportError('handleResponseBody(' + kind + '): parse', e); return; }
         try {
             if (kind === 'sbc-set-challenges') {
                 // Challenge-Liste eines Sets: enthält die Anforderungen pro
@@ -277,9 +297,10 @@
                 harvestItems(json, true);
             }
         } catch (e) {
-            warn('Fehler beim Verarbeiten einer Response:', e);
+            reportError('handleResponseBody(' + kind + ')', e);
         }
     }
+    // [URLCLS-END]
     // ---- fetch() Wrapper ---------------------------------------------------
     const _origFetch = window.fetch ? window.fetch.bind(window) : null;
     if (_origFetch) {
@@ -296,6 +317,7 @@
             return _origFetch(input, init).then(function (resp) {
                 try {
                     const url = (typeof input === 'string') ? input : (input && input.url);
+                    if (url) noteUnclassifiedUtas(url);
                     if (url && classifyUrl(url)) {
                         resp.clone().text().then(function (txt) {
                             handleResponseBody(url, txt);
@@ -338,6 +360,7 @@
                     RE_SBC_SQUAD_PUT.test(String(url))) {
                     try { STATE.diag.lastSquadPutBody = String(body).slice(0, 3000); } catch (e) {}
                 }
+                if (url) noteUnclassifiedUtas(url);
                 if (url && classifyUrl(url)) {
                     this.addEventListener('load', function () {
                         try {
@@ -3927,6 +3950,34 @@
             ' · Services: ' + (servicesAvailable() ? '✓' : '–') +
             ' · utas: ' + STATE.diag.utasSeen;
     }
+    // [RAREHIST-BEGIN]
+    // Reine Funktion (kein STATE-Zugriff ausser dem uebergebenen pool) - so per
+    // Marker isoliert testbar (Verhaltensgleichheit zur vormaligen anonymen
+    // IIFE in buildDiagReport() ist ein eigener Testfall in solver-test.js).
+    function computeRareflagHistogram(pool) {
+        const m = {};
+        for (const p of pool) {
+            const key = String(p.rareflag);
+            m[key] = (m[key] || 0) + 1;
+        }
+        const out = { '0_common': m['0'] || 0, '1_rare': m['1'] || 0,
+                      '3_totw': m['3'] || 0 };
+        const rest = Object.keys(m).filter(k => ['0', '1', '3'].indexOf(k) < 0)
+            .map(k => ({ f: k, n: m[k] }))
+            .sort((a, b) => b.n - a.n);
+        out.topSpecials = rest.slice(0, 5).map(x => x.f + ':' + x.n).join(' ');
+        out.specialFlags = rest.length;
+        out.specialTotal = rest.reduce((a, x) => a + x.n, 0);
+        // Cap 30: haelt den Report auch bei einem theoretischen Pool-Ausreisser
+        // kompakt - in der Praxis liegt specialFlags deutlich darunter. Anders
+        // als topSpecials (nur die Top-5 nach Haeufigkeit) landen hier ALLE
+        // distincten rareflag-Werte OHNE Counts, damit ein neuer, zunaechst
+        // seltener rareflag (z.B. ein frisches Promo-Special mit 1 Karte) immer
+        // sichtbar ist, auch wenn er die Top-5-Haeufigkeitsgrenze nicht erreicht.
+        out.allSpecialFlagValues = rest.map(x => x.f).slice(0, 30).join(',');
+        return out;
+    }
+    // [RAREHIST-END]
     function buildDiagReport() {
         // Bewusst OHNE Session-Token-Werte!
         let servicesKeys = null;
@@ -3954,9 +4005,11 @@
             counts: {
                 fetchSeen: STATE.diag.fetchSeen,
                 xhrSeen: STATE.diag.xhrSeen,
-                utasSeen: STATE.diag.utasSeen
+                utasSeen: STATE.diag.utasSeen,
+                utasUnclassified: STATE.diag.utasUnclassified
             },
             lastUtasPaths: STATE.diag.lastUtasPaths,
+            lastUnclassifiedPaths: STATE.diag.lastUnclassifiedPaths,
             lastErrors: STATE.diag.lastErrors,
             uiScan: STATE.diag.uiScan || null,
             // Gesperrte Karten: wurden PaleTools-Locks gefunden und wie viele?
@@ -4192,22 +4245,7 @@
             // GEKUERZT (der Report muss kopierbar bleiben): das volle Histogramm
             // waren ~80 Zeilen. Gebraucht werden Common/Rare - und von den
             // Special-Flags die haeufigsten fuenf plus Restsumme.
-            rareflagHistogram: (function () {
-                const m = {};
-                for (const p of STATE.pool) {
-                    const key = String(p.rareflag);
-                    m[key] = (m[key] || 0) + 1;
-                }
-                const out = { '0_common': m['0'] || 0, '1_rare': m['1'] || 0,
-                              '3_totw': m['3'] || 0 };
-                const rest = Object.keys(m).filter(k => ['0', '1', '3'].indexOf(k) < 0)
-                    .map(k => ({ f: k, n: m[k] }))
-                    .sort((a, b) => b.n - a.n);
-                out.topSpecials = rest.slice(0, 5).map(x => x.f + ':' + x.n).join(' ');
-                out.specialFlags = rest.length;
-                out.specialTotal = rest.reduce((a, x) => a + x.n, 0);
-                return out;
-            })(),
+            rareflagHistogram: computeRareflagHistogram(STATE.pool),
             poolSpecialCount: STATE.pool.filter(p => p.isSpecial).length,
             evoExcluded: STATE.diag.evoExcluded,
             // Struktur-Samples hoher Karten: verrät uns die echten Feldnamen,

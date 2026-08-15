@@ -2352,12 +2352,40 @@ function mulberry32(a) {
 {
     const urlClsBlock = extractMarkerBlock(src, '// [URLCLS-BEGIN]', '// [URLCLS-END]');
     check('URLCLS-Marker-Block gefunden', !!urlClsBlock);
-    function buildUrlHelpers() {
-        const STATE = { session: {}, diag: { utasSeen: 0, lastUtasPaths: [] }, sbc: { apiPrefix: 'sbs' } };
-        const helpers = new Function('STATE', 'log', 'refreshDiagUI',
-            urlClsBlock + '\nreturn { detectApiBase: detectApiBase, classifyUrl: classifyUrl };'
-        )(STATE, function () {}, function () {});
-        return { STATE: STATE, detectApiBase: helpers.detectApiBase, classifyUrl: helpers.classifyUrl };
+    // Der Markerblock reicht bis hinter handleResponseBody - die Funktion ruft
+    // reportError() sowie drei App-eigene Funktionen auf, die selbst NICHT
+    // Teil des Blocks sind. Minimal gehaltene Stubs statt eines separat
+    // gepflegten Duplikats der echten Logik (die an anderer Stelle bereits
+    // abgedeckt ist, siehe parseSbcChallenge/applyFromSetChallenges/
+    // harvestItems-Tests).
+    function buildUrlHelpers(overrides) {
+        overrides = overrides || {};
+        const STATE = {
+            session: {},
+            diag: { utasSeen: 0, lastUtasPaths: [], lastErrors: [], utasUnclassified: 0, lastUnclassifiedPaths: [] },
+            sbc: { apiPrefix: 'sbs' },
+            lastSetChallenges: null,
+            lastChallengeRaw: null
+        };
+        const reportError = overrides.reportError || function (label, e) {
+            STATE.diag.lastErrors.push(label + ': ' + ((e && e.message) || String(e)));
+        };
+        const applyFromSetChallenges = overrides.applyFromSetChallenges || function () {};
+        const parseSbcChallenge = overrides.parseSbcChallenge || function () {};
+        const harvestItems = overrides.harvestItems || function () {};
+        const helpers = new Function(
+            'STATE', 'log', 'refreshDiagUI', 'reportError',
+            'applyFromSetChallenges', 'parseSbcChallenge', 'harvestItems',
+            urlClsBlock + '\nreturn { detectApiBase: detectApiBase, classifyUrl: classifyUrl, ' +
+                'noteUnclassifiedUtas: noteUnclassifiedUtas, handleResponseBody: handleResponseBody };'
+        )(STATE, function () {}, function () {}, reportError, applyFromSetChallenges, parseSbcChallenge, harvestItems);
+        return {
+            STATE: STATE,
+            detectApiBase: helpers.detectApiBase,
+            classifyUrl: helpers.classifyUrl,
+            noteUnclassifiedUtas: helpers.noteUnclassifiedUtas,
+            handleResponseBody: helpers.handleResponseBody
+        };
     }
 
     // (a) classifyUrl: alle vier SBC-Endpunktformen, je mit sbs- UND sbc-Praefix,
@@ -2432,6 +2460,82 @@ function mulberry32(a) {
         (src.match(/\(sbs\|sbc\)/g) || []).length === 0);
     check('SBS_SBC_PREFIX_RE_SRC genau einmal definiert',
         (src.match(/const SBS_SBC_PREFIX_RE_SRC = /g) || []).length === 1);
+
+    // (g) handleResponseBody: kaputtes JSON an einer bereits als SBC-relevant
+    // klassifizierten URL -> reportError() landet im Report (Aktion 1, erster
+    // Catch). Ohne diese Aenderung war der Fehlschlag komplett stumm.
+    {
+        const { handleResponseBody, STATE } = buildUrlHelpers();
+        const sbcUrl = 'https://utas.mob.v5.prd.futc-ext.gcp.ea.com/ut/game/fc26/sbs/sets';
+        handleResponseBody(sbcUrl, '{invalid');
+        check('handleResponseBody: kaputtes JSON an SBC-URL erzeugt einen lastErrors-Eintrag',
+            STATE.diag.lastErrors.length === 1, JSON.stringify(STATE.diag.lastErrors));
+        check('handleResponseBody: der Eintrag nennt "handleResponseBody("',
+            STATE.diag.lastErrors[0].indexOf('handleResponseBody(') === 0, STATE.diag.lastErrors[0]);
+    }
+    // (h) handleResponseBody: kaputtes JSON an einer NICHT klassifizierten
+    // (fremden) URL -> classifyUrl() liefert null, die Funktion kehrt VOR dem
+    // JSON.parse-Versuch zurueck -> kein Log-Spam fuer Fremd-Traffic/HTML-
+    // Fehlerseiten (siehe patterns/good/stille-catches-nur-an-der-ea-grenze.md).
+    {
+        const { handleResponseBody, STATE } = buildUrlHelpers();
+        handleResponseBody('https://example.com/foo/bar', '{invalid');
+        check('handleResponseBody: kaputtes JSON an Fremd-URL erzeugt KEINEN lastErrors-Eintrag',
+            STATE.diag.lastErrors.length === 0, JSON.stringify(STATE.diag.lastErrors));
+    }
+    // (i) handleResponseBody: valides JSON, aber die nachgelagerte Verarbeitung
+    // (hier parseSbcChallenge) wirft -> zweiter Catch meldet ebenfalls per
+    // reportError() statt nur warn() (Aktion 1, zweiter Catch).
+    {
+        const { handleResponseBody, STATE } = buildUrlHelpers({
+            parseSbcChallenge: function () { throw new Error('kaputte Challenge-Struktur'); }
+        });
+        const challengeUrl = 'https://utas.mob.v5.prd.futc-ext.gcp.ea.com/ut/game/fc26/sbs/challenge/3070';
+        handleResponseBody(challengeUrl, '{}');
+        check('handleResponseBody: Fehler in der Verarbeitung (zweiter Catch) erzeugt einen lastErrors-Eintrag',
+            STATE.diag.lastErrors.length === 1, JSON.stringify(STATE.diag.lastErrors));
+        check('handleResponseBody: der Eintrag des zweiten Catches nennt ebenfalls "handleResponseBody("',
+            STATE.diag.lastErrors[0].indexOf('handleResponseBody(') === 0, STATE.diag.lastErrors[0]);
+    }
+
+    // (j) noteUnclassifiedUtas: unbekannte, aber SBC-aehnliche /ut/game/-URL
+    // (Aktion 2) -> eigener Zaehler + Sample-Ring, unabhaengig vom generischen
+    // lastUtasPaths-Ring (der ALLEN utas-Traffic aufnimmt).
+    {
+        const { noteUnclassifiedUtas, STATE } = buildUrlHelpers();
+        noteUnclassifiedUtas('https://utas.mob.v5.prd.futc-ext.gcp.ea.com/ut/game/fc26/sbx/foo');
+        check('noteUnclassifiedUtas: unbekannter Pfad zaehlt hoch',
+            STATE.diag.utasUnclassified === 1, STATE.diag.utasUnclassified);
+        check('noteUnclassifiedUtas: unbekannter Pfad landet im Sample-Ring',
+            STATE.diag.lastUnclassifiedPaths.length === 1 &&
+            STATE.diag.lastUnclassifiedPaths[0].indexOf('/sbx/foo') > -1,
+            JSON.stringify(STATE.diag.lastUnclassifiedPaths));
+    }
+    // (k) noteUnclassifiedUtas: bereits klassifizierte URL -> kein Fehlalarm
+    // fuer bekannten Traffic.
+    {
+        const { noteUnclassifiedUtas, STATE } = buildUrlHelpers();
+        noteUnclassifiedUtas('https://utas.mob.v5.prd.futc-ext.gcp.ea.com/ut/game/fc26/club?start=0');
+        check('noteUnclassifiedUtas: bekannter Endpunkt zaehlt NICHT',
+            STATE.diag.utasUnclassified === 0, STATE.diag.utasUnclassified);
+    }
+    // (l) noteUnclassifiedUtas: sechs verschiedene unbekannte Pfade
+    // nacheinander -> Ring bleibt bei 5 Eintraegen (Cap-Verhalten wie beim
+    // Vorbild lastUtasPaths).
+    {
+        const { noteUnclassifiedUtas, STATE } = buildUrlHelpers();
+        for (let i = 1; i <= 6; i++) {
+            noteUnclassifiedUtas('https://utas.mob.v5.prd.futc-ext.gcp.ea.com/ut/game/fc26/sbx/foo' + i);
+        }
+        check('noteUnclassifiedUtas: Zaehler zaehlt alle sechs',
+            STATE.diag.utasUnclassified === 6, STATE.diag.utasUnclassified);
+        check('noteUnclassifiedUtas: Sample-Ring deckelt bei 5 Eintraegen',
+            STATE.diag.lastUnclassifiedPaths.length === 5, STATE.diag.lastUnclassifiedPaths.length);
+        check('noteUnclassifiedUtas: Ring enthaelt die JUENGSTEN 5 Pfade (foo2..foo6)',
+            STATE.diag.lastUnclassifiedPaths.join(',').indexOf('foo1') === -1 &&
+            STATE.diag.lastUnclassifiedPaths[4].indexOf('foo6') > -1,
+            JSON.stringify(STATE.diag.lastUnclassifiedPaths));
+    }
 }
 
 // ========== 26. Migrations-Absicherung: extractMarkerBlock/extractFunction ==========
@@ -2867,6 +2971,61 @@ function mulberry32(a) {
         scanExports.reqCountRaw(noKey, [parent]).count === 6);
     check('reqCountRaw findet den Count in der Eltern-Kette: defaulted ist false',
         scanExports.reqCountRaw(noKey, [parent]).defaulted === false);
+}
+
+// ========== 35. computeRareflagHistogram: Verhaltensgleichheit zur vormaligen IIFE + allSpecialFlagValues ==========
+{
+    const rarehistBlock = extractMarkerBlock(src, '// [RAREHIST-BEGIN]', '// [RAREHIST-END]');
+    check('RAREHIST-Marker-Block gefunden', !!rarehistBlock);
+    const computeRareflagHistogram = new Function(rarehistBlock + '\nreturn computeRareflagHistogram;')();
+
+    function card(rareflag) { return { rareflag: rareflag }; }
+
+    // (a) Fuenf haeufige Special-rareflags (je >= 3 Karten) plus EIN neuer,
+    // seltener rareflag (1 Karte) - der seltene Wert darf NICHT in topSpecials
+    // auftauchen (Cap-Verhalten unveraendert), MUSS aber als String in
+    // allSpecialFlagValues stehen (Aktion 3 - vorher komplett unsichtbar).
+    const pool = []
+        .concat(new Array(3).fill(null).map(() => card(10)))
+        .concat(new Array(4).fill(null).map(() => card(11)))
+        .concat(new Array(5).fill(null).map(() => card(12)))
+        .concat(new Array(6).fill(null).map(() => card(13)))
+        .concat(new Array(7).fill(null).map(() => card(14)))
+        .concat([card(99)]); // neu, selten: 1 Karte
+    const out = computeRareflagHistogram(pool);
+    check('computeRareflagHistogram: der seltene rareflag 99 fehlt in topSpecials (Cap 5 unveraendert)',
+        out.topSpecials.indexOf('99:') === -1, out.topSpecials);
+    check('computeRareflagHistogram: der seltene rareflag 99 steht in allSpecialFlagValues',
+        out.allSpecialFlagValues.split(',').indexOf('99') > -1, out.allSpecialFlagValues);
+    check('computeRareflagHistogram: allSpecialFlagValues enthaelt alle sechs distincten Specials',
+        out.allSpecialFlagValues.split(',').length === 6, out.allSpecialFlagValues);
+
+    // (b) Regression: 0_common/1_rare/3_totw/specialFlags/specialTotal bleiben
+    // gegenueber der vormaligen anonymen IIFE unveraendert (reine Extraktion,
+    // keine Verhaltensaenderung an den bereits genutzten Feldern).
+    const regressionPool = [card(0), card(0), card(1), card(3), card(3), card(3)]
+        .concat(new Array(3).fill(null).map(() => card(10)));
+    const regOut = computeRareflagHistogram(regressionPool);
+    check('computeRareflagHistogram: 0_common (Regression)', regOut['0_common'] === 2, regOut['0_common']);
+    check('computeRareflagHistogram: 1_rare (Regression)', regOut['1_rare'] === 1, regOut['1_rare']);
+    check('computeRareflagHistogram: 3_totw (Regression)', regOut['3_totw'] === 3, regOut['3_totw']);
+    check('computeRareflagHistogram: specialFlags = 1 distincter Special-Wert (Regression)',
+        regOut.specialFlags === 1, regOut.specialFlags);
+    check('computeRareflagHistogram: specialTotal = 3 Karten mit diesem Wert (Regression)',
+        regOut.specialTotal === 3, regOut.specialTotal);
+    check('computeRareflagHistogram: topSpecials nennt den einzigen Special-Wert (Regression)',
+        regOut.topSpecials === '10:3', regOut.topSpecials);
+
+    // (c) leerer Pool wirft nicht und liefert leere/neutrale Felder.
+    const emptyOut = computeRareflagHistogram([]);
+    check('computeRareflagHistogram: leerer Pool wirft nicht und liefert 0/leere Felder',
+        emptyOut['0_common'] === 0 && emptyOut.specialFlags === 0 && emptyOut.allSpecialFlagValues === '',
+        JSON.stringify(emptyOut));
+
+    // (d) buildDiagReport() ruft die extrahierte Funktion (kein toter Code,
+    // die IIFE ist wirklich ersetzt statt nur daneben zu existieren).
+    check('buildDiagReport() ruft computeRareflagHistogram(STATE.pool) auf',
+        src.indexOf('rareflagHistogram: computeRareflagHistogram(STATE.pool)') > -1);
 }
 
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt

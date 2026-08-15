@@ -1379,3 +1379,59 @@ sowie `playerLevelConstraints`/`qualityConstraints`/`rarityConstraints`
 tragen `countDefaulted` mit; `buildDiagReport()` zeigt `countDefaultedTotal`
 als Kurzsumme. Der Solver selbst liest weiterhin nur `pl.count`/`rc.count`
 (`|| 1`) - reine Zusatz-Property, kein Kontrollfluss-Eingriff.
+
+## 38. handleResponseBody meldet ueber reportError(), unklassifizierte utas-URLs bekommen einen eigenen Ring, rareflagHistogram zeigt alle Werte
+
+Drei additive Beobachtbarkeits-Luecken an der EA-Antwortgrenze, keine der drei
+tastet fetch/XHR-Wrapper, Session-Header-Absorption oder die 401-Retry-Kaskade
+an (Vertrag, siehe §32).
+
+**`handleResponseBody()` meldet ueber `reportError()` statt stumm zu bleiben.**
+Beide Catches (JSON-Parse-Fehlschlag und Fehler in der nachgelagerten
+Verarbeitung) riefen vorher hoechstens `warn()` oder gar nichts - am Handy
+haengt keine DevTools-Konsole, ein solcher Fehlschlag war fuer Rasmus
+unsichtbar. Beide rufen jetzt `reportError('handleResponseBody(' + kind + ')...', e)`
+(der bestehende Doppelkanal-Helfer aus §23, keine neue Abstraktion). Die
+Meldung feuert NUR fuer URLs, die `classifyUrl()` bereits als SBC-relevant
+erkannt hat - `handleResponseBody` kehrt fuer alle anderen URLs vorher zurueck
+(`!kind`-Guard), bevor der JSON.parse-Versuch ueberhaupt beginnt. Kein
+Log-Spam fuer Fremd-Traffic oder HTML-Fehlerseiten anderer Endpunkte (siehe
+`patterns/good/stille-catches-nur-an-der-ea-grenze.md`).
+
+**`noteUnclassifiedUtas(url)` als eigener Zaehler + 5er-Ring fuer
+unklassifizierte `/ut/game/`-URLs.** Der bestehende `lastUtasPaths`-Ring
+(15 Slots) nimmt ALLEN utas-Traffic auf, unabhaengig davon, ob `classifyUrl()`
+ihn kennt - ein seltener, neuer Endpunkt kann darin von haeufigem bekannten
+Traffic (Club-Pagination, Storage) verdraengt werden, bevor je ein
+Diagnose-Report gezogen wird. `STATE.diag.utasUnclassified` (Zaehler) und
+`STATE.diag.lastUnclassifiedPaths` (eigener 5er-Ring, IDs maskiert wie beim
+Vorbild) fangen genau diesen Fall separat ein. Bewusst KEIN `warn`/
+`diagError`-Aufruf in `noteUnclassifiedUtas` - das ist keine Fehlermeldung,
+sondern eine reine Beobachtung von regulaerem, aber unbekanntem Traffic; ein
+zusaetzlicher Log-Kanal dafuer waere Spam. Aufrufstellen: je eine zusaetzliche
+Zeile im bereits vorhandenen `try {} catch (e) {}` von fetch- und
+XHR-Wrapper, Wrapper-Struktur selbst unangetastet. `lastUnclassifiedPaths`
+wird bewusst OHNE lokale Alias-Variable direkt ueber
+`STATE.diag.lastUnclassifiedPaths.push(...)`/`.shift()` befuellt (anders als
+`lastErrors`/`lastUtasPaths`, siehe §25) - dadurch erkennt die
+`STATE.diag`-Symmetrieprüfung das Schreibmuster ohne eine neue Ausnahme in
+`ALIAS_MUTATED_FIELDS`.
+
+**`computeRareflagHistogram(pool)` als benannte Funktion, `allSpecialFlagValues`
+deckt die Top-5-Verdeckungslücke ab.** Die vormals anonyme IIFE in
+`buildDiagReport()` steht jetzt als eigenstaendige, reine Funktion zwischen
+den Markern `// [RAREHIST-BEGIN]`/`// [RAREHIST-END]` (Technik aus
+`patterns/good/eingebetteten-code-exakt-testen.md`) - reine Extraktion, `0_common`/
+`1_rare`/`3_totw`/`topSpecials`/`specialFlags`/`specialTotal` bleiben
+unveraendert. `out.allSpecialFlagValues` (Cap 30, kommagetrennt) listet
+zusaetzlich ALLE distincten Special-rareflag-Werte OHNE Counts - ein neuer,
+zunaechst seltener rareflag (z.B. ein frisches Promo-Special mit 1 Karte) war
+vorher unsichtbar, sobald er die Top-5-Haeufigkeitsgrenze von `topSpecials`
+nicht erreichte; jetzt taucht sein Wert immer auf, auch wenn sein Count
+implizit bei "1 von vielen" bleibt.
+
+Alle drei Felder (`lastErrors`, `utasUnclassified`/`lastUnclassifiedPaths`,
+`rareflagHistogram`) liegen wie der Rest von `STATE.diag` nur im
+Skript-Speicher der laufenden Session - ein kurz auftretender unbekannter
+Endpunkt, der vor dem naechsten Diagnose-Klick durch F5/App-Neustart verloren
+geht, bleibt unsichtbar. Konsistent mit dem Rest von `STATE.diag`.

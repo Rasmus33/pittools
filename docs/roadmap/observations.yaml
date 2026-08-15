@@ -38,17 +38,8 @@ discoveries:
   shared_item_candidates: []
   cross_feature_smells: []
 seeds_next:
-  seeded_at: '2026-08-15T15:23:15Z'
+  seeded_at: null
   patterns: []
   shared_items: []
-  features:
-  - 'ENDSTAND nach iter5: 6 von 9 Features exakt auf structural_max (batch 70/70,
-    bedienpanel 85/85, sbc 80/80, ea-app 75/75, android 80/80, team 75/75). Die 3
-    restlichen Restpunkte sind ausschliesslich strukturell: solver 92/95 (reverse-engineerte
-    Formel), diagnose 84/85 (inhaerenter Vorlauf fuer unbekannte Fehlerbilder), pool
-    83/85 (Fehlertoleranz bewusst nicht angefasst — Club-Lade-Takt ist Nicht-anfassen-Zone).
-    KEINE weiteren Lifts ohne neuen Anlass — die Roadmap ist fertig.'
-  discoveries:
-  - 'git stash verliert im CRLF-Worktree still den staged/unstaged-Split — Implementer
-    sollten fuer Phasen-Snapshots git show nutzen (Beobachtung aus #54)'
-  - APK v1.8.0-Installation durch Rasmus weiterhin ausstehend
+  features: []
+  discoveries: []

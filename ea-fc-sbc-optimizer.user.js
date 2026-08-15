@@ -124,7 +124,7 @@
             uiScan: null,            // Panel/FAB/inSbcView-Snapshot zum Diagnose-Klick
             batchSteps: null,        // letzte Batch-Runden: ok/steps beim Oeffnen der naechsten Instanz
             batchStuckCount: 0,      // wie oft der stuck-Diagnosezweig in openNextInstance auslöste (v4.36.0-Vorfall über mehrere Läufe hinweg messbar statt anekdotisch)
-            lastTeam: null,          // zuletzt vom Solver geliefertes Team (ok/reason/cards)
+            lastTeam: null,          // zuletzt vom Solver geliefertes Team (ok/reason/cards/usedAssetsCount)
             submitCandidates: null,  // Controller.Methode-Kandidaten fuers Abgeben
             submitChallengeVia: null, // welcher Controller-/Service-Weg beim Abgeben gegriffen hat
             submitWithoutResponseCount: 0, // wie oft submitChallengeToEa ohne auswertbare Response als Erfolg durchging (LEARNINGS §9, v4.36.0: offen, ob Abgabe wirklich bestätigt war)
@@ -2218,7 +2218,7 @@
                 if (bad) {
                     return { ok: false, reason: 'Interner Fehler: ' + bad +
                         '. Nichts eingetragen - bitte Diagnose schicken.',
-                        warnings: warnings, teamDump: dump };
+                        warnings: warnings, teamDump: dump, usedAssetsCount: usedAssets.size };
                 }
                 const sum = team.reduce((s, p) => s + p.rating, 0);
                 const rats = team.map(p => p.rating);
@@ -2237,6 +2237,12 @@
                     target: target || null,
                     poolInfo: poolInfo,
                     teamDump: dump,
+                    // Beobachtbarkeit fuer den reserve()-Funnel (Anker/Rarity-
+                    // Pick/Vorgaben): Anzahl der ueber reserve() als distinkte
+                    // Spieler (assetId) gezaehlten Karten - haette vorher (Anker
+                    // und Rarity-Pick liefen inline an reserve() vorbei) keine
+                    // verlaessliche Aussagekraft gehabt.
+                    usedAssetsCount: usedAssets.size,
                     reason: (target && ovr < target) ? ('Erreichter OVR ' + ovr + ' < Ziel ' + target + '.') : null,
                     warnings: warnings
                 };
@@ -5237,7 +5243,11 @@
             STATE.diag.lastTeam = {
                 ok: !!res.ok,
                 reason: res.ok ? null : res.reason,
-                cards: res.teamDump || null
+                cards: res.teamDump || null,
+                // Beobachtbarkeit fuer den reserve()-Funnel (Anker/Rarity-Pick/
+                // Vorgaben): Anzahl distinkter Spieler (assetId), die ueber
+                // reserve() reserviert wurden - siehe SolverCore reserve().
+                usedAssetsCount: res.usedAssetsCount != null ? res.usedAssetsCount : null
             };
         } catch (e) {}
         return res;

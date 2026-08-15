@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.45.0
+// @version      4.46.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.45.0';
+    const VERSION = '4.46.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -123,11 +123,13 @@
             refreshLog: null,        // Protokoll des View-Refresh nach dem Abgeben
             uiScan: null,            // Panel/FAB/inSbcView-Snapshot zum Diagnose-Klick
             batchSteps: null,        // letzte Batch-Runden: ok/steps beim Oeffnen der naechsten Instanz
+            batchFailedSteps: null,  // wie batchSteps, aber NUR ok:false-Runden, Cap 30 statt 6er-Ring (ueberlebt laengere Batches, siehe recordBatchStep)
             batchStuckCount: 0,      // wie oft der stuck-Diagnosezweig in openNextInstance auslöste (v4.36.0-Vorfall über mehrere Läufe hinweg messbar statt anekdotisch)
             lastTeam: null,          // zuletzt vom Solver geliefertes Team (ok/reason/cards/usedAssetsCount)
             submitCandidates: null,  // Controller.Methode-Kandidaten fuers Abgeben
             submitChallengeVia: null, // welcher Controller-/Service-Weg beim Abgeben gegriffen hat
             submitWithoutResponseCount: 0, // wie oft submitChallengeToEa ohne auswertbare Response als Erfolg durchging (LEARNINGS §9, v4.36.0: offen, ob Abgabe wirklich bestätigt war)
+            submitConfirmations: null, // Post-Submit-Plausibilisierung im "ohne Response"-Zweig: via/hadResponse/squadEmptyAfter/ms je Versuch (reine Beobachtung, kein Abbruchkriterium)
             lastTap: null            // letzter simulierter Tap: Events/Position/Abdeckung/Popup
         }
     };
@@ -3887,6 +3889,9 @@
             // Instanz öffnen wollte? (Die Abbruchmeldung verweist darauf -
             // in v4.18.0 fehlte das Feld im Report, mein Fehler.)
             batchSteps: STATE.diag.batchSteps || null,
+            // Verlustfreies Gegenstueck dazu, Cap 30 statt 6er-Ring: die frueheste
+            // gescheiterte Runde bleibt auch bei einem spaeten Abbruch sichtbar.
+            batchFailedSteps: STATE.diag.batchFailedSteps || null,
             // Wie oft loeste der stuck-Zweig oben schon aus? Macht den
             // v4.36.0-Live-Vorfall ueber mehrere Laeufe hinweg messbar statt
             // nur aus einem einzelnen LEARNINGS-Eintrag ablesbar.
@@ -3907,6 +3912,9 @@
             // trotzdem als Erfolg? (LEARNINGS §9, v4.36.0: offen gelassene Frage,
             // ob EA die Abgabe wirklich bestaetigt hat.)
             submitWithoutResponseCount: STATE.diag.submitWithoutResponseCount || 0,
+            // Griff eine Abgabe "ohne Response" wirklich? isSquadEmpty() 400ms danach
+            // erneut gelesen - reine Beobachtung (kein throw/Retry), siehe submitChallengeToEa.
+            submitConfirmations: STATE.diag.submitConfirmations || null,
             // Der letzte fehlende Schritt: nach dem Abgeben landet die App im
             // SBC-HUB (mehrfach belegt), und loadChallenge() bringt die Ansicht
             // nicht zurück. Um die SBC wie von Hand anzuklicken, brauche ich die
@@ -4535,6 +4543,25 @@
                     (resp ? '' : ' (ohne Response)');
                 if (!resp) {
                     STATE.diag.submitWithoutResponseCount = (STATE.diag.submitWithoutResponseCount || 0) + 1;
+                    // Additive Plausibilisierung, KEIN Abbruchkriterium: solange kein
+                    // zweiter Live-Beleg zeigt, dass isSquadEmpty()===false nach einer
+                    // "ohne Response"-Abgabe wirklich einen Fehlschlag bedeutet, darf das
+                    // NICHT zu throw/Retry fuehren (False-Positive-Risiko: Netzwerk-Race,
+                    // Squad-Objekt noch nicht aktualisiert - "2 von 5 fertig" waere sonst
+                    // schlechter dran als ohne diese Pruefung). Nicht lesbar -> 'unknown',
+                    // dann bleibt es reine Beobachtung statt einer geratenen Aussage.
+                    const tConfirm = Date.now();
+                    let squadEmptyAfter = 'unknown';
+                    await batchWait(400);
+                    try {
+                        if (liveSquad && typeof liveSquad.isSquadEmpty === 'function') {
+                            squadEmptyAfter = liveSquad.isSquadEmpty();
+                        }
+                    } catch (e) {}
+                    STATE.diag.submitConfirmations = (STATE.diag.submitConfirmations || []).concat([{
+                        via: cand.w + '.' + cand.m, hadResponse: false,
+                        squadEmptyAfter: squadEmptyAfter, ms: Date.now() - tConfirm
+                    }]).slice(-6);
                 }
                 return { via: 'controller' };
             } catch (e) {
@@ -4604,7 +4631,7 @@
             let empty = null;
             try { if (sq && typeof sq.isSquadEmpty === 'function') empty = sq.isSquadEmpty(); }
             catch (e) {}
-            if (ctrl && sq && matchesPlannedSbc(plan) && empty !== false) {
+            if (ctrl && sq && isFreshMatchingInstance(plan, STATE.sbc, empty)) {
                 steps.push({ ms: Date.now() - t0, done: true, clicked: clicked });
                 return { ok: true, steps: steps };
             }
@@ -4633,7 +4660,7 @@
                     empty: empty
                 } });
             }
-            if (ctrl && (i === 5 || i === 25)) {
+            if (ctrl && shouldTryBack(i)) {
                 const b = clickBackButton();
                 steps.push({ ms: Date.now() - t0, back: b });
                 if (b.ok) { wentBack = true; await batchWait(900); continue; }
@@ -4889,6 +4916,10 @@
         // Die erste Zeile ist die noch offene Wiederholung.
         return { ok: clickLike(rows[0]), why: rows.length + ' Zeile(n), erste geklickt' };
     }
+    // Eigene, pur testbare Bedingung statt inline in openNextInstance - der
+    // v4.36.0-Live-Vorfall (App blieb im Squad-View haengen) war bisher nur per
+    // Text-Match belegt, nicht per Verhaltenstest.
+    function shouldTryBack(i) { return i === 5 || i === 25; }
     /**
      * Den Zurueck-Pfeil der App-Kopfleiste klicken. Gebraucht, wenn die App
      * nach dem Abgeben im Squad-View haengen bleibt (live beim 4/5-Abbruch):
@@ -4952,6 +4983,16 @@
         if (String(STATE.sbc.targetOVR || '') !== String(plan.targetOVR || '')) return false;
         if (Number(STATE.sbc.formationSlots || 0) !== Number(plan.slots || 0)) return false;
         return true;
+    }
+    // Sperre gegen eine bereits abgegebene Instanz: passt die offene SBC den
+    // Vorgaben nach, aber ihre challengeId steckt schon in plan.usedChallengeIds
+    // (onBatchRunClick traegt sie dort nach jeder Abgabe ein), ist es im
+    // Retry-Fenster die ALTE Instanz, nicht die neue - "jede Wiederholung hat
+    // eine eigene challengeId" (CLAUDE.md). Bisher nur beobachtet
+    // (usedInstance im stuck-Diagnosezweig), hier erstmals durchgesetzt.
+    function isFreshMatchingInstance(plan, sbcState, squadEmpty) {
+        return !!(matchesPlannedSbc(plan) && squadEmpty !== false &&
+            (plan.usedChallengeIds || []).indexOf(String(sbcState.challengeId)) === -1);
     }
     async function onBatchPlanClick() {
         syncSbcWithOpenChallenge();
@@ -5038,6 +5079,22 @@
         ui.batchRun.disabled = false;
         ui.batchRun.textContent = 'Alle ' + plan.planned + ' eintragen + abgeben';
     }
+    // Reiner Reducer (keine DOM-/Netzwerkabhaengigkeit, isoliert testbar): pflegt
+    // den bestehenden 6er-Ring diag.batchSteps unveraendert UND haelt zusaetzlich
+    // jede gescheiterte Runde verlustfrei in diag.batchFailedSteps fest, Cap 30
+    // statt 6 (analog lastErrors) - sonst ueberschreibt der 6er-Ring bei
+    // laengeren Batches die frueheste problematische Runde, bevor ein spaeter
+    // Abbruch sie ueberhaupt meldet.
+    function recordBatchStep(diag, round, next) {
+        diag.batchSteps = (diag.batchSteps || []).concat([{
+            round: round, ok: next.ok, steps: next.steps
+        }]).slice(-6);
+        if (!next.ok) {
+            diag.batchFailedSteps = (diag.batchFailedSteps || []).concat([{
+                round: round, ok: next.ok, steps: next.steps
+            }]).slice(-30);
+        }
+    }
     /**
      * Arbeitet den Plan ab: eintragen -> abgeben -> naechste Instanz oeffnen.
      * Bricht bei jeder Unstimmigkeit ab - "2 von 5 fertig" ist besser als eine
@@ -5095,9 +5152,7 @@
                     showProgress(i + 2, n, 'öffne die nächste SBC...', (doneLog.length ? doneLog.length + ' fertig' : ''));
                     setStatus(tag + ': öffne die nächste Runde...');
                     const next = await openNextInstance(plan);
-                    STATE.diag.batchSteps = (STATE.diag.batchSteps || []).concat([{
-                        round: i + 1, ok: next.ok, steps: next.steps
-                    }]).slice(-6);
+                    recordBatchStep(STATE.diag, i + 1, next);
                     if (!next.ok) {
                         if (next.exhausted) {
                             // Kein Fehler, sondern eine Auskunft: EA laesst das

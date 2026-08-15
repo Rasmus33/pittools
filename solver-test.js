@@ -410,13 +410,13 @@ function mulberry32(a) {
 
 // ========== 8. Rarity-Vorgaben: Gruppen-Matching + Quellen-Regel + Kosten ==========
 {
-    // Kosten-basierte Wahl der Vorgabe-Karte: die BILLIGERE gewinnt, auch wenn
-    // sie das höhere Rating hat. Die Bänder werden hier EXPLIZIT gesetzt statt
-    // die Default-Tabelle zu nehmen - sonst hängt der Test daran, wie Rasmus
-    // seine Ratings gerade bewertet (mit '85-88:2' waren 85er und 88er gleich
-    // teuer und der Test prüfte nichts mehr). KEINE SSOT-Drift: bewusst
-    // unabhängig von SolverCore.DEFAULT_RATING_COST_SPEC, nicht mit ihr
-    // synchron halten.
+    // GEDREHT in v4.67.0 (Produktregel von Rasmus, 16.08.): TOTW sind
+    // wertgleich - die Rating-Baender gelten fuer sie NICHT mehr. Der alte
+    // Erwartungswert (88er-TOTW gewinnt, weil sein BAND billiger ist) ist
+    // damit ungueltig; jetzt gewinnt bei fensterneutraler Wahl der
+    // NIEDRIGERE TOTW (rating/1000-Tiebreak), voellig egal wie die Baender
+    // stehen. Die invertierten Baender (85 teuer, 88 billig) bleiben im Test,
+    // um genau das zu beweisen: sie duerfen die TOTW-Wahl nicht mehr kippen.
     const BANDS = '0-84:0, 85-86:5, 87-88:2, 89+:12';
     const totw85 = P(85, { special: true, rareflag: 3, groups: [83] });
     const totw88 = P(88, { special: true, rareflag: 3, groups: [83] });
@@ -426,8 +426,8 @@ function mulberry32(a) {
         ratingCostSpec: BANDS,
         rarityConstraints: [{ label: 'PLAYER_RARITY_GROUP', ids: [], count: 1, groupId: 83 }]
     }));
-    check('Vorgabe-Karte nach KOSTEN: 88er TOTW (2) statt 85er (5)', res.ok &&
-        res.players.some(p => p.id === totw88.id) && !res.players.some(p => p.id === totw85.id),
+    check('TOTW-Vorgabe ignoriert Baender: 85er TOTW gewinnt trotz teurem 85er-Band (v4.67.0)', res.ok &&
+        res.players.some(p => p.id === totw85.id) && !res.players.some(p => p.id === totw88.id),
         'team=' + res.players.filter(p => p.isSpecial).map(p => p.name).join(','));
     // Quellen-Regel: Club-FUTTIES nie, auch wenn günstiger
     const clubFutties = P(84, { special: true, rareflag: 137, groups: [83] });
@@ -5250,6 +5250,118 @@ function mulberry32(a) {
     }
 
     pending.push(Promise.all(results59));
+}
+
+// ========== 60. v4.67.0: TOTW ohne Rating-Band-Kosten + Filter-Ursache in der Unloesbar-Meldung ==========
+// Produktregel (Rasmus, 16.08.): TOTW sind wertgleich - die Rating-Kosten-
+// Baender gelten fuer sie nicht; nur ein minimaler Rating-Anteil (rating/1000)
+// unterscheidet sie. Und: frisst der Max-Rating-Filter ALLE Kandidaten einer
+// Rarity-Vorgabe, steht die Ursache jetzt IN der Meldung (Live-Fall: "0
+// Kandidaten trotz 43 TOTW" bei aktivem Filter 85).
+{
+    // (a) costOf: TOTW-Paar unterscheidet sich NUR um den Rating-Tiebreak,
+    // Gold-Paar zahlt weiter die Band-Differenz (Kontrolle).
+    {
+        const mk = (r, rf, groups) => ({ id: 'c' + r + rf, rating: r, rareflag: rf,
+            isSpecial: rf >= 2, isRare: rf === 1, isStorage: false,
+            untradeable: false, groups: groups || [] });
+        const totw84 = mk(84, 3, [83]), totw87 = mk(87, 3, [83]);
+        const gold84 = mk(84, 1), gold87 = mk(87, 1);
+        const pool = [totw84, totw87, gold84, gold87]; // je Rating 2 Karten -> Scarcity gleich
+        const cfg = { ratingCostSpec: '0-86:0, 87-99:6', scarcityWeight: 18,
+            storageBonus: 0, untradeableBonus: 0, rarityGuardCost: 8 };
+        const costOf = SolverCore.makeCostOf(pool, cfg);
+        const totwDiff = costOf(totw87) - costOf(totw84);
+        check('TOTW: Kostendifferenz 87 vs 84 ist NUR der Rating-Tiebreak (0.003), kein Band',
+            Math.abs(totwDiff - 0.003) < 1e-9, 'diff=' + totwDiff);
+        const goldDiff = costOf(gold87) - costOf(gold84);
+        check('Gold (Kontrolle): 87er zahlt weiter die Band-Differenz (6)',
+            Math.abs(goldDiff - 6) < 1e-9, 'diff=' + goldDiff);
+    }
+    // (b) Verhalten: Rarity-Vorgabe ohne Ziel-OVR (Greedy-Reservierung nach
+    // Kosten). Band macht 84 kuenstlich teuer (12) und 87 gratis - VOR der
+    // Regel haette der Solver den 87er-TOTW gewaehlt; JETZT ignorieren TOTW
+    // die Baender und der niedrigere 84er wird verbraucht.
+    {
+        const mk = (id, r, rf, groups) => ({ id: id, name: id, rating: r, rareflag: rf,
+            isSpecial: rf >= 2, isRare: rf === 1, isStorage: false,
+            untradeable: false, groups: groups || [] });
+        const pool = [
+            mk('T84', 84, 3, [83]), mk('T87', 87, 3, [83]),
+            mk('C60a', 60, 0), mk('C60b', 60, 0)
+        ];
+        const cfg = { targetOVR: null, slots: 3, minRating: 1, maxOvershoot: 0,
+            applyRarity: true, specialOnlyFromStorage: false,
+            ratingCostSpec: '0-83:0, 84:12, 85-99:0',
+            scarcityWeight: 0.0001, storageBonus: 0, untradeableBonus: 0,
+            rarityGuardCost: 0, lockedIds: [], maxRareRating: 99, maxCommonRating: 99,
+            rarityConstraints: [{ label: 'PLAYER_RARITY_GROUP', ids: [], count: 1, groupId: 83 }],
+            qualityConstraints: [], rareConstraints: [], playerLevelConstraints: []
+        };
+        const res = SolverCore.solve(pool, cfg);
+        check('TOTW-Reservierung ohne Ziel: nimmt den NIEDRIGEREN TOTW trotz teurem 84er-Band',
+            res.ok && res.players.some(p => p.id === 'T84') && !res.players.some(p => p.id === 'T87'),
+            res.ok ? res.players.map(p => p.id).join(',') : res.reason);
+    }
+    // (c) Unloesbar-Meldung nennt den Max-Rating-Filter als Ursache, wenn er
+    // ALLE Vorgabe-Kandidaten frisst (Live-Fall 16.08.).
+    {
+        const mk = (id, r, rf, groups) => ({ id: id, rating: r, rareflag: rf,
+            isSpecial: rf >= 2, isRare: rf === 1, isStorage: false,
+            untradeable: false, groups: groups || [] });
+        const pool = [
+            mk('T88', 88, 3, [83]), mk('T90', 90, 3, [83]),
+            mk('G84a', 84, 1), mk('G84b', 84, 1), mk('G84c', 84, 1)
+        ];
+        const cfg = { targetOVR: 84, slots: 3, minRating: 1, maxOvershoot: 0,
+            applyRarity: true, specialOnlyFromStorage: false,
+            maxRatingEnabled: true, maxRating: 85,
+            ratingCostSpec: '0-99:0', scarcityWeight: 0.0001, storageBonus: 0,
+            untradeableBonus: 0, rarityGuardCost: 0, lockedIds: [],
+            maxRareRating: 99, maxCommonRating: 99,
+            rarityConstraints: [{ label: 'PLAYER_RARITY_GROUP', ids: [], count: 1, groupId: 83 }],
+            qualityConstraints: [], rareConstraints: [], playerLevelConstraints: []
+        };
+        const res = SolverCore.solve(pool, cfg);
+        check('Unloesbar mit Filter: ok:false und die Meldung nennt Max-Rating als Ursache',
+            !res.ok && /über Max-Rating 85/.test(res.reason || ''),
+            JSON.stringify({ ok: res.ok, reason: res.reason }));
+        // Gegenprobe: Filter aus -> loesbar (die TOTW duerfen wieder mitspielen).
+        const cfg2 = Object.assign({}, cfg, { maxRatingEnabled: false });
+        const res2 = SolverCore.solve(pool, cfg2);
+        check('Gegenprobe ohne Filter: dieselbe SBC ist loesbar',
+            res2.ok === true, res2.ok ? 'ok' : res2.reason);
+    }
+    // (d) LIVE-BUG 16.08.: "Specials nur aus Storage" warf Verein-TOTW mit
+    // raus (die dokumentierte TOTW-Ausnahme fehlte im allgemeinen Pool-Filter,
+    // nur die Reservierung hatte sie) -> "Rarity-Vorgabe nicht erfuellbar"
+    // trotz 43 TOTW im Verein. Jetzt: Verein-TOTW bleiben mit aktivem Haken
+    // nutzbar, andere Verein-Specials fliegen weiter raus.
+    {
+        const mk = (id, r, rf, groups, storage) => ({ id: id, name: id, rating: r,
+            rareflag: rf, isSpecial: rf >= 2, isRare: rf === 1,
+            isStorage: !!storage, untradeable: false, groups: groups || [] });
+        const pool = [
+            mk('TOTW86', 86, 3, [83], false),       // Verein-TOTW: MUSS nutzbar sein
+            mk('FUT88', 88, 16, [83], false),       // Verein-Special (kein TOTW): bleibt tabu
+            mk('G84a', 84, 1), mk('G84b', 84, 1), mk('G82', 82, 1)
+        ];
+        const cfg = { targetOVR: 84, slots: 3, minRating: 1, maxOvershoot: 2,
+            applyRarity: true, specialOnlyFromStorage: true,
+            ratingCostSpec: '0-99:0', scarcityWeight: 0.0001, storageBonus: 0,
+            untradeableBonus: 0, rarityGuardCost: 0, lockedIds: [],
+            maxRareRating: 99, maxCommonRating: 99,
+            rarityConstraints: [{ label: 'PLAYER_RARITY_GROUP', ids: [], count: 1, groupId: 83 }],
+            qualityConstraints: [], rareConstraints: [], playerLevelConstraints: []
+        };
+        const res = SolverCore.solve(pool, cfg);
+        check('Specials-nur-Storage: Verein-TOTW erfuellt die Gruppe-83-Vorgabe (TOTW-Ausnahme)',
+            res.ok === true && res.players.some(p => p.id === 'TOTW86'),
+            res.ok ? res.players.map(p => p.id).join(',') : res.reason);
+        check('Specials-nur-Storage: Verein-Special ohne TOTW bleibt weiter ausgeschlossen',
+            !res.ok || !res.players.some(p => p.id === 'FUT88'),
+            res.ok ? res.players.map(p => p.id).join(',') : 'n/a');
+    }
 }
 
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt

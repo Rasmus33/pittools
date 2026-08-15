@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.66.0
+// @version      4.67.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.66.0';
+    const VERSION = '4.67.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -1859,7 +1859,16 @@
                 ? Number(cfg.untradeableBonus) : 3);
             function costOf(p) {
                 const n = countByRating.get(p.rating) || 1;
-                const base = alpha / n + bandFn(p.rating);
+                // TOTW (rareflag 3) sind wertgleich - die Rating-Kosten-
+                // Baender gelten fuer sie NICHT (Produktregel von Rasmus,
+                // 16.08.): ein 87er-TOTW ist nicht "teurer" als ein 84er,
+                // nur weil 87er-GOLD im Band teuer ist. Stattdessen ein
+                // minimaler Rating-Anteil (rating/1000) als Tiebreak:
+                // niedrigere TOTW werden bei sonst gleicher Eignung zuerst
+                // verbraucht ("hoehere sind besser, aber nur minimal").
+                // Scarcity/Storage/Untradeable/Rarity-Schutz wirken weiter.
+                const band = isTotw(p) ? (p.rating / 1000) : bandFn(p.rating);
+                const base = alpha / n + band;
                 return (p.isStorage ? (base / 2 - beta) : base) +
                        (isProtectedRarity(p) ? guardCost : 0) -
                        (p.untradeable ? untrBonus : 0);
@@ -2057,6 +2066,7 @@
             // verwendet, auch nicht fuer Vorgaben. Anders als die Rarity-Sperre
             // oben lockert sich dieser Filter NIE selbst; Unloesbarkeit wird
             // unten explizit gemeldet (LEARNINGS §44).
+            const rawPool = poolAll;
             poolAll = applyMaxRatingFilter(poolAll, cfg);
             const strict = solveCore(poolAll, cfg, true);
             if (strict && strict.ok) return strict;
@@ -2071,6 +2081,27 @@
             // aussagekräftigere (die Sperre war dort nicht die Ursache).
             const result = loose || strict;
             if (result && !result.ok && cfg.maxRatingEnabled && cfg.maxRating) {
+                // Live-Fall 16.08.: "Rarity-Vorgabe nicht erfüllbar" bei 43
+                // TOTW im Pool - ALLE lagen über dem aktiven Max-Rating.
+                // Ein Filter, der still die Vorgabe-Kandidaten frisst, macht
+                // die Meldung irreführend - deshalb steht die Ursache jetzt
+                // IN der Meldung, nicht nur als Warnung darunter.
+                try {
+                    const parts = [];
+                    const rcs = (cfg.applyRarity === false) ? [] : (cfg.rarityConstraints || []);
+                    for (const rc of rcs) {
+                        const pre = rawPool.filter(function (p) { return matchesRarity(p, rc); }).length;
+                        const post = poolAll.filter(function (p) { return matchesRarity(p, rc); }).length;
+                        if (pre > 0 && post === 0) {
+                            parts.push('alle ' + pre + ' Kandidaten für "' + (rc.label || 'Rarity') +
+                                '" liegen über Max-Rating ' + cfg.maxRating);
+                        }
+                    }
+                    if (parts.length) {
+                        result.reason = (result.reason || 'Nicht lösbar.') +
+                            ' Ursache: ' + parts.join('; ') + ' - Max-Rating-Filter lockern oder ausschalten.';
+                    }
+                } catch (e) {}
                 result.warnings = (result.warnings || []).concat(
                     'Mit Max-Rating ' + cfg.maxRating + ' nicht lösbar - Filter lockern?');
             }
@@ -2183,7 +2214,13 @@
                 : ((p) => p.rating >= qLo && p.rating <= qHi);
             let pool = poolAll.filter(inQBand);
             if (cfg.specialOnlyFromStorage) {
-                pool = pool.filter(p => !(p.isSpecial && !p.isStorage));
+                // TOTW-AUSNAHME (Produktregel, Live-Fall 16.08.): "Verein-
+                // Specials NIE in SBCs - einzige Ausnahme: TOTW (rareflag 3)".
+                // Genau diese Ausnahme fehlte hier: der Filter warf Verein-TOTW
+                // mit raus, die Reservierung (reservationCandidates hat die
+                // Ausnahme korrekt) bekam den schon leergefilterten Pool und
+                // meldete "Rarity-Vorgabe nicht erfuellbar" trotz 43 TOTW.
+                pool = pool.filter(p => !(p.isSpecial && !p.isStorage && !isTotw(p)));
             }
             // Bei Bronze/Silber-Vorgaben NUR normale Karten: ein bronzenes
             // Special ist wertvoller als sein Rating, und für die Vorgabe
@@ -4621,6 +4658,27 @@
                 count: ratingBands.length,
                 isDefault: JSON.stringify(ratingBands) === JSON.stringify(defaultBands())
             },
+            // Aktive Panel-Einstellungen zum Report-Zeitpunkt (Live-Fall
+            // 16.08.: "0 Rarity-Kandidaten trotz 43 TOTW" war ohne Kenntnis
+            // des aktiven Max-Rating-Filters nicht diagnostizierbar - der
+            // Report trug bis dahin KEINE Config). Wie `bands` zur Laufzeit
+            // berechnet, kein STATE.diag-Feld.
+            cfgSnapshot: (function () {
+                try {
+                    const c = readConfig();
+                    return {
+                        minRating: c.minRating, maxOvershoot: c.maxOvershoot,
+                        maxRatingEnabled: c.maxRatingEnabled, maxRating: c.maxRating,
+                        applyRarity: c.applyRarity,
+                        specialOnlyFromStorage: c.specialOnlyFromStorage,
+                        lockedCount: (c.lockedIds || []).length,
+                        maxRareRating: c.maxRareRating, maxCommonRating: c.maxCommonRating,
+                        scarcityWeight: c.scarcityWeight, storageBonus: c.storageBonus,
+                        untradeableBonus: c.untradeableBonus, rarityGuardCost: c.rarityGuardCost,
+                        rarityPickId: c.rarityPickId
+                    };
+                } catch (e) { return { error: String(e && e.message || e) }; }
+            })(),
             // Batch: was hat der Lauf pro Runde gesehen, als er die nächste
             // Instanz öffnen wollte? (Die Abbruchmeldung verweist darauf -
             // in v4.18.0 fehlte das Feld im Report, mein Fehler.)

@@ -1877,3 +1877,32 @@ oder Storage passt, bleibt liegen mit Hinweis im Report.
 in der SBC-Ansicht sichtbar - `syncLauncher()` zeigt ihn jetzt zusaetzlich in
 der Store-Ansicht, sonst waere der neue Pack-Opener-Abschnitt nie erreichbar;
 die Einhaengung in die SBC-Aktionsleiste bleibt dabei SBC-spezifisch.
+
+## 47. Verein-TOTW und die Storage-Regel, TOTW-Flachkosten, Filter-Ursachen in Meldungen
+
+Drei Aenderungen aus einem Live-Abend (16.08., v4.67.0):
+
+**Die TOTW-Ausnahme fehlte im allgemeinen Pool-Filter.** Die Produktregel
+sagt seit jeher: "Verein-Specials NIE in SBCs - einzige Ausnahme: TOTW
+(rareflag 3)". Der Reservierungs-Filter (reservationCandidates) hatte die
+Ausnahme, aber der ALLGEMEINE "Specials nur aus Storage"-Filter in solveCore
+warf Verein-TOTW mit raus - die Reservierung bekam den leergefilterten Pool
+und meldete "Rarity-Vorgabe nicht erfuellbar", waehrend die Anzeige daneben
+43 verfuegbare TOTW zeigte. Rasmus fand den Ausloeser selbst (Haken raus ->
+ploetzlich loesbar). Merksatz: eine Ausnahme-Regel muss an JEDEM Gate
+stehen, das die Kartenklasse beruehrt - ein einziges Gate ohne sie frisst
+die Karten, bevor das korrekte Gate sie je sieht.
+
+**TOTW sind wertgleich (neue Produktregel von Rasmus).** Die Rating-Kosten-
+Baender gelten fuer TOTW nicht mehr: ein 87er-TOTW ist nicht teurer als ein
+84er, nur weil 87er-Gold im Band teuer ist. Stattdessen rating/1000 als
+minimaler Tiebreak (niedrigere TOTW zuerst verbrauchen). Scarcity, Storage-
+Rabatt, Untradeable-Bonus und Rarity-Schutz wirken unveraendert. Der
+Alt-Test "Vorgabe-Karte nach KOSTEN" wurde mit Begruendung gedreht.
+
+**Unloesbar-Meldungen nennen jetzt Filter-Ursachen.** Frisst der aktive
+Max-Rating-Filter ALLE Kandidaten einer Rarity-Vorgabe, steht das IN der
+Meldung ("alle N Kandidaten liegen ueber Max-Rating X") statt nur als
+Warnung darunter. Und der Report traegt einen cfgSnapshot (aktive
+Panel-Einstellungen inkl. lockedCount) - der Live-Fall war ohne Kenntnis
+der aktiven Filter nicht diagnostizierbar.

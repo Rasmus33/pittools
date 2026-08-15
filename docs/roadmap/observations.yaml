@@ -38,21 +38,8 @@ discoveries:
   shared_item_candidates: []
   cross_feature_smells: []
 seeds_next:
-  seeded_at: '2026-08-15T18:38:40Z'
+  seeded_at: null
   patterns: []
   shared_items: []
-  features:
-  - 'rating-solver: playerLevelConstraints-Reservierung hat strukturell denselben
-    Kosten-zuerst-Aufbau wie der gefixte Rarity-Pfad (user.js ~2293-2307) — offener,
-    UNVERIFIZIERTER Verdacht aus LEARNINGS §41; naechster Schritt waere ein gezieltes
-    Fuzzing wie in #57, NICHT blind fixen'
-  - EA hat am 15.08. abends grosse Kit-/Belohnungs-Metadaten in die Set-Daten gehaengt
-    — Ausloeser der Hotfix-Kaskade v4.57-v4.60; die elgReq-Quelle (v4.60) ist jetzt
-    die Verteidigungslinie, Live-Bewaehrung durch Rasmus stand beim Seed noch aus
-  discoveries:
-  - 'Live-Feedback-Schleife funktionierte: Report -> Diagnose-Feld zeigt Ursache ->
-    Hotfix in <1h, viermal am selben Abend; die iter3-6-Diagnosefelder (scanStats,
-    deepScanBySource, titleSource, skippedKeys) waren dabei die Werkzeuge'
-  - LEARNINGS §30 traegt noch eine changelog-artige Formulierung (pre-existierend,
-    vom iter6-Re-Score notiert) — Mini-Doku-Politur bei Gelegenheit
-  - APK v1.8.0-Installation durch Rasmus weiterhin ausstehend
+  features: []
+  discoveries: []

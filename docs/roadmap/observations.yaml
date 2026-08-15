@@ -236,8 +236,22 @@ discoveries:
       strukturell tot (Pool ist vor buildDp immer assetId-unique) — nur der priorityOf-Teil
       wirkt. Kandidat naechste Gap-Analyse rating-solver.
 seeds_next:
-  seeded_at: null
-  patterns: []
-  shared_items: []
-  features: []
-  discoveries: []
+  seeded_at: '2026-08-15T02:19:00Z'
+  patterns:
+  - 'symmetrie-test-lesen-schreiben-trennen: 1 Beleg, beim naechsten Test-Ausbau erneut
+    pruefen'
+  shared_items:
+  - 'test-extraktions-helfer: jetzt >10 Marker-Extraktions-Stellen in solver-test.js
+    ueber 4+ Features — reif fuer ein SI-Ticket'
+  features:
+  - 'batch-modus: Lift-Plan-Aktion 4 nur halb geliefert — aktive Abgabe-Plausibilisierung
+    (Squad-Nachpruefung nach ohne-Response-Submit) fehlt, Ziel um 2 Punkte verfehlt'
+  - 'diagnose-werkzeuge: Symmetrie-Test um 3. Richtung ergaenzen (deklariert→im Report
+    gelesen) + lastEligible sichtbar machen'
+  - 'rating-solver: makeConsumeCmp Duplikat-Stapel-Tiebreak strukturell tot — bereinigen
+    oder begruenden'
+  discoveries:
+  - 'vision-pflege: code_geography der Userscript-Features auf reine Pfade/Globs umstellen
+    (Beleg-/Scorer-Resolver findet sonst 0 Kandidaten)'
+  - classifyUrl storage-Fallback fuer challenge/setId-URLs unerreichbar (vorbestehend,
+    dokumentiert)

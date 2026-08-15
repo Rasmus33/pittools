@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.65.0
+// @version      4.66.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.65.0';
+    const VERSION = '4.66.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -6195,12 +6195,18 @@
             SearchCriteria = win.UTSearchCriteriaDTO;
             if (typeof SearchCriteria !== 'function') missing.push('UTSearchCriteriaDTO');
         } catch (e) { missing.push('UTSearchCriteriaDTO'); }
+        // GameCurrency ist OPTIONAL (Live-Befund 16.08., packScan: in der
+        // fc26-Web-App existiert es nicht als Global). Stufe 1 braucht es
+        // nicht: purchase(currency) wird nie gerufen (nur open() auf
+        // besessenen Packs), und isMiscPackItem() hat den itemType-Fallback.
+        // Fehlt es, wird das nur diagnostisch vermerkt, nicht blockiert.
+        const optionalMissing = [];
         try {
             GameCurrency = win.GameCurrency;
-            if (typeof GameCurrency !== 'function') missing.push('GameCurrency');
-        } catch (e) { missing.push('GameCurrency'); }
+            if (typeof GameCurrency !== 'function') { GameCurrency = null; optionalMissing.push('GameCurrency'); }
+        } catch (e) { GameCurrency = null; optionalMissing.push('GameCurrency'); }
         return {
-            ok: missing.length === 0, missing: missing,
+            ok: missing.length === 0, missing: missing, optionalMissing: optionalMissing,
             store: store, item: item, repoItem: repoItem, ItemPile: ItemPile,
             SearchCriteria: SearchCriteria, GameCurrency: GameCurrency
         };
@@ -6300,7 +6306,7 @@
             byId.get(key).push(p);
         }
         STATE.packEntitiesById = byId;
-        mergePackScan({ myPacks: groups, missingGlobals: [] });
+        mergePackScan({ myPacks: groups, missingGlobals: g.optionalMissing || [] });
         return groups;
     }
     function renderPackTypeOptions() {
@@ -6362,7 +6368,7 @@
             mergePackScan({ missingGlobals: g.missing });
             return { ok: false, reason: 'Store-Schnittstellen fehlen (' + g.missing.join(', ') + ').' };
         }
-        mergePackScan({ missingGlobals: [], errorForm: null, testRun: null });
+        mergePackScan({ missingGlobals: g.optionalMissing || [], errorForm: null, testRun: null });
         let unassignedBefore;
         try { unassignedBefore = g.repoItem.numItemsInCache(g.ItemPile.PURCHASED); }
         catch (e) {

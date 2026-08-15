@@ -4881,8 +4881,10 @@ function mulberry32(a) {
             !dEmpty.toClub.length && !dEmpty.toStorage.length && !dEmpty.toMisc.length && !dEmpty.leftover.length);
     }
 
-    // (e) resolvePackGlobals: alle sechs Globalen-Checks praesent -> ok, jede fehlende
-    // einzeln erkannt (Fehlerform beantwortet direkt "welches Global fehlt").
+    // (e) resolvePackGlobals: fuenf PFLICHT-Globale (jede fehlende einzeln
+    // erkannt) + GameCurrency als OPTIONAL (Live-Befund 16.08., packScan:
+    // existiert in der fc26-Web-App nicht als Global; Stufe 1 ruft nie
+    // purchase(currency), und isMiscPackItem hat den itemType-Fallback).
     {
         const fn = extractFunction(src, 'resolvePackGlobals');
         check('Funktion resolvePackGlobals gefunden (58e)', !!fn);
@@ -4899,15 +4901,15 @@ function mulberry32(a) {
                 GameCurrency: function () {}
             };
         }
-        check('resolvePackGlobals: alle sechs Globalen-Checks da -> ok:true, missing leer',
-            (function () { const r = resolvePackGlobals(fullWindow()); return r.ok && r.missing.length === 0; })());
+        check('resolvePackGlobals: alle Globalen da -> ok:true, missing UND optionalMissing leer',
+            (function () { const r = resolvePackGlobals(fullWindow());
+                return r.ok && r.missing.length === 0 && r.optionalMissing.length === 0; })());
         const cases = [
             ['services.Store.getPacks', w => { delete w.services.Store; }],
             ['services.Item', w => { delete w.services.Item; }],
             ['repositories.Item', w => { delete w.repositories.Item; }],
             ['ItemPile', w => { delete w.ItemPile; }],
-            ['UTSearchCriteriaDTO', w => { delete w.UTSearchCriteriaDTO; }],
-            ['GameCurrency', w => { delete w.GameCurrency; }]
+            ['UTSearchCriteriaDTO', w => { delete w.UTSearchCriteriaDTO; }]
         ];
         for (const [label, mutate] of cases) {
             const w = fullWindow();
@@ -4915,6 +4917,17 @@ function mulberry32(a) {
             const r = resolvePackGlobals(w);
             check('resolvePackGlobals: fehlendes ' + label + ' -> ok:false, in missing[] genannt',
                 r.ok === false && r.missing.indexOf(label) > -1, JSON.stringify(r.missing));
+        }
+        // Der Live-Fall: GameCurrency fehlt -> ok:true (nicht blockierend),
+        // aber diagnostisch in optionalMissing vermerkt, GameCurrency null.
+        {
+            const w = fullWindow();
+            delete w.GameCurrency;
+            const r = resolvePackGlobals(w);
+            check('resolvePackGlobals: fehlendes GameCurrency blockiert NICHT (ok:true, optionalMissing)',
+                r.ok === true && r.missing.length === 0 &&
+                r.optionalMissing.indexOf('GameCurrency') > -1 && r.GameCurrency === null,
+                JSON.stringify({ missing: r.missing, optional: r.optionalMissing }));
         }
     }
 

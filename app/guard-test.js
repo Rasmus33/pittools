@@ -298,6 +298,66 @@ function ok(name, cond, detail) {
             name + ' ruft weder addLog noch reportNetError auf');
     }
 
+    // 10. Aktion 1 (lift-plan android-app-wrapper): 304 ist kein Fehler -
+    //     reportNetNote([net-ok]) statt des fehler-benannten reportNetError.
+    //     Die Zeile muss sichtbar bleiben (Rasmus liest daran den
+    //     PaleTools-Hintergrund-Refresh ab, docs/LEARNINGS.md §20) - nur das
+    //     Praefix wechselt.
+    const reportNetNoteBody = extractBraceBlock(javaSrc, 'void reportNetNote(String where, String detail) {');
+    ok('reportNetNote nutzt das [net-ok]-Präfix',
+        /addLog\("\[net-ok\] "/.test(reportNetNoteBody), reportNetNoteBody);
+    const fetchIfChangedBody = extractBraceBlock(javaSrc,
+        'String fetchUrlIfChanged(String u, String etagKey, String modKey) {');
+    const idx304 = fetchIfChangedBody.indexOf('code == 304');
+    const idxNot200 = fetchIfChangedBody.indexOf('code != 200', idx304);
+    const branch304 = idx304 >= 0 && idxNot200 > idx304
+        ? fetchIfChangedBody.slice(idx304, idxNot200) : '';
+    ok('304-Zweig in fetchUrlIfChanged ruft reportNetNote statt reportNetError',
+        /reportNetNote\(/.test(branch304) && !/reportNetError\(/.test(branch304),
+        branch304);
+
+    // 11. Aktion 2: scriptSbc/scriptPale/paleSource laufen ausschließlich
+    //     über setLoadedScripts() - keine externe Feldzuweisung mehr.
+    const setLoadedScriptsBody = extractBraceBlock(javaSrc,
+        'void setLoadedScripts(String sbc, String pale, String source) {');
+    ok('setLoadedScripts loggt (nur bei tatsächlicher Änderung)',
+        /addLog\(/.test(setLoadedScriptsBody), setLoadedScriptsBody);
+    const srcWithoutSetter = javaSrc.replace(setLoadedScriptsBody, '');
+    const externalAssignRe = /\.(scriptSbc|scriptPale|paleSource)\s*=(?!=)/;
+    const externalAssignMatch = srcWithoutSetter.match(externalAssignRe);
+    ok('keine .scriptSbc=/.scriptPale=/.paleSource=-Zuweisung außerhalb des Setters',
+        !externalAssignMatch, externalAssignMatch && externalAssignMatch[0]);
+    const scriptLoaderBody = extractBraceBlock(javaSrc, 'class ScriptLoader implements Runnable {');
+    ok('ScriptLoader.run() nutzt setLoadedScripts',
+        /a\.setLoadedScripts\(sbc, pale, source\)/.test(scriptLoaderBody), scriptLoaderBody);
+    const settingsSaveBody = extractBraceBlock(javaSrc, 'class SettingsSave implements DialogInterface.OnClickListener {');
+    ok('SettingsSave.onClick() nutzt setLoadedScripts(null, null, null)',
+        /a\.setLoadedScripts\(null,\s*null,\s*null\)/.test(settingsSaveBody), settingsSaveBody);
+
+    // 12. Aktion 3: SbcWebViewClient bekommt onReceivedError/onReceivedHttpError
+    //     (bisher einzige Fremd-Grenze ganz ohne Diagnose-Spur), beide loggend.
+    const webViewClientBody = extractBraceBlock(javaSrc,
+        'class SbcWebViewClient extends android.webkit.WebViewClient {');
+    const onReceivedErrorBody = extractBraceBlock(webViewClientBody, 'public void onReceivedError(');
+    ok('onReceivedError existiert und loggt über addLog',
+        /addLog\(/.test(onReceivedErrorBody), onReceivedErrorBody);
+    const onReceivedHttpErrorBody = extractBraceBlock(webViewClientBody, 'public void onReceivedHttpError(');
+    ok('onReceivedHttpError existiert und loggt über addLog',
+        /addLog\(/.test(onReceivedHttpErrorBody), onReceivedHttpErrorBody);
+
+    // 13. Aktion 4: readStream liefert nie null (nur ""), also muss der
+    //     Leer-Body-Schutz auf isEmpty() prüfen statt auf den strukturell nie
+    //     zutreffenden Vergleich mit null - fetchUrl bekommt denselben Schutz,
+    //     der ihm bisher komplett fehlte.
+    ok('fetchUrlIfChanged prüft body.isEmpty() statt body == null',
+        /body\.isEmpty\(\)/.test(fetchIfChangedBody) && !/body == null/.test(fetchIfChangedBody),
+        fetchIfChangedBody);
+    const fetchUrlBody = extractBraceBlock(javaSrc, 'String fetchUrl(String u) {');
+    ok('fetchUrl hat einen eigenen Leer-Body-Check ("leerer Body") mit return null',
+        /isEmpty\(\)/.test(fetchUrlBody) && /"leerer Body"/.test(fetchUrlBody)
+            && /isEmpty\(\)[\s\S]*?return null;/.test(fetchUrlBody),
+        fetchUrlBody);
+
     console.log(failed
         ? '\n' + failed + ' Test(s) fehlgeschlagen.'
         : '\nAlle Wächter-Tests bestanden.');

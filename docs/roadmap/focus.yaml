@@ -60,4 +60,16 @@ history:
       after: 84
       target: 82
       verdict: hit
+- iteration: 2
+  decided_at: '2026-08-15T10:31:07Z'
+  dimensions:
+  - RA
+  features:
+  - android-app-wrapper
+  phases: []
+  mode: soft-regression-guard
+  rationale: 'Einziges Feature mit echtem Restpotenzial (72/80); deckt Cleanup-Kind
+    #25 (304-Zweig) mit. Alle anderen Features an/nahe ihren Deckeln — halten. Doku-Reste
+    (#27/#28, Batch-LEARNINGS-Debt) macht Main direkt als Doku-Runde.'
+  effectiveness: {}
 pending_suggestion: null

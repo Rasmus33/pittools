@@ -973,3 +973,57 @@ Source-Slice-Regressionstest (Stil analog `setLooksRepeatable`) sichert die
 drei Abbruch-Zweige von `onBatchRunClick()`, das Plan-verbraucht-Prinzip im
 `finally` sowie den `stuck`-/`clickBackButton`-Diagnosezweig in
 `openNextInstance()` gegen stillschweigendes Entfernen ab.
+
+## 28. reserve()-Funnel jetzt an JEDEM Reservierungspfad, Sortier-Komparator + Kostenformel als Factory
+
+Fortsetzung von §16: die dortige Absicherung ("Alle Reservierungen laufen
+jetzt ueber `reserve(p)`/`freeCard(p)`") galt tatsaechlich nur fuer die
+automatischen Reservierungspfade (Bronze/Silber-Quoten, Spieler-Level-
+Vorgaben, Rarity-Vorgaben, Rare-ohne-Ziel). Der Anker (`cfg.anchorId`) und die
+manuell gewaehlte Rarity-Karte (`cfg.rarityPickId`) pflegten `used`/`reserved`
+weiterhin inline und liefen damit am `reserve()`-Funnel vorbei - `usedAssets`
+blieb fuer beide Pfade unbefuellt. Folgenlos war das nur, weil die
+SPIELER-EINDEUTIGKEIT (ebenfalls §16, laeuft VOR der Anker-/Rarity-Pick-
+Auswahl auf `pool` UND `poolAll`) pro assetId schon vorher genau eine Karte
+uebriglaesst - ein zweiter Eintrag mit derselben assetId wie der Anker bzw.
+der manuelle Pick kann den Fund also strukturell gar nicht ueberleben. Zwei
+unabhaengige Mechanismen schuetzten also dieselbe Invariante, aber nur einer
+davon war als solcher erkennbar (kein Log-Spur, kein Test, der genau diesen
+zweiten Pfad beschreibt). Jetzt reservieren beide Pfade ueber `reserve(p)`;
+`reserve()` selbst meldet zusaetzlich per Warnung, falls eine assetId doch
+schon in `usedAssets` steht - vorher gab es dafuer keinerlei Beobachtungspunkt.
+Das Solver-Ergebnis (`finishTeam`) und der Diagnose-Report (`STATE.diag.lastTeam`)
+tragen dafuer `usedAssetsCount` (Anzahl distinkter, ueber `reserve()`
+gezaehlter Spieler) mit.
+
+Zwei begleitende Struktur-Refactorings im selben Codeabschnitt, beide
+verhaltensneutral (236/236 Tests unveraendert gruen):
+
+- Der Sortier-Komparator "Storage vor Verein -> niedrigstes Rating -> Kosten
+  -> Tiebreak" stand viermal woertlich im Solver (Bronze/Silber-Quoten,
+  Rare-ohne-Ziel, Gold-Rare-Reservierung, Auffuell-Karten). `makeFillCmp(costOf,
+  tiebreakCmp)` ersetzt alle vier - der Tiebreak-Comparator bleibt Parameter,
+  weil zwei Stellen mit `makeConsumeCmp(pool)` und zwei mit
+  `makeConsumeCmp(avail)` abschliessen (unterschiedliche Kartenmengen; ein
+  hartkodierter gemeinsamer Tiebreak haette an zwei Stellen die Reihenfolge
+  stillschweigend geaendert).
+- `costOf()` war eine private Closure innerhalb von `solveCore`, `solver-test.js`
+  bildete dieselbe Formel eigenstaendig als `cardCostFn()` nach (nur per
+  Kommentar synchron gehalten). `makeCostOf(pool, cfg)` ist jetzt die
+  modul-weite Factory (`SolverCore.makeCostOf`), `solveCore` ruft sie auf statt
+  die Closure inline zu definieren, `bruteBest()`/`solverObjective()` in
+  `solver-test.js` rufen dieselbe Funktion statt einer eigenen Nachbildung -
+  Test und Solver rechnen seither nachweislich mit demselben Code.
+
+`WASTE_WEIGHT` (Kommentar beschrieb eine Fenstersteuerung, die tatsaechlich
+laengst ueber `cfg.maxOvershoot` laeuft) und der `priorityOf`-Export (kein
+Aufrufer ausserhalb des Moduls) waren beide tot - per Grep bestaetigt, dann
+entfernt statt mit einem nachtraeglich erfundenen Verwendungsgrund behalten.
+
+**Muster:** eine im Code als "gilt jetzt ueberall" dokumentierte Invariante
+(§16) galt hier tatsaechlich nur an den Pfaden, die zum Zeitpunkt der
+Doku-Aenderung schon existierten - ein spaeter hinzugefuegter Pfad (Anker,
+manueller Rarity-Pick) wurde beim Haerten der Invariante nicht nachgezogen.
+Ein zweiter, unabhaengiger Schutzmechanismus kann dieselbe Luecke lange
+unsichtbar halten, ohne dass jemand merkt, dass die dokumentierte Garantie
+nur zufaellig haelt.

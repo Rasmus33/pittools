@@ -1094,8 +1094,7 @@ function mulberry32(a) {
     // _submitChallenge - am PC ist es der UTSBCSquadSplitViewController mit
     // beiden. Der Code schaute nur auf EINEN Controller und nur auf den
     // oeffentlichen Namen.
-    const fn = src.slice(src.indexOf("async function submitChallengeToEa"),
-                         src.indexOf("async function openNextInstance"));
+    const fn = extractFunction(src, 'submitChallengeToEa');
     check("Submit sucht auch _submitChallenge", fn.indexOf("_submitChallenge") > -1);
     check("Submit laeuft ueber den ganzen Controller-Stack",
         fn.indexOf("getControllerChain") > -1);
@@ -1118,8 +1117,7 @@ function mulberry32(a) {
     // UTSBCHubViewController). clickLike schickte nur pointer+mouse, ohne
     // Koordinaten - die schmale EA-Ansicht haengt ihre Tap-Handler an
     // touchstart/touchend.
-    const fn = src.slice(src.indexOf("function clickLike"),
-                         src.indexOf("function visibleAll"));
+    const fn = extractFunction(src, 'clickLike');
     check("Tap schickt touchstart/touchend",
         fn.indexOf("touchstart") > -1 && fn.indexOf("touchend") > -1);
     check("Tap hat Koordinaten (nicht 0,0)",
@@ -1152,8 +1150,7 @@ function mulberry32(a) {
         hub.indexOf("[class*=") === -1 && hub.indexOf("querySelector('.tileContent") === -1);
 
     // Set nicht mehr wiederholbar -> klarer Abbruch statt "Diagnose schicken".
-    const fn = src.slice(src.indexOf("function setLooksRepeatable"),
-                         src.indexOf("function matchesPlannedSbc"));
+    const fn = extractFunction(src, 'setLooksRepeatable');
     check("Set-Status wird gelesen", /repeatable/.test(fn) && /complete/.test(fn));
     check("Nicht ablesbarer Status bricht NICHT ab (null)",
         /repeatable: null/.test(fn));
@@ -1262,20 +1259,18 @@ function mulberry32(a) {
     // nicht auf. Der Tap kam dreimal an (touchHandled true, inViewport true),
     // das Set hatte laut Kachel noch 19 Wiederholungen offen. Nach einem
     // Neustart lief es wieder -> es hing ein Zustand, kein Selektor.
-    const ps = src.slice(src.indexOf("function popupState"), src.indexOf("function dismissRewardPopup"));
+    const ps = extractFunction(src, 'popupState');
     check("popupState liest den App-Shield", /gPopupClickShield/.test(ps) && /isShieldUp/.test(ps));
     check("popupState zaehlt bildschirmfuellende Overlays",
         /click-shield/.test(ps) && /innerWidth/.test(ps));
     check("popupState ignoriert unsere eigene UI", /sbc-opt/.test(ps));
 
-    const dm = src.slice(src.indexOf("function dismissRewardPopup"),
-                         src.indexOf("function popupState") > 0 ? src.length : 0);
     check("Popups werden MEHRFACH geschlossen (mehrere Overlays hintereinander)",
         /for \(let k = 0; k < 3; k\+\+\)/.test(src));
     check("closed wird nur gemeldet, wenn wirklich was offen war",
         /if \(!before.overlays/.test(src));
 
-    const cl = src.slice(src.indexOf("function clickLike"), src.indexOf("function visibleAll"));
+    const cl = extractFunction(src, 'clickLike');
     check("Tap meldet, was an der Stelle GANZ OBEN liegt",
         /elementFromPoint/.test(cl) && /covered/.test(cl));
     check("Tap nimmt den Popup-Zustand mit", /popup: popupState\(\)/.test(cl));
@@ -1292,8 +1287,7 @@ function mulberry32(a) {
     // (wiederholbare SBCs bekommen pro Durchlauf eine neue ID), 403 heisst
     // "EA nimmt das so nicht an" - im reqDump standen scope PLAYER und
     // CLUB MEMBER, also Vorgaben, die der Solver bewusst nicht abdeckt.
-    const rf = src.slice(src.indexOf("async function resolveFreshChallengeId"),
-                         src.indexOf("// Anforderungen der aktuellen Challenge"));
+    const rf = extractFunction(src, 'resolveFreshChallengeId');
     check("Frische Instanz wird aus der Set-Liste geholt",
         /sbs\/setId\/. \+ setId \+ ./.test(rf) || rf.indexOf("/challenges") > -1);
     check("Die alte ID wird ausgeschlossen", /String\(n.challengeId\) === String\(oldId\)/.test(rf));
@@ -1374,10 +1368,9 @@ function mulberry32(a) {
     // Live-Report: paletools:2026:...:lockedItems = [100664921, 190871, 225733,
     // 50332136, ...] - KEINE 12-stelligen Item-IDs. Die alte Schwelle 1e11 hat
     // alles verworfen (found: 0), obwohl der Key da war.
-    const a = src.indexOf('function looksLikeItemId');
-    const b = src.indexOf('\n    }', a) + 6;
-    check('looksLikeItemId ist vorhanden', a > -1 && b > a);
-    const looks = eval('(' + src.slice(a, b).replace('function looksLikeItemId', 'function') + ')');
+    const looksLikeItemIdSrc = extractFunction(src, 'looksLikeItemId');
+    check('looksLikeItemId ist vorhanden', !!looksLikeItemIdSrc);
+    const looks = eval('(' + looksLikeItemIdSrc.replace('function looksLikeItemId', 'function') + ')');
     const real = [100664921, 190871, 225733, 50332136, 83923656];
     check('Locks: echte PaleTools-IDs werden erkannt', real.every(looks),
         real.filter(x => !looks(x)).join(','));
@@ -1408,13 +1401,17 @@ function mulberry32(a) {
     // Zielschema - die eigentliche Ausschlusslogik fuer Leihspieler/Konzept-
     // Karten/Evolutions (LEARNINGS SS2, Zeile 37-59) lief nie gegen die echten,
     // rohen EA-Feldnamen (academyId, loans, concept, itemType, ...).
-    const isNormalCardSrc = src.slice(src.indexOf('function isNormalCard'), src.indexOf('const STATE = {'));
-    const poolSrc = src.slice(src.indexOf('function isEvolution'), src.indexOf('// ---- Gesperrte Karten'));
+    const poolSrc = [
+        extractFunction(src, 'isNormalCard'),
+        extractFunction(src, 'isEvolution'),
+        extractFunction(src, 'normalizePlayer'),
+        extractFunction(src, 'resolvePlayerName')
+    ].join('\n');
     // Jeder Aufruf bekommt eine frische STATE.diag.evoExcluded - sonst wuerden
     // die Zaehler-Checks unten von vorherigen Fixtures verfaelscht.
     function fresh() {
         const STATE = { diag: { evoExcluded: 0 } };
-        const mod = new Function('STATE', isNormalCardSrc + '\n' + poolSrc +
+        const mod = new Function('STATE', poolSrc +
             '\nreturn { isEvolution: isEvolution, normalizePlayer: normalizePlayer, resolvePlayerName: resolvePlayerName };')(STATE);
         mod.STATE = STATE;
         return mod;
@@ -1495,9 +1492,12 @@ function mulberry32(a) {
     // reinen Text-Vorhandensein-Check - die eigentliche Traversierung (Array-
     // Form, Objekt-Form, Pack-Ausschluss NEBENEINANDER in DERSELBEN
     // localStorage-Instanz, verschachtelte Zweige) lief nie als Verhalten durch.
-    const a = src.indexOf('function looksLikeItemId');
-    const b = src.indexOf('// ---- Namen zur ANZEIGEZEIT');
-    const fnSrc = src.slice(a, b);
+    const fnSrc = [
+        extractFunction(src, 'looksLikeItemId'),
+        extractFunction(src, 'harvestIds'),
+        extractFunction(src, 'findLockBranches'),
+        extractFunction(src, 'readPaletoolsLocks')
+    ].join('\n');
 
     function makeLocalStorage(map) {
         const keys = Object.keys(map);
@@ -1726,10 +1726,8 @@ function mulberry32(a) {
 
 // ========== 16. reportError-Helfer: existiert und bedient beide Kanaele ==========
 {
-    const a = src.indexOf('function reportError');
-    check('reportError ist direkt neben diagError definiert', a > -1);
-    const b = src.indexOf('\n    }', a) + 6;
-    const body = a > -1 ? src.slice(a, b) : '';
+    const body = extractFunction(src, 'reportError') || '';
+    check('reportError ist direkt neben diagError definiert', !!body);
     check('reportError ruft warn( auf', /\bwarn\(/.test(body), body);
     check('reportError ruft diagError( auf', /\bdiagError\(/.test(body), body);
 }
@@ -1740,18 +1738,10 @@ function mulberry32(a) {
     // buildDiagReport() liest, aber das nirgends deklariert ist, liefert
     // dauerhaft null, ohne dass ein Fehler auffaellt - und umgekehrt ein
     // deklariertes Feld, das nirgends befuellt wird, ist tote Deklaration.
-    function matchingBrace(openIdx) {
-        let depth = 0;
-        for (let i = openIdx; i < src.length; i++) {
-            if (src[i] === '{') depth++;
-            else if (src[i] === '}') { depth--; if (depth === 0) return i; }
-        }
-        return -1;
-    }
     const diagDeclKey = src.indexOf('diag: {');
     check('STATE.diag-Deklaration gefunden', diagDeclKey > -1);
     const diagOpen = src.indexOf('{', diagDeclKey);
-    const diagClose = matchingBrace(diagOpen);
+    const diagClose = matchingBraceIndex(src, diagOpen);
     const diagDeclSrc = src.slice(diagOpen + 1, diagClose);
     const declared = new Set();
     {
@@ -1765,7 +1755,7 @@ function mulberry32(a) {
     const fnKey = src.indexOf('function buildDiagReport');
     check('buildDiagReport() gefunden', fnKey > -1);
     const fnOpen = src.indexOf('{', fnKey);
-    const fnClose = matchingBrace(fnOpen);
+    const fnClose = matchingBraceIndex(src, fnOpen);
     const fnBody = src.slice(fnOpen, fnClose + 1);
     const readNames = new Set();
     {
@@ -1805,12 +1795,8 @@ function mulberry32(a) {
     const fnKey = src.indexOf('function buildDiagReport');
     const sbcKey = src.indexOf('sbc: {', fnKey);
     check('sbc-Objekt-Literal in buildDiagReport() gefunden', sbcKey > -1);
-    let depth = 0, sbcClose = -1;
     const sbcOpen = src.indexOf('{', sbcKey);
-    for (let i = sbcOpen; i < src.length; i++) {
-        if (src[i] === '{') depth++;
-        else if (src[i] === '}') { depth--; if (depth === 0) { sbcClose = i; break; } }
-    }
+    const sbcClose = matchingBraceIndex(src, sbcOpen);
     const sbcSrc = src.slice(sbcOpen + 1, sbcClose);
     const keys = [];
     {
@@ -1832,23 +1818,13 @@ function mulberry32(a) {
 // + Klammerzaehlung (wie looksLikeItemId oben), deepScanChallenge ueber den
 // [SBCSCAN-BEGIN]/[SBCSCAN-END]-Marker.
 {
-    function extractFn(name) {
-        let key = src.indexOf('function ' + name);
-        check('Funktion ' + name + ' gefunden', key > -1);
-        if (src.slice(Math.max(0, key - 6), key) === 'async ') key -= 6;
-        const openBrace = src.indexOf('{', src.indexOf('(', key));
-        let depth = 0, close = -1;
-        for (let i = openBrace; i < src.length; i++) {
-            if (src[i] === '{') depth++;
-            else if (src[i] === '}') { depth--; if (depth === 0) { close = i; break; } }
-        }
-        return src.slice(key, close + 1);
-    }
     const scanBlock = extractMarkerBlock(src, '// [SBCSCAN-BEGIN]', '// [SBCSCAN-END]');
     check('SBCSCAN-Marker-Block gefunden', !!scanBlock);
     const scanExports = new Function(scanBlock + '\nreturn { deepScanChallenge: deepScanChallenge, isDomOrWindow: isDomOrWindow };')();
-    const collectSrc = extractFn('collectChallengeNodes');
-    const resolveSrc = extractFn('resolveFreshChallengeId');
+    const collectSrc = extractFunction(src, 'collectChallengeNodes');
+    check('Funktion collectChallengeNodes gefunden', !!collectSrc);
+    const resolveSrc = extractFunction(src, 'resolveFreshChallengeId');
+    check('Funktion resolveFreshChallengeId gefunden', !!resolveSrc);
 
     function buildResolver(jsonPayload, STATE) {
         return new Function('STATE', 'warn', 'apiGet', 'deepScanChallenge', 'isDomOrWindow',
@@ -1880,7 +1856,8 @@ function mulberry32(a) {
     pending.push(Promise.all(results));
 
     // matchesPlannedSbc: derselbe Namensdrift-Fix, synchron testbar.
-    const matchesSrc = extractFn('matchesPlannedSbc');
+    const matchesSrc = extractFunction(src, 'matchesPlannedSbc');
+    check('Funktion matchesPlannedSbc gefunden', !!matchesSrc);
     function buildMatcher(STATE) {
         return new Function('STATE', matchesSrc + '\nreturn matchesPlannedSbc;')(STATE);
     }
@@ -1960,18 +1937,8 @@ function mulberry32(a) {
 // obwohl die offene SBC eigentlich die geplante ist - failsafe (kein falscher
 // Treffer), aber ohne diesen Test unentdeckt geblieben.
 {
-    function extractFn(name) {
-        const key = src.indexOf('function ' + name);
-        check('Funktion ' + name + ' gefunden (21)', key > -1);
-        const openBrace = src.indexOf('{', src.indexOf('(', key));
-        let depth = 0, close = -1;
-        for (let i = openBrace; i < src.length; i++) {
-            if (src[i] === '{') depth++;
-            else if (src[i] === '}') { depth--; if (depth === 0) { close = i; break; } }
-        }
-        return src.slice(key, close + 1);
-    }
-    const matchesSrc = extractFn('matchesPlannedSbc');
+    const matchesSrc = extractFunction(src, 'matchesPlannedSbc');
+    check('Funktion matchesPlannedSbc gefunden (21)', !!matchesSrc);
     function buildMatcher(STATE) {
         return new Function('STATE', matchesSrc + '\nreturn matchesPlannedSbc;')(STATE);
     }
@@ -2007,8 +1974,7 @@ function mulberry32(a) {
 
     // Die Abbruchmeldung in onBatchRunClick muss STATE.sbc.formationSlots nennen -
     // sonst zeigt sie bei echter Diskrepanz "undefined" statt Ist/Soll (Namensdrift).
-    const runFn = src.slice(src.indexOf('async function onBatchRunClick'),
-                             src.indexOf('function findLiveChallenge'));
+    const runFn = extractFunction(src, 'onBatchRunClick');
     check('onBatchRunClick-Abbruchmeldung nennt STATE.sbc.formationSlots (nicht das ' +
         'nie geschriebene STATE.sbc.slots)',
         runFn.indexOf('STATE.sbc.formationSlots') > -1 && !/STATE\.sbc\.slots\b/.test(runFn));
@@ -2022,8 +1988,7 @@ function mulberry32(a) {
 // bemerkt - genau der Mangel, der erklaert, warum der Slots-No-Op (Abschnitt 19)
 // unbemerkt blieb.
 {
-    const runFn = src.slice(src.indexOf('async function onBatchRunClick'),
-                             src.indexOf('function findLiveChallenge'));
+    const runFn = extractFunction(src, 'onBatchRunClick');
     check('onBatchRunClick wirft bei fehlender Pool-Karte',
         runFn.indexOf('Karte(n) nicht mehr im Pool') > -1);
     check('onBatchRunClick wirft bei fehlendem Controller/Challenge',
@@ -2036,8 +2001,7 @@ function mulberry32(a) {
         runFn.indexOf('finally') > -1 &&
         runFn.indexOf('STATE.batch = null') > runFn.indexOf('finally'));
 
-    const nextFn = src.slice(src.indexOf('async function openNextInstance'),
-                              src.indexOf('function clickLike'));
+    const nextFn = extractFunction(src, 'openNextInstance');
     check('stuck-Diagnosezweig bei i===2/20/45 vorhanden',
         nextFn.indexOf('i === 2 || i === 20 || i === 45') > -1);
     check('clickBackButton-Zweig bei i===5/25 vorhanden',
@@ -2220,17 +2184,17 @@ function mulberry32(a) {
 
     // (g) Statische Regression: controllerScan()/refreshOpenSbcView() rufen
     // getControllerChain() auf statt ihre eigene Traversal nachzubauen.
-    const csFn = src.slice(src.indexOf('function controllerScan()'), src.indexOf('function refreshOpenSbcView()'));
+    const csFn = extractFunction(src, 'controllerScan');
     check('controllerScan ruft getControllerChain() auf', csFn.indexOf('getControllerChain()') > -1);
     check('controllerScan hat keinen eigenen chainFns-Literal-Block mehr', csFn.indexOf('chainFns') === -1);
-    const rvFn = src.slice(src.indexOf('function refreshOpenSbcView()'), src.indexOf('async function refreshChallengeCache()'));
+    const rvFn = extractFunction(src, 'refreshOpenSbcView');
     check('refreshOpenSbcView ruft getControllerChain() auf', rvFn.indexOf('getControllerChain()') > -1);
     check('refreshOpenSbcView hat keinen eigenen chainFns-Literal-Block mehr', rvFn.indexOf('chainFns') === -1);
 
     // (h) Statische Regression: syncSbcWithOpenChallenge() ruft findLiveChallenge()
     // auf statt die Key-Liste erneut zu literalisieren, und meldet Fehlschlaege
     // ueber reportError() (diagnose-Phase).
-    const syncFn = src.slice(src.indexOf('function syncSbcWithOpenChallenge()'), src.indexOf('function isEvolution('));
+    const syncFn = extractFunction(src, 'syncSbcWithOpenChallenge');
     check('syncSbcWithOpenChallenge ruft findLiveChallenge() auf', syncFn.indexOf('findLiveChallenge()') > -1);
     check('syncSbcWithOpenChallenge baut die Key-Liste nicht mehr selbst nach',
         syncFn.indexOf("'_overviewController'") === -1);
@@ -2238,7 +2202,7 @@ function mulberry32(a) {
 
     // (i) Statische Regression: submitViaApp() (Submit-Weg 0) hat WARUM-Kommentare
     // an den bewusst NICHT konsolidierten Stellen und bleibt ohne Helfer-Aufruf.
-    const svaFn = src.slice(src.indexOf('async function submitViaApp('), src.indexOf('async function submitToSbc('));
+    const svaFn = extractFunction(src, 'submitViaApp');
     check('submitViaApp: WARUM-Kommentar verweist auf LEARNINGS und "Nicht anfassen ohne Grund"',
         /Nicht anfassen ohne Grund/.test(svaFn) && /LEARNINGS/.test(svaFn));
     // Der WARUM-Kommentar selbst nennt die Helfer-Namen ("Bewusst NICHT
@@ -2344,6 +2308,46 @@ function mulberry32(a) {
         (src.match(/\(sbs\|sbc\)/g) || []).length === 0);
     check('SBS_SBC_PREFIX_RE_SRC genau einmal definiert',
         (src.match(/const SBS_SBC_PREFIX_RE_SRC = /g) || []).length === 1);
+}
+
+// ========== 26. Migrations-Absicherung: extractMarkerBlock/extractFunction ==========
+// Haelt die neuen Helfer (Kopf der Datei) gegen unabhaengig reimplementierte
+// Kopien der URSPRUENGLICHEN Extraktions-Algorithmen byte-gleich - driftet die
+// Helfer-Logik jemals von diesem Verhalten ab, faellt es hier auf, nicht erst
+// stumm in einem der >20 umgezogenen Testbloecke oben (siehe
+// docs/roadmap/shared-items/test-extraktions-helfer.md, "Migration").
+{
+    function oldMarkerBlock(beginMarker, endMarker) {
+        const re = new RegExp(beginMarker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') +
+            '([\\s\\S]*?)' + endMarker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+        const mm = src.match(re);
+        return mm ? mm[1] : null;
+    }
+    for (const name of ['SOLVER', 'SBCSCAN', 'BANDS', 'CTRL', 'SBCCTRL', 'URLCLS']) {
+        const begin = '// [' + name + '-BEGIN]';
+        const end = '// [' + name + '-END]';
+        check('extractMarkerBlock(' + name + ') byte-gleich zur alten Regex-Extraktion',
+            extractMarkerBlock(src, begin, end) === oldMarkerBlock(begin, end));
+    }
+
+    function oldExtractFunction(functionName) {
+        let key = src.indexOf('function ' + functionName);
+        if (key === -1) return null;
+        if (src.slice(Math.max(0, key - 6), key) === 'async ') key -= 6;
+        const openBrace = src.indexOf('{', src.indexOf('(', key));
+        let depth = 0, close = -1;
+        for (let i = openBrace; i < src.length; i++) {
+            if (src[i] === '{') depth++;
+            else if (src[i] === '}') { depth--; if (depth === 0) { close = i; break; } }
+        }
+        return close === -1 ? null : src.slice(key, close + 1);
+    }
+    // 'resolveFreshChallengeId' ist async (prueft die "async "-Praefix-Erkennung),
+    // 'matchesPlannedSbc' und 'buildDiagReport' sind es nicht.
+    for (const name of ['resolveFreshChallengeId', 'matchesPlannedSbc', 'buildDiagReport', 'isNormalCard']) {
+        check('extractFunction(' + name + ') byte-gleich zur alten Klammer-Zaehlung',
+            extractFunction(src, name) === oldExtractFunction(name));
+    }
 }
 
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt

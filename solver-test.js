@@ -3562,6 +3562,75 @@ function mulberry32(a) {
         /error: scanError/.test(src) && /skippedKeys: skippedKeys/.test(src));
 }
 
+// ========== 45. Ticket #57: Eligible-Gate in submitChallengeToEa erstmals
+// verhaltensgetestet (Gap-Report Iter. 6, Aktion 1) ==========
+// Der Mock in Abschnitt 27 haelt isSBCSquadEligible fest auf () => true - der
+// "if (eligible === false) throw" -Zweig (:4732-4735) lief in der gesamten
+// Suite bisher NIE. Hier wird der echte Abbruch ausgeloest und per Spy auf
+// ctrl.submitChallenge belegt, dass er VOR jedem Submit-Aufruf greift.
+{
+    const fnSrc = extractFunction(src, 'submitChallengeToEa');
+    check('Funktion submitChallengeToEa gefunden (45)', !!fnSrc);
+
+    function runWithEligible(eligibleValue, opts) {
+        opts = opts || {};
+        const STATE = { diag: {
+            submitCandidates: null, submitChallengeVia: null,
+            submitWithoutResponseCount: 0, submitConfirmations: null
+        } };
+        let submitCalls = 0;
+        const squad = {
+            isSBCSquadEligible: () => {
+                if (opts.throwOnEligible) throw new Error('boom eligible (simuliert)');
+                return eligibleValue;
+            },
+            isSquadEmpty: () => true
+        };
+        const ctrl = { _squad: squad, submitChallenge: () => { submitCalls++; return true; } };
+        if (opts.noEligibleMethod) delete squad.isSBCSquadEligible;
+        const sandbox = {
+            STATE: STATE,
+            findSbcController: () => ctrl,
+            getControllerChain: () => [],
+            obsPromise: async (r) => r,
+            responseOk: () => true,
+            batchWait: () => Promise.resolve()
+        };
+        const keys = Object.keys(sandbox);
+        const fn = new Function(keys.join(','),
+            fnSrc + '\nreturn submitChallengeToEa;').apply(null, keys.map(k => sandbox[k]));
+        return fn().then(
+            r => ({ ok: true, result: r, submitCalls: submitCalls }),
+            e => ({ ok: false, error: e, submitCalls: submitCalls }));
+    }
+
+    const results45 = [];
+    results45.push(runWithEligible(false).then(r => {
+        check('eligible===false: wirft VOR jedem Submit-Aufruf statt still abzugeben',
+            !r.ok && /NICHT abgegeben/.test(r.error && r.error.message),
+            r.ok ? JSON.stringify(r.result) : (r.error && r.error.message));
+        check('eligible===false: ctrl.submitChallenge wurde NIE aufgerufen',
+            r.submitCalls === 0, 'submitCalls=' + r.submitCalls);
+    }));
+    results45.push(runWithEligible(true).then(r => {
+        check('Gegenprobe eligible===true: Abgabe laeuft normal weiter (via controller)',
+            r.ok && r.result && r.result.via === 'controller' && r.submitCalls === 1,
+            r.ok ? (JSON.stringify(r.result) + ' calls=' + r.submitCalls) : (r.error && r.error.message));
+    }));
+    results45.push(runWithEligible(null, { throwOnEligible: true }).then(r => {
+        check('isSBCSquadEligible() wirft beim Lesen: bestehender try/catch faengt das ' +
+            '(eligible bleibt null) - weiterhin normale Abgabe, kein Abbruch',
+            r.ok && r.result && r.result.via === 'controller' && r.submitCalls === 1,
+            r.ok ? (JSON.stringify(r.result) + ' calls=' + r.submitCalls) : (r.error && r.error.message));
+    }));
+    results45.push(runWithEligible(null, { noEligibleMethod: true }).then(r => {
+        check('Squad ohne isSBCSquadEligible()-Methode: Gate wird uebersprungen, normale Abgabe',
+            r.ok && r.result && r.result.via === 'controller' && r.submitCalls === 1,
+            r.ok ? (JSON.stringify(r.result) + ' calls=' + r.submitCalls) : (r.error && r.error.message));
+    }));
+    pending.push(Promise.all(results45));
+}
+
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt
 // process.exit() die Loader-Tests, bevor sie laufen - sie zählten dann nicht mit
 // und ein Fehler dort wäre unbemerkt geblieben.

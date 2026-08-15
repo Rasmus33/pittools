@@ -948,7 +948,7 @@
                 else if (/lock/i.test(k)) harvestIds(obj, ids, 0);
                 else findLockBranches(obj, ids, 0);
             }
-        } catch (e) { warn('Locks lesen fehlgeschlagen:', e && e.message); }
+        } catch (e) { reportError('Locks lesen fehlgeschlagen', e); }
         STATE.diag.locks = {
             keysScanned: keysScanned,
             found: ids.size,
@@ -1375,7 +1375,7 @@
                 const p = normalizePlayer(it, false);
                 if (p) out.push(p);
             }
-        } catch (e) { warn('Unassigned-Fetch Fehler:', e); }
+        } catch (e) { reportError('Unassigned-Fetch Fehler', e); }
         return out;
     }
     async function fetchStorageViaHttp() {
@@ -1387,7 +1387,7 @@
                 const p = normalizePlayer(it, true);
                 if (p) out.push(p);
             }
-        } catch (e) { warn('storagepile-Fetch Fehler:', e.message); }
+        } catch (e) { reportError('storagepile-Fetch Fehler', e); }
         return out;
     }
     // ---- Kombinierter Pool-Load ---------------------------------------------

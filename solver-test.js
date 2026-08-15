@@ -3105,6 +3105,128 @@ function mulberry32(a) {
         /recordDeepScanStats\(scan\)/.test(captureSrc));
 }
 
+// ========== 37. Ticket #50: sbcButtonContainer() - additiver Text-Fallback ohne Primaerpfad-Verdraengung ==========
+{
+    const containerSrc = extractFunction(src, 'sbcButtonContainer');
+    const byTextSrc = extractFunction(src, 'sbcButtonContainerByText');
+    check('Funktion sbcButtonContainer gefunden (37)', !!containerSrc);
+    check('Funktion sbcButtonContainerByText gefunden (37)', !!byTextSrc);
+
+    // containerFallbackUsed ist im Produktcode ein modulweites `let` neben
+    // btnAttachCount/launcherClicks (KEIN STATE.diag-Feld, LEARNINGS §25) -
+    // hier als lokale Variable im selben Function-Scope nachgebildet, damit
+    // die extrahierten Funktionen ihren Zaehler-Zugriff unveraendert
+    // ausfuehren koennen.
+    function loadContainerHelpers(fakeDocument) {
+        return new Function('document',
+            'let containerFallbackUsed = 0;\n' +
+            byTextSrc + '\n' + containerSrc +
+            '\nreturn { sbcButtonContainer: sbcButtonContainer, ' +
+            'getFallbackUsed: function () { return containerFallbackUsed; } };'
+        )(fakeDocument);
+    }
+    function visibleBtn(txt, parent) {
+        return { offsetParent: {}, getClientRects: () => [{}], textContent: txt, parentNode: parent || null };
+    }
+
+    // (a) Primaerer Selektor UND Text-Fallback-Buttons gleichzeitig sichtbar -
+    // der Reihenfolge-Beweis: die zurueckgegebene Referenz MUSS mit dem
+    // Primaer-Element identisch sein (nicht nur "irgendein Treffer"), der
+    // Fallback-Zaehler bleibt bei 0 - der Primaer-Loop bricht per `return`
+    // ab, bevor der Fallback-Code ueberhaupt erreicht wird.
+    {
+        const primaryEl = { offsetParent: {}, getClientRects: () => [{}] };
+        const fallbackParent = {};
+        const fakeDocument = {
+            querySelectorAll: function (sel) {
+                if (sel === '.sbc-button-container') return [primaryEl];
+                if (sel === 'button') {
+                    return [visibleBtn('Use Squad Builder', fallbackParent),
+                            visibleBtn('Clear Squad', fallbackParent)];
+                }
+                return [];
+            }
+        };
+        const helpers = loadContainerHelpers(fakeDocument);
+        check('Primaer-Selektor UND Fallback-Text-Treffer gleichzeitig: der Primaer-Loop gewinnt (Identitaet, nicht nur ein Treffer)',
+            helpers.sbcButtonContainer() === primaryEl);
+        check('Primaer-Loop gewinnt: containerFallbackUsed bleibt 0 (Fallback-Code strukturell unerreicht)',
+            helpers.getFallbackUsed() === 0);
+    }
+
+    // (b) Primaer-Selektor liefert nichts, Fallback-Text-Buttons vorhanden ->
+    // gemeinsamer Elternknoten der Treffer als Container, Zaehler +1.
+    {
+        const fallbackParent = {};
+        const fakeDocument = {
+            querySelectorAll: function (sel) {
+                if (sel === '.sbc-button-container') return [];
+                if (sel === 'button') {
+                    return [visibleBtn('Use Squad Builder', fallbackParent),
+                            visibleBtn('Clear Squad', fallbackParent)];
+                }
+                return [];
+            }
+        };
+        const helpers = loadContainerHelpers(fakeDocument);
+        check('Primaer-Selektor leer, Fallback-Text-Treffer vorhanden: gemeinsamer Elternknoten kommt zurueck',
+            helpers.sbcButtonContainer() === fallbackParent);
+        check('Fallback tatsaechlich benutzt: containerFallbackUsed steht auf 1',
+            helpers.getFallbackUsed() === 1);
+    }
+
+    // (c) Beides liefert nichts -> null, Zaehler bleibt 0.
+    {
+        const fakeDocument = { querySelectorAll: function () { return []; } };
+        const helpers = loadContainerHelpers(fakeDocument);
+        check('Weder Primaer-Selektor noch Fallback-Text-Treffer: null',
+            helpers.sbcButtonContainer() === null);
+        check('Kein Treffer: containerFallbackUsed bleibt 0',
+            helpers.getFallbackUsed() === 0);
+    }
+
+    // (d) uneindeutiger Fallback (Treffer mit unterschiedlichen Elternknoten,
+    // z.B. weil EAs neuer Container ganz anders aufgebaut ist) -> nicht
+    // raten, null statt eines falschen Containers.
+    {
+        const fakeDocument = {
+            querySelectorAll: function (sel) {
+                if (sel === '.sbc-button-container') return [];
+                if (sel === 'button') return [visibleBtn('Use Squad Builder', {}), visibleBtn('Exchange', {})];
+                return [];
+            }
+        };
+        const helpers = loadContainerHelpers(fakeDocument);
+        check('Fallback-Treffer mit UNTERSCHIEDLICHEN Elternknoten: uneindeutig -> null statt Raten',
+            helpers.sbcButtonContainer() === null);
+    }
+}
+
+// ========== 38. Ticket #50: inSbcView() - Fail-Open bei Fehlern, Kette bestimmt Sichtbarkeit ==========
+{
+    const inSbcViewSrc = extractFunction(src, 'inSbcView');
+    check('Funktion inSbcView gefunden (38)', !!inSbcViewSrc);
+    function loadInSbcView(fakeGetControllerChain) {
+        return new Function('getControllerChain', inSbcViewSrc + '\nreturn inSbcView;')(fakeGetControllerChain);
+    }
+    check('inSbcView(): leere Kette -> true (kein Einstieg verstecken, bevor die App bereit ist)',
+        loadInSbcView(() => [])() === true);
+    check('inSbcView(): Kette mit .constructor.name passend zu /sbc/i -> true',
+        loadInSbcView(() => [{ constructor: { name: 'UTSBCSquadSelectSummaryController' } }])() === true);
+    check('inSbcView(): Kette ohne Treffer -> false',
+        loadInSbcView(() => [{ constructor: { name: 'UTHomeHubController' } }])() === false);
+    check('inSbcView(): werfende Kette -> true (bestehendes Fail-Open-Verhalten, als Testfall festgeschrieben)',
+        loadInSbcView(() => { throw new Error('boom'); })() === true);
+}
+
+// ========== 39. Ticket #50: syncLauncher() nutzt sbcButtonContainer() statt eigener Selektor-Logik (DRY) ==========
+{
+    const syncLauncherSrc = extractFunction(src, 'syncLauncher');
+    check('Funktion syncLauncher gefunden (39)', !!syncLauncherSrc);
+    check('syncLauncher() ruft sbcButtonContainer() auf statt eine eigene Selektor-Logik zu duplizieren',
+        syncLauncherSrc.indexOf('sbcButtonContainer()') > -1);
+}
+
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt
 // process.exit() die Loader-Tests, bevor sie laufen - sie zählten dann nicht mit
 // und ein Fehler dort wäre unbemerkt geblieben.

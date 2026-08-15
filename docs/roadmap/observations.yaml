@@ -30,8 +30,18 @@
 #                 consume-seeds`) — NICHT bei iteration-done geleert. Ersetzt
 #                 das deprecatete gitignored `iteration-seeds.yaml` (ADR #78).
 schema_version: 1.4.0
-iteration: null
-entries: []
+iteration: 7
+entries:
+- at: '2026-08-15T19:24:10Z'
+  issue: 62
+  po_class: null
+  surprises:
+  - 'Der §41-Verdacht war KEIN Fehlalarm: dieselbe Fehlerklasse (Kosten-zuerst-Reservierung
+    ignoriert das Fenster) sitzt auch im playerLevel-Pfad — das Analogie-Argument
+    aus dem Rarity-Fund hat sich als verlaesslicher Bug-Detektor erwiesen.'
+  reasoning: 'Fuzzing-Verifikation nach #57-Protokoll: Diskrepanz gefunden, dreifach
+    verifiziert (bruteBest + unabhaengige Bitmask-Enumeration + Code-Lesen), als Charakterisierungstest
+    gepinnt (559/559). Fix folgt als eigenes Ticket (#60-Analogon).'
 discoveries:
   pattern_candidates: []
   antipattern_candidates: []

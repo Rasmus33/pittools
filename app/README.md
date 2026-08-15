@@ -84,7 +84,8 @@ Der PaleTools-Status sagt, woran es liegt:
 | `NICHT ausgefuehrt, fehlt dauerhaft: …` | 30 min gewartet, Symbol kam nie |
 | `keine Rückmeldung` | der Wächter hat nie ausgeführt |
 
-`node app/guard-test.js` prüft diesen Wächter samt Nachkontrolle (18 Tests).
+`node app/guard-test.js` prüft diesen Wächter samt Nachkontrolle sowie die
+statischen App-Invarianten (Pflicht-Logging, Setter-Kapselung, Leer-Body-Guard).
 
 ## Technik-Notizen
 

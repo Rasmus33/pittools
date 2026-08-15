@@ -1824,3 +1824,56 @@ Beide liefen bisher nur inline in `solveCore()`/`solve()` - `isLockedOut()` +
 `filterLockedCards()` und `applyMaxRatingFilter()` sind jetzt eigene SSOT-
 Funktionen, von `solve()`/`solveCore()` UND `computeRarityAvailability()`
 genutzt.
+
+## 46. Ticket #69: Pack-Opener Stufe 1 - Store-Enumeration + Einzel-Pack-Testlauf
+
+Von Rasmus beauftragt (16.08.): besessene Packs (My Packs) in einem Rutsch
+oeffnen statt einzeln, weil das manuelle Oeffnen (auch via PaleTools) langsam
+ist und eine lange Klickstrecke hat. Pack-Oeffnen ist UNUMKEHRBAR - deshalb
+zweistufiger Rollout (`docs/roadmap/vision/features/pack-opener.md`): Stufe 1
+oeffnet hoechstens EIN Pack pro Klick und dient der Live-Verifikation, "Alle
+oeffnen" kommt erst in Stufe 2 nach bestaetigter Stufe 1.
+
+Die Mechanik stammt aus einer PaleTools-Analyse vom 16.08.2026 (dekodiertes
+`packsOpener`-Plugin, hohe Konfidenz auf allen sechs Kernfragen):
+`services.Store.getPacks()` liefert `response.packs`, eigene Packs sind
+Eintraege mit `isMyPack === true`, JEDE Instanz ist ein eigener Eintrag mit
+derselben `id` (Gruppierung nach `id`, Anzahl = Anzahl Eintraege). Oeffnen
+laeuft ueber `packEntity.open()` (Observable -> Promise, `success` pruefen),
+davor muss `repositories.Item.numItemsInCache(ItemPile.PURCHASED) === 0` sein
+(volle Unassigned-Pile lehnt EA sonst ab). Einsammeln:
+`repositories.Item.setDirty(ItemPile.PURCHASED)` dann
+`services.Item.requestUnassignedItems()`. Verteilen: Nicht-Duplikate ->
+`services.Item.move(arr, ItemPile.CLUB)`, Duplikate (`item.isDuplicate()`) ->
+Storage bis zur Kapazitaet (`services.Item.searchStorageItems(...)` fuer den
+Stand), Misc-Items (Coins etc., erkannt ueber `instanceof GameCurrency`) ->
+`services.Item.redeem(item)` einzeln. Takt zwischen den Verteil-Schritten
+300-700ms (LEARNINGS §30-Logik, "Fast" wie PaleTools).
+
+`PACK_STORAGE_CAPACITY_ASSUMED = 100` ist PaleTools' hartkodierter Wert, OHNE
+dass ein EA-Endpunkt die echte Grenze liefert - bewusst als benannte Konstante
+mit WARUM-Kommentar markiert statt stillschweigend uebernommen.
+`STATE.diag.packScan` (Enumeration, Testlauf-Items inkl. rating/isDuplicate-
+Rohwert/Ziel-Pile, Storage-/Unassigned-Zaehlung vorher/nachher, fehlende
+Globals, Fehlerform) misst bei der ersten Live-Nutzung nach, ob die Annahme
+haelt und beantwortet gleichzeitig die drei weiteren offenen Mechanik-Fragen
+aus dem Vision-Dokument (`open()`-Semantik bei mehreren Instanzen derselben
+`id`, `isDuplicate()` auf echten fc26-Entities, Fehlerform bei
+Entitlement-Fehlern).
+
+`resolvePackGlobals()` loest ALLE benoetigten EA-Globalen (`services.Store`,
+`services.Item`, `repositories.Item`, `ItemPile`, `UTSearchCriteriaDTO`,
+`GameCurrency`) VORAB defensiv auf und bricht bei jedem fehlenden sauber ab,
+bevor `open()` (irreversibel!) ueberhaupt versucht wird - ein erst mitten im
+Testlauf fehlendes Global waere nicht mehr abbrechbar. `runPackTestOpen()`
+folgt derselben Abbruch-Disziplin wie der Batch-Modus: Unassigned-Guard ->
+`open()` -> success-Check -> Einsammeln -> Verteilen, jeder Fehlschlag bricht
+sofort ab, kein Retry (Pack-Oeffnen laesst sich nicht zurueckdrehen). Stufe 1
+quicksellt nichts und legt nichts auf die Transferliste - was nicht in Verein
+oder Storage passt, bleibt liegen mit Hinweis im Report.
+
+`inStoreView()`/`syncPackSection()` sind Store-Pendants zu `inSbcView()`/
+`syncLauncher()` (Ticket #50). Der Einstiegspunkt (FAB + Panel) war bisher NUR
+in der SBC-Ansicht sichtbar - `syncLauncher()` zeigt ihn jetzt zusaetzlich in
+der Store-Ansicht, sonst waere der neue Pack-Opener-Abschnitt nie erreichbar;
+die Einhaengung in die SBC-Aktionsleiste bleibt dabei SBC-spezifisch.

@@ -2725,6 +2725,150 @@ function mulberry32(a) {
     }
 }
 
+// ========== 32. Aktion 1: scopesSeen ungegated gegen die reqDump-Whitelist-Luecke ==========
+{
+    const scanBlock = extractMarkerBlock(src, '// [SBCSCAN-BEGIN]', '// [SBCSCAN-END]');
+    check('SBCSCAN-Marker-Block gefunden (32)', !!scanBlock);
+    const deepScanChallenge = new Function(scanBlock + '\nreturn deepScanChallenge;')();
+
+    // "ARCHETYPE_GROUP" enthaelt keines der zehn Whitelist-Teilworte
+    // (RATING/RARITY/PLAYER/OVR/LEVEL/QUALITY/CLUB/LEAGUE/NATION/CHEM) - eine
+    // komplett neue EA-Scope-Familie, wie Mangel 1 im Gap-Report sie
+    // beschreibt.
+    const out = deepScanChallenge([{ scope: 'ARCHETYPE_GROUP', value: 5 }]);
+    check('scopesSeen enthaelt den Whitelist-fremden Scope',
+        out.scopesSeen.indexOf('ARCHETYPE_GROUP') > -1, JSON.stringify(out.scopesSeen));
+    check('reqDump filtert ihn weiterhin heraus (Whitelist-Logik unveraendert)',
+        !out.reqs.some(r => r.scope === 'ARCHETYPE_GROUP'), JSON.stringify(out.reqs));
+
+    // Deckel bei 40 Eintraegen - das Set darf trotz 60 distinkter Scopes nicht
+    // darueber wachsen.
+    const many = [];
+    for (let i = 0; i < 60; i++) many.push({ scope: 'UNKNOWN_SCOPE_' + i, value: i });
+    const outCap = deepScanChallenge(many);
+    check('scopesSeen ist bei 40 Eintraegen gedeckelt', outCap.scopesSeen.length === 40,
+        'len=' + outCap.scopesSeen.length);
+
+    // Gegenprobe: ein bekannter Whitelist-Scope landet weiterhin normal in
+    // reqDump UND zusaetzlich in scopesSeen (keine Regression).
+    const outKnown = deepScanChallenge([{ scope: 'PLAYER_RARITY_GROUP', value: 4 }]);
+    check('bekannter Whitelist-Scope steht weiterhin in reqDump',
+        outKnown.reqs.some(r => r.scope === 'PLAYER_RARITY_GROUP'));
+    check('bekannter Whitelist-Scope steht auch in scopesSeen',
+        outKnown.scopesSeen.indexOf('PLAYER_RARITY_GROUP') > -1);
+}
+
+// ========== 33. Aktion 2: Traversal-Kappung wird als scanStats sichtbar, ohne den Fund zu veraendern ==========
+{
+    // Baut eine einfache Kette gleichartiger Zwischenknoten (je ein "child"),
+    // deren Blatt erst NACH `depth` Ebenen erreicht wird - EXAKT konstruiert
+    // ueber die jeweilige Kappungsgrenze der drei Scanner.
+    function chain(depth, leafProps) {
+        let node = Object.assign({ isLeaf: true }, leafProps);
+        for (let i = 0; i < depth; i++) node = { child: node };
+        return node;
+    }
+
+    const scanBlock = extractMarkerBlock(src, '// [SBCSCAN-BEGIN]', '// [SBCSCAN-END]');
+    check('SBCSCAN-Marker-Block gefunden (33)', !!scanBlock);
+    const deepScanChallenge = new Function(scanBlock + '\nreturn deepScanChallenge;')();
+
+    // deepScanChallenge kappt bei d > 7 - eine TEAM_RATING-Vorgabe 9 Ebenen
+    // tief bleibt dadurch unerreicht (Regressions-Gegenprobe: target bleibt
+    // null, GENAU wie vor dieser Iteration - scanStats macht das jetzt nur
+    // SICHTBAR statt stillschweigend).
+    const deep = deepScanChallenge(chain(9, { scope: 'TEAM_RATING', value: 84 }));
+    check('vergrabene Vorgabe bleibt hinter der Tiefenkappung unerreicht (Regression)',
+        deep.target === null);
+    check('deepScanChallenge markiert depthCapped bei ueberschrittener Tiefe',
+        deep.depthCapped === true, JSON.stringify({ depthCapped: deep.depthCapped, visitedCount: deep.visitedCount }));
+    check('visitedCount zaehlt exakt bis zur Kappungstiefe (Wurzel + 7 Ebenen)',
+        deep.visitedCount === 8, 'visited=' + deep.visitedCount);
+    check('budgetExhausted bleibt false (Tiefenkappung, nicht Budget)',
+        deep.budgetExhausted === false);
+
+    // Gegenprobe: dieselbe Vorgabe FLACH (Tiefe 2) wird weiterhin gefunden,
+    // depthCapped bleibt false - kein Kontrollfluss-Eingriff durch das neue Feld.
+    const shallow = deepScanChallenge(chain(2, { scope: 'TEAM_RATING', value: 84 }));
+    check('dieselbe Vorgabe flach bleibt unveraendert auffindbar', shallow.target === 84);
+    check('depthCapped bleibt false, wenn die Tiefe nicht ueberschritten wird',
+        shallow.depthCapped === false);
+
+    // findChallengeNode()/collectChallengeNodes() kappen bei d > 6 - additiver
+    // statsOut-Parameter, bestehende zweistellige Aufrufe bleiben unveraendert.
+    const findSrc = extractFunction(src, 'findChallengeNode');
+    check('Funktion findChallengeNode gefunden', !!findSrc);
+    const collectSrc = extractFunction(src, 'collectChallengeNodes');
+    check('Funktion collectChallengeNodes gefunden (33)', !!collectSrc);
+    const isDomOrWindowSrc = extractFunction(src, 'isDomOrWindow');
+    const buildTraversers = new Function('isDomOrWindow',
+        findSrc + '\n' + collectSrc + '\nreturn { findChallengeNode: findChallengeNode, collectChallengeNodes: collectChallengeNodes };'
+    )(new Function(isDomOrWindowSrc + '\nreturn isDomOrWindow;')());
+
+    const deepNode = chain(8, { challengeId: 'DEEP', requirements: [] });
+    check('findChallengeNode OHNE statsOut bleibt aufrufbar (Rueckwaertskompatibilitaet)',
+        buildTraversers.findChallengeNode(deepNode, 'DEEP') === null);
+    const findStats = {};
+    check('findChallengeNode findet den zu tief vergrabenen Knoten weiterhin NICHT (Regression)',
+        buildTraversers.findChallengeNode(deepNode, 'DEEP', findStats) === null);
+    check('findChallengeNode markiert depthCapped im statsOut',
+        findStats.findNode && findStats.findNode.depthCapped === true, JSON.stringify(findStats));
+
+    const collectStats = {};
+    const deepList = buildTraversers.collectChallengeNodes(deepNode, collectStats);
+    check('collectChallengeNodes findet den zu tief vergrabenen Knoten weiterhin NICHT (Regression)',
+        deepList.length === 0, JSON.stringify(deepList));
+    check('collectChallengeNodes markiert depthCapped im statsOut',
+        collectStats.collectNodes && collectStats.collectNodes.depthCapped === true, JSON.stringify(collectStats));
+
+    // Gegenprobe: derselbe Knoten flach (Tiefe 2) wird weiterhin gefunden,
+    // depthCapped bleibt false.
+    const shallowNode = chain(2, { challengeId: 'SHALLOW', requirements: [] });
+    const shallowStats = {};
+    check('findChallengeNode findet den flachen Knoten weiterhin (Regression)',
+        buildTraversers.findChallengeNode(shallowNode, 'SHALLOW', shallowStats) === shallowNode.child.child);
+    check('findChallengeNode: depthCapped bleibt false ohne Kappung',
+        shallowStats.findNode && shallowStats.findNode.depthCapped === false);
+}
+
+// ========== 34. Aktion 3: reqCountRaw()/reqCountDefaulted() markieren den 1-Fallback ==========
+{
+    const scanBlock = extractMarkerBlock(src, '// [SBCSCAN-BEGIN]', '// [SBCSCAN-END]');
+    check('SBCSCAN-Marker-Block gefunden (34)', !!scanBlock);
+    const scanExports = new Function(scanBlock +
+        '\nreturn { reqCountRaw: reqCountRaw, reqCount: reqCount, reqCountDefaulted: reqCountDefaulted };')();
+
+    // Kein bekannter Count-Key (count/requirementCount/keyCount/amount/minimum/
+    // _count) weder am Objekt noch in den Eltern -> der alte 1-Fallback greift,
+    // jetzt aber SICHTBAR markiert statt von einem echten Wert 1 ununterscheidbar.
+    const noKey = { scope: 'PLAYER_OVERALL_RATING_MIN', value: 85 };
+    check('reqCountRaw ohne bekannten Count-Key: count bleibt 1 (Regression)',
+        scanExports.reqCountRaw(noKey, []).count === 1);
+    check('reqCountRaw ohne bekannten Count-Key: defaulted ist true',
+        scanExports.reqCountRaw(noKey, []).defaulted === true);
+    check('reqCount() liefert weiterhin nur die Zahl (Wrapper-Vertrag, Regression)',
+        scanExports.reqCount(noKey, []) === 1);
+    check('reqCountDefaulted() spiegelt das Flag',
+        scanExports.reqCountDefaulted(noKey, []) === true);
+
+    // Bekannter Count-Key am Objekt selbst -> kein Fallback.
+    const withCount = { scope: 'PLAYER_OVERALL_RATING_MIN', value: 85, count: 4 };
+    check('reqCountRaw mit count-Feld: Zahl unveraendert (Regression)',
+        scanExports.reqCountRaw(withCount, []).count === 4);
+    check('reqCountRaw mit count-Feld: defaulted ist false',
+        scanExports.reqCountRaw(withCount, []).defaulted === false);
+    check('reqCount() liefert bei vorhandenem Count-Feld weiterhin dieselbe Zahl (Regression)',
+        scanExports.reqCount(withCount, []) === 4);
+
+    // Bekannter Count-Key im ELTERN-Objekt (EAs uebliche Ablage, siehe Kommentar
+    // an reqCountRaw) -> ebenfalls kein Fallback.
+    const parent = { requirementCount: 6 };
+    check('reqCountRaw findet den Count in der Eltern-Kette: Zahl uebernommen (Regression)',
+        scanExports.reqCountRaw(noKey, [parent]).count === 6);
+    check('reqCountRaw findet den Count in der Eltern-Kette: defaulted ist false',
+        scanExports.reqCountRaw(noKey, [parent]).defaulted === false);
+}
+
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt
 // process.exit() die Loader-Tests, bevor sie laufen - sie zählten dann nicht mit
 // und ein Fehler dort wäre unbemerkt geblieben.

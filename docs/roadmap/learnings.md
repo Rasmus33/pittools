@@ -68,3 +68,34 @@ Kumulativ. Git-Log ist die History.
 - Klasse D (PARTIAL akzeptiert): 0 — drei von vier Validator-Läufen waren glatte PASS
 - Cleanup-Deckung: #24 durch #33, #26 durch #34 geschlossen (abandon-Pfad, FSM erlaubt kein Backlog→Done)
 - Klassen A/B/F/G/H/Q: 0 · Eskalationen: 0
+
+## Iteration 2 — 2026-08-15
+
+## Iteration 2 — 2026-08-15
+
+### Score-Bewegung
+- Fokus-Iteration (1 von 9 Features): android-app-wrapper 72→79 (Ziel 78 übertroffen, Deckel 80 fast erreicht). Gehaltene 8 Features unverändert (kein Produkt-Code-Touch außer app/).
+- Fokus-Verdict: hit. App v1.7.0 → v1.8.0 (versionCode 12), APK gebaut + Signatur verifiziert; Userscript unangetastet (v4.48.0 bleibt).
+- Tests: 409 solver-Tests unverändert grün; guard-test von 27 auf 37 Assertions (8 neue Checks für die 4 Pflicht-Aktionen).
+
+### Methodische Erkenntnisse
+- Kleine Iterationen funktionieren: 1 Ticket + Main-Doku-Runde statt Ticket-Maschinerie für Doku-Chores — die drei Cleanup-Kinder #25/#27/#28 kosteten als PO-Direktarbeit einen Bruchteil eines Ticket-Durchlaufs (#25 lief als Aktion im Feature-Lift mit).
+- Das Post-Squash-PR-Problem aus iter1 wurde durch Prozess vermieden: ALLE Commits inkl. Nachträge VOR `ticket review` bündeln (Auto-Merge feuert beim Ready-Stellen). Der README-Zähler-Nachtrag lief deshalb als PO-Commit im Worktree, bevor der PR ready wurde.
+- Subagenten sterben am Session-Limit: der Implementer fiel nach getaner Arbeit beim Nachtrag aus (API-Limit) — der PO kann triviale Nachträge selbst committen statt neu zu spawnen, solange alle Gates danach grün laufen.
+- Hand-Zählungen in Doku driften systematisch ("(18 Tests)" war schon vor iter2 falsch): zählungsfrei formulieren statt Zahl aktualisieren.
+- Ein toter Guard ist schlimmer als keiner: `body == null` nach `readStream` konnte strukturell nie greifen und gaukelte Schutz vor — der Ersatz (`isEmpty()`) brauchte den Beweis, dass kein Aufrufer sich auf leere-aber-nicht-null-Strings verlässt (Grep über alle Call-Sites).
+- Statischer Regex-Check ist ein legitimer guard-test-Ersatz für vm-Sandbox, wenn die Laufzeitumgebung (HttpURLConnection) nicht simulierbar ist — aber nur mit Negativ-Tests, die beweisen, dass der Check echte Regressionen fängt.
+
+### Patterns ergänzt / verändert
+- Keine neuen Patterns. Beleg-Registrierung ist entblockt: code_geography aller 9 Vision-Docs auf reine Pfade umgestellt (#28), `pattern add-beleg` löst für Userscript-Features wieder Kandidaten auf (verifiziert: candidate_files=3).
+- fehler-unsichtbar-verschluckt weiter zurückgedrängt: letzte blinde Fremd-Grenze der App (WebView-Seitenlade-Fehler) hat jetzt eine Log-Spur.
+
+### Shared-Items
+- Keine (Gap-Report empfahl explizit kein Mid-Iter-SI; bestätigt richtig).
+
+### PO-Entscheidungen
+- Klasse C (Nachtrag): 1 — README-Zähler-Fix, wegen Subagent-Ausfall vom PO selbst committet.
+- Validator: glattes PASS ohne Findings (0 PARTIALs in dieser Iteration).
+- Cleanup-Deckung: #25 durch #40 (Aktion 1), #27 + #28 durch PO-Doku-Commit 6572fbe — alle drei via abandon-Pfad geschlossen. Offen bleibt nur #29 im Sammelticket #30.
+- LEARNINGS-Schulden getilgt: §35 (Batch-Sperre + submitConfirmations, Debt aus iter1-#32), §36 (App-1.8.0-Entscheidungen, direkt nach dem Re-Score nachgezogen — der Scorer hatte den fehlenden Eintrag als Restlücke benannt).
+- Eskalationen: 0.

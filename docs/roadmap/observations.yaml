@@ -30,23 +30,8 @@
 #                 consume-seeds`) — NICHT bei iteration-done geleert. Ersetzt
 #                 das deprecatete gitignored `iteration-seeds.yaml` (ADR #78).
 schema_version: 1.4.0
-iteration: 2
-entries:
-- at: '2026-08-15T12:08:42Z'
-  issue: 40
-  po_class: null
-  surprises:
-  - Implementer starb einmal am Session-Limit (API); PO hat den README-Zaehler-Nachtrag
-    selbst im Worktree committet — zaehlungsfrei formuliert, weil Hand-Zaehlungen
-    ((18 Tests) war schon vor iter2 falsch) nachweislich driften.
-  - javac-Lokalkompilat als freiwillige Zusatzpruefung des Implementers — es gibt
-    kein automatisiertes Java-Compile-Gate; Kandidat fuer ein spaeteres commands.*-Gate.
-  - Aktion-5-Commit (phase core) lag NACH dem release-Commit — Validator akzeptiert,
-    weil rein additiv und Build erst nach Merge am HEAD erfolgt.
-  reasoning: 'Glattes Validator-PASS ohne Findings. 304 als [net-ok]-Notiz deckt Cleanup-Kind
-    #25; Setter-Kapselung + WebView-Fehler-Logging + Leer-Body-Guard schliessen die
-    drei groessten RA-Luecken der App-Slice. App 1.8.0 (versionCode 12), APK-Build
-    durch PO steht aus.'
+iteration: null
+entries: []
 discoveries:
   pattern_candidates: []
   antipattern_candidates: []

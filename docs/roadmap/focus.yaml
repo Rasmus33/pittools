@@ -192,4 +192,17 @@ history:
       duenn, nur Kosmetik — direkt erledigt). Parallel bewaehrte sich die gesamte
       Diagnose-Infrastruktur live: 6 Reports an einem Abend fuehrten zu 4 Hotfixes
       (v4.57 Daily-Same-Id, v4.58 Scan-Prioritaet, v4.59 = #60, v4.60 elgReq-Quelle).'
+- iteration: 7
+  decided_at: '2026-08-15T19:10:36Z'
+  dimensions:
+  - RA
+  features:
+  - rating-solver
+  phases: []
+  mode: soft-regression-guard
+  rationale: 'Wartezeit-Runde waehrend Rasmus v4.60.0 testet: der einzige offene Verdacht
+    aus §41 wird per Fuzzing verifiziert (playerLevelConstraints-Reservierung, strukturell
+    identisch zum gefixten Rarity-Pfad). Test-only; Ergebnis ist ein Urteil (sauber/Befund-Pin),
+    Fix nur bei bewiesenem Befund.'
+  effectiveness: {}
 pending_suggestion: null

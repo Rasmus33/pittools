@@ -84,7 +84,8 @@ Der PaleTools-Status sagt, woran es liegt:
 | `NICHT ausgefuehrt, fehlt dauerhaft: …` | 30 min gewartet, Symbol kam nie |
 | `keine Rückmeldung` | der Wächter hat nie ausgeführt |
 
-`node app/guard-test.js` prüft diesen Wächter samt Nachkontrolle (18 Tests).
+`node app/guard-test.js` prüft diesen Wächter samt Nachkontrolle sowie die
+statischen App-Invarianten (Pflicht-Logging, Setter-Kapselung, Leer-Body-Guard).
 
 ## Technik-Notizen
 
@@ -111,3 +112,22 @@ Der PaleTools-Status sagt, woran es liegt:
   d8-Build (ohne Gradle) stolpert sonst über das InnerClasses-Attribut.
 - `res/` wird per `aapt2 compile --dir res` gebaut und mit `-R` gelinkt — ohne
   das findet `aapt2` das im Manifest referenzierte `@mipmap/ic_launcher` nicht.
+- `reportNetError` (Fehler, `[net]`-Präfix) und `reportNetNote` (Nicht-Fehler
+  wie 304/Cache-aktuell, `[net-ok]`-Präfix) sind die einzigen zwei
+  Log-Choke-Points für Netz-/Cache-Vorgänge — getrennte Präfixe halten echte
+  Fehler von erwarteten Zuständen im App-Log auseinander.
+- `scriptSbc`/`scriptPale`/`paleSource` laufen ausschließlich über
+  `setLoadedScripts(sbc, pale, source)` — analog zu den Zustands-Settern
+  `setScriptsReady`/`setPaleStatus`/`setPaleInjected`, loggt nur bei
+  tatsächlicher Änderung.
+- `SbcWebViewClient` loggt Main-Frame-Ladefehler (`onReceivedError`/
+  `onReceivedHttpError`) mit `[webview]`-Präfix — die einzige Fremd-Grenze
+  der App (DNS/TLS/Serverfehler beim initialen Laden von `WEB_APP_URL`), die
+  sonst nur die eigene WebView-Fehlerseite zeigt, ohne dass Log-Ringpuffer
+  oder Script-Report davon etwas sehen. Subressourcen-Fehler laufen über die
+  Konsole und damit `SbcChromeClient.onConsoleMessage`.
+- `fetchUrl`/`fetchUrlIfChanged` prüfen den gelesenen Body auf `isEmpty()`,
+  nicht auf `null` — `readStream` liefert laut Signatur nie `null`, nur `""`.
+- `MAX_LOG_SHARE_CHARS` (für "Log teilen") ist von `PALE_CHUNK`
+  (`evaluateJavascript`-Rohzeichen-Limit) abgeleitet, keine separat
+  gepflegte Zahl — beide hängen an derselben Binder-IPC-Größenordnung.

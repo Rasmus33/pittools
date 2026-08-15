@@ -36,6 +36,9 @@ import android.view.WindowManager;
 import android.webkit.CookieManager;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
+import android.webkit.WebResourceError;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.widget.Button;
@@ -74,6 +77,10 @@ public class MainActivity extends Activity {
     // IPC-Aufruf klar unter dem ~1-MB-Binder-Limit.
     // (Kein u-Escape-Literal in Kommentaren: javac wertet die auch dort aus.)
     static final int PALE_CHUNK = 60000;
+    // Intent-Extra fuer "Log teilen" laeuft ueber denselben Binder-IPC-Umweg
+    // wie evaluateJavascript - deshalb von PALE_CHUNK abgeleitet statt einer
+    // zweiten, separat gepflegten Zahl.
+    static final int MAX_LOG_SHARE_CHARS = PALE_CHUNK * 2;
 
     WebView web;
     SharedPreferences prefs;
@@ -161,11 +168,33 @@ public class MainActivity extends Activity {
         addLog("paleInjected=" + value);
     }
 
+    /**
+     * Einziger Schreibweg fuer scriptSbc/scriptPale/paleSource - schliesst die
+     * Kapselungs-Restluecke der drei Felder oben (die reichen ihre Quelle
+     * ("Cache"/"Download"/"keine" in ScriptLoader, null beim Settings-Reset)
+     * unveraendert durch). Loggt nur, wenn sich mindestens ein Wert wirklich
+     * aendert.
+     */
+    void setLoadedScripts(String sbc, String pale, String source) {
+        if (java.util.Objects.equals(sbc, scriptSbc) && java.util.Objects.equals(pale, scriptPale)
+                && java.util.Objects.equals(source, paleSource)) {
+            return;
+        }
+        scriptSbc = sbc;
+        scriptPale = pale;
+        paleSource = source;
+        addLog("Scripts gesetzt: Optimizer=" + (sbc == null ? "FEHLT" : sbc.length() + " Zeichen")
+                + ", PaleTools=" + (pale == null ? "FEHLT" : pale.length() + " Zeichen")
+                + ", Quelle=" + (source == null ? "(unbekannt)" : source));
+    }
+
     void shareLog() {
         String text = buildLogReport();
         // Der Intent-Extra geht über Binder - grob begrenzen, sonst fliegt es
-        // bei langen Logs (dieselbe Grenze wie bei evaluateJavascript).
-        if (text.length() > 120000) text = text.substring(text.length() - 120000);
+        // bei langen Logs.
+        if (text.length() > MAX_LOG_SHARE_CHARS) {
+            text = text.substring(text.length() - MAX_LOG_SHARE_CHARS);
+        }
         Intent i = new Intent(Intent.ACTION_SEND);
         i.setType("text/plain");
         i.putExtra(Intent.EXTRA_SUBJECT, "PitTools-Log " + appVersion());
@@ -426,6 +455,16 @@ public class MainActivity extends Activity {
         addLog("[net] " + where + ": " + detail);
     }
 
+    /**
+     * Log-Choke-Point fuer den gesunden Nicht-Fehler-Fall: ein 304 heisst
+     * "Hintergrund-Auffrischung lief, Cache passt" (docs/LEARNINGS.md §20) -
+     * kein Fehler, aber die Zeile muss trotzdem sichtbar bleiben, sonst
+     * verliert Rasmus den Beleg, dass der PaleTools-Refresh gelaufen ist.
+     */
+    void reportNetNote(String where, String detail) {
+        addLog("[net-ok] " + where + ": " + detail);
+    }
+
     String fetchUrl(String u) {
         try {
             HttpURLConnection c = (HttpURLConnection) new URL(u).openConnection();
@@ -437,7 +476,12 @@ public class MainActivity extends Activity {
                 reportNetError("fetchUrl " + u, "HTTP " + code);
                 return null;
             }
-            return readStream(c.getInputStream());
+            String body = readStream(c.getInputStream());
+            if (body.isEmpty()) {
+                reportNetError("fetchUrl " + u, "leerer Body");
+                return null;
+            }
+            return body;
         } catch (Exception e) {
             reportNetError("fetchUrl " + u, e.getClass().getSimpleName() + " " + e.getMessage());
             return null;
@@ -462,7 +506,7 @@ public class MainActivity extends Activity {
             if (mod != null) c.setRequestProperty("If-Modified-Since", mod);
             int code = c.getResponseCode();
             if (code == 304) {
-                reportNetError("fetchUrlIfChanged " + u, "304 (Cache aktuell)");
+                reportNetNote("fetchUrlIfChanged " + u, "304 (Cache aktuell)");
                 return null;
             }
             if (code != 200) {
@@ -472,7 +516,10 @@ public class MainActivity extends Activity {
             String newEtag = c.getHeaderField("ETag");
             String newMod = c.getHeaderField("Last-Modified");
             String body = readStream(c.getInputStream());
-            if (body == null) {
+            // readStream (siehe unten) liefert laut Signatur nie null, nur ""
+            // (sb.toString()) - der alte "== null"-Vergleich konnte
+            // strukturell nie zutreffen.
+            if (body.isEmpty()) {
                 reportNetError("fetchUrlIfChanged " + u, "leerer Body");
                 return null;
             }
@@ -788,6 +835,26 @@ class SbcWebViewClient extends android.webkit.WebViewClient {
         // in onPageStarted mit "UIItemActionEvent is not defined".
         a.injectPaleLate();
     }
+    // Ohne diese zwei Overrides zeigt die WebView bei DNS-/TLS-/Serverfehlern
+    // nur ihre eigene Standard-Fehlerseite - weder Log-Ringpuffer noch
+    // Script-Report sehen davon etwas (einzige Fremd-Grenze ohne Diagnose-
+    // Spur). Gate auf isForMainFrame(): Subressourcen-Fehler laufen bereits
+    // ueber die Konsole und damit SbcChromeClient.onConsoleMessage.
+    @Override
+    public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+        if (request.isForMainFrame()) {
+            a.addLog("[webview] " + request.getUrl() + ": " + error.getErrorCode()
+                    + " " + error.getDescription());
+        }
+    }
+    @Override
+    public void onReceivedHttpError(WebView view, WebResourceRequest request,
+            WebResourceResponse errorResponse) {
+        if (request.isForMainFrame()) {
+            a.addLog("[webview] " + request.getUrl() + ": HTTP " + errorResponse.getStatusCode()
+                    + " " + errorResponse.getReasonPhrase());
+        }
+    }
 }
 
 class ScriptLoader implements Runnable {
@@ -806,7 +873,6 @@ class ScriptLoader implements Runnable {
             else sbc = a.readCache("sbc.js");
         }
         if (sbc == null) sbc = a.readAsset("sbc-optimizer.user.js");
-        a.scriptSbc = sbc;
 
         // 2. PaleTools: CACHE ZUERST. Es ist ~900 KB, und die WebView startete
         // bisher erst NACH dem Download - das war die Wartezeit, bis PaleTools
@@ -830,8 +896,8 @@ class ScriptLoader implements Runnable {
                 if (pale != null) a.writeCache("pale.js", pale);
             }
         }
-        a.scriptPale = pale;
-        a.paleSource = (pale == null) ? "keine" : (paleFromCache ? "Cache" : "Download");
+        String source = (pale == null) ? "keine" : (paleFromCache ? "Cache" : "Download");
+        a.setLoadedScripts(sbc, pale, source);
         a.setScriptsReady(true);
 
         // BEWUSST "geladen", nicht "bereit": das sagt nur, dass die Dateien
@@ -886,8 +952,7 @@ class SettingsSave implements DialogInterface.OnClickListener {
             .putString("paleUrl", urlPale.getText().toString().trim())
             .apply();
         a.setScriptsReady(false);
-        a.scriptSbc = null;
-        a.scriptPale = null;
+        a.setLoadedScripts(null, null, null);
         a.loadScriptsThenStart();
     }
 }

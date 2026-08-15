@@ -38,8 +38,14 @@ discoveries:
   shared_item_candidates: []
   cross_feature_smells: []
 seeds_next:
-  seeded_at: null
+  seeded_at: '2026-08-15T20:36:39Z'
   patterns: []
   shared_items: []
-  features: []
-  discoveries: []
+  features:
+  - 'PORTFOLIO KOMPLETT (iter8): alle 9 Features exakt auf structural_max — solver
+    95/95, pool 85/85, diagnose 85/85, bedienpanel 85/85, sbc 80/80, android 80/80,
+    ea-app 75/75, team 75/75, batch 70/70. Weitere Punkte gibt es nur noch ueber Cap-Revisionen
+    (neue Erkenntnisse/EA-Wandel), nicht ueber Lifts.'
+  discoveries:
+  - 'Offen ausserhalb der Scores: Joint-Optimierungs-Debt (§41 Bekannte Grenze, anlassgebunden),
+    APK-1.8.0-Installation, Live-Bewaehrung v4.60/v4.61 durch Rasmus'

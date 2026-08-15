@@ -1,18 +1,18 @@
-# Discoveries — Iteration 6
+# Discoveries — Iteration 7
 
-**Stand:** 2026-08-15T18:38:12Z
+**Stand:** 2026-08-15T20:07:19Z
 
 ## Pattern-Discoveries (Klasse F)
 
-_Keine mid-iter ergänzten Patterns in Iter 6._
+_Keine mid-iter ergänzten Patterns in Iter 7._
 
 ## Shared-Item-Mid-Iter-Inserts (Klasse G)
 
-_Keine Shared-Items spät ergänzt in Iter 6._
+_Keine Shared-Items spät ergänzt in Iter 7._
 
 ## Cross-Feature-Smells (gebündelte Cleanup-Sammeltickets)
 
-_Keine `collect_and_bundle`-Discoveries in Iter 6 — kein Bündeln nötig._
+_Keine `collect_and_bundle`-Discoveries in Iter 7 — kein Bündeln nötig._
 
 ## Vision-Hinweise für nächste Iter
 

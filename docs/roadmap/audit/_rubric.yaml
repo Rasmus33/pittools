@@ -69,15 +69,14 @@ ea-app-anbindung:
 rating-solver:
   RA:
     evidence:
-    - ea-fc-sbc-optimizer.user.js:2526-2657
-    - ea-fc-sbc-optimizer.user.js:2378-2513
-    - solver-test.js:3712-3802
-    - docs/LEARNINGS.md:1551-1641
-    notes: 'Post-iter6: Fuzzing fand echten Reservierungs-Defekt (Fenster ignoriert),
-      Fix via reserveRarityWindowAware (Trial-Cap 200, Greedy-Fallback textuell identisch),
-      randomisiertes Testnetz fuer Quoten-Pfade. Rest zum Deckel: reverse-engineerte
-      Formel + offener playerLevel-Verdacht (dokumentiert, unverifiziert).'
-    score: 94.0
+    - ea-fc-sbc-optimizer.user.js:2445-2572
+    - solver-test.js:4212-4436
+    - docs/LEARNINGS.md:1646-1684
+    notes: 'Post-iter7: playerLevel-Verdacht per Fuzzing bewiesen (#62) und via Generalisierung
+      des #60-Musters gefixt (#64, reserveWindowAware). Joint-Optimierungs-Grenze
+      ehrlich dokumentiert (kein RA-Abzug lt. Rubric). Structural_max 95 erreicht
+      — letzter Deckel-Grund ist die reverse-engineerte Formel selbst.'
+    score: 95.0
     source: user-manual
     updated_at: '2026-08-15'
 sbc-vorgaben-erkennung:

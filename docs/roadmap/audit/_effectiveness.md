@@ -1,6 +1,6 @@
-# Iteration-Effektivität — Iteration 6 (M6)
+# Iteration-Effektivität — Iteration 7 (M6)
 
-**Stand:** 2026-08-15T18:38:12Z
+**Stand:** 2026-08-15T20:07:19Z
 
 ## Kennzahlen
 
@@ -8,9 +8,9 @@
 > (7 von 9). 2 voll-gehaltene
 > Feature(s) sind ausgeschlossen — ihr Alt-Gewinn wird nicht erneut gezählt (ADR #98).
 
-- **avg_score_gain** über die Fokus-Features: **1.6**
+- **avg_score_gain** über die Fokus-Features: **1.7**
 - **median_score_gain**: 1.0
-- **stdev_score_gain**: 0.8
+- **stdev_score_gain**: 1.0
 - **under_expectation_ratio**: **0.0%** (0 / 7 Fokus-Features unter 70 % des erwarteten Gains)
 - **worst_feature**: `android-app-wrapper` (Gain: 1.0)
 - **best_feature**: `bedienpanel-ui` (Gain: 3.0)
@@ -30,7 +30,7 @@ Post − Pre == Tatsächlicher Gain. Absolute Σ-Scores stehen in `_summary.md`.
 | `batch-modus` | 69.0 | 70.0 | 69 | 1.0 | 0.0 | 100.0% |
 | `bedienpanel-ui` | 82.0 | 85.0 | 84 | 3.0 | 2.0 | 150.0% |
 | `ea-app-anbindung` | 74.0 | 75.0 | 75 | 1.0 | 1.0 | 100.0% |
-| `rating-solver` | 92.0 | 94.0 | 93 | 2.0 | 1.0 | 200.0% |
+| `rating-solver` | 92.0 | 95.0 | 93 | 3.0 | 1.0 | 300.0% |
 | `sbc-vorgaben-erkennung` | 78.0 | 80.0 | 79 | 2.0 | 1.0 | 200.0% |
 | `spieler-pool` | 83.0 | 84.0 | 80 | 1.0 | -3.0 | -33.3% |
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.46.0
+// @version      4.47.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.46.0';
+    const VERSION = '4.47.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -3946,15 +3946,20 @@
                 } catch (e) { return { error: String(e && e.message || e) }; }
             })(),
             // Submit-Diagnose: welcher Weg hat zuletzt gegriffen und ist
-            // ueberhaupt eine Challenge offen?
+            // ueberhaupt eine Challenge offen? findSbcController()/
+            // findLiveChallenge() traversieren dieselbe undokumentierte
+            // EA-Controller-Kette wie hubScan - analog dazu abgesichert, damit
+            // ein EA-seitiger Bruch dort nicht den GESAMTEN Report mitreisst.
             submitInfo: (function () {
-                const svc = window.services && window.services.SBC;
-                const ctrl = findSbcController();
-                return {
-                    saveChallengeThere: !!(svc && typeof svc.saveChallenge === "function"),
-                    liveChallengeThere: !!findLiveChallenge(),
-                    controllerName: (ctrl && ctrl.constructor && ctrl.constructor.name) || null
-                };
+                try {
+                    const svc = window.services && window.services.SBC;
+                    const ctrl = findSbcController();
+                    return {
+                        saveChallengeThere: !!(svc && typeof svc.saveChallenge === "function"),
+                        liveChallengeThere: !!findLiveChallenge(),
+                        controllerName: (ctrl && ctrl.constructor && ctrl.constructor.name) || null
+                    };
+                } catch (e) { return { error: String(e && e.message || e) }; }
             })(),
             // Einstiegspunkt-Diagnose: sitzt der Menüpunkt in der EA-Leiste
             // oder fällt die App auf den FAB zurück? tabBarCount zeigt, ob
@@ -4042,6 +4047,12 @@
             })(),
             refreshLog: STATE.diag.refreshLog || null,
             submitVia: STATE.diag.submitVia || null,
+            // Kein "|| null": lastEligible ist dreiwertig (true = App haelt
+            // Squad fuer abgabefaehig, false = ausdruecklich NICHT abgabefaehig
+            // - der fuer Rasmus wichtigste Fall, null = Pruefung nicht moeglich).
+            // "false || null" wuerde zu null kollabieren und den wichtigsten
+            // Fall ununterscheidbar von "nicht geprueft" machen.
+            lastEligible: typeof STATE.diag.lastEligible !== 'undefined' ? STATE.diag.lastEligible : null,
             controllerScan: controllerScan(),
             // GEKUERZT: von den 23 Slots sind die meisten leer (id 0) - die
             // stehen jetzt nur als Anzahl drin. Wichtig ist, WELCHE Karte auf
@@ -4144,7 +4155,16 @@
             inSbcView: inSbcView(),
             btnAttached: !!document.getElementById(BTN_ID)
         };
-        const report = buildDiagReport();
+        // Das Diagnose-Werkzeug darf bei EA-Wandel nicht selbst lautlos
+        // ausfallen: ein kaputtes Report-Feld liefert sonst gar nichts statt
+        // wenigstens des Fehlers selbst.
+        let report;
+        try {
+            report = buildDiagReport();
+        } catch (e) {
+            reportError('Diagnose-Report fehlgeschlagen', e);
+            report = { version: VERSION, url: location.href, error: String(e && e.message || e) };
+        }
         console.log(LOG_PREFIX + ' ===== DIAGNOSE-REPORT (bitte komplett kopieren) =====');
         console.log(JSON.stringify(report, null, 2));
         console.log(LOG_PREFIX + ' ===== ENDE DIAGNOSE-REPORT =====');

@@ -1161,3 +1161,48 @@ Methode/Pfad zaehlen - ein gemeinsamer Kern liefe sonst Gefahr, einen
 laufenden GET- und PUT-Retry denselben Zaehler teilen zu lassen. Voraussetzung
 fuer eine Folge-Iteration: ein Mock-Testharness fuer `apiGet`/`apiPut`, analog
 zum bestehenden `fetchClubViaHttp`-Test.
+
+## 33. lastEligible steht dreiwertig im Report, submitInfo faengt EA-Brueche wie hubScan
+
+`STATE.diag.lastEligible` (bei jedem 403 aus `isSBCSquadEligible()` befuellt,
+siehe Abschnitt 19) ist dreiwertig: `true` = App haelt den Squad fuer
+abgabefaehig, `false` = ausdruecklich NICHT abgabefaehig - der fuer Rasmus
+wichtigste Fall, weil er zeigt, dass eine Vorgabe fehlt, die der Solver nicht
+abdeckt -, `null` = Pruefung nicht moeglich. `buildDiagReport()` gibt das Feld
+deshalb bewusst NICHT ueber das sonst uebliche `STATE.diag.X || null`-Idiom
+aus (siehe `submitVia`, `refreshLog`, `lastTeam` in derselben Funktion),
+sondern ueber `typeof STATE.diag.lastEligible !== 'undefined' ? ... : null` -
+`false || null` wuerde zu `null` kollabieren und den wichtigsten Fall
+ununterscheidbar von "nicht geprueft" machen.
+
+`solver-test.js` Abschnitt 17 prueft die `STATE.diag`-Symmetrie jetzt in drei
+statt zwei Richtungen: gelesen -> deklariert, deklariert -> irgendwo im File
+befuellt, UND deklariert -> tatsaechlich INNERHALB von `buildDiagReport()`
+gelesen. Die dritte Richtung haette den `lastEligible`-Fund automatisch
+aufgedeckt (deklariert und befuellt, aber im Report ungelesen) und schuetzt
+jedes kuenftige Feld vor demselben stillen Ausfall. `lastTap` ist die einzige
+begruendete Ausnahme: es fliesst nur mittelbar in den Report, weil
+`clickSetTile()` es per Wert in sein `step`-Objekt liest, das ueber
+`recordBatchStep()` in `STATE.diag.batchSteps`/`batchFailedSteps` landet - und
+die werden gelesen. Die "befuellt"-Pruefung selbst verlangt jetzt ein echtes
+Schreibmuster (`=` ausser `==`/`===`/`!==`, `.push(`, `.shift(`, `++`, `--`)
+statt einer blossen Erwaehnung; `lastErrors`/`lastUtasPaths` bleiben die
+einzige begruendete Ausnahme davon, weil beide per lokaler Referenz
+eingesammelt und ueber diese Referenz mutiert werden (`const arr =
+STATE.diag.X; arr.push(...)`), was ein Schreibmuster-Regex an der
+`STATE.diag.X`-Stelle selbst nicht sieht.
+
+`submitInfo` (in `buildDiagReport()`) ruft `findSbcController()`/
+`findLiveChallenge()` auf - dieselbe undokumentierte EA-Controller-Kette, die
+`hubScan` bereits traversiert - und ist jetzt strukturell genauso in ein
+eigenes `try { ... } catch (e) { return { error: ... } }` gefasst wie
+`hubScan`. `onDiagClick()` faengt seinerseits den kompletten
+`buildDiagReport()`-Aufruf: wirft ein einzelnes Report-Feld, liefert
+`reportError()` die Fehlermeldung in beide Diagnosekanaele UND es geht
+trotzdem ein minimaler Fallback-Report (`version`/`url`/`error`) in Konsole
+und Zwischenablage - das Werkzeug, das EA-Wandel sichtbar machen soll, bleibt
+bei genau dieser Fehlerklasse nicht selbst stumm. `solver-test.js` Abschnitt
+31 extrahiert `buildDiagReport()` und prueft fuer `hubScan`/`submitInfo`/
+`launcher` je einzeln, dass zwischen deren `(function () {` und `})()` sowohl
+ein Aufruf der EA-Controller-Traversal als auch ein eigener `catch (e)`
+vorkommt.

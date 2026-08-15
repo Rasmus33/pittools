@@ -1784,27 +1784,58 @@ function mulberry32(a) {
     check('Jedes in buildDiagReport() gelesene STATE.diag-Feld ist deklariert',
         undeclaredReads.length === 0, undeclaredReads.join(','));
 
+    // Dritte Richtung, spiegelbildlich zur vorigen Pruefung: jedes deklarierte
+    // Feld muss auch INNERHALB von buildDiagReport() (zwischen fnOpen/fnClose)
+    // tatsaechlich gelesen werden - sonst bleibt es befuellt, aber im
+    // kopierbaren Report unsichtbar (genau der lastEligible-Fund: deklariert
+    // und bei jedem 403 befuellt, aber nirgends im Report gelesen).
+    const MISSING_FROM_REPORT_EXCEPTIONS = new Set([
+        // lastTap fliesst nur mittelbar in den Report: clickSetTile() liest
+        // es per Wert in sein eigenes step-Objekt, das per recordBatchStep()
+        // in STATE.diag.batchSteps/batchFailedSteps landet - UND die werden
+        // in buildDiagReport() gelesen. Eine zusaetzliche direkte Lesung waere
+        // eine doppelte Kopie desselben Werts, kein fehlendes Feld.
+        'lastTap'
+    ]);
+    const missingFromReport = Array.from(declared)
+        .filter(n => !readNames.has(n) && !MISSING_FROM_REPORT_EXCEPTIONS.has(n));
+    check('Jedes deklarierte STATE.diag-Feld (ausser begruendeten Ausnahmen) wird auch INNERHALB von buildDiagReport() gelesen',
+        missingFromReport.length === 0, missingFromReport.join(','));
+
     // Symmetrisch: jedes deklarierte Feld wird auch AUSSERHALB von
-    // buildDiagReport() referenziert - dort wird es befuellt (direkte
-    // Zuweisung, ++, oder wie bei lastErrors/lastUtasPaths per Referenz
-    // eingesammelt und via push()/shift() mutiert; eine reine "= "-Regex
-    // wuerde genau diese beiden bestehenden, echten Felder faelschlich als
-    // "nie zugewiesen" melden). Ein Feld OHNE jede Stelle ausserhalb des
-    // Reports ist exakt der uiScan-Fall vor diesem Fix.
+    // buildDiagReport() mit einem ECHTEN Schreibmuster befuellt (Zuweisung
+    // "=" ausser "=="/"==="/"!==", .push(, .shift(, ++, --) - eine reine
+    // Erwaehnung (z.B. eine Lesestelle "if (STATE.diag.X)") zaehlt bewusst
+    // NICHT mehr als "befuellt", sonst koennte ein kuenftiges Feld denselben
+    // uiScan-Fehler von der Schreib-Seite unbemerkt wiederholen.
     // "diag." statt zwingend "STATE.diag." erfasst auch reine Reducer-Helfer
     // wie recordBatchStep(diag, ...), die STATE.diag nur als Parameter
     // durchgereicht bekommen und intern "diag.<feld>" schreiben - eine reine
     // "STATE.diag."-Suche wuerde deren Felder faelschlich als unbefuellt melden.
+    const ALIAS_MUTATED_FIELDS = new Set([
+        // lastErrors/lastUtasPaths werden nie als "diag.X = ..." geschrieben,
+        // sondern per lokaler Referenz eingesammelt und mit push()/shift()
+        // mutiert (siehe diagError() bzw. detectApiBase(): "const arr =
+        // STATE.diag.X; arr.push(...)"). Ein Schreibmuster-Regex kann diese
+        // Aliasierung nicht verfolgen, ohne wieder jede blosse Erwaehnung
+        // durchzulassen - beide Felder sind per Volltextsuche verifiziert.
+        'lastErrors', 'lastUtasPaths'
+    ]);
     const unassigned = [];
     for (const name of declared) {
-        const re = new RegExp('\\bdiag\\.' + name + '\\b', 'g');
+        if (ALIAS_MUTATED_FIELDS.has(name)) continue;
+        const writeRe = new RegExp(
+            '\\bdiag\\.' + name + '\\s*=[^=]' +          // Zuweisung, kein ==/===/!==
+            '|\\bdiag\\.' + name + '\\.(push|shift)\\(' + // Ringpuffer-Mutation
+            '|\\bdiag\\.' + name + '\\s*(\\+\\+|--)',     // Zaehler
+            'g');
         let mm, foundOutside = false;
-        while ((mm = re.exec(src))) {
+        while ((mm = writeRe.exec(src))) {
             if (mm.index < fnOpen || mm.index >= fnClose) { foundOutside = true; break; }
         }
         if (!foundOutside) unassigned.push(name);
     }
-    check('Jedes deklarierte STATE.diag-Feld wird auch ausserhalb des Reports befuellt',
+    check('Jedes deklarierte STATE.diag-Feld (ausser Alias-Mutationen) wird ausserhalb des Reports mit einem echten Schreibmuster befuellt',
         unassigned.length === 0, unassigned.join(','));
 }
 
@@ -2597,6 +2628,35 @@ function mulberry32(a) {
     const runFn = extractFunction(src, 'onBatchRunClick');
     check('onBatchRunClick ruft recordBatchStep(STATE.diag, i + 1, next) statt der Inline-Zeile',
         runFn.indexOf('recordBatchStep(STATE.diag, i + 1, next)') > -1);
+}
+
+// ========== 31. buildDiagReport(): EA-Controller-Traversal-Subbloecke faengt eigene Fehler ==========
+{
+    // hubScan/submitInfo/launcher rufen alle findSbcController()/
+    // findLiveChallenge()/getControllerChain() auf - dieselbe undokumentierte
+    // EA-Controller-Kette, die bei EA-Wandel als erstes bricht (siehe
+    // patterns/good/stille-catches-nur-an-der-ea-grenze.md). Jeder dieser
+    // Sub-Bloecke braucht einen EIGENEN catch (e), sonst reisst ein Fehler
+    // darin die GESAMTE buildDiagReport() mit - und das Diagnose-Werkzeug,
+    // das genau solche EA-Brueche sichtbar machen soll, faellt selbst
+    // lautlos aus.
+    const fnSrc = extractFunction(src, 'buildDiagReport');
+    check('buildDiagReport() gefunden (Block 31)', !!fnSrc);
+
+    const EA_TRAVERSAL_SUBBLOCKS = ['hubScan', 'submitInfo', 'launcher'];
+    for (const name of EA_TRAVERSAL_SUBBLOCKS) {
+        const marker = name + ': (function () {';
+        const startIdx = fnSrc.indexOf(marker);
+        check(marker.trim() + ' in buildDiagReport() gefunden', startIdx > -1, name);
+        if (startIdx < 0) continue;
+        const openBrace = startIdx + marker.length - 1;
+        const closeBrace = matchingBraceIndex(fnSrc, openBrace);
+        const blockSrc = fnSrc.slice(openBrace, closeBrace + 1);
+        check(name + ' ruft EA-Controller-Traversal auf (Testannahme dieses Blocks)',
+            /\b(findSbcController|findLiveChallenge|getControllerChain)\s*\(/.test(blockSrc));
+        check(name + ' hat einen eigenen catch (e) zwischen (function () { und })()',
+            /\bcatch\s*\(\s*e\s*\)/.test(blockSrc));
+    }
 }
 
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt

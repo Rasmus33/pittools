@@ -4196,15 +4196,18 @@ function mulberry32(a) {
     }
 }
 
-// ========== 52. Ticket #62: Brute-Force-Fuzzing MIT Spieler-Level-Vorgabe
-// (playerLevelConstraints) - bestaetigt den Verdacht aus LEARNINGS 41 ==========
-// LEARNINGS 41 vermutete per Analogie (nicht brute-force-verifiziert), dass
-// die Spieler-Level-Reservierung in solveCore() (plList-Schleife, Zeile
-// ~2293-2307, "min. Nx X+") denselben Kosten-zuerst-Aufbau hat wie der in
-// Ticket #57/#60 gefixte Rarity-Pfad. Analog zu Section 46 (Rarity)
-// generalisiert bruteBest() gegen Configs MIT playerLevelConstraints - anders
-// als bei der Rarity-Gruppe ist die Quote hier ein "mindestens", quotaOk
-// prueft daher ">=" statt "===".
+// ========== 52. Ticket #62/#64: Brute-Force-Fuzzing MIT Spieler-Level-Vorgabe
+// (playerLevelConstraints) - FIX verifiziert (reserveWindowAware(), LEARNINGS
+// 41) ==========
+// Die Spieler-Level-Reservierung in solveCore() (plList-Schleife) probiert
+// fuer Vorgaben MIT gesetztem target jetzt - wie die Rarity-Reservierung
+// (Ticket #57/#60) - alle infrage kommenden Kandidaten-Kombinationen per DP
+// durch (reserveWindowAware(), generalisiert aus dem Rarity-Pfad) und waehlt
+// die Kombination mit dem kleinsten team-weiten V (Tiebreak Kosten), statt
+// wie zuvor rein nach den Kosten der Vorgabe-Karte selbst zu sortieren. Analog
+// zu Section 46 (Rarity) generalisiert bruteBest() gegen Configs MIT
+// playerLevelConstraints - anders als bei der Rarity-Gruppe ist die Quote hier
+// ein "mindestens", quotaOk prueft daher ">=" statt "===".
 {
     const rand = mulberry32(62006200);
     let allMatch = true, detail = '';
@@ -4250,33 +4253,18 @@ function mulberry32(a) {
             }
         }
     }
-    // BEKANNTER, VERIFIZIERTER DEFEKT (Regel-Hierarchie aus CLAUDE.md: das
-    // "Max. Rating-Ueberschuss"-Fenster hat Vorrang - Kosten entscheiden NUR
-    // innerhalb davon, "kein Rating verschenken"): die Spieler-Level-
-    // Reservierung in solveCore() (plList-Schleife) waehlt die Vorgabe-
-    // Karte(n) ausschliesslich nach
-    // "(costOf(a) - costOf(b)) || (a.rating - b.rating)" - strukturell
-    // identisch zum in Ticket #57/#60 gefixten Rarity-Pfad, aber ohne dessen
-    // reserveRarityWindowAware()-Gegenstueck. Dreifach verifiziert (Ticket
-    // #62, Protokoll wie #57): (1) bruteBest() oben (Rueckwaertssuche ueber
-    // alle N-Kombinationen des per Fuzzing gefundenen 14-Karten-Falls t2);
-    // (2) eine zweite, unabhaengig implementierte Bitmask-Enumeration auf
-    // demselben t2-Pool (alle C(14,11)-Kombinationen ueber Ausschluss-Indizes
-    // statt Rueckwaertssuche) UND eine vollstaendige manuelle Auflistung
-    // aller C(6,4)=15 Kombinationen des Minimal-Repros unten - beide
-    // bestaetigen exakt dieselben vMin/bestObj-Werte, kein Fehler in der
-    // Referenz; (3) Code-Lesen der plList-Schleife bestaetigt den Mechanismus:
-    // costOf() einer Storage-Karte (93, Kosten 13) ist niedriger als costOf()
-    // einer Vereins-Karte (92, Kosten 22) - die Reservierung waehlt die 93er,
-    // obwohl die 92er zusammen mit demselben Rest-Pool das kleinere, im
-    // Fenster liegende globale V-Minimum erreicht haette (ovrExact 84.13/
-    // waste 6.13 statt der gelieferten 84.56/waste 6.56).
-    // Dieser Check PINNT das heutige IST-Ergebnis, damit main gruen bleibt,
-    // OHNE den Befund zu verstecken (Workaround-Ausnahme Q2): wer diesen
-    // Defekt behebt (z.B. analog zu reserveRarityWindowAware()), MUSS den
-    // Check auf die korrekte Erwartung drehen (ovrExact === 84.13,
-    // waste === 6.13 - die im selben Pool erreichbare, fensterkonforme
-    // Alternative, siehe LEARNINGS 41).
+    // Regel-Hierarchie aus CLAUDE.md: das "Max. Rating-Ueberschuss"-Fenster hat
+    // Vorrang - Kosten entscheiden NUR innerhalb davon, "kein Rating
+    // verschenken". Minimal-Repro (4 Slots, maxOvershoot 0, "mind. 1x 88+"):
+    // eine guenstigere, aber zu hoch geratete Storage-Karte (B, 93, Kosten 13)
+    // und eine teurere, aber ZIELGENAUE Vereins-Karte (A, 92, Kosten 22)
+    // erfuellen beide dieselbe Spieler-Level-Vorgabe - nur A erreicht mit dem
+    // Rest des Pools ovrExact 84.13 (waste 6.13) statt 84.56 (waste 6.56).
+    // Vor dem Fix (Ticket #62, dreifach verifiziert: bruteBest() oben,
+    // eine zweite, unabhaengig implementierte Bitmask-Enumeration auf
+    // demselben t2-Pool und eine vollstaendige manuelle Auflistung aller
+    // C(6,4)=15 Kombinationen des Minimal-Repros) waehlte die plList-Schleife
+    // ausschliesslich nach costOf() und lieferte 84.56/6.56 statt 84.13/6.13.
     const minRepro = (function () {
         const A = P(92, {});                 // Vereins-Karte, teurer, aber fenster-optimal
         const B = P(93, { storage: true });  // Storage-Karte, guenstiger, aber Ueberschuss
@@ -4290,14 +4278,161 @@ function mulberry32(a) {
         });
         return SolverCore.solve(pool, c);
     })();
-    check('BEKANNTER BEFUND (Spieler-Level-Reservierung ignoriert Overshoot-Fenster, ' +
-        'LEARNINGS 41): Minimal-Repro (4 Slots, maxOvershoot 0, "mind. 1x 88+") liefert heute ' +
-        'ovrExact 84.56 (waste 6.56) statt der im selben Pool erreichbaren 84.13 (waste 6.13) - ' +
-        '30x-Fuzzing (Seed 62006200) findet dieselbe Ursache bei t2',
-        minRepro.ok && minRepro.ovrExact === 84.56 && minRepro.waste === 6.56 &&
-        !allMatch && /t2:/.test(detail),
+    check('FIX verifiziert (war: bekannter Befund #62): Minimal-Repro (4 Slots, ' +
+        'maxOvershoot 0, "mind. 1x 88+") waehlt die zielgenaue Vereins-Karte A (92) ' +
+        'statt der guenstigeren, aber hoeher geraten Storage-Karte B (93) und erreicht ' +
+        'ovrExact 84.13 (waste 6.13) - 30x-Fuzzing (Seed 62006200) findet KEINE Abweichung ' +
+        'mehr (allMatch)',
+        minRepro.ok && minRepro.ovrExact === 84.13 && minRepro.waste === 6.13 && allMatch,
         'minRepro.ok=' + minRepro.ok + ' ovrExact=' + (minRepro.ok && minRepro.ovrExact) +
         ' waste=' + (minRepro.ok && minRepro.waste) + ' fuzzDetail=' + detail);
+}
+
+// ========== 53. Ticket #64: reserveWindowAware() generalisiert auf
+// Spieler-Level-Vorgaben - Cap-Fallback, Gegenprobe und kombinierter
+// Rarity+Spieler-Level-Fuzz (LEARNINGS 41) ==========
+
+// (a) Kombinatorik-Schranke im Spieler-Level-Pfad: 40 distinct-rating
+// Kandidaten (60..99, 1 Karte je Rating), need=3 -> C(40,3)=9880 reisst
+// RARITY_WINDOW_TRIAL_CAP (200) sicher. Erwartet: dieselben drei Karten wie
+// der heutige, unveraenderte Kosten-Greedy (additiver Fallback, kein
+// zweiter Fehlerpfad) UND die (mit dem Rarity-Pfad geteilte) Cap-Warnung.
+{
+    const pool = [];
+    for (let r = 60; r <= 99; r++) pool.push(P(r, {}));
+    const c = cfg(84, {
+        slots: 11, maxOvershoot: 3.0,
+        scarcityWeight: 18, storageBonus: 2,
+        ratingCostSpec: SolverCore.DEFAULT_RATING_COST_SPEC,
+        playerLevelConstraints: [{ label: 'PLAYER_RATING', minRating: 60, count: 3 }]
+    });
+    const res = SolverCore.solve(pool, c);
+    const costOf = SolverCore.makeCostOf(pool, c);
+    // Der heutige (unveraenderte) Kosten-Greedy-Sortier-Ausdruck aus der
+    // plList-Schleife: Kosten aufsteigend, Rating als Tiebreak.
+    const expectedIds = pool.filter(p => p.rating >= 60).slice()
+        .sort((a, b) => (costOf(a) - costOf(b)) || (a.rating - b.rating))
+        .slice(0, 3).map(p => p.id).sort((a, b) => a - b);
+    check('Ticket #64: Cap-Ueberschreitung im Spieler-Level-Pfad (40 Kandidaten, ' +
+        'C(40,3)=9880 > Cap 200) reserviert dieselben drei Karten wie der heutige, ' +
+        'unveraenderte Kosten-Greedy',
+        res.ok && expectedIds.every(id => res.players.some(p => p.id === id)),
+        res.ok ? ('teamIds=' + JSON.stringify(res.players.map(p => p.id)) +
+            ' expected=' + JSON.stringify(expectedIds)) : res.reason);
+    check('Ticket #64: Cap-Ueberschreitung im Spieler-Level-Pfad meldet dieselbe ' +
+        '(mit dem Rarity-Pfad geteilte) Fallback-Warnung',
+        res.ok && (res.warnings || []).some(w => /Fensterbewusste Vorgaben-Wahl uebersprungen/.test(w)),
+        JSON.stringify(res.warnings));
+}
+
+// (b) Gegenprobe ohne playerLevelConstraints: das Verschieben von
+// cmp/NEED/windowV/searchTeam()/reserveWindowAware() vor die Spieler-Level-
+// Schleife (Ticket #64) darf den reservierungsfreien UND den Rarity-only-Pfad
+// nicht veraendern - 30x-Fuzzing ohne jede playerLevelConstraint gegen
+// dieselbe Brute-Force-Referenz wie Test 4/46, nur mit einem frischen Seed.
+{
+    const rand = mulberry32(64106410);
+    let allMatch = true, detail = '';
+    for (let t = 0; t < 30; t++) {
+        const n = 12 + Math.floor(rand() * 4);
+        const pool = [];
+        for (let i = 0; i < n; i++) {
+            pool.push(P(75 + Math.floor(rand() * 14), { storage: rand() < 0.3 }));
+        }
+        const target = 76 + Math.floor(rand() * 6);
+        const c = cfg(target, {
+            slots: 6,
+            maxOvershoot: Math.floor(rand() * 4) / 10,
+            scarcityWeight: 18, storageBonus: 2,
+            ratingCostSpec: SolverCore.DEFAULT_RATING_COST_SPEC
+            // playerLevelConstraints bleibt der cfg()-Default: []
+        });
+        const res = SolverCore.solve(pool, c);
+        const bb = bruteBest(pool, c);
+        if (bb === null) {
+            if (res.ok) { allMatch = false; detail = 't' + t + ': brute unloesbar, solver ok'; break; }
+        } else {
+            if (!res.ok) { allMatch = false; detail = 't' + t + ': brute loesbar (vMin=' + bb.vMin + '), solver nicht: ' + res.reason; break; }
+            const obj = solverObjective(res, pool, c, bb.vMin);
+            if (Math.abs(obj - bb.bestObj) > 1e-6) {
+                allMatch = false; detail = 't' + t + ': brute=' + bb.bestObj + ' solver=' + obj; break;
+            }
+        }
+    }
+    check('Ticket #64 Gegenprobe: ohne playerLevelConstraints byte-gleiches ' +
+        'Verhalten (30x Brute-Force-Paritaet, kein Spieler-Level-Pfad beteiligt)',
+        allMatch, detail);
+}
+
+// (c) Kombinierter Fuzz: Rarity- UND Spieler-Level-Vorgabe GLEICHZEITIG in
+// derselben SBC - reserveWindowAware() laeuft sequenziell fuer BEIDE
+// Vorgaben-Arten (erst Spieler-Level, dann Rarity, siehe solveCore()) auf
+// demselben, sich veraendernden reserved-Zustand. quotaOk prueft beide
+// Quoten gemeinsam gegen die unabhaengige Brute-Force-Referenz (bruteBest).
+// Die Rarity-Kandidaten bleiben bewusst STRIKT unter minRatingC (disjunkt von
+// den Spieler-Level-Kandidaten): eine Karte, die ZUFAELLIG beide Vorgaben
+// gleichzeitig erfuellen koennte, deckt eine gemeinsame Joint-Optimierung
+// ueber ZWEI VERSCHIEDENE Vorgaben-Typen hinweg auf, die ausserhalb des
+// Ticket-Umfangs liegt (jede reserveWindowAware()-Instanz optimiert nur
+// GEGEN BEREITS FEST reservierte Karten, nicht vorausschauend gegen eine
+// SPAETER laufende, andersartige Vorgabe - siehe Ticket #64 followups).
+{
+    const rand = mulberry32(64006400);
+    let allMatch = true, detail = '';
+    for (let t = 0; t < 30; t++) {
+        const nNormal = 11 + Math.floor(rand() * 3);
+        const nHigh = 2 + Math.floor(rand() * 2);
+        const nProt = 2 + Math.floor(rand() * 2);
+        const minRatingC = 83 + Math.floor(rand() * 4); // 83..86
+        const needHigh = 1 + Math.floor(rand() * Math.min(2, nHigh));
+        const needProt = 1 + Math.floor(rand() * Math.min(2, nProt));
+        const pool = [];
+        for (let i = 0; i < nNormal; i++) {
+            pool.push(P(70 + Math.floor(rand() * 8), { storage: rand() < 0.3, groups: [19] }));
+        }
+        for (let i = 0; i < nHigh; i++) {
+            pool.push(P(minRatingC + Math.floor(rand() * 8), { storage: rand() < 0.5, groups: [19] }));
+        }
+        for (let i = 0; i < nProt; i++) {
+            pool.push(P(70 + Math.floor(rand() * (minRatingC - 70)),
+                { special: true, rareflag: 137, groups: [83], storage: rand() < 0.5 }));
+        }
+        const target = 80 + Math.floor(rand() * 6);
+        const c = cfg(target, {
+            maxOvershoot: Math.floor(rand() * 4) / 10,
+            scarcityWeight: 18, storageBonus: 2,
+            ratingCostSpec: SolverCore.DEFAULT_RATING_COST_SPEC,
+            rarityConstraints: [{ label: 'PLAYER_RARITY_GROUP', ids: [], count: needProt, groupId: 83 }],
+            playerLevelConstraints: [{ label: 'PLAYER_RATING', minRating: minRatingC, count: needHigh }]
+        });
+        const res = SolverCore.solve(pool, c);
+        const quotaOk = (team) => {
+            const gotProt = team.filter(p => Array.isArray(p.groups) && p.groups.indexOf(83) > -1).length;
+            const gotHigh = team.filter(p => p.rating >= minRatingC).length;
+            return gotProt === needProt && gotHigh >= needHigh;
+        };
+        const bb = bruteBest(pool, c, quotaOk);
+        if (bb === null) {
+            if (res.ok) { allMatch = false; detail = 't' + t + ': brute (kombiniert) unloesbar, solver ok'; break; }
+        } else {
+            if (!res.ok) { allMatch = false; detail = 't' + t + ': brute loesbar (vMin=' + bb.vMin + '), solver nicht: ' + res.reason; break; }
+            if (!quotaOk(res.players)) {
+                allMatch = false; detail = 't' + t + ': Solver-Team erfuellt die kombinierte Quote nicht (Rarity ' +
+                    res.players.filter(p => p.groups && p.groups.indexOf(83) > -1).length + '/' + needProt +
+                    ', Spieler-Level ' + res.players.filter(p => p.rating >= minRatingC).length + '/' + needHigh + ')';
+                break;
+            }
+            const obj = solverObjective(res, pool, c, bb.vMin);
+            if (Math.abs(obj - bb.bestObj) > 1e-6) {
+                allMatch = false; detail = 't' + t + ': brute=' + bb.bestObj + ' solver=' + obj; break;
+            }
+            if (SolverCore.squadRating(res.players.map(p => p.rating)) < target) {
+                allMatch = false; detail = 't' + t + ': Team erreicht Ziel nicht!'; break;
+            }
+        }
+    }
+    check('30x kombinierter Brute-Force-Fuzz MIT Rarity- UND Spieler-Level-Vorgabe ' +
+        'gleichzeitig (Ticket #64)', allMatch, detail);
 }
 
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt

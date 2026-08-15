@@ -56,6 +56,19 @@ entries:
     Wiederholung verfuegbar — N von M geschafft), der Neu-oeffnen-Rat bleibt nur fuer
     den uneindeutigen Fall; staleRecover traegt Server-Zustand (status/timesCompleted/endTime).
     v4.63.0, 598/598, Main-verifiziert.
+- at: '2026-08-15T22:36:59Z'
+  issue: 68
+  po_class: null
+  surprises:
+  - 'Implementer wich korrekt von veralteten Roadmap-Docs ab (lift-plan/gap zeigten
+    noch #50) und folgte den Ticket-Kriterien — die iter9-Schnell-Tickets ohne frische
+    Gap/Lift-Docs funktionieren, hinterlassen aber Doc-Drift (als Debt gesammelt).'
+  - 'Bewusste Scope-Entscheidung: Verfuegbarkeits-Zeile nur fuer Rarity-/Gruppe-83-Vorgaben,
+    nicht fuer Bronze/Silber/Gold-Qualitaet (dort ist die TOTW/Storage-Aufschluesselung
+    fachlich sinnlos) — deckt Rasmus O-Ton exakt.'
+  reasoning: Vorgabe-Kandidaten-Verfuegbarkeit im Info-Block, SSOT mit der Reservierung
+    (reservationCandidates() von beiden genutzt, 598er-Baseline unveraendert = Verhaltensbeweis).
+    v4.64.0, 615/615, Main-verifiziert.
 discoveries:
   pattern_candidates: []
   antipattern_candidates: []

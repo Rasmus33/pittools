@@ -145,6 +145,18 @@ entries:
     auf jetzt-fremden Paragraph 23) — Doku-Fix macht Main direkt.'
   reasoning: 'PARTIAL akzeptiert: beide Funde sind Folgearbeit, Akzeptanz komplett.
     v4.43.0 geht live.'
+- at: '2026-08-15T01:44:04Z'
+  issue: 9
+  po_class: null
+  surprises:
+  - '#9 hat beim Konsolidieren einen latenten Bug mitgefixt: findLiveChallenge hatte
+    keinen typeof-Objekt-Guard (sync haette bei Muell-_challenge faelschlich true
+    gemeldet) — Guard in den Helfer gezogen statt beim Swap verloren, alle 3 Aufrufer
+    profitieren.'
+  - 'patterns/bad/helfer-existiert-wird-umgangen.md: zwei Code-Belege sind durch #9
+    aufgeloest (Traversal-Duplikate weg) — Pattern-Doc-Pflege beim Audit.'
+  reasoning: 'Validator PASS in der fragilsten Zone: Weg 0 nur kommentiert, Konsolidierung
+    testfest am synthetischen Controller-Graph. v4.44.0 geht live.'
 discoveries:
   pattern_candidates:
   - slug: symmetrie-test-lesen-schreiben-trennen

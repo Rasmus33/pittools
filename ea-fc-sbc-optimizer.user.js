@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.60.0
+// @version      4.61.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.60.0';
+    const VERSION = '4.61.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -1760,10 +1760,11 @@
         // wird in localStorage gemerkt - eine Änderung hier greift nur, wenn
         // dort noch nichts gespeichert ist oder "Zurücksetzen" gedrückt wird.
         const DEFAULT_RATING_COST_SPEC = '0-80:0, 81-83:2, 84:1, 85-88:2, 89-90:3, 91-92:4, 93+:12';
-        // Kombinatorik-Schranke fuer reserveRarityWindowAware() (Ticket #60,
-        // LEARNINGS 41): Anzahl der (Rating -> Anzahl)-Aufteilungen, die pro
-        // Rarity-Vorgabe tatsaechlich per DP durchprobiert werden, bevor auf
-        // den Kosten-Greedy zurueckgefallen wird. Konservativ fuer Reaktionszeit
+        // Kombinatorik-Schranke fuer reserveWindowAware() (Ticket #60/#64,
+        // LEARNINGS 41): Anzahl der (Rating -> Anzahl)-Aufteilungen, die PRO
+        // VORGABE (Rarity- UND playerLevel-Reservierung teilen sich die
+        // Schranke) tatsaechlich per DP durchprobiert werden, bevor auf den
+        // Kosten-Greedy zurueckgefallen wird. Konservativ fuer Reaktionszeit
         // am Handy geschaetzt (Lift-Plan), nicht am realen Geraet gemessen -
         // ein spaeterer Live-Befund kann den Wert mit eigenem Beleg anpassen.
         const RARITY_WINDOW_TRIAL_CAP = 200;
@@ -2240,146 +2241,55 @@
                     warnings.push('Gewählte Rarity-Karte nicht im Pool gefunden - Automatik greift.');
                 }
             }
-            // ---- Gemischte Qualitaets-Vorgaben (Bronze + Silber) ----------
-            // Pro Stufe die guenstigsten Karten reservieren, in derselben
-            // Rangfolge wie ueberall ohne Ziel-Rating: Storage vor Verein, dann
-            // das niedrigste Rating, dann die Kosten (LEARNINGS 17).
-            if (qTiers) {
-                if (qTiers.reduce((a, t) => a + t.count, 0) > N) {
-                    return { ok: false, reason: 'Gemischte Vorgabe verlangt mehr Spieler (' +
-                        qTiers.map(t => t.count + 'x ' + t.label).join(' + ') +
-                        ') als das Team Slots hat (' + N + '). Bitte Diagnose schicken.',
-                        warnings: warnings };
-                }
-                for (const t of qTiers) {
-                    let have = reserved.filter(p => p.rating >= t.lo && p.rating <= t.hi).length;
-                    const picked = [];
-                    while (have < t.count) {
-                        const cand = pool
-                            .filter(p => freeCard(p) && p.rating >= t.lo && p.rating <= t.hi)
-                            .sort(makeFillCmp(costOf, reserveCmp))[0];
-                        if (!cand) {
-                            return { ok: false, reason: 'Qualitaets-Vorgabe "' + t.count + 'x ' +
-                                t.label + '" nicht erfuellbar - nur ' + have +
-                                ' passende Karte(n) im Pool.', warnings: warnings };
-                        }
-                        reserve(cand);
-                        picked.push(cand.rating);
-                        have++;
-                    }
-                    if (picked.length) {
-                        warnings.push(picked.length + 'x ' + t.label + ' reserviert (' +
-                            picked.sort((a, b) => a - b).join(', ') + ').');
-                    }
-                }
-            }
-            // ---- Spieler-Level-Vorgaben (z.B. "min. 10 Spieler mit 85+") ----
-            // Bei SBCs OHNE Team-Rating (Tausch-/Provisions-Upgrades) gilt
-            // die Min-OVR-Vorgabe praktisch immer für ALLE geforderten
-            // Spieler ("4x 87+"; die Slot-Zahl IST die Spieleranzahl). EAs
-            // Count-Feld ist im Objektbaum unzuverlässig auffindbar - darum
-            // wird der Count hier auf die Slot-Zahl angehoben.
-            let plBoosted = false;
-            const plList = ((cfg.applyRarity === false) ? [] : (cfg.playerLevelConstraints || [])).map(function (pl) {
-                if (!target && (pl.count || 1) < N) {
-                    plBoosted = true;
-                    return Object.assign({}, pl, { count: N });
-                }
-                return pl;
-            });
-            if (plBoosted) {
-                warnings.push('Ohne Team-Rating: Min-OVR-Vorgabe auf alle ' + N + ' Slots angewendet.');
-            }
-            for (const pl of plList) {
-                const needCount = pl.count || 1;
-                let have = reserved.filter(p => p.rating >= pl.minRating).length;
-                while (have < needCount) {
-                    const cand = pool
-                        .filter(p => freeCard(p) && p.rating >= pl.minRating)
-                        .sort((a, b) => (costOf(a) - costOf(b)) || (a.rating - b.rating) || reserveCmp(a, b))[0];
-                    if (!cand) {
-                        return { ok: false, reason: 'Spieler-Vorgabe "min. ' + needCount + 'x ' + pl.minRating + '+" kann mit dem aktuellen Pool nicht erfüllt werden.', warnings: warnings };
-                    }
-                    reserve(cand);
-                    warnings.push('Vorgabe ' + pl.minRating + '+: ' + cand.name + ' (' + cand.rating + ') reserviert.');
-                    have++;
-                }
-            }
-            // ---- Rarity-Vorgaben ----
-            let rcList = (cfg.applyRarity === false) ? [] : (cfg.rarityConstraints || []);
-            // OHNE Team-Rating gilt eine RARE-Vorgabe (Gruppe 4) fuer ALLE
-            // Slots: live zeigte eine "Rare: Min. 6 Players"-SBC mit 6 Slots
-            // count 1 - EAs Count-Feld ist im Objektbaum unzuverlaessig
-            // (LEARNINGS 6). Bewusst NUR fuer Gruppe 4: bei Gruppe 83
-            // (TOTW/TOTS/FOF/FUTTIES) will Rasmus genau die geforderte Anzahl,
-            // eine Anhebung waere dort teuer falsch.
-            if (!target) {
-                let boosted = false;
-                rcList = rcList.map(function (rc) {
-                    if (Number(rc.groupId) === 4 && (rc.count || 1) < N) {
-                        boosted = true;
-                        return Object.assign({}, rc, { count: N });
-                    }
-                    return rc;
-                });
-                if (boosted) {
-                    warnings.push('Ohne Team-Rating: Rare-Vorgabe auf alle ' + N + ' Slots angewendet.');
-                }
-            }
-            // Die QUALITAETS-Vorgabe gilt fuer JEDEN Spieler im Team, also auch
-            // fuer die Karten, die eine Rarity-Vorgabe erfuellen. Live
-            // (v4.25.0) reservierte "Rare: Min. 6 + Exactly Gold" sechs BRONZE-
-            // Rare, weil die Reservierung auf dem ungefilterten poolAll lief -
-            // das Qualitaets-Fenster steckte nur im Auffuell-Pool.
-            const qResLo = qualityLabel ? qLo : 0;
-            const qResHi = qualityLabel ? qHi : 99;
-            const inQualityBand = (p) => (qualityLabel ? inQBand(p)
-                    : (p.rating >= qResLo && p.rating <= qResHi)) &&
-                // Bronze/Silber: keine Specials, auch nicht als Vorgabe-Karte.
-                !(qualityLow && p.isSpecial);
-            // cmp/NEED werden hier (statt an ihrer alten Stelle nach der
-            // rcList-Schleife) berechnet, weil reserveRarityWindowAware()/
-            // searchTeam() (Ticket #60, LEARNINGS 41) sie schon WAEHREND der
-            // Rarity-Reservierung brauchen - beide Ausdruecke sind reine
-            // Funktionen von bereits bekannten Werten (N/target), das Vorziehen
-            // aendert also nichts an ihrem Ergebnis, nur am Zeitpunkt der
-            // Berechnung. Die alte Stelle weiter unten entfaellt (SSOT: eine
-            // einzige `NEED`/`cmp`-Deklaration statt zweier synchron zu
-            // haltender Kopien).
+            // cmp/NEED/windowV werden hier (statt bei ihrer fachlichen Herkunft,
+            // der Rarity-Vorgaben-Reservierung) berechnet, weil sowohl die
+            // Spieler-Level- als auch die Rarity-Vorgaben-Reservierung
+            // (reserveWindowAware()/searchTeam(), Ticket #60/#64, LEARNINGS 41)
+            // sie brauchen, BEVOR ihre jeweilige Reservierungs-Schleife läuft -
+            // Spieler-Level kommt im Code vor Rarity. Beide Ausdrücke sind
+            // reine Funktionen von bereits bekannten Werten (N/target), eine
+            // einzige Deklaration statt zweier synchron zu haltender Kopien
+            // (SSOT).
             const cmp = makeConsumeCmp();
             const NEED = target ? (N * N * target - Math.floor(N / 2)) : null;
-            // windowV ebenfalls vorgezogen (reine Funktion von cfg.maxOvershoot/N,
-            // SSOT mit searchTeam()s frueherer lokaler Kopie) - reserveRarityWindowAware()
+            // windowV: reine Funktion von cfg.maxOvershoot/N, SSOT mit
+            // searchTeam()s frueherer lokaler Kopie - reserveWindowAware()
             // braucht denselben Wert, um ueber ALLE Trials hinweg (nicht pro
             // Trial einzeln) das global guenstigste Ergebnis IM Fenster zu waehlen.
             const windowV = target ? Math.max(0, Math.round(
                 (cfg.maxOvershoot != null ? cfg.maxOvershoot : 0.10) * N * N)) : 0;
-            // Wird reserveRarityWindowAware() fuendig, haelt sie hier das ueber
+            // Wird reserveWindowAware() bei der Spieler-Level- oder der
+            // Rarity-Vorgaben-Reservierung fuendig, haelt sie hier das ueber
             // ALLE Kandidaten-Kombinationen ermittelte globale Minimum fest
-            // (Schritt 5). Der FINALE Such-Aufruf am Ende dieser Funktion nutzt
-            // es als vMinFloor: die endgueltige Team-Zusammenstellung darf NICHT
-            // erneut ihr EIGENES (potenziell breiteres) Fenster um die fest
-            // reservierten Vorgabe-Karten herum entdecken - sonst waere die
-            // Reservierungs-Entscheidung fuer ein Fenster getroffen worden, das
-            // die spaetere Auffuellung gar nicht mehr einhaelt (live per
-            // Fuzzing gefunden, LEARNINGS 41). Bleibt null, wenn keine
-            // fensterbewusste Reservierung stattfand - der finale Aufruf
-            // verhaelt sich dann exakt wie zuvor (Selbst-Entdeckung).
-            let rarityVMinFloor = null;
+            // (Schritt 5 im jeweiligen Aufruf). Der FINALE Such-Aufruf am Ende
+            // dieser Funktion nutzt es als vMinFloor: die endgueltige
+            // Team-Zusammenstellung darf NICHT erneut ihr EIGENES (potenziell
+            // breiteres) Fenster um die fest reservierten Vorgabe-Karten herum
+            // entdecken - sonst waere die Reservierungs-Entscheidung fuer ein
+            // Fenster getroffen worden, das die spaetere Auffuellung gar nicht
+            // mehr einhaelt (live per Fuzzing gefunden, LEARNINGS 41). Laeuft
+            // danach noch eine WEITERE window-aware Reservierung (z.B. Rarity
+            // nach Spieler-Level), ueberschreibt deren eigenes, mit den dann
+            // schon fest reservierten Karten neu ermitteltes Minimum diesen
+            // Wert - das ist erwuenscht (praeziser, weil mit mehr Kontext
+            // berechnet). Bleibt null, wenn keine window-aware Reservierung
+            // stattfand - der finale Aufruf verhaelt sich dann exakt wie zuvor
+            // (Selbst-Entdeckung).
+            let reservationVMinFloor = null;
             // ---- searchTeam(): DP-Suche, parametrisiert statt Closure -------
             // Mathematisch UNVERAENDERT gegenueber der bisherigen runSearch()
             // (bandFor/scanSt/Phase 1+2/Auswahl sind byte-identisch uebernommen,
             // siehe LEARNINGS 41 fuer den Diff-Beleg) - nur reserved/avail kommen
             // jetzt als Parameter statt als Closure ueber die (erst nach der
             // gesamten Reservierung feststehenden) Aussen-Variablen, damit
-            // reserveRarityWindowAware() dieselbe Suche fuer probeweise
-            // reservierte Kandidaten-Kombinationen aufrufen kann, BEVOR die
-            // eigentliche Reservierung feststeht (Schritt 4 im Lift-Plan).
+            // reserveWindowAware() dieselbe Suche fuer probeweise reservierte
+            // Kandidaten-Kombinationen aufrufen kann, BEVOR die eigentliche
+            // Reservierung feststeht (Schritt 4 im Lift-Plan).
             function searchTeam(reservedArr, availArr, expDims, sharedBandCache, vMinFloor) {
                 const kLocal = N - reservedArr.length;
                 // Beim echten (finalen) Aufruf ist das bereits vorher geprueft
                 // (":avail.length < k" weiter oben); ein Trial-Aufruf aus
-                // reserveRarityWindowAware() hat diese Pruefung nicht - eine zu
+                // reserveWindowAware() hat diese Pruefung nicht - eine zu
                 // knappe Kombination ist dort einfach "nicht loesbar", kein Fehler.
                 if (availArr.length < kLocal) return null;
                 const reservedSumLocal = reservedArr.reduce((s, p) => s + p.rating, 0);
@@ -2401,9 +2311,9 @@
                     }
                     return best;
                 }
-                // windowV ist bereits vor der rcList-Schleife berechnet (SSOT,
-                // siehe dort) - eine einzige Deklaration statt zweier synchron
-                // zu haltender Kopien.
+                // windowV ist bereits vor der plList/rcList-Schleife berechnet
+                // (SSOT, siehe dort) - eine einzige Deklaration statt zweier
+                // synchron zu haltender Kopien.
                 const bandCache = sharedBandCache || new Map();
                 function bandFor(st) {
                     const rBoost = Math.floor(st / N) + 1;
@@ -2457,7 +2367,7 @@
                     }
                 }
                 const stHardCapLocal = stLowLocal + 900;
-                // vMinFloor (Ticket #60, LEARNINGS 41): reserveRarityWindowAware()
+                // vMinFloor (Ticket #60, LEARNINGS 41): reserveWindowAware()
                 // ruft searchTeam() in einem ZWEITEN Durchlauf mit einem von
                 // AUSSEN vorgegebenen Fenster-Boden (dem ueber ALLE Kombinationen
                 // ermittelten globalen Minimum) statt des selbst entdeckten
@@ -2511,24 +2421,29 @@
                 const low = band.dpLow.reconstruct(kLocal - chosen.ref.bA, chosen.ref.eL, chosen.ref.sLow);
                 return { team: reservedArr.concat(high, low), V: chosen.V, vMin: vMin };
             }
-            // ---- reserveRarityWindowAware() (Ticket #60, LEARNINGS 41) ------
-            // Ersetzt fuer rcList-Vorgaben MIT gesetztem target die reine
-            // Kosten-Sortierung durch eine fensterbewusste Auswahl: probiert
-            // - bounded durch RARITY_WINDOW_TRIAL_CAP - ALLE moeglichen
-            // (Rating -> Anzahl)-Aufteilungen der `stillNeed` Vorgabe-Karten
-            // tatsaechlich durch dieselbe DP-Suche (searchTeam) und reserviert
-            // die Kombination mit dem kleinsten erreichten V (Tiebreak Kosten -
-            // CLAUDE.mds Regel-Hierarchie "Fenster > Kosten"). Reserviert NICHTS
-            // (Rueckgabe 0) wenn die Kombinatorik den Cap reisst oder keine
-            // Kombination ueberhaupt ein loesbares Team ergibt - der bestehende
-            // Kosten-Greedy direkt nach dem Aufruf greift dann unveraendert
+            // ---- reserveWindowAware() (Ticket #60/#64, LEARNINGS 41) ---------
+            // Generalisierte fensterbewusste Vorgaben-Reservierung: fuer eine
+            // Vorgabe MIT gesetztem target (die Aufrufer entscheiden das jeweils
+            // selbst) ersetzt sie die reine Kosten-Sortierung durch eine
+            // fensterbewusste Auswahl - probiert - bounded durch
+            // RARITY_WINDOW_TRIAL_CAP - ALLE moeglichen (Rating -> Anzahl)-
+            // Aufteilungen der `stillNeed` Vorgabe-Karten unter den vom Aufrufer
+            // gelieferten Kandidaten (`cands`, das Kandidaten-Praedikat lebt
+            // beim jeweiligen Aufrufer - Rarity und Spieler-Level filtern
+            // unterschiedliche Pools/Bedingungen) tatsaechlich durch dieselbe
+            // DP-Suche (searchTeam) und reserviert die Kombination mit dem
+            // kleinsten erreichten V (Tiebreak Kosten - CLAUDE.mds
+            // Regel-Hierarchie "Fenster > Kosten"). `describeCard(p)` liefert
+            // den warnings-Text pro reservierter Karte (Aufrufer-spezifisches
+            // Format). `canShareBandCache` (Aufrufer-berechnet, siehe dort)
+            // erlaubt Trials denselben Band-Cache/Avail-Pool zu teilen, wenn
+            // KEINER der Kandidaten je in "avail" auftauchen koennte. Reserviert
+            // NICHTS (Rueckgabe 0), wenn die Kombinatorik den Cap reisst oder
+            // keine Kombination ueberhaupt ein loesbares Team ergibt - der
+            // bestehende Kosten-Greedy beim Aufrufer greift dann unveraendert
             // (additiver Fallback, kein zweiter Fehlerpfad).
-            function reserveRarityWindowAware(rc, stillNeed) {
-                if (stillNeed <= 0) return 0;
-                const cands = poolAll.filter(p => p.rating >= minRating && freeCard(p) &&
-                    inQualityBand(p) && matchesRarity(p, rc) &&
-                    (!cfg.specialOnlyFromStorage || p.isStorage || !p.isSpecial || isTotw(p)));
-                if (!cands.length) return 0;
+            function reserveWindowAware(stillNeed, cands, describeCard, canShareBandCache) {
+                if (stillNeed <= 0 || !cands.length) return 0;
                 // Schritt 2 (Lift-Plan): pro Rating nur die (bis zu stillNeed)
                 // guenstigsten Kandidaten behalten - verlustfrei, weil der
                 // V-Beitrag einer Karte ausschliesslich von ihrem Rating abhaengt
@@ -2567,7 +2482,8 @@
                 // je in "avail" landen koennte - sonst haengt avail von der
                 // konkreten Kombination ab (loser Durchlauf, limitProtected===false,
                 // wo ungenutzte geschuetzte Karten als Fueller bleiben duerfen).
-                const canShareBandCache = limitProtected && cands.every(function (p) { return isProtectedRarity(p); });
+                // Der Aufrufer berechnet diese Bedingung (kennt seine eigenen
+                // Kandidaten), reserveWindowAware() selbst bleibt neutral.
                 const sharedBandCache = canShareBandCache ? new Map() : null;
                 const sharedAvail = canShareBandCache
                     ? pool.filter(function (p) { return !used.has(p.id) && !isProtectedRarity(p); })
@@ -2645,15 +2561,143 @@
                 if (!best) return 0;
                 for (const p of best.combo) {
                     reserve(p);
-                    warnings.push('Vorgabe ' + (rc.label || 'Rarity') + ': ' + p.name + ' (' + p.rating +
-                        (p.isSpecial ? ', Special' : '') + ') reserviert.');
+                    warnings.push(describeCard(p));
                 }
                 // Der finale Such-Aufruf (Ende dieser Funktion) muss dasselbe
                 // Fenster respektieren, das diese Wahl gerade erst begruendet
                 // hat - sonst entdeckt er fuer die jetzt FEST reservierten
                 // Karten sein EIGENES (potenziell breiteres) Fenster erneut.
-                rarityVMinFloor = globalVmin;
+                reservationVMinFloor = globalVmin;
                 return best.combo.length;
+            }
+            // ---- Gemischte Qualitaets-Vorgaben (Bronze + Silber) ----------
+            // Pro Stufe die guenstigsten Karten reservieren, in derselben
+            // Rangfolge wie ueberall ohne Ziel-Rating: Storage vor Verein, dann
+            // das niedrigste Rating, dann die Kosten (LEARNINGS 17).
+            if (qTiers) {
+                if (qTiers.reduce((a, t) => a + t.count, 0) > N) {
+                    return { ok: false, reason: 'Gemischte Vorgabe verlangt mehr Spieler (' +
+                        qTiers.map(t => t.count + 'x ' + t.label).join(' + ') +
+                        ') als das Team Slots hat (' + N + '). Bitte Diagnose schicken.',
+                        warnings: warnings };
+                }
+                for (const t of qTiers) {
+                    let have = reserved.filter(p => p.rating >= t.lo && p.rating <= t.hi).length;
+                    const picked = [];
+                    while (have < t.count) {
+                        const cand = pool
+                            .filter(p => freeCard(p) && p.rating >= t.lo && p.rating <= t.hi)
+                            .sort(makeFillCmp(costOf, reserveCmp))[0];
+                        if (!cand) {
+                            return { ok: false, reason: 'Qualitaets-Vorgabe "' + t.count + 'x ' +
+                                t.label + '" nicht erfuellbar - nur ' + have +
+                                ' passende Karte(n) im Pool.', warnings: warnings };
+                        }
+                        reserve(cand);
+                        picked.push(cand.rating);
+                        have++;
+                    }
+                    if (picked.length) {
+                        warnings.push(picked.length + 'x ' + t.label + ' reserviert (' +
+                            picked.sort((a, b) => a - b).join(', ') + ').');
+                    }
+                }
+            }
+            // ---- Spieler-Level-Vorgaben (z.B. "min. 10 Spieler mit 85+") ----
+            // Bei SBCs OHNE Team-Rating (Tausch-/Provisions-Upgrades) gilt
+            // die Min-OVR-Vorgabe praktisch immer für ALLE geforderten
+            // Spieler ("4x 87+"; die Slot-Zahl IST die Spieleranzahl). EAs
+            // Count-Feld ist im Objektbaum unzuverlässig auffindbar - darum
+            // wird der Count hier auf die Slot-Zahl angehoben.
+            let plBoosted = false;
+            const plList = ((cfg.applyRarity === false) ? [] : (cfg.playerLevelConstraints || [])).map(function (pl) {
+                if (!target && (pl.count || 1) < N) {
+                    plBoosted = true;
+                    return Object.assign({}, pl, { count: N });
+                }
+                return pl;
+            });
+            if (plBoosted) {
+                warnings.push('Ohne Team-Rating: Min-OVR-Vorgabe auf alle ' + N + ' Slots angewendet.');
+            }
+            // Fensterbewusste Wahl NUR mit gesetztem target (dasselbe Muster
+            // wie bei der Rarity-Vorgabe weiter unten) - ohne target bleibt der
+            // heutige, dafuer bereits korrekte Kosten-Sortier-Weg unveraendert
+            // (kein maxOvershoot-Fenster ohne Ziel-Rating).
+            function reservePlayerLevelForConstraint(pl, stillNeed) {
+                const cands = pool.filter(function (p) { return freeCard(p) && p.rating >= pl.minRating; });
+                return reserveWindowAware(stillNeed, cands, function (p) {
+                    return 'Vorgabe ' + pl.minRating + '+: ' + p.name + ' (' + p.rating + ') reserviert.';
+                }, false);
+            }
+            for (const pl of plList) {
+                const needCount = pl.count || 1;
+                let have = reserved.filter(p => p.rating >= pl.minRating).length;
+                if (target && have < needCount) {
+                    have += reservePlayerLevelForConstraint(pl, needCount - have);
+                }
+                while (have < needCount) {
+                    const cand = pool
+                        .filter(p => freeCard(p) && p.rating >= pl.minRating)
+                        .sort((a, b) => (costOf(a) - costOf(b)) || (a.rating - b.rating) || reserveCmp(a, b))[0];
+                    if (!cand) {
+                        return { ok: false, reason: 'Spieler-Vorgabe "min. ' + needCount + 'x ' + pl.minRating + '+" kann mit dem aktuellen Pool nicht erfüllt werden.', warnings: warnings };
+                    }
+                    reserve(cand);
+                    warnings.push('Vorgabe ' + pl.minRating + '+: ' + cand.name + ' (' + cand.rating + ') reserviert.');
+                    have++;
+                }
+            }
+            // ---- Rarity-Vorgaben ----
+            let rcList = (cfg.applyRarity === false) ? [] : (cfg.rarityConstraints || []);
+            // OHNE Team-Rating gilt eine RARE-Vorgabe (Gruppe 4) fuer ALLE
+            // Slots: live zeigte eine "Rare: Min. 6 Players"-SBC mit 6 Slots
+            // count 1 - EAs Count-Feld ist im Objektbaum unzuverlaessig
+            // (LEARNINGS 6). Bewusst NUR fuer Gruppe 4: bei Gruppe 83
+            // (TOTW/TOTS/FOF/FUTTIES) will Rasmus genau die geforderte Anzahl,
+            // eine Anhebung waere dort teuer falsch.
+            if (!target) {
+                let boosted = false;
+                rcList = rcList.map(function (rc) {
+                    if (Number(rc.groupId) === 4 && (rc.count || 1) < N) {
+                        boosted = true;
+                        return Object.assign({}, rc, { count: N });
+                    }
+                    return rc;
+                });
+                if (boosted) {
+                    warnings.push('Ohne Team-Rating: Rare-Vorgabe auf alle ' + N + ' Slots angewendet.');
+                }
+            }
+            // Die QUALITAETS-Vorgabe gilt fuer JEDEN Spieler im Team, also auch
+            // fuer die Karten, die eine Rarity-Vorgabe erfuellen. Live
+            // (v4.25.0) reservierte "Rare: Min. 6 + Exactly Gold" sechs BRONZE-
+            // Rare, weil die Reservierung auf dem ungefilterten poolAll lief -
+            // das Qualitaets-Fenster steckte nur im Auffuell-Pool.
+            const qResLo = qualityLabel ? qLo : 0;
+            const qResHi = qualityLabel ? qHi : 99;
+            const inQualityBand = (p) => (qualityLabel ? inQBand(p)
+                    : (p.rating >= qResLo && p.rating <= qResHi)) &&
+                // Bronze/Silber: keine Specials, auch nicht als Vorgabe-Karte.
+                !(qualityLow && p.isSpecial);
+            // cmp/NEED/windowV/reservationVMinFloor/searchTeam()/
+            // reserveWindowAware() sind bereits VOR der Spieler-Level-Schleife
+            // deklariert (SSOT, siehe dort) - beide Vorgaben-Arten teilen sich
+            // dieselbe fensterbewusste Reservierungs-Maschinerie.
+            function reserveRarityForConstraint(rc, stillNeed) {
+                const cands = poolAll.filter(p => p.rating >= minRating && freeCard(p) &&
+                    inQualityBand(p) && matchesRarity(p, rc) &&
+                    (!cfg.specialOnlyFromStorage || p.isStorage || !p.isSpecial || isTotw(p)));
+                // Geteilter Band-Cache ist nur sicher, wenn KEINER der Kandidaten
+                // je in "avail" landen koennte (siehe reserveWindowAware()) -
+                // bei einer Rarity-Vorgabe trifft das zu, wenn ALLE Kandidaten
+                // selbst geschuetzte Rarity sind (dann schliesst `limitProtected`
+                // sie ohnehin komplett aus avail aus, unabhaengig vom Trial).
+                const canShareBandCache = limitProtected && cands.every(isProtectedRarity);
+                return reserveWindowAware(stillNeed, cands, function (p) {
+                    return 'Vorgabe ' + (rc.label || 'Rarity') + ': ' + p.name + ' (' + p.rating +
+                        (p.isSpecial ? ', Special' : '') + ') reserviert.';
+                }, canShareBandCache);
             }
             for (const rc of rcList) {
                 const needCount = rc.count || 1;
@@ -2667,7 +2711,7 @@
                 // sofort auf `needCount` - die anschliessende while-Schleife
                 // laeuft dann gar nicht mehr an (0 Iterationen bei Erfolg).
                 if (target && have < needCount) {
-                    have += reserveRarityWindowAware(rc, needCount - have);
+                    have += reserveRarityForConstraint(rc, needCount - have);
                 }
                 while (have < needCount) {
                     // Quellen-Regel für Vorgaben (Rasmus):
@@ -2903,17 +2947,18 @@
                 .concat(avail.map(p => p.rating))
                 .sort((a, b) => b - a)
                 .slice(0, N);
-            let result = searchTeam(reserved, avail, exp, null, rarityVMinFloor);
+            let result = searchTeam(reserved, avail, exp, null, reservationVMinFloor);
             if (!result && exp) {
-                result = searchTeam(reserved, avail, null, null, rarityVMinFloor);
+                result = searchTeam(reserved, avail, null, null, reservationVMinFloor);
                 if (result) warnings.push('Max. teure Spieler (' + cfg.maxExpensiveCount + ' ab ' + exp.th + '+) ist mit diesem Pool nicht einhaltbar - Beschränkung gelockert.');
             }
-            // Verteidigungslinie (sollte laut Beweis in reserveRarityWindowAware()
-            // nie greifen, siehe LEARNINGS 41): war rarityVMinFloor gesetzt und
-            // liefert die Suche DAMIT dennoch nichts, lieber ohne Floor erneut
-            // suchen (mit Warnung) als eine loesbare SBC faelschlich abzulehnen -
-            // dasselbe Fallback-Muster wie bei der Max-teure-Beschraenkung oben.
-            if (!result && rarityVMinFloor != null) {
+            // Verteidigungslinie (sollte laut Beweis in reserveWindowAware()
+            // nie greifen, siehe LEARNINGS 41): war reservationVMinFloor gesetzt
+            // und liefert die Suche DAMIT dennoch nichts, lieber ohne Floor
+            // erneut suchen (mit Warnung) als eine loesbare SBC faelschlich
+            // abzulehnen - dasselbe Fallback-Muster wie bei der Max-teure-
+            // Beschraenkung oben.
+            if (!result && reservationVMinFloor != null) {
                 result = searchTeam(reserved, avail, exp, null, null);
                 if (result) warnings.push('Internes Fenster der Vorgaben-Wahl passte nicht zur finalen Zusammenstellung - ohne Fenster-Vorgabe erneut gesucht. Bitte Diagnose schicken.');
             }

@@ -165,7 +165,14 @@ trotz Erfolg).
   nicht abgegeben, fehlen die Karten im Pool → einmal "Spieler laden".
 - "Spieler laden" = Voll-Refresh (alter Bestand wird verworfen, Backup bei
   Fehlschlag). Unvollständiger Load setzt `loadIncomplete` → Warnung beim
-  Optimieren.
+  Optimieren (`onRunClick`) UND beim Batch-Planen (`onBatchPlanClick`, additiv:
+  das Planen läuft trotzdem weiter, CLAUDE.md "Batch darf abgeben"). Der Batch-
+  Plan trägt den Zustand zusätzlich als `plan.poolLoadIncomplete` mit sich, die
+  Vorschau (`renderBatchPreview`) zeigt ein Banner - der Toast selbst ist nach
+  4,3s weg, die Freigabe kommt oft erst deutlich später. Sichtbar in beiden
+  Debug-Kanälen: `clubLoad.loadIncomplete` im Script-Diagnose-JSON (dasselbe
+  `clubLoad`-Feld, das schon Seitengröße/Takt/Retries trägt, siehe §30) und ein
+  `warn()`-Aufruf an derselben Stelle in `fetchClubViaHttp` fürs App-Log.
 
 ## 8. Android-App (app/)
 
@@ -1053,24 +1060,33 @@ nur zufaellig haelt.
 
 ## 29. Pool-/Lock-Fehlerpfade rufen reportError(), Normalisierung + Lock-Traversierung sind End-to-End getestet
 
-`fetchUnassignedViaHttp`, `fetchStorageViaHttp` und der Gesamt-Catch von
-`readPaletoolsLocks` rufen bei einem Fehlschlag `reportError(label, e)` statt
-nur `warn()` - konsistent mit dem Vorbild in `apiGet`/`apiPut` und dem
-Services-Fallback von `loadPool`. `readPaletoolsLocks` traegt zusaetzlich ein
-`error`-Feld in `STATE.diag.locks` (neben `keysScanned`/`found`/`sample`/
-`keys`): bricht die `localStorage`-Scan-Schleife mitten drin ab (z.B.
-`localStorage.key()` wirft), zeigt der Report die Fehlermeldung direkt statt
-sie nur ueber eine niedrigere `keysScanned`/`found`-Zahl erraten zu muessen -
-sicherheitsrelevant, weil ein stiller Teilausfall die "gesperrte Karten
-NIEMALS verbauen"-Regel unterlaufen koennte. Bereits gefundene IDs vor dem
-Abbruch bleiben dabei erhalten (die Schleife fuellt `ids` fortlaufend, der
-Catch umschliesst nur die Traversierung selbst).
+`fetchUnassignedViaHttp`, `fetchStorageViaHttp`, `removeFromPool` und der
+Gesamt-Catch von `readPaletoolsLocks` rufen bei einem Fehlschlag
+`reportError(label, e)` statt nur `warn()` - konsistent mit dem Vorbild in
+`apiGet`/`apiPut` und dem Services-Fallback von `loadPool`. `readPaletoolsLocks`
+traegt zusaetzlich ein `error`-Feld in `STATE.diag.locks` (neben
+`keysScanned`/`found`/`sample`/`keys`): bricht die `localStorage`-Scan-Schleife
+mitten drin ab (z.B. `localStorage.key()` wirft), zeigt der Report die
+Fehlermeldung direkt statt sie nur ueber eine niedrigere `keysScanned`/
+`found`-Zahl erraten zu muessen - sicherheitsrelevant, weil ein stiller
+Teilausfall die "gesperrte Karten NIEMALS verbauen"-Regel unterlaufen koennte.
+Bereits gefundene IDs vor dem Abbruch bleiben dabei erhalten (die Schleife
+fuellt `ids` fortlaufend, der Catch umschliesst nur die Traversierung selbst).
 
-`solver-test.js` (Abschnitte 8b-5/8b-6) extrahiert `isEvolution`/
-`normalizePlayer`/`resolvePlayerName` bzw. `looksLikeItemId`/`harvestIds`/
-`findLockBranches`/`readPaletoolsLocks` per Marker aus der ausgelieferten
-Datei und spielt sie gegen rohe EA-Feldnamen bzw. simuliertes `localStorage`
-durch (Muster [[eingebetteten-code-exakt-testen]]): jede dokumentierte
+Ein PRO-KEY-Fehlschlag (der einzelne Key ist nicht lesbar, oder sein Wert ist
+kein valides JSON) bricht die Schleife nicht ab, sondern ueberspringt nur
+diesen einen Key - `STATE.diag.locks.skippedKeys` zaehlt jeden dieser Faelle.
+`reportError()` meldet dabei hoechstens einmal pro Session
+(`STATE.locksSkipReported`), nicht pro Key - sonst waeren 50 korrupte Keys 50
+identische Zeilen im Report/App-Log. `skippedKeys` steht NEBEN `error`, ersetzt
+es nicht: `error` bleibt fuer den Gesamt-Loop-Abbruch reserviert.
+
+`solver-test.js` (Abschnitte 8b-5/8b-6, Pro-Key-Faelle in Abschnitt 44)
+extrahiert `isEvolution`/`normalizePlayer`/`resolvePlayerName` bzw.
+`looksLikeItemId`/`harvestIds`/`findLockBranches`/`readPaletoolsLocks` per
+Marker aus der ausgelieferten Datei und spielt sie gegen rohe EA-Feldnamen bzw.
+simuliertes `localStorage` durch (Muster [[eingebetteten-code-exakt-testen]]):
+jede dokumentierte
 Evolution-Flag-Variante (`academyId`, `academyItemId`, `academyAttributes` als
 Array/Objekt, `evolutionId`, `evolutionData`, `evoPath`, `isEvo`, `isAcademy`,
 `tradableBeforeAcademy`, `isAcademyItem()`), Leihspieler/Konzept-Karten

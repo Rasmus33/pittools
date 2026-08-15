@@ -101,6 +101,7 @@
         loading: false,
         servicesHooked: false,
         cancelLoad: false,
+        locksSkipReported: false,    // schon einmal reportError() fuer einen uebersprungenen Lock-Key gemeldet? (verhindert Spam bei vielen korrupten Keys)
         lastChallengeRaw: null,      // letzte SBC-Response (fürs Debugging)
         lastSetChallenges: null,     // gecachte Challenge-Liste des geöffneten Sets
         // Offene Ablage fuer Laufzeitzustand, den buildDiagReport() kopiert -
@@ -1023,6 +1024,7 @@
     function readPaletoolsLocks() {
         const ids = new Set();
         let keysScanned = 0;
+        let skippedKeys = 0;
         const keyInfo = [];
         // Bricht die Schleife mitten drin ab, bleibt die Sperrliste unvollstaendig,
         // OHNE dass der Report das zeigt (CLAUDE.md: gesperrte Karten NIEMALS
@@ -1030,6 +1032,18 @@
         // macht das im Report explizit sichtbar statt nur ueber niedrige Zahlen
         // erraten zu werden.
         let scanError = null;
+        // EIN einzelner kaputter Key (nicht lesbar ODER kein valides JSON) darf
+        // die restlichen Locks nicht kosten - deshalb pro Key ueberspringen statt
+        // die ganze Schleife abzubrechen. skippedKeys zaehlt JEDEN Fall, ein
+        // reportError() aber nur einmal pro Session (STATE.locksSkipReported) -
+        // sonst waeren 50 korrupte Keys 50 identische Konsolen-/Report-Zeilen.
+        function markSkipped(k, e) {
+            skippedKeys++;
+            if (!STATE.locksSkipReported) {
+                STATE.locksSkipReported = true;
+                reportError('readPaletoolsLocks: Key uebersprungen (' + k + ')', e);
+            }
+        }
         try {
             for (let i = 0; i < localStorage.length; i++) {
                 const k = localStorage.key(i);
@@ -1044,10 +1058,10 @@
                                    head: val.slice(0, 120) });
                 } catch (e) {}
                 let raw = null;
-                try { raw = localStorage.getItem(k); } catch (e) { continue; }
+                try { raw = localStorage.getItem(k); } catch (e) { markSkipped(k, e); continue; }
                 if (!raw) continue;
                 let obj = null;
-                try { obj = JSON.parse(raw); } catch (e) { continue; }
+                try { obj = JSON.parse(raw); } catch (e) { markSkipped(k, e); continue; }
                 // Steht der Key selbst schon für die Sperrliste, ist der ganze
                 // Wert die Quelle - sonst nur die "lock"-Zweige darin.
                 // ACHTUNG: "lockedPacks" enthaelt PACK-IDs ([1030, 20038, ...]),
@@ -1069,7 +1083,11 @@
             sample: Array.from(ids).slice(0, 5),
             // Nur noetig, wenn found = 0: daran ist der richtige Key ablesbar.
             keys: keyInfo.slice(0, 12),
-            error: scanError
+            error: scanError,
+            // Pro-Key uebersprungen (nicht lesbar / kein valides JSON) - anders
+            // als scanError (Gesamt-Loop-Abbruch) bleibt die Suche bei den
+            // restlichen Keys hier weiter aktiv.
+            skippedKeys: skippedKeys
         };
         return ids;
     }
@@ -1140,7 +1158,7 @@
                 refreshSbcInfoUI();
                 log(removed + ' verbaute Karten aus dem Pool entfernt (' + STATE.pool.length + ' übrig).');
             }
-        } catch (e) { warn('removeFromPool:', e.message); }
+        } catch (e) { reportError('removeFromPool', e); }
     }
     function harvestItems(json, fromStorage) {
         const items = extractItems(json);
@@ -1424,7 +1442,7 @@
         let total = Infinity;
         let gotAny = false;
         STATE.loadIncomplete = false;
-        STATE.diag.clubLoad = { pageSize: count, gap: gap, pages: 0, retries: 0, ms: 0 };
+        STATE.diag.clubLoad = { pageSize: count, gap: gap, pages: 0, retries: 0, ms: 0, loadIncomplete: false };
         const t0 = Date.now();
         while (page * count < total) {
             if (STATE.cancelLoad) break;
@@ -1451,6 +1469,12 @@
             if (!json) {
                 if (!gotAny) throw new Error('Club-Laden fehlgeschlagen (Session?). Bitte kurz in der App navigieren und erneut versuchen.');
                 STATE.loadIncomplete = true;
+                // Beide Debug-Kanaele: clubLoad.loadIncomplete steht im JSON-
+                // Report (buildDiagReport gibt clubLoad komplett zurueck),
+                // warn() landet im App-Log-Ringpuffer - der bestehende Toast
+                // (loadPool/onRunClick) bleibt zusaetzlich unveraendert bestehen.
+                STATE.diag.clubLoad.loadIncomplete = true;
+                warn('Club-Laden dauerhaft fehlgeschlagen ab Seite', page, '- Pool bleibt unvollstaendig.');
                 break;
             }
             gotAny = true;

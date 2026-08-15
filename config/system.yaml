@@ -7,11 +7,14 @@ paths:
   roadmap_root: docs/roadmap
 
 # Prüf-Kommandos aus dem eisernen Arbeitsablauf (CLAUDE.md):
-# Syntax-Check, Solver-Test-Suite, PaleTools-Wächter-Test der App.
+# Syntax-Check, Solver-Test-Suite, PaleTools-Wächter-Test der App,
+# App-Log-Ringpuffer-Test, javac-Gate ohne Keystore (seit iter3, #44).
 commands:
   syntax_check: "node --check ea-fc-sbc-optimizer.user.js"
   solver_test: "node solver-test.js"
   guard_test: "node app/guard-test.js"
+  log_test: "node app/log-test.js"
+  compile_check: "bash app/compile-check.sh"
 
 github:
   host: github.com
@@ -43,7 +46,7 @@ iteration:
 
 worker:
   pre_commit_gate: syntax_check
-  final_gates: [syntax_check, solver_test, guard_test]
+  final_gates: [syntax_check, solver_test, guard_test, log_test, compile_check]
   parallel_subagents: 3
   parallel_tickets: 1
   agent_models:

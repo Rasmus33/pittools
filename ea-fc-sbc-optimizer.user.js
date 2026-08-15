@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.40.0
+// @version      4.41.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.40.0';
+    const VERSION = '4.41.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -1477,6 +1477,21 @@
                 return (counts.get(kb) || 0) - (counts.get(ka) || 0);
             };
         }
+        // Sortier-Komparator "Storage vor Verein -> niedrigstes Rating ->
+        // Kosten -> Tiebreak", an vier Stellen im Solver identisch gebraucht
+        // (Bronze/Silber-Quoten, Rare-ohne-Ziel-Reservierung, Gold-Rare-
+        // Reservierung ohne Ziel-OVR, Auffüll-Karten ohne Ziel-OVR). Der
+        // Tiebreak-Comparator MUSS Parameter bleiben: zwei der vier Stellen
+        // schließen mit makeConsumeCmp(pool) ab, zwei mit makeConsumeCmp(avail)
+        // - unterschiedliche (gefilterte) Kartenmengen. Ein hartkodierter
+        // gemeinsamer Tiebreak würde an zwei Stellen die Reihenfolge
+        // stillschweigend ändern.
+        function makeFillCmp(costOf, tiebreakCmp) {
+            return function (a, b) {
+                return ((b.isStorage ? 1 : 0) - (a.isStorage ? 1 : 0)) ||
+                    (a.rating - b.rating) || (costOf(a) - costOf(b)) || tiebreakCmp(a, b);
+            };
+        }
         /**
          * EXAKTE Squad-Rating-Formel von EA FC (community-verifiziert,
          * gleiche Formel wie im FC26-Solver von Regista6 / EasySBC):
@@ -1547,14 +1562,53 @@
         }
         // TOTW-Karte (Team of the Week / Inform): rareflag 3.
         function isTotw(p) { return Number(p.rareflag) === 3; }
-        // Gewicht der Summen-Überschreitung. Klein => innerhalb des
-        // erlaubten Waste-Fensters entscheiden die KARTEN-Kosten.
-        // Mit Max-Waste = 0 (Standard) ist das Fenster {stMin}, d.h. die
-        // minimale Summe ist die harte Prämisse und die Karten-Kosten
-        // brechen nur Gleichstände AUF der Minimalsumme. Erst wer Max-Waste
-        // erhöht, erlaubt bewusst etwas mehr Summe, um teure Karten
-        // (96er/93+) zu schonen.
-        const WASTE_WEIGHT = 0.05;
+        // Kartenkosten (Band + persönliche Scarcity, Storage-Bonus, Rarity-
+        // Schutz-Aufschlag, Untradeable-Rabatt) als modul-weite Factory statt
+        // einer Closure innerhalb von solveCore: solver-test.js baut damit
+        // dieselbe Formel per SolverCore.makeCostOf() auf, statt sie als
+        // eigenständige cardCostFn() nachzubilden (SSOT, vorher nur per
+        // Kommentar "MUSS synchron bleiben" abgesichert).
+        function makeCostOf(pool, cfg) {
+            const bandFn = (typeof cfg.ratingCostFn === 'function')
+                ? cfg.ratingCostFn
+                : parseRatingCosts(cfg.ratingCostSpec != null ? cfg.ratingCostSpec : DEFAULT_RATING_COST_SPEC);
+            let alpha = cfg.scarcityWeight != null ? cfg.scarcityWeight : 18;
+            let beta = cfg.storageBonus != null ? cfg.storageBonus : 2;
+            if (alpha <= 0) alpha = 1e-6;
+            if (beta <= 0) beta = 1e-7;
+            const countByRating = new Map();
+            for (const p of pool) countByRating.set(p.rating, (countByRating.get(p.rating) || 0) + 1);
+            // RARITY-SCHUTZ: Karten, die Requirement-Rarities erfüllen können
+            // (TOTW/TOTS/FOF/FUTTIES = Rarity-Gruppe 83), sind wertvoller als
+            // ihr Rating - sie werden für künftige SBC-Vorgaben gebraucht.
+            // Sie bekommen einen festen Kosten-Aufschlag: ohne Vorgabe meidet
+            // der Solver sie, mit Vorgabe wird GENAU die geforderte Anzahl
+            // reserviert und der Rest trotzdem gemieden. Der Aufschlag wirkt
+            // NACH dem Storage-Rabatt (wird also nicht halbiert).
+            const guardGroups = Array.isArray(cfg.protectedGroups) && cfg.protectedGroups.length
+                ? cfg.protectedGroups.map(Number) : [83];
+            const guardCost = Math.max(0, cfg.rarityGuardCost != null ? Number(cfg.rarityGuardCost) : 8);
+            function isProtectedRarity(p) {
+                if (!guardCost || !Array.isArray(p.groups) || !p.groups.length) return false;
+                for (const g of guardGroups) if (p.groups.indexOf(g) > -1) return true;
+                return false;
+            }
+            // UNTRADEABLE bevorzugen: solche Karten lassen sich nicht
+            // verkaufen, sind für SBCs aber vollwertig - sie zuerst zu
+            // verbauen spart echte Coins. Rabatt wirkt wie der Rarity-Aufschlag
+            // NACH dem Storage-Rabatt (wird also nicht halbiert).
+            const untrBonus = Math.max(0, cfg.untradeableBonus != null
+                ? Number(cfg.untradeableBonus) : 3);
+            function costOf(p) {
+                const n = countByRating.get(p.rating) || 1;
+                const base = alpha / n + bandFn(p.rating);
+                return (p.isStorage ? (base / 2 - beta) : base) +
+                       (isProtectedRarity(p) ? guardCost : 0) -
+                       (p.untradeable ? untrBonus : 0);
+            }
+            costOf.isProtectedRarity = isProtectedRarity;
+            return costOf;
+        }
         function matchesRarity(p, c) {
             if (!c) return p.isSpecial;
             // EXAKTES Matching über Rarity-GRUPPEN (live verifiziert, fc26):
@@ -1898,8 +1952,21 @@
             const reserveCmp = makeConsumeCmp(pool);
             // Jede Reservierung MUSS hierueber laufen: sie fuehrt used und
             // usedAssets zusammen nach. Zwei Karten desselben Spielers im Team
-            // sind HTTP 460 (LEARNINGS 6).
+            // sind HTTP 460 (LEARNINGS 6). Anker und manueller Rarity-Pick
+            // liefen frueher inline an reserve() vorbei (usedAssets blieb fuer
+            // sie leer) - das war folgenlos, weil die SPIELER-EINDEUTIGKEIT
+            // weiter oben pool/poolAll schon vorab pro assetId dedupliziert.
+            // Seit hier BEIDE Pfade ueber reserve() laufen, haengt die
+            // Kollisions-Sperre nicht mehr zusaetzlich von dieser upstream-
+            // Dedupe ab, falls sie ein zukuenftiger Umbau je lockert.
             function reserve(p) {
+                if (p.assetId != null && p.assetId !== 0 && usedAssets.has(String(p.assetId))) {
+                    // Sollte durch die SPIELER-EINDEUTIGKEIT oben strukturell
+                    // unerreichbar sein - falls doch, ist das hier die einzige
+                    // Stelle, die es je sichtbar macht (vorher keine Log-Spur).
+                    warnings.push('Interne Warnung: ' + (p.name || p.assetId) +
+                        ' wurde durch Anker/Rarity-Pick ein zweites Mal reserviert (gleicher Spieler) - bitte Diagnose schicken.');
+                }
                 used.add(p.id);
                 if (p.assetId != null && p.assetId !== 0) usedAssets.add(String(p.assetId));
                 reserved.push(p);
@@ -1911,47 +1978,14 @@
             // ---- Kartenkosten (Band + persönliche Scarcity, Storage-Bonus) ----
             // VOR den Reservierungen definiert: auch Vorgabe-Karten werden
             // nach KOSTEN gewählt (87er TOTW mit Kosten 2 schlägt 85er mit 5).
-            const bandFn = (typeof cfg.ratingCostFn === 'function')
-                ? cfg.ratingCostFn
-                : parseRatingCosts(cfg.ratingCostSpec != null ? cfg.ratingCostSpec : DEFAULT_RATING_COST_SPEC);
-            let alpha = cfg.scarcityWeight != null ? cfg.scarcityWeight : 18;
-            let beta = cfg.storageBonus != null ? cfg.storageBonus : 2;
-            if (alpha <= 0) alpha = 1e-6;
-            if (beta <= 0) beta = 1e-7;
-            const countByRating = new Map();
-            for (const p of pool) countByRating.set(p.rating, (countByRating.get(p.rating) || 0) + 1);
-            // RARITY-SCHUTZ: Karten, die Requirement-Rarities erfüllen können
-            // (TOTW/TOTS/FOF/FUTTIES = Rarity-Gruppe 83), sind wertvoller als
-            // ihr Rating - sie werden für künftige SBC-Vorgaben gebraucht.
-            // Sie bekommen einen festen Kosten-Aufschlag: ohne Vorgabe meidet
-            // der Solver sie, mit Vorgabe wird GENAU die geforderte Anzahl
-            // reserviert und der Rest trotzdem gemieden. Der Aufschlag wirkt
-            // NACH dem Storage-Rabatt (wird also nicht halbiert).
-            const guardGroups = Array.isArray(cfg.protectedGroups) && cfg.protectedGroups.length
-                ? cfg.protectedGroups.map(Number) : [83];
-            const guardCost = Math.max(0, cfg.rarityGuardCost != null ? Number(cfg.rarityGuardCost) : 8);
-            function isProtectedRarity(p) {
-                if (!guardCost || !Array.isArray(p.groups) || !p.groups.length) return false;
-                for (const g of guardGroups) if (p.groups.indexOf(g) > -1) return true;
-                return false;
-            }
-            // UNTRADEABLE bevorzugen: solche Karten lassen sich nicht
-            // verkaufen, sind für SBCs aber vollwertig - sie zuerst zu
-            // verbauen spart echte Coins. Rabatt wirkt wie der Rarity-Aufschlag
-            // NACH dem Storage-Rabatt (wird also nicht halbiert).
-            const untrBonus = Math.max(0, cfg.untradeableBonus != null
-                ? Number(cfg.untradeableBonus) : 3);
-            function costOf(p) {
-                const n = countByRating.get(p.rating) || 1;
-                const base = alpha / n + bandFn(p.rating);
-                return (p.isStorage ? (base / 2 - beta) : base) +
-                       (isProtectedRarity(p) ? guardCost : 0) -
-                       (p.untradeable ? untrBonus : 0);
-            }
+            // makeCostOf() ist die modul-weite SSOT-Factory (nahe parseRatingCosts) -
+            // solver-test.js ruft dieselbe Funktion statt sie nachzubilden.
+            const costOf = makeCostOf(pool, cfg);
+            const isProtectedRarity = costOf.isProtectedRarity;
             // ---- Anker ----
             if (cfg.anchorId != null && cfg.anchorId !== '') {
                 const anchor = pool.find(p => String(p.id) === String(cfg.anchorId));
-                if (anchor) { used.add(anchor.id); reserved.push(anchor); }
+                if (anchor) reserve(anchor);
                 else {
                     const inAll = poolAll.find(p => String(p.id) === String(cfg.anchorId));
                     warnings.push(inAll
@@ -1974,8 +2008,7 @@
                     }
                 }
                 if (pick) {
-                    used.add(pick.id);
-                    reserved.push(pick);
+                    reserve(pick);
                     forcedPickId = pick.id;
                     warnings.push('Rarity-Vorgabe: ' + pick.name + ' (' + pick.rating + ') manuell gesetzt.');
                 } else {
@@ -1999,8 +2032,7 @@
                     while (have < t.count) {
                         const cand = pool
                             .filter(p => freeCard(p) && p.rating >= t.lo && p.rating <= t.hi)
-                            .sort((a, b) => ((b.isStorage ? 1 : 0) - (a.isStorage ? 1 : 0)) ||
-                                (a.rating - b.rating) || (costOf(a) - costOf(b)) || reserveCmp(a, b))[0];
+                            .sort(makeFillCmp(costOf, reserveCmp))[0];
                         if (!cand) {
                             return { ok: false, reason: 'Qualitaets-Vorgabe "' + t.count + 'x ' +
                                 t.label + '" nicht erfuellbar - nur ' + have +
@@ -2114,8 +2146,7 @@
                                 (!cfg.specialOnlyFromStorage || p.isStorage || !p.isSpecial || isTotw(p)));
                     }
                     const cand = cands.sort((!target && isRareGroup)
-                        ? ((a, b) => ((b.isStorage ? 1 : 0) - (a.isStorage ? 1 : 0)) ||
-                            (a.rating - b.rating) || (costOf(a) - costOf(b)) || reserveCmp(a, b))
+                        ? makeFillCmp(costOf, reserveCmp)
                         : ((a, b) => (costOf(a) - costOf(b)) || (a.rating - b.rating) || reserveCmp(a, b))
                     )[0];
                     if (!cand) {
@@ -2238,8 +2269,7 @@
                     for (let need = needRare; need > 0; need--) {
                         const cand = avail
                             .filter(p => freeCard(p) && p.isRare && p.rating <= maxRare)
-                            .sort((a, b) => ((b.isStorage ? 1 : 0) - (a.isStorage ? 1 : 0)) ||
-                                (a.rating - b.rating) || (costOf(a) - costOf(b)) || cmp(a, b))[0];
+                            .sort(makeFillCmp(costOf, cmp))[0];
                         if (!cand) break;
                         reserve(cand);
                         gotRare++;
@@ -2285,10 +2315,7 @@
                 // Die Kosten duerfen NICHT vor dem Rating stehen: 75-77 liegen
                 // alle in der Stufe "0-80: 0", also gewinnt sonst ueber
                 // alpha/anzahl die HAEUFIGERE Karte.
-                const fillers = fillPool.filter(freeCard).sort(
-                    (a, b) => ((b.isStorage ? 1 : 0) - (a.isStorage ? 1 : 0)) ||
-                        (a.rating - b.rating) || (costOf(a) - costOf(b)) || cmp(a, b)
-                ).slice(0, k2);
+                const fillers = fillPool.filter(freeCard).sort(makeFillCmp(costOf, cmp)).slice(0, k2);
                 if (reserved.length + fillers.length < N) {
                     return { ok: false, reason: 'Zu wenige passende Karten für die Vorgabe (' + (reserved.length + fillers.length) + '/' + N + ').', warnings: warnings };
                 }
@@ -2481,10 +2508,9 @@
             squadRating: squadRating,
             squadRatingExact: squadRatingExact,
             squadV: squadV,
-            priorityOf: priorityOf,
             parseRatingCosts: parseRatingCosts,
             DEFAULT_RATING_COST_SPEC: DEFAULT_RATING_COST_SPEC,
-            WASTE_WEIGHT: WASTE_WEIGHT
+            makeCostOf: makeCostOf
         };
     })();
     // [SOLVER-END]

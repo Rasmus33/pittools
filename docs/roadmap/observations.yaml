@@ -157,6 +157,18 @@ entries:
     aufgeloest (Traversal-Duplikate weg) — Pattern-Doc-Pflege beim Audit.'
   reasoning: 'Validator PASS in der fragilsten Zone: Weg 0 nur kommentiert, Konsolidierung
     testfest am synthetischen Controller-Graph. v4.44.0 geht live.'
+- at: '2026-08-15T02:07:50Z'
+  issue: 10
+  po_class: null
+  surprises:
+  - '#10 fand beim Anker-Test eine vorbestehende Anomalie: classifyUrl ist unanchored/ordered
+    — der storage-Fallback-Zweig ist fuer URLs mit challenge/setId-Segment unerreichbar.
+    Bewusst nicht geaendert (waere Verhaltensaenderung), als Debt getrackt.'
+  - 'Validator hat die Verhaltensneutralitaet der Regex-Migration unabhaengig bewiesen:
+    Alt-Code (18c8c5e) besteht dieselbe 35er-Test-Matrix.'
+  reasoning: 'Letztes Ticket der Iteration: Validator PASS, heisser fetch/XHR-Pfad
+    nachweislich verhaltensneutral migriert. v4.45.0 geht live. Iteration 0 damit
+    komplett — Audit ist der naechste Schritt.'
 discoveries:
   pattern_candidates:
   - slug: symmetrie-test-lesen-schreiben-trennen

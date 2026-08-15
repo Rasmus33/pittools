@@ -1,12 +1,12 @@
 ---
 feature: bedienpanel-ui
-analyzed_at: 2026-08-14
-iteration: 0
+analyzed_at: 2026-08-15
+iteration: 4
 regression: false
 score_current:
-  RA: 68
+  RA: 82
 score_target:
-  RA: 78
+  RA: 84
 ---
 
 # Gap-Report — Bedienpanel & Einstiegspunkte
@@ -15,142 +15,137 @@ score_target:
 
 ### RA — Robust Architecture
 
-**Wert:** 68 / 85 (structural_max)
-**Schwellwert:** 59.5
+**Wert:** 82 / 85 (structural_max)
+**Schwellwert:** 59.5 (85 × 0.7)
 **Status:** pass
-**Begründung:** Laut `audit-evaluator` sind die Einstiegspunkte (FAB, SBC-Button,
-Panel-Öffnen/-Ziehen, generische DOM-Erkennung, Fail-Open, LEARNINGS §10) robust
-gegen EAs undokumentierten Wandel — das trägt den Großteil der 68 Punkte. Der
-Abzug gegenüber dem strukturellen Maximum kommt konkret aus dem Band-Editor
-(`defaultBands()`): er liefert nachweislich veraltete Reset-Werte, ein
-SSOT-Bruch gegenüber `DEFAULT_RATING_COST_SPEC` ohne Drift-Test — also ein
-Verstoß gegen die RA-Rubric-Kriterien „Dokumentierte Begründung" und
-„Testbarkeit" innerhalb eines ansonsten soliden Features.
+**Begründung:** Audit Iteration 3 (`docs/roadmap/audit/bedienpanel-ui.md`) bestätigt: Band-Editor-SSOT
+(`defaultBands()` ← `SolverCore.DEFAULT_RATING_COST_SPEC`), Nutzer-Bands-Invariante (gespeicherte
+Bands überleben Kosten-Tabellen-Änderungen bis "Zurücksetzen"), Testbarkeit für die reinen
+Band-Funktionen (0..99-Äquivalenz-Sweep über `[BANDS-BEGIN]`/`[BANDS-END]`) und der
+`launcher.*`-Diagnose-Block sind sauber umgesetzt. Der Restabstand zu 85 ist explizit benannt:
+"EA-Fehlertoleranz-Achse bewusst nicht angefasst" — genau dort liegt bei Live-Code-Read
+(diese Iteration) auch tatsächlich der einzige strukturell nennenswerte Rest: ein einziger
+hartkodierter Einhänge-Selektor ohne generischen Fallback, dazu drei kleinere aber echte
+Beobachtbarkeits-/Abbruchdisziplin-Lücken, die die übrigen vier RA-Achsen (Testbarkeit,
+dokumentiertes Warum, Abbruch-Disziplin für alle ANDEREN Pfade) nicht schmälern, aber auch
+nicht weiter heben.
 
 ## Mängel (≥ 3 pro Dimension — M1)
 
 ### RA — Robust Architecture
 
-1. **`defaultBands()` driftet gegen `DEFAULT_RATING_COST_SPEC` (SSOT-Bruch, Q5):**
-   `ea-fc-sbc-optimizer.user.js:1485` definiert die aktuelle, von Rasmus
-   korrigierte Tabelle (`85-88:2`, Stand Aug 2026). `ea-fc-sbc-optimizer.user.js:3360-3370`
-   (`defaultBands()`, im Reset-Button `ui.bandReset` verdrahtet über
-   `initBandEditor()` bei `:3391-3395`) liefert stattdessen den alten Stand
-   (`{lo:85,hi:86,cost:5}`, `{lo:87,hi:88,cost:2}`). `readConfig()` baut
-   `cfg.ratingCostSpec` bei `:4054` IMMER aus `bandsToSpec(ratingBands)` — bei
-   Panel-Betrieb ist `DEFAULT_RATING_COST_SPEC` damit faktisch tot, und
-   „Zurücksetzen" liefert nachweislich falsche Zahlen. Siehe Pattern
-   [[wissens-duplikate-ohne-ssot]] (Code-Beleg dort deckungsgleich).
-2. **Kein Testfall für den Band-Editor überhaupt (Testbarkeit-Kriterium der Rubric):**
-   `solver-test.js` enthält keine einzige Referenz auf `defaultBands`,
-   `bandsToSpec` oder `ratingBands` (grep über die gesamte Datei: 0 Treffer).
-   Damit fehlt dem Band-Editor genau die Absicherung, die
-   `eingebetteten-code-exakt-testen` (`applies_to_features` listet
-   `bedienpanel-ui` explizit) für den Rest der Datei längst etabliert hat
-   (Marker-Extraktion für den Solver bei `:1411`/`:2446`, statische Checks für
-   Panel-HTML bei `solver-test.js:380-410`) — der Band-Editor selbst blieb
-   davon ausgenommen und die Drift aus Mangel 1 fiel deshalb nicht in CI auf.
-3. **Ungültige Band-Eingaben scheitern lautlos statt mit `warn()`/Nutzer-Feedback (Abbruch-Disziplin):**
-   `parseRatingCosts()` (`ea-fc-sbc-optimizer.user.js:1486-1503`) iteriert
-   `for (let r = lo; r <= Math.min(99, hi); r++)`. Trägt ein Nutzer im
-   Band-Editor (`renderBandRows()`/`upd()`, `:3441-3449`) versehentlich
-   `lo > hi` ein (z.B. Zeilen per Zahlenfeld ohne Ordering-Check editiert),
-   läuft die Schleife nie und die Stufe wird kommentarlos zum No-Op — kein
-   `toast()`, kein `warn()`, keine visuelle Markierung der Zeile. Das ist
-   KEINE legitime Fremd-Grenze im Sinne von
-   [[stille-catches-nur-an-der-ea-grenze]] (eigene UI-Eingabe, keine
-   EA-/`localStorage`-Grenze), sondern eine eigene Fachentscheidung, für die
-   das Pattern selbst `warn()` verlangt.
-4. **`buildDiagReport()` enthält keinerlei Feld zur aktiven Rating-Kosten-Spec
-   (Beobachtbarkeits-Kriterium):** `ea-fc-sbc-optimizer.user.js:3727-3820`
-   listet u.a. `counts`, `locks`, `clubLoad`, `submitCandidates`, aber nirgends
-   `ratingCostSpec`/`ratingBands`. Bei Verdacht auf genau die in Mangel 1
-   beschriebene Drift (Rasmus meldet „SBC kostet mehr Rare als erwartet")
-   liefert der Diagnose-Report — laut CLAUDE.md „Debugging-Konvention" der
-   einzige Kanal ohne DevTools am Handy — keinen Anhaltspunkt, welche Tabelle
-   der Solver gerade tatsächlich verwendet hat.
-5. **LEARNINGS.md §10 dokumentiert Einstiegspunkte ausführlich, aber nicht den
-   Band-Editor als fragile Stelle (Dokumentierte-Begründung-Kriterium):**
-   `docs/LEARNINGS.md:436-493` behandelt FAB/SBC-Button/Drag/Pointer-Events
-   mit klarem WARUM je Incident, erwähnt aber an keiner Stelle den
-   Reset-Pfad oder das SSOT-Risiko der Kosten-Tabelle — obwohl CLAUDE.md
-   („Rating-Kosten-Tabelle … Tabelle UND Max-Überschuss liegen in
-   localStorage: neue Defaults greifen erst nach 'Zurücksetzen'") diese
-   Stelle bereits als heikel markiert. Der Drift wäre kein „Nicht anfassen
-   ohne Grund"-Kandidat, sondern hätte hier als aktiver Warnhinweis stehen
-   müssen.
+1. **Einziger Einhänge-Pfad zur SBC-Aktionsleiste ist ein hartkodierter Selektor ohne
+   generischen Fallback** — `sbcButtonContainer()` (`ea-fc-sbc-optimizer.user.js:3832-3838`)
+   sucht ausschließlich `.sbc-button-container`; benennt EA diese Klasse um, liefert die
+   Funktion dauerhaft `null` und der SBC-Button verschwindet lautlos (FAB bleibt als
+   Rückfallweg, aber die zweite, laut LEARNINGS §10 bevorzugte Einhänge-Fläche fällt komplett
+   weg). Bemerkenswert: die Fähigkeit, den Container generisch über sichtbaren Button-Text zu
+   finden, existiert bereits — aber nur als reiner Diagnose-Scan in `buildDiagReport()`
+   (`ea-fc-sbc-optimizer.user.js:4119-4136`, `buttonDump`/`visibleButtons`), nicht als
+   tatsächlicher Fallback-Versuch in `sbcButtonContainer()` selbst. Genau das ist die von
+   `vision/features/bedienpanel-ui.md` benannte strukturelle Deckelbegründung ("Einhänge-Punkte
+   in EAs Container") und der von Audit Iteration 3 explizit offen gelassene Punkt
+   ("EA-Fehlertoleranz-Achse bewusst nicht angefasst").
+2. **`readConfig()` hat als einziger der zentralen Panel-Helfer keinen DOM-Existenz-Guard** —
+   `ea-fc-sbc-optimizer.user.js:4344-4372` liest ~15 `ui.*`-Felder ungeprüft
+   (`ui.minrating.value`, `ui.applyrarity.checked`, …), während alle Nachbar-Funktionen im
+   selben Block konsequent guarden: `setStatus` (`:3927`, `if (ui.status)`), `refreshSbcInfoUI`
+   (`:3929`, `if (!ui.target) return;`), `renderResult` (`:4483`, `if (!ui.result) return;`),
+   `showProgress`/`finishProgress` (`:4535`, `:4544`, je `if (!ui.progress) return;`). Fehlt
+   ein referenziertes Element (z.B. durch eine künftige Panel-HTML-Änderung, die eine `id=`
+   vergisst — LEARNINGS §10 nennt genau dieses Fehlerbild für v4.17.0), wirft `readConfig()`
+   unabgefangen mitten in `onRunClick()` (`:4438-4481`); nur das `finally` (Button
+   reaktivieren) läuft noch, `setStatus`/`toast`/`diagError` werden nie erreicht — der Status
+   bleibt auf dem vorherigen Text ("optimiere...") stehen, ohne dass Rasmus je einen Hinweis
+   auf die Ursache bekäme.
+3. **Drei `localStorage`-Schreibpfade schlucken Quota-/SecurityError vollständig lautlos** —
+   `saveBands()` (`ea-fc-sbc-optimizer.user.js:3594-3596`), der "Erweiterte
+   Einstellungen"-Toggle (`:3554`) und die Drag-Positions-Persistenz in `makeDraggable`
+   (`:3766-3769`) fangen jeweils nur mit leerem `catch (e) {}` — ohne `warn()`, ohne
+   `reportError()`/`diagError()`. Das widerspricht dem im selben File etablierten Muster
+   (LEARNINGS §23: `reportError()` als Choke-Point genau für diese Fehlerklasse, an anderen
+   Stellen wie `apiGet`/`apiPut`/`submitToSbc` bereits verwendet). Im Private-Modus oder bei
+   voller Storage-Quota "funktioniert" der Band-Editor optisch (In-Memory-Array `ratingBands`
+   wird weiter aktualisiert), aber nichts überlebt den nächsten Reload — ohne jede sichtbare
+   Fehlermeldung, weder im Panel noch im Diagnose-Report.
+4. **Keine gegenseitige Ausschluss-Sperre zwischen "Spieler laden" und "Optimieren"** —
+   `onRunClick()` (`ea-fc-sbc-optimizer.user.js:4438-4481`) prüft nur `STATE.pool.length === 0`
+   (`:4448-4451`), nicht `STATE.loading`. `onLoadClick()` (`:4399-4437`) setzt bei einem
+   Voll-Refresh `STATE.pool = []` und befüllt danach asynchronously neu; `loadPool()` setzt
+   `STATE.loadIncomplete = false` erst bei eigenem Start (`:1424`) und `= true` erst bei einem
+   tatsächlichen Fehlschlag mitten im Laden (`:1451`). Ein Klick auf "Optimieren" während eines
+   laufenden Ladens sieht während der Zwischenzustände weder einen leeren Pool (Check greift
+   nicht mehr) noch `loadIncomplete=true` (wird erst gesetzt, falls überhaupt ein Fehlschlag
+   auftritt) — der Solver kann so unbemerkt auf einem noch unvollständigen Pool laufen, ohne
+   dass die sonst übliche "Pool unvollständig geladen"-Warnung (`:4457-4460`) greift. Zusätzlich
+   überschreiben sich die `setStatus()`-Aufrufe beider Flows gegenseitig (kein Sperr- oder
+   Prioritätsmechanismus für den Statustext).
 
 ## Lift-Aktionen (≥ 3 pro Dimension — M1)
 
 ### RA — Robust Architecture
 
-1. **`defaultBands()` gegen `DEFAULT_RATING_COST_SPEC` ableiten statt duplizieren:**
-   `defaultBands()` (`ea-fc-sbc-optimizer.user.js:3360-3370`) so umbauen, dass
-   sie aus `DEFAULT_RATING_COST_SPEC` (`:1485`) via `parseRatingCosts()` +
-   Band-Rekonstruktion erzeugt wird (oder minimal: die Literal-Werte 1:1 auf
-   den aktuellen Spec-String synchronisieren) — SSOT-Fix nach
-   [[wissens-duplikate-ohne-ssot]]. **Nur der Reset-Pfad ändert sich**,
-   `localStorage['sbcOptRatingBands']` (gespeicherte Nutzer-Bands) bleibt
-   unangetastet — `initBandEditor()` (`:3382-3385`) liest weiterhin zuerst
-   `saved`. Neuer statischer Testfall in `solver-test.js` (per
-   Marker-Extraktion, s. Aktion 2) muss `bandsToSpec(defaultBands()) ===
-   DEFAULT_RATING_COST_SPEC` verifizieren, sonst wäre dies laut Pattern eine
-   stille Verhaltensänderung ohne Regressionsschutz. Erwarteter Gain: **+8 Pt
-   RA** (schließt den in `SCORE_RESULT.details.reasoning` explizit genannten
-   Hauptabzug).
-2. **Band-Editor per Marker in `solver-test.js` extrahieren und testen
-   (Pattern-Adoption `eingebetteten-code-exakt-testen`):** neue
-   `// [BANDS-BEGIN]`/`// [BANDS-END]`-Marker um `defaultBands`,
-   `bandsToSpec`, `parseRatingCosts` legen (analog zu den bestehenden
-   `[SOLVER-BEGIN]`/`[SOLVER-END]`-Markern bei `:1411`/`:2446`), Testfälle für
-   (a) `bandsToSpec(defaultBands()) === DEFAULT_RATING_COST_SPEC`, (b)
-   `lo > hi` → Band bleibt No-Op (dokumentiert erwartetes Verhalten oder
-   erzwingt Korrektur, je nach Aktion 3), (c) leere `ratingBands`-Liste →
-   `parseRatingCosts('')` liefert durchgehend Kosten 0 (aktuelles Verhalten,
-   als Testfall festgeschrieben statt überraschend). Erwarteter Gain: **+7 Pt
-   RA** (Testbarkeits-Kriterium, schließt die 0-Treffer-Lücke aus Mangel 2).
-3. **`warn()`+visuelles Feedback bei ungültiger Band-Eingabe:** in `upd()`
-   (`ea-fc-sbc-optimizer.user.js:3441-3449`) nach dem Klemmen von `lo`/`hi`
-   prüfen `if (band.lo > band.hi) { warn('Band ' + band.lo + '-' + band.hi +
-   ' ist ungültig (lo>hi), wird ignoriert.'); row.classList.add('sbc-opt-bandinvalid'); }`
-   — folgt der in [[stille-catches-nur-an-der-ea-grenze]] selbst gezogenen
-   Grenze (eigene Fachlogik, kein Fremd-Catch). Erwarteter Gain: **+4 Pt RA**
-   (Abbruch-Disziplin).
-4. **`ratingCostSpec`/aktive Bands in `buildDiagReport()` aufnehmen +
-   LEARNINGS.md-Eintrag ergänzen:** in `buildDiagReport()`
-   (`ea-fc-sbc-optimizer.user.js:3727ff`) ein Feld `bands: { spec:
-   bandsToSpec(ratingBands), count: ratingBands.length, isDefault:
-   JSON.stringify(ratingBands) === JSON.stringify(defaultBands()) }`
-   ergänzen (Muster wie `locks`/`clubLoad` bei `:3760`/`:3772`); zusätzlich
-   `docs/LEARNINGS.md` §10 um einen Punkt „Band-Editor: `defaultBands()` MUSS
-   synchron zu `DEFAULT_RATING_COST_SPEC` bleiben, Reset-Button betroffen"
-   erweitern. Erwarteter Gain: **+5 Pt RA** (Beobachtbarkeit +
-   Dokumentierte Begründung, zwei Rubric-Kriterien gleichzeitig).
+1. **Generischen Text-Fallback für `sbcButtonContainer()` ergänzen (additiv).** Zweiter
+   Versuch NACH dem bestehenden `.sbc-button-container`-Lookup: sichtbare Buttons nach Text
+   durchsuchen (Muster wie bereits in `buttonDump`, `ea-fc-sbc-optimizer.user.js:4119-4136`
+   vorhanden, z.B. `/squad builder|clear squad|exchange/i`) und deren gemeinsamen Elternknoten
+   als Container zurückgeben, nur wenn der primäre Selektor nichts liefert — der bisherige Pfad
+   bleibt Pfad 1, unverändert. Diagnose-Zähler `containerFallbackUsed` in `buildDiagReport()`
+   ergänzen, damit ein Umstieg auf den Fallback sichtbar bleibt statt nur implizit zu
+   funktionieren. Schließt exakt die von Audit Iteration 3 benannte Lücke.
+   **Erwarteter Gain:** +2–3 Pt RA (Fehlertoleranz-Achse, direkt zielgerichtet).
+2. **`readConfig()` gegen fehlende DOM-Referenzen absichern.** Entweder (a) einen Guard nach
+   dem Vorbild der Nachbarfunktionen ergänzen, der bei fehlendem Kern-Element ein
+   `{ ok:false, reason:'...' }` liefert (Pattern `strukturierte-ok-why-rueckgabe`), das
+   `onRunClick()` dann sauber mit Toast + `setStatus('Fehler')` behandelt, oder (b) minimal den
+   Aufruf in `onRunClick()` in denselben Try/Catch-Stil einbetten, der bereits um
+   `SolverCore.solve()` liegt (`:4466-4467`), inklusive `reportError('readConfig', e)`.
+   **Erwarteter Gain:** +2 Pt RA (Beobachtbarkeit + Abbruch-Disziplin).
+3. **Die drei stillen `localStorage`-Catches auf `reportError()` umstellen.** Bestehenden
+   Choke-Point (LEARNINGS §23, bereits an `apiGet`/`apiPut`/`submitToSbc` verwendet) an
+   `saveBands()` (`:3595`), dem Advanced-Toggle (`:3554`) und der Drag-Positions-Persistenz
+   (`:3768`) nachziehen — reine Ergänzung im Catch-Zweig, kein Verhaltensunterschied im
+   Erfolgsfall. Macht Private-Mode/Quota-Fälle zum ersten Mal überhaupt sichtbar.
+   **Erwarteter Gain:** +2 Pt RA (Beobachtbarkeit-Achse, schließt eine konkrete Instanz des
+   dokumentierten Antipatterns `fehler-unsichtbar-verschluckt`).
+4. **[dünn] `STATE.loading`-Guard am Anfang von `onRunClick()` ergänzen**, analog zum bereits
+   vorhandenen Re-Entrancy-Schutz in `onLoadClick()` (`:4401-4405`): bei aktivem Laden Toast
+   ("Lädt noch – bitte warten.") statt Solve-Versuch. Mechanisch klein, das Zeitfenster ist eng
+   (wenige hundert ms) und führt zu keiner Datenkorruption (der Solver liest immer eine
+   konsistente Array-Referenz), nur zu einem irreführenden Status-Text bzw. einem potenziell
+   suboptimalen Team ohne Warnhinweis — daher als dünne, aber saubere Einzelmaßnahme markiert.
+   **Erwarteter Gain:** +1 Pt RA (Abbruch-Disziplin).
+5. **Fallback-Logik testbar machen (Voraussetzung: Aktion 1 zuerst).** `sbcButtonContainer()`/
+   `syncLauncher()`/`inSbcView()` per Marker-Block extrahieren und nach dem Vorbild von
+   `app/guard-test.js` (Fake-DOM in einer `vm`-Sandbox, bereits im selben Repo etabliert) in
+   `solver-test.js` durchspielen: (a) primärer Selektor vorhanden → Attach über Pfad 1,
+   (b) Selektor umbenannt/fehlt + Text-Fallback vorhanden → Attach über Pfad 2, (c) beides
+   fehlt → nur FAB, kein Wurf. Adoptiert das Pattern `eingebetteten-code-exakt-testen`, das für
+   `bedienpanel-ui` bereits als `applies_to_features` gelistet ist, aber für diese drei
+   DOM-Helfer noch nicht genutzt wird (nur `defaultBands`/`bandsToSpec` sind aktuell per Marker
+   getestet). **Erwarteter Gain:** +2 Pt RA (Testbarkeits-Achse), zieht Aktion 1 voraus.
 
 ## Edge-Cases (mind. 1 — M1)
 
-- **Bereits gespeicherte Alt-Bands nach dem Fix:** Nutzer, die VOR dem
-  SSOT-Fix schon einmal „Zurücksetzen" gedrückt haben, tragen die veralteten
-  Werte (`85-86:5`, `87-88:2`) inzwischen in `localStorage['sbcOptRatingBands']`
-  — laut Aufgabenstellung und CLAUDE.md („Tabelle UND Max-Überschuss liegen in
-  localStorage: neue Defaults greifen erst nach 'Zurücksetzen'") darf der Fix
-  diesen Storage-Key NICHT automatisch überschreiben/migrieren. Der Fix behebt
-  also nur zukünftige Resets; Rasmus muss nach dem Update ggf. einmal manuell
-  erneut „Zurücksetzen" drücken, um die korrigierte Tabelle zu bekommen — das
-  gehört als Hinweis in die Release-Kommunikation, sonst hält sich die Drift
-  für genau die Nutzer, die sie zuerst gemeldet haben.
-- Zusätzlich zu beachten (nicht Pflicht-Edge-Case, aber leicht übersehen):
-  leere `ratingBands`-Liste (alle Zeilen per „✕" gelöscht) liefert über
-  `bandsToSpec([]) === ''` und `parseRatingCosts('')` einen Kosten-Fn, der für
-  JEDES Rating 0 zurückgibt — der Solver optimiert dann nur noch nach
-  Summe/Storage, ohne dass irgendwo eine Warnung erscheint.
+- **`localStorage`-Wipe MITTEN in der Session statt nur beim Start.** LEARNINGS §10 dokumentiert
+  bereits den Fall "Kosten-Tabelle ändert sich, gespeicherte Nutzer-Bands bleiben unberührt" —
+  der Umkehrfall wird leicht vergessen: verliert der Browser/die WebView `localStorage`
+  zwischen zwei Panel-Öffnungen (Low-Memory-Eviction, EA-Storage-Wipe, manuelles Leeren durch
+  Rasmus), fällt `initBandEditor()` (`:3597-3601`) beim nächsten Laden lautlos auf
+  `defaultBands()` zurück — korrekt und sicher, aber ohne jede sichtbare Meldung ("deine
+  benutzerdefinierten Bänder wurden zurückgesetzt"). Wird bei einem Lift der Fallback-/
+  Diagnose-Achse leicht übersehen, weil der Code an dieser Stelle bereits "funktioniert"
+  (kein Crash, sinnvoller Default) und deshalb nicht als Mangel auffällt, obwohl er dieselbe
+  Beobachtbarkeits-Lücke wie Mangel 3 hat, nur am Lesepfad statt am Schreibpfad.
 
 ## Lift-Empfehlung
 
-Vorsichtig, kleiner Diff: alle vier Aktionen betreffen ausschließlich den
-Reset-Pfad und Diagnose/Doku, nicht den Solver-Kern oder Submit-Wege — passt
-zu CLAUDE.md „Kleine Diffs, additiv statt Ersatz". Aktion 1+2 gehören
-zusammen in einen Schritt (Fix + Test im selben Commit, sonst ungeschützte
-Verhaltensänderung); Aktion 3+4 können unabhängig und risikofrei folgen. Kein
-Mid-Iter-SI nötig — keine der vier Aktionen hat einen zweiten Konsumenten
-außerhalb von `bedienpanel-ui`.
+Vorsichtig, additiv, gezielt: Genau EIN strukturell benannter Rest (EA-Fehlertoleranz beim
+Container-Einhängen) trägt den Löwenanteil des möglichen Gains (Aktion 1, +2–3 Pt) und ist
+durch die bereits vorhandene `buttonDump`-Diagnose fast fertig vorbereitet — reine
+Fallback-Verdrahtung, kein Neubau. Aktionen 2–3 sind kleine, mechanische
+Beobachtbarkeits-Ergänzungen nach etabliertem Muster (`reportError()`), die ohne Risiko einzeln
+umsetzbar sind. Aktion 4 ist bewusst als dünn markiert — bei knappem Iterations-Budget zuerst
+1–3 umsetzen, 4 nur mitnehmen wenn Zeit bleibt. Aktion 5 (Testbarkeit) sollte NACH Aktion 1
+laufen, da sie deren Fallback-Verzweigung testet — kein Mid-Iter-SI nötig, klassische
+Sequenz innerhalb einer Iteration.

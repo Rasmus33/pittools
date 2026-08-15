@@ -1,10 +1,1 @@
-[
-  {
-    "slug": "fehler-sichtbarkeit-diagerror",
-    "consumers": ["ea-app-anbindung", "spieler-pool", "diagnose-werkzeuge", "batch-modus"],
-    "proposed_target_path": "ea-fc-sbc-optimizer.user.js",
-    "test_paths": ["solver-test.js"],
-    "bundle_hint": "beobachtbarkeit",
-    "rationale": "Das Antipattern 'fehler-unsichtbar-verschluckt' (applies_to_features: spieler-pool, ea-app-anbindung, android-app-wrapper, diagnose-werkzeuge, batch-modus) tritt an strukturell identischen Catch-Bloecken in mindestens vier Features auf: Services-/HTTP-Fallbacks und Sync in ea-app-anbindung (fetchUnassignedViaServices :1100, fetchStorageViaServices :1118, syncSbcWithOpenChallenge :762), Pool-Laden in spieler-pool (fetchUnassignedViaHttp :1334, fetchStorageViaHttp :1346), Batch-Planung in batch-modus (onBatchPlanClick :4831-4833) sowie diagnose-werkzeuge als Konsument der Report-Infrastruktur selbst. Die Pattern-Beziehungen benennen die Wurzelursache explizit (Q5/SSOT): 'es gibt keinen gemeinsamen Wrapper (z.B. reportError(msg, e) = warn/Log + Report-Ablage in einem Aufruf), der die Entscheidung erzwingt, dass ein Fehlertyp in den Report muss - sie haengt stattdessen vom Autor-Moment an jeder einzelnen Call-Site ab'. Ein zentraler reportError(msg, e)-Helper (warn() + diagError() in einem Aufruf) neben der bestehenden diagError()-Definition im Userscript wuerde alle vier Konsumenten von einer wiederkehrenden Einzelfall-Entscheidung entlasten und macht die naechste neue Fehlerklasse strukturell sichtbar statt vom Zufall abhaengig. In dieser Iteration von ea-app-anbindung bleiben die drei betroffenen Catch-Bloecke bewusst additiv und feature-lokal (kein Blocker durch die SI); die SI ist der Kandidat fuer eine gebuendelte Folge-Iteration ueber alle vier Consumer hinweg."
-  }
-]
+[]

@@ -1,201 +1,243 @@
 ---
 feature: sbc-vorgaben-erkennung
-iteration: 0
+iteration: 3
 score_current:
-  RA: 65
+  RA: 78
 score_target:
-  RA: 75
+  RA: 79
 primary_paths:
   - ea-fc-sbc-optimizer.user.js
   - solver-test.js
+  - docs/LEARNINGS.md
 patterns_required:
-  - eingebetteten-code-exakt-testen
   - diagnose-feld-statt-raten
+  - abbruch-disziplin
+  - eingebetteten-code-exakt-testen
 pk_files_to_cite: []
 citation_only: false
 shared_items_required: []
-priority: P2-normal
+priority: P3-deferred
 effort: S
-analyzed_at: 2026-08-14
+analyzed_at: 2026-08-15
 ---
 
 # Lift-Plan — SBC-Vorgaben-Erkennung
 
-**Ticket-Titel-Vorschlag (ADR #73):** Slot-Namensdrift beheben und SBC-Parser mit echten Tests absichern
-
 ## Marschroute
 
-Vier Aktionen entlang der Phasen-Reihenfolge `core → diagnose → tests → docs →
-release`, in der von `gap-analyst` empfohlenen Abhängigkeitsordnung: zuerst
-die einzige verhaltensändernde Aktion (Namensdrift-Fix, Aktion 1) isoliert mit
-eigenem Testfall, danach die additive Marker-Extraktion samt echten
-Parser-Tests (Aktion 2) — sie profitiert davon, dass der Slot-Vergleich dann
-bereits scharf ist. Die beiden additiven Aktionen 3 (`matchedAs`-Diagnosefeld)
-und 4 (Duplikat-Zeile entfernen) laufen parallel bzw. nachgelagert ohne
-Abhängigkeit. Kein aggressiver Ein-Schritt-Umbau: RA ist mit 65/80 bereits
-`pass` (Schwelle 56), die Iteration nimmt sich bewusst Zeit für den
-Brute-Force-artigen Testfall aus Aktion 1 statt auf Geschwindigkeit zu
-optimieren (Q1). Jede Aktion respektiert „keine Regression": `node --check`
-und das volle `solver-test.js` müssen vorher wie nachher grün sein, und jede
-Verhaltensänderung bekommt einen eigenen neuen Testfall statt eines stillen
-Fixes nebenbei (Q2).
+Iterations-Linse: EA-Wandel-Toleranz. Alle drei Aktionen sind reine
+Beobachtbarkeits-Ergänzungen am bereits per Marker (`// [SBCSCAN-BEGIN]` /
+`// [SBCSCAN-END]`) isolierten Deep-Scan-Parser-Cluster
+(`ea-fc-sbc-optimizer.user.js:362-537`) — keine der drei bestehenden,
+live-verifizierten Erkennungspfade (Whitelist-Matching, Traversal-Limits,
+Count-Fallback) ändert ihr Verhalten; es kommen ausschließlich neue
+Rückgabe-/Report-Felder hinzu. Reihenfolge folgt der gegebenen
+`phase_sequence`:
+
+1. **core** — die additive Sammel-/Splitlogik einbauen: `allScopesSeen`
+   im `deepScanChallenge()`-Traversal-Loop mitführen (Aktion 1); `reqCount()`
+   intern in einen gemeinsamen `reqCountRaw()`-Helfer aufspalten, der Zahl UND
+   Default-Flag in einem Durchlauf liefert (Aktion 3 — DRY, kein zweiter
+   Chain-Walk).
+2. **diagnose** — die drei neuen Signale bis in `STATE.sbc` /
+   `buildDiagReport()` durchreichen: `scopesSeenCount`/`scopesSeenSample`,
+   `scanStats` (optionaler `statsOut`-Parameter für `findChallengeNode`/
+   `collectChallengeNodes`, die anders als `deepScanChallenge` keinen
+   Objekt-Rückgabewert haben), `countDefaulted` an jedem `reqDump`-/
+   Constraint-Eintrag plus eine Kurzsumme.
+3. **tests** — drei neue, mit konstruierten Challenge-Strukturen arbeitende
+   Testfälle in `solver-test.js` (Whitelist-Bypass, Traversal-Kappung,
+   reqCount-Default), jeweils inkl. Gegenprobe, dass das bestehende Verhalten
+   (Whitelist filtert weiter wie bisher, Limits bleiben 20000/Tiefe 6-7,
+   `reqCount()`-Zahl unverändert) unangetastet bleibt. `node solver-test.js`
+   muss vor und nach dem Schnitt für alle bestehenden Fälle grün bleiben.
+4. **docs** — `docs/LEARNINGS.md` bekommt Eintrag §37 mit den drei additiven
+   Feldern, dem Bezug zu §26/§27/§34 (verwandte Diagnose-Muster) und der
+   expliziten Begründung, warum `scanStats` NICHT zu einer neuen Warnung
+   führt (Rückbezug auf den in v4.34.0 zurückgenommenen Fehlalarm,
+   `ea-fc-sbc-optimizer.user.js:4333-4337`).
+5. **release** — `@version` (Header) und `const VERSION` gemeinsam auf die
+   nächste freie Versionsnummer bumpen (aktuell `4.48.0`; ein paralleles
+   Ticket `ea-app-anbindung` bumpt in derselben Iteration ebenfalls — die
+   konkrete Nummer wird beim Implementieren gegen den dann aktuellen main-Stand
+   koordiniert, nicht im Plan fest vorgeschrieben), Push auf `main`.
+
+Kein Mid-Iter-Shared-Item nötig: alle drei Änderungen liegen im selben
+Deep-Scan-Cluster und werden von einem Implementer-Durchlauf mit kleinen
+Diffs umgesetzt (Einschätzung aus dem Gap-Report übernommen).
 
 ## Aktionen pro Dimension
 
 ### RA — Robust Architecture
 
-1. **`STATE.sbc.slots`-Namensdrift auf `STATE.sbc.formationSlots` umstellen
-   (SSOT-Fix, verhaltensändernd):** die vier Lesestellen des nie
-   geschriebenen Feldes durch das tatsächlich gepflegte Feld ersetzen —
-   `ea-fc-sbc-optimizer.user.js:576` (`resolveFreshChallengeId`, `wantSlots`),
-   `:4795` (`matchesPlannedSbc`), `:4816` (`onBatchPlanClick`, Anker-Übernahme
-   `plan.slots`), `:4916` (Nutzertext bei Batch-Abbruch-Diskrepanz). Schreib-
-   stellen bleiben unverändert (`:492`, `:640`, `:675`, `:691` schreiben
-   bereits korrekt `STATE.sbc.formationSlots`). Folgt dem SSOT-Prinzip aus
-   `docs/roadmap/patterns/bad/wissens-duplikate-ohne-ssot.md` (Abschnitt
-   „Namensdrift als Sonderfall"): eine Quelle statt einer zweiten, nie
-   befüllten. **Pflicht-Testfall in `solver-test.js`** (kein stiller Fix,
-   siehe Q2): zwei simulierte Set-Challenge-Knoten mit unterschiedlichem
-   `formationSlots`-Wert durch `deepScanChallenge` schicken und assertieren,
-   dass `resolveFreshChallengeId()`-Logik (bzw. eine isoliert testbare
-   Nachbildung ihres Kandidaten-Filters `okTarget && okSlots`) den zum
-   geplanten `wantSlots` passenden Knoten auswählt und den mit abweichender
-   Slot-Zahl ablehnt — sowie ein zweiter Fall für `matchesPlannedSbc`, der
-   zeigt, dass ein Plan mit `slots: 11` gegen eine offene SBC mit
-   `formationSlots: 4` jetzt tatsächlich `false` liefert (vorher `false ===
-   false`, also fälschlich `true`-äquivalent). Erwarteter Gain: **+6 bis +8
-   Pt RA** (behebt den im Gap-Report benannten Hauptabzug „Slot-
-   Disambiguierung faktisch tot").
+1. **Aktion 1 — `scopesSeen` gegen die reqDump-Whitelist-Lücke
+   (behebt Mangel 1).**
+   - `deepScanChallenge()` (`ea-fc-sbc-optimizer.user.js:408-536`): direkt an
+     der Stelle, an der `scope = scopeString(o)` truthy wird
+     (`:424-425`, VOR der Whitelist-Prüfung bei `:488-496`), den Scope-String
+     zusätzlich in ein `Set` aufnehmen — unabhängig davon, ob er anschließend
+     eine der zehn Whitelist-Teilzeichenketten trifft. Deckel bei 40 Einträgen
+     (Set-Größe prüfen, keine weiteren Adds darüber), analog zum bestehenden
+     `out.reqs.length < 25`-Deckel bei `:489`.
+   - Am Ende von `deepScanChallenge()` (vor `return out;`, `:535`) das Set in
+     `out.scopesSeen` (Array) konvertieren. Reine Ergänzung des
+     Rückgabeobjekts — `matchedAs`, `reqValue`, `reqCount`, die bestehende
+     Whitelist-Logik bei `:488-496` bleiben unverändert.
+   - `STATE.sbc` (Deklaration `:84-96`) bekommt ein neues Feld
+     `scopesSeen: []`; `setCurrentChallenge()` (`:540-557`) setzt es beim
+     Challenge-Wechsel zusammen mit den anderen `STATE.sbc.*`-Feldern zurück.
+   - `applyScan()` (`:746-792`) übernimmt `scan.scopesSeen` UNGEACHTET des
+     bestehenden `if (scan.reqs.length)`-Gates bei `:757` (das Gate gilt nur
+     für `reqDump`/`otherScopes` — ein neuer Scope kann auftreten, ohne dass
+     `scan.reqs` etwas enthält, genau der Bug-Fall aus Mangel 1) —
+     eigener, ungegateter Zuweisungsblock: `STATE.sbc.scopesSeen = scan.scopesSeen || [];`.
+   - `buildDiagReport()`-`sbc`-Block (`:4088-4107`) bekommt
+     `scopesSeenCount: (STATE.sbc.scopesSeen || []).length` und
+     `scopesSeenSample: STATE.sbc.scopesSeen || []` (bereits auf 40 gedeckelt,
+     keine weitere Kürzung nötig).
+   - Erwarteter Gain: +2-3 Pt RA (Beobachtbarkeits-Kriterium — eine komplett
+     neue EA-Scope-Familie ist jetzt sichtbar, statt spurlos zu verschwinden).
 
-2. **`deepScanChallenge`-Cluster per Marker extrahierbar machen und mit
-   konstruierten EA-Objekten real testen (additiv):** in
-   `ea-fc-sbc-optimizer.user.js` ein neues Marker-Paar `// [SBCSCAN-BEGIN]`
-   vor `scopeString` (aktuell `:317`) und `// [SBCSCAN-END]` nach dem Ende von
-   `deepScanChallenge` (aktuell `:476`) einfügen — umschließt `scopeString`,
-   `reqValue`, `reqIds`, `reqCount`, `isDomOrWindow`, `deepScanChallenge`.
-   Diese sechs Funktionen sind bereits self-contained (keine Referenz auf
-   `STATE`, `warn` oder andere Datei-Globals außer Standard-JS), also ohne
-   Anpassung 1:1 extrahierbar — Pattern `eingebetteten-code-exakt-testen`
-   (Marker-Extraktion statt Nachbau, analog `// [SOLVER-BEGIN]`/`:1411` /
-   `// [SOLVER-END]`/`:2446`). In `solver-test.js` eine neue Sektion nach dem
-   Vorbild von `:10-13` (Regex-Extraktion + `new Function(...)`) ergänzen und
-   drei Testfälle mit konstruierten EA-Response-Objekten schreiben, die die
-   dokumentierten Live-Bugs aus `docs/LEARNINGS.md` §6/§11 exakt nachstellen:
-   (a) `PLAYER_RARITY_GROUP` mit Wert 4 korrekt als Rare-Gruppe erkannt,
-   während ein Namens-Scope mit „RARE"-Substring (`CARRARESE CALCIO` o.ä.)
-   NICHT matcht (ergänzt die bestehenden reinen String-Checks aus
-   `solver-test.js:1218-1235` um einen echten Funktionsaufruf), (b)
-   `PLAYER_LEVEL` mit Wert 1 landet in `out.quality`, (c) `PLAYER_LEVEL` mit
-   Wert 87 landet in `out.playerLevel` bzw. `out.target`. Rein additiv — nur
-   neue Marker-Kommentare + neue Testsektion, keine Änderung an der
-   Funktionslogik selbst; `node --check` und das volle `solver-test.js`
-   trotzdem danach zur Bestätigung laufen lassen. Erwarteter Gain: **+8 bis
-   +10 Pt RA** (schließt die im Gap-Report benannte fehlende Testbarkeit der
-   Parsing-Kernlogik — bisher nur String-Präsenz-Checks auf den Rohquelltext,
-   kein einziger Aufruf von `deepScanChallenge`).
+2. **Aktion 2 — `scanStats` gegen die stille Traversal-Kappung
+   (behebt Mangel 2).**
+   - `deepScanChallenge()`: `visited`-Zähler (bereits vorhanden, `:413/419`)
+     sowie eine neue `depthSkipped`-Flagge (wird `true`, sobald die
+     Bedingung `d > 7` bei `:417` einen Knoten tatsächlich aussortiert —
+     NICHT nur beim generellen Continue durch `seen.has`/`isDomOrWindow`)
+     zusätzlich auf `out` legen:
+     `out.visitedCount = visited; out.depthCapped = depthSkipped; out.budgetExhausted = (visited >= 20000 && queue.length > 0);`
+     vor `return out;` (`:535`).
+   - `findChallengeNode(root, cid)` (`:559-589`) und
+     `collectChallengeNodes(root)` (`:596-625`) geben aktuell einen bloßen
+     Knoten bzw. ein Array zurück — der Rückgabe-TYP darf sich laut
+     Iterations-Linse NICHT ändern (bricht sonst `applyFromSetChallenges()`
+     und `resolveFreshChallengeId()`, beide live-verifiziert). Additiver Weg:
+     beide Funktionen bekommen einen optionalen dritten/zweiten Parameter
+     `statsOut` (Default `undefined`, bestehende Aufrufe ohne diesen Parameter
+     bleiben unverändert funktionsfähig). Ist `statsOut` gesetzt, schreiben
+     die Funktionen am Ende ihres jeweiligen Loops
+     `statsOut.findNode = { visitedCount, depthCapped, budgetExhausted }` bzw.
+     `statsOut.collectNodes = { ... }` hinein (gleiche drei Felder, gleiche
+     Kappungs-Bedingungen `d > 6` / `visited < 20000` wie bisher — nur deren
+     Erreichen wird jetzt sichtbar, die Limits selbst bleiben `20000`/Tiefe
+     `6`-`7`).
+   - Call-Sites: `applyFromSetChallenges()` (`:666-673`) und
+     `resolveFreshChallengeId()` (`:633-664`) legen vor dem jeweiligen Aufruf
+     `STATE.diag.scanStats = STATE.diag.scanStats || {};` an und übergeben
+     dieses Objekt als `statsOut`; `parseSbcChallenge`/`captureChallengeEntity`
+     übernehmen zusätzlich `out.visitedCount/depthCapped/budgetExhausted` von
+     `deepScanChallenge()` in denselben `STATE.diag.scanStats.deepScan`-Zweig.
+   - `buildDiagReport()` übernimmt `scanStats: STATE.diag.scanStats || null`
+     ungefiltert (Muster identisch zu `staleRecover`/`batchStuckCount`,
+     `:3908-3914`). `STATE.diag`-Deklaration (`:110-134`) bekommt das neue
+     Feld `scanStats: null`.
+   - **Kein neues `warnings`-/Abbruch-Kriterium** — reines Beobachtungsfeld
+     (siehe Edge-Case unten, v4.34.0-Rückfall vermeiden).
+   - Erwarteter Gain: +2 Pt RA (Beobachtbarkeit + Fehlertoleranz-Kriterium).
 
-3. **Klassifizierungs-Zweig pro `reqDump`-Eintrag sichtbar machen
-   (additiv):** in `out.reqs.push(...)` (`ea-fc-sbc-optimizer.user.js:388`)
-   ein zusätzliches Feld `matchedAs` ergänzen, abgeleitet aus denselben
-   Bedingungen, die ohnehin schon berechnet werden — `isTeamRating` (`:390-
-   393`) → `'TEAM_RATING'`, `isPlayerLevel` (`:401-404`) → `'PLAYER_LEVEL'`,
-   `isQualityScope` (`:417-418`) → `'PLAYER_QUALITY'`, `scope.indexOf('RARITY')
-   > -1` (`:427`) → `'RARITY'`, sonst `'unclassified'`. Pattern
-   `diagnose-feld-statt-raten` befolgen: das Feld macht sichtbar, welcher der
-   sich gegenseitig ausschließenden Zweige griff bzw. dass keiner griff —
-   genau die Information, die beim `PLAYER_LEVEL`-Dual-Use-Bug (LEARNINGS
-   §6/§11) beim Live-Debugging fehlte. **Edge-Case explizit mitdenken:** ein
-   `PLAYER_LEVEL`/`PLAYER_QUALITY`-Wert zwischen 4 und 39 fällt durch
-   `isPlayerLevel` (verlangt `v >= 40`) UND `isQualityScope` (verlangt `v` in
-   1..3) — `matchedAs` muss für diesen Fall `'unclassified'` liefern statt
-   das Feld wegzulassen, sonst bleibt genau die Lücke unsichtbar, die den
-   nächsten Dual-Use-Bug verursachen könnte. Rein additiv — nur ein neues
-   Feld im Objekt-Literal, keine bestehende Zuweisung wird verändert;
-   trotzdem einen `solver-test.js`-Smoke-Check ergänzen (kann in derselben
-   neuen Marker-Testsektion aus Aktion 2 laufen), der für die drei
-   LEARNINGS-§6/§11-Fixtures (`PLAYER_LEVEL` Wert 1 / Wert 87 / ein Wert wie
-   15 als Beleg für `'unclassified'`) das erwartete `matchedAs` prüft.
-   Erwarteter Gain: **+4 bis +6 Pt RA** (Beobachtbarkeits-Kriterium aus
-   `docs/roadmap/vision/score-criteria.md`).
+3. **Aktion 3 — `reqCountDefaulted` gegen den unsichtbaren
+   `return 1`-Fallback (behebt Mangel 3).**
+   - `reqCount(o, parents)` (`:383-397`) intern aufspalten: neuer Helfer
+     `reqCountRaw(o, parents)` mit der bestehenden Chain-Walk-Logik
+     (`:387-395`), der `{ count, defaulted }` liefert (`defaulted = true`
+     nur, wenn KEIN der fünf bekannten Keys traf und der `1`-Fallback griff).
+     `reqCount(o, parents)` wird zum Einzeiler `return reqCountRaw(o, parents).count;`
+     — exakt derselbe Rückgabewert für alle vier bestehenden Aufrufer
+     (`:454, :469, :481, :495`), keine Verhaltensänderung, keine Duplikation
+     der Key-Liste (Q4/DRY). Neue Funktion
+     `function reqCountDefaulted(o, parents) { return reqCountRaw(o, parents).defaulted; }`.
+   - An allen vier Push-Stellen in `deepScanChallenge()` zusätzlich
+     `countDefaulted: reqCountDefaulted(o, par)` mitgeben:
+     `out.playerLevel.push(...)` (`:454`), `out.quality.push(...)` (`:469`),
+     `out.rarity.push(...)` (`:478-486`), `out.reqs.push(...)` (`:495`).
+     Die `dedupe()`-Keyfunktionen (`:530-534`) bleiben unverändert (Dedupe
+     läuft weiterhin über Label/Wert/Count, nicht über das neue Flag — zwei
+     sonst identische Vorgaben mit unterschiedlichem `countDefaulted` sind
+     inhaltlich dieselbe Vorgabe).
+   - `STATE.sbc.rarityConstraints`/`playerLevelConstraints`/
+     `qualityConstraints`/`reqDump` übernehmen das Flag automatisch, da sie
+     direkt die `scan.*`-Arrays referenzieren (`applyScan()`, `:746-758`) —
+     keine weitere Verdrahtung nötig.
+   - `buildDiagReport()`-`sbc`-Block: eine Kurzsumme
+     `countDefaultedTotal` (Anzahl `countDefaulted === true` über
+     `reqDump` + die drei Constraint-Arrays) ergänzen — macht "Count geraten
+     (nicht gefunden): N Vorgaben" auf einen Blick sichtbar, ohne den ganzen
+     Report nach dem Flag durchsuchen zu müssen.
+   - Solver-Verhalten (`needCount = pl.count || 1` bei `:2095`,
+     `rc.count || 1` bei `:2142`) bleibt unverändert — reine
+     Zusatz-Property, kein Kontrollfluss-Eingriff.
+   - Erwarteter Gain: +2 Pt RA (Beobachtbarkeit + dokumentierte Begründung
+     einer fragilen Stelle).
 
-4. **Doppelte `rareConstraints`-Deklaration im Diagnose-Report entfernen
-   (verhaltensneutral):** `ea-fc-sbc-optimizer.user.js:3927-3928` — eine der
-   beiden identischen Zeilen `rareConstraints: STATE.sbc.rareConstraints ||
-   []` im selben Objekt-Literal streichen (JS überschreibt den Duplikat-Key
-   ohnehin durch sich selbst, keine funktionale Änderung; die dritte,
-   unabhängige Stelle `:4059` bleibt unberührt — anderer Report-Zweig, kein
-   Duplikat desselben Literals). `node --check` + volles `solver-test.js`
-   danach laufen lassen, um Verhaltensneutralität zu bestätigen. Erwarteter
-   Gain: **+1 bis +2 Pt RA** (Sorgfalt-Signal im Beobachtbarkeits-Kanal
-   selbst, der laut CLAUDE.md-Debugging-Konvention der einzige Weg zu
-   Rasmus' Fehlerbildern ist).
+**Nicht eingeplant:** die im Gap-Report als "dünn" markierte
+Rareflag-Verteilungs-Plausibilitätsnotiz — bei 1-2 Punkten realistischer
+Restgain birgt eine Anomalie-Heuristik hier False-Positive-Risiko
+(saisonale Verschiebung ist laut CLAUDE.md legitim) und wird auf PO-Empfehlung
+weggelassen.
 
 ## Phasen-Commit-Mapping
 
-| Phase | Aktionen |
-|-------|----------|
-| core | Aktion 1 (vier Lesestellen `STATE.sbc.slots` → `STATE.sbc.formationSlots`); Aktion 4 (Duplikat-Zeile `:3927` oder `:3928` entfernen); `// [SBCSCAN-BEGIN]`/`// [SBCSCAN-END]`-Marker für Aktion 2 einfügen (reine Kommentarzeilen, keine Logikänderung) |
-| diagnose | Aktion 3 (`matchedAs`-Feld in `out.reqs.push(...)`, `:388`) |
-| tests | Pflicht-Testfall zu Aktion 1 (zwei simulierte Set-Challenge-Knoten, `resolveFreshChallengeId`-Kandidatenfilter + `matchesPlannedSbc`); neue `solver-test.js`-Marker-Extraktionssektion für Aktion 2 mit den drei LEARNINGS-§6/§11-Fixtures; Smoke-Check für Aktion 3 (`matchedAs` an denselben drei Fixtures, inkl. `'unclassified'`-Fall) |
-| docs | `docs/LEARNINGS.md`-Eintrag zum jetzt scharf geschalteten Slot-Vergleich (Batch-Anker-Abgleich vergleicht ab jetzt tatsächlich Slots) |
-| release | `node --check ea-fc-sbc-optimizer.user.js`; `node solver-test.js` (alle Tests inkl. der neuen grün); `@version` + `const VERSION` bumpen; Push auf `main` |
+| Phase     | Aktionen |
+|-----------|----------|
+| core      | `allScopesSeen`-Sammlung in `deepScanChallenge()` (Aktion 1, Sammelteil); `reqCount()` → `reqCountRaw()`-Aufspaltung + `reqCountDefaulted()` (Aktion 3, Kernlogik) |
+| diagnose  | `STATE.sbc.scopesSeen` + `scopesSeenCount`/`scopesSeenSample` im Report (Aktion 1, Verdrahtung); `statsOut`-Parameter an `findChallengeNode`/`collectChallengeNodes`, `STATE.diag.scanStats`, Report-Feld `scanStats` (Aktion 2); `countDefaulted` an allen vier Push-Stellen + `countDefaultedTotal` im Report (Aktion 3, Verdrahtung) |
+| tests     | Whitelist-Bypass-Test, Traversal-Kappungs-Test (deepScanChallenge + findChallengeNode/collectChallengeNodes), reqCount-Default-Test — je mit Regressions-Gegenprobe auf unverändertes Bestandsverhalten |
+| docs      | `docs/LEARNINGS.md` §37 |
+| release   | `@version`/`const VERSION` bump, Push auf `main` |
 
 ## Shared-Item-Bedarf
 
-Keiner. Die `deepScanChallenge`-Cluster-Zeilen (`ea-fc-sbc-optimizer.user.js:317-476`)
-gehören ausschließlich zur Code-Geographie von `sbc-vorgaben-erkennung` — kein
-anderes Vision-Feature (`ea-app-anbindung`, `rating-solver`, `batch-modus`,
-`team-eintragen`, `bedienpanel-ui`, `diagnose-werkzeuge`, `spieler-pool`,
-`android-app-wrapper`) referenziert diese Zeilen oder eine analoge
-Parser-Struktur. Der neue `// [SBCSCAN-BEGIN]`/`// [SBCSCAN-END]`-Marker ist
-dieselbe TECHNIK wie `// [SOLVER-BEGIN]`/`// [SOLVER-END]`, aber kein
-gemeinsam genutztes Code-Artefakt — jedes Feature markiert seinen eigenen,
-unabhängigen Block. Ein `diagError`-Nachrüstung für neue Fehlerbilder wäre
-zwar cross-feature-relevant, ist hier aber nicht Teil der Aktionen (Aktion 3
-nutzt ausschließlich das bereits bestehende `reqDump`-Feld additiv) und
-gehört, falls sie ansteht, in die Lift-Pläne von `diagnose-werkzeuge` bzw. den
-Features, die tatsächlich neue Fehlerpfade einführen. `[]` in
-`sbc-vorgaben-erkennung.shared-items.json`.
+Keins. Alle drei Aktionen sind feature-intern im selben Deep-Scan-Cluster
+(`ea-fc-sbc-optimizer.user.js`, SBCSCAN-Marker-Block + die beiden
+Nachbar-Traversal-Funktionen) und haben keinen zweiten Konsumenten. Sidecar
+bleibt leer (`[]`).
 
 ## Risiken / Edge-Cases
 
-- **Aktion 1 schaltet zwei bislang stummen Vergleiche scharf:**
-  `resolveFreshChallengeId()` kann nach dem Fix Kandidaten ablehnen, die
-  vorher (mangels funktionierendem Slot-Vergleich) durchgingen — betrifft den
-  von CLAUDE.md als Knackpunkt bezeichneten Batch-Modus-Anker. Ohne den
-  Pflicht-Testfall bestünde das Risiko, dass eine SBC mit tatsächlich
-  passenden Slots durch einen Tippfehler im Vergleich (`Number(...)`-Cast,
-  `== null`-Fallback) neu fälschlich abgelehnt wird — genau das Szenario, vor
-  dem die Abbruch-Disziplin (`:596-599`, „lieber sauber melden als in die
-  falsche SBC schreiben") schützen soll, aber nur wenn der Vergleich selbst
-  korrekt ist.
-- **`matchesPlannedSbc` nach dem Fix strenger:** ein Batch-Plan, dessen
-  `plan.slots` vor dem Fix immer `undefined` war, verglich bisher
-  `undefined !== undefined` → `false` (Test bestand). Nach dem Fix vergleicht
-  er echte Zahlen — ein Alt-Plan-Objekt aus einer laufenden Session (falls
-  über einen Reload hinweg persistiert, was aktuell nicht der Fall ist, aber
-  als Annahme zu prüfen) könnte inkonsistent werden. Da `STATE.batch` laut
-  Code nur In-Memory lebt und nach jedem Lauf verbraucht wird (`plan.consumed`
-  über `finally`), ist das Risiko gering, sollte aber beim Review kurz
-  bestätigt werden.
-- **Marker-Kollision:** der neue Markername `SBCSCAN` darf nicht mit
-  `SOLVER` kollidieren oder von dessen Regex versehentlich mitgegriffen
-  werden — `solver-test.js`s bestehende `SOLVER-BEGIN`/`SOLVER-END`-Regex ist
-  nicht-gierig (`[\s\S]*?`) und stoppt am ersten `SOLVER-END`, bleibt also
-  unberührt; trotzdem beim Einfügen prüfen, dass kein Objekt/keine Variable
-  in beiden Blöcken gleich benannt ist (aktuell keine Überschneidung
-  erkennbar, da `deepScanChallenge`-Cluster außerhalb 1411–2446 liegt).
-  Mid-Iter-Einschub (Klasse G) wäre denkbar, falls sich beim Extrahieren doch
-  eine versteckte Abhängigkeit auf eine Funktion außerhalb des neuen Blocks
-  zeigt (z.B. falls eine künftige Änderung `deepScanChallenge` um einen
-  `warn()`-Aufruf erweitert) — dann müsste der Marker-Block nachträglich
-  erweitert werden.
-- **Edge-Case `matchedAs: 'unclassified'` als Dauerzustand statt Ausnahme:**
-  falls EA in einer künftigen Season tatsächlich eine 5-stufige
-  Qualitätsskala einführt (Werte 4-39, siehe Gap-Report), würde `matchedAs`
-  dauerhaft `'unclassified'` für diese Vorgabe zeigen, ohne dass sich das
-  Verhalten der SBC-Erfüllung ändert — das Diagnose-Feld macht die Lücke
-  sichtbar, schließt sie aber nicht. Kein Grund, das in dieser Iteration zu
-  beheben (kein bekannter Live-Vorfall, nur eine dokumentierte Möglichkeit),
-  aber der Report sollte diesen Fall künftig triggern können, falls er
-  eintritt.
+- **`scanStats` darf nicht zur Wiederholung des v4.34.0-Fehlers werden.**
+  Erreichtes `visited >= 20000` oder die Tiefengrenze bedeutet NICHT
+  zwingend, dass relevante Vorgaben fehlen — die BFS kann `TEAM_RATING`
+  o.ä. bereits früh gefunden haben, bevor das Budget erschöpft war. Anders
+  als bei der Solver-Suchfenster-Erschöpfung (`docs/LEARNINGS.md` §34, dort
+  bewusst per unabhängiger `vBound`-Gegenrechnung als echte Ursache belegt)
+  gibt es hier keine unabhängige Bestätigung, dass eine Kappung tatsächlich
+  eine Vorgabe verschluckt hat. Aktion 2 bleibt deshalb strikt ein reines
+  Report-/`STATE.diag`-Feld — KEIN neuer `warnings`-Eintrag, KEIN Abbruch,
+  keine Bedingung, die `ok`/`reason` beeinflusst. Validierung: Testfall prüft
+  explizit, dass ein Solver-Lauf mit `budgetExhausted: true` denselben
+  `ok`/`reason`/Team liefert wie ohne das Feld.
+- **`scopesSeen`-Deckel (40 Einträge) darf die Diagnose nicht selbst
+  verschlucken.** Bei SBCs mit sehr vielen distinkten Scope-Strings (z.B.
+  durch tief verschachtelte Eligibility-Metadaten) würde ein zu niedriger
+  Deckel den entscheidenden neuen Scope u.U. selbst wieder aussortieren.
+  Test deckt den Fall ab, dass der neue, unbekannte Scope FRÜH im Traversal
+  auftaucht (realistisch, da Requirement-Knoten meist oberflächennah liegen)
+  und damit vor dem Deckel im Set landet.
+- **`reqCountRaw`-Refactoring ist eine Verhaltens-Nulländerung, aber
+  Regressionsrisiko bei fehlerhafter Extraktion.** Da alle vier bestehenden
+  Aufrufer weiterhin nur die Zahl über `reqCount()` bekommen, muss der
+  Refactoring-Schritt durch einen expliziten Vorher/Nachher-Vergleich
+  abgesichert werden (bestehende `solver-test.js`-Fälle für `matchedAs`/
+  `reqCount`, Abschnitt 20, bleiben unverändert grün) — kein isolierter
+  Unit-Test für `reqCountRaw` selbst ersetzt diesen End-to-End-Beleg.
+  Mid-Iter-Vermutung: sollte der Implementer beim Refactoring auf eine
+  fünfte, bisher unbekannte Count-Quelle stoßen, gehört das in einen eigenen
+  Mangel/Folge-Ticket, nicht in einen stillen Verhaltenswechsel dieser
+  Iteration.
+- **`statsOut`-Parameter-Pattern an `findChallengeNode`/
+  `collectChallengeNodes` ist ein neues Signatur-Element.** Rein additiv
+  (optionaler Parameter, alle bestehenden Aufrufe ohne dritten/zweiten
+  Parameter unverändert), aber die Test-Extraktion in `solver-test.js`
+  Abschnitt 19 (`extractFunction(src, 'collectChallengeNodes')` /
+  `'resolveFreshChallengeId'`) muss weiterhin funktionieren — der neue
+  Parameter darf die Klammerzählung/Marker-Extraktion nicht stören
+  (reine Text-Erweiterung der Funktionssignatur, keine Struktur-Änderung).
+
+## Lift-Plan-Pre-Validation (M2)
+
+Kein PK-Anteil in dieser Iteration (`structural_max` nur `RA`) —
+`pk_files_to_cite` bleibt leer, `plan estimate` prüft hier nur
+Ziel-Erreichung `RA` (`79`, `≤ min(structural_max=80, achievable_ceiling)`)
+und Fokus-Konformität (RA ist die einzige fokussierte Dimension dieser
+Iteration). Drei additive, unabhängig testbare Signale mit je eigener
+konstruierter Regressions-Gegenprobe halten das Miss-Risk niedrig.

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.61.0
+// @version      4.62.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.61.0';
+    const VERSION = '4.62.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -1959,10 +1959,17 @@
          * (zwei FUTTIES verbaut, eine gefordert). Kosten-Feintuning hätte das
          * nur verschoben, nicht behoben.
          *
-         * Ist die SBC so nicht lösbar, wird die Sperre aufgehoben und gewarnt -
-         * gleiches Muster wie bei "max. teure Spieler".
+         * Ist die SBC so nicht lösbar, wird die Sperre aufgehoben und gewarnt.
          */
         function solve(poolAll, cfg) {
+            // Max. Rating pro Spieler (Ticket #66): HARTER Pool-Vorfilter, VOR
+            // jeder Reservierung/Suche - eine Karte über der Grenze wird nie
+            // verwendet, auch nicht fuer Vorgaben. Anders als die Rarity-Sperre
+            // oben lockert sich dieser Filter NIE selbst; Unloesbarkeit wird
+            // unten explizit gemeldet (LEARNINGS §44).
+            if (cfg.maxRatingEnabled && cfg.maxRating) {
+                poolAll = poolAll.filter(p => p.rating <= cfg.maxRating);
+            }
             const strict = solveCore(poolAll, cfg, true);
             if (strict && strict.ok) return strict;
             const loose = solveCore(poolAll, cfg, false);
@@ -1974,7 +1981,12 @@
             }
             // Beide gescheitert: die Meldung des LOCKEREN Versuchs ist die
             // aussagekräftigere (die Sperre war dort nicht die Ursache).
-            return loose || strict;
+            const result = loose || strict;
+            if (result && !result.ok && cfg.maxRatingEnabled && cfg.maxRating) {
+                result.warnings = (result.warnings || []).concat(
+                    'Mit Max-Rating ' + cfg.maxRating + ' nicht lösbar - Filter lockern?');
+            }
+            return result;
         }
         function solveCore(poolAll, cfg, limitProtected) {
             // Warnungen: KEINE Dubletten. Vorher stand die gelockerte
@@ -2925,17 +2937,6 @@
                 }
                 return finishTeam(reserved.concat(fillers));
             }
-            // ---- Max-teure-Beschränkung ----
-            let exp = null;
-            if (cfg.maxExpensiveEnabled) {
-                const th = cfg.expensiveThreshold || 99;
-                const budget = (cfg.maxExpensiveCount || 0) - reserved.filter(p => p.rating >= th).length;
-                if (budget < 0) {
-                    warnings.push('Max-teure-Vorgabe ist schon durch reservierte Spieler überschritten - Beschränkung ignoriert.');
-                } else {
-                    exp = { th: th, budget: budget };
-                }
-            }
             // NEED ist bereits vor der rcList-Schleife berechnet (siehe dort) -
             // eine einzige Deklaration statt zweier synchron zu haltender
             // Kopien (SSOT). Für die Quick-Obergrenze: höchste Ratings
@@ -2947,19 +2948,14 @@
                 .concat(avail.map(p => p.rating))
                 .sort((a, b) => b - a)
                 .slice(0, N);
-            let result = searchTeam(reserved, avail, exp, null, reservationVMinFloor);
-            if (!result && exp) {
-                result = searchTeam(reserved, avail, null, null, reservationVMinFloor);
-                if (result) warnings.push('Max. teure Spieler (' + cfg.maxExpensiveCount + ' ab ' + exp.th + '+) ist mit diesem Pool nicht einhaltbar - Beschränkung gelockert.');
-            }
+            let result = searchTeam(reserved, avail, null, null, reservationVMinFloor);
             // Verteidigungslinie (sollte laut Beweis in reserveWindowAware()
             // nie greifen, siehe LEARNINGS 41): war reservationVMinFloor gesetzt
             // und liefert die Suche DAMIT dennoch nichts, lieber ohne Floor
             // erneut suchen (mit Warnung) als eine loesbare SBC faelschlich
-            // abzulehnen - dasselbe Fallback-Muster wie bei der Max-teure-
-            // Beschraenkung oben.
+            // abzulehnen.
             if (!result && reservationVMinFloor != null) {
-                result = searchTeam(reserved, avail, exp, null, null);
+                result = searchTeam(reserved, avail, null, null, null);
                 if (result) warnings.push('Internes Fenster der Vorgaben-Wahl passte nicht zur finalen Zusammenstellung - ohne Fenster-Vorgabe erneut gesucht. Bitte Diagnose schicken.');
             }
             if (!result) {
@@ -3568,6 +3564,14 @@
         .sbc-opt-inline input[type=number] { flex:1; }
         .sbc-opt-toggle { display:flex; align-items:center; gap:8px; cursor:pointer; }
         .sbc-opt-toggle input { width:auto; }
+        .sbc-opt-group-title {
+            color:#00e0b8; font-size:11px; font-weight:700; text-transform:uppercase;
+            letter-spacing:.03em; margin:14px 0 6px;
+        }
+        .sbc-opt-group-title:first-of-type { margin-top:0; }
+        .sbc-opt-compact { display:flex; align-items:center; gap:8px; }
+        .sbc-opt-compact label { flex:1; margin-bottom:0; }
+        .sbc-opt-compact select { width:auto; min-width:110px; }
         .sbc-opt-btn {
             width:100%; border:none; border-radius:8px; padding:10px;
             font-weight:700; font-size:13px; cursor:pointer; margin-top:6px;
@@ -3726,11 +3730,22 @@
                     <input type="number" id="sbc-opt-minrating" value="75" min="1" max="99">
                 </div>
                 <div class="sbc-opt-row">
+                    <label class="sbc-opt-toggle">
+                        <input type="checkbox" id="sbc-opt-maxrating-en">
+                        Max. Rating pro Spieler begrenzen
+                    </label>
+                    <div class="sbc-opt-inline" style="margin-top:6px;">
+                        <input type="number" id="sbc-opt-maxrating" value="85" min="1" max="99" title="Max. Rating">
+                        <span style="color:#9db2c8;">OVR</span>
+                    </div>
+                </div>
+                <div class="sbc-opt-row">
                     <label>Max. Rating-Überschuss über Minimum (z.B. 0.10 = bis 84.10 statt 84.00)</label>
                     <input type="number" id="sbc-opt-maxwaste" value="0.00" min="0" max="2" step="0.01">
                 </div>
                 <details id="sbc-opt-advanced">
                     <summary>Erweiterte Einstellungen</summary>
+                <div class="sbc-opt-group-title">Kartenwahl</div>
                 <div class="sbc-opt-row">
                     <label class="sbc-opt-toggle">
                         <input type="checkbox" id="sbc-opt-applyrarity" checked>
@@ -3745,51 +3760,9 @@
                 </div>
                 <div class="sbc-opt-row">
                     <label class="sbc-opt-toggle">
-                        <input type="checkbox" id="sbc-opt-maxexp-en">
-                        Max. teure Spieler begrenzen
+                        <input type="checkbox" id="sbc-opt-uselocks" checked>
+                        Gesperrte Karten (PaleTools-Schloss) nie verbauen
                     </label>
-                    <div class="sbc-opt-inline" style="margin-top:6px;">
-                        <input type="number" id="sbc-opt-maxexp-count" value="4" min="0" max="11" title="max. Anzahl">
-                        <span style="color:#9db2c8;">Stück ab</span>
-                        <input type="number" id="sbc-opt-maxexp-th" value="88" min="1" max="99" title="Rating-Schwelle">
-                        <span style="color:#9db2c8;">OVR</span>
-                    </div>
-                </div>
-                <div class="sbc-opt-row">
-                    <label>Rating-Kosten (höher = Karten dieser Stufe mehr schonen)</label>
-                    <div class="sbc-opt-bandhead"><span></span><span>von</span><span>bis</span><span>Kosten</span><span></span></div>
-                    <div id="sbc-opt-bands"></div>
-                    <div class="sbc-opt-inline" style="margin-top:4px;">
-                        <button class="sbc-opt-btn ghost" id="sbc-opt-band-add" style="margin:0;padding:5px;">+ Stufe</button>
-                        <button class="sbc-opt-btn ghost" id="sbc-opt-band-reset" style="margin:0;padding:5px;">Zurücksetzen</button>
-                    </div>
-                </div>
-                <div class="sbc-opt-row">
-                    <label>Seltene Club-Karten schonen</label>
-                    <select id="sbc-opt-scarcity">
-                        <option value="0">Aus (nur Waste zählt)</option>
-                        <option value="8">Leicht</option>
-                        <option value="18" selected>Normal</option>
-                        <option value="35">Stark</option>
-                    </select>
-                </div>
-                <div class="sbc-opt-row">
-                    <label>Storage-Karten bevorzugt verbrauchen</label>
-                    <select id="sbc-opt-storagebonus">
-                        <option value="0">Aus</option>
-                        <option value="1">Leicht</option>
-                        <option value="2" selected>Normal</option>
-                        <option value="4">Stark</option>
-                    </select>
-                </div>
-                <div class="sbc-opt-row">
-                    <label>Unverkäufliche Karten zuerst verbauen (spart Coins)</label>
-                    <select id="sbc-opt-untradeable">
-                        <option value="0">Aus</option>
-                        <option value="1">Leicht</option>
-                        <option value="3" selected>Normal</option>
-                        <option value="6">Stark</option>
-                    </select>
                 </div>
                 <div class="sbc-opt-row">
                     <label>Gold-SBCs ohne Ziel-OVR: höchstes Rating für Rare / für Common
@@ -3801,13 +3774,17 @@
                         <input type="number" id="sbc-opt-maxcommon" value="77" min="0" max="99">
                     </div>
                 </div>
-                <div class="sbc-opt-row">
-                    <label class="sbc-opt-toggle">
-                        <input type="checkbox" id="sbc-opt-uselocks" checked>
-                        Gesperrte Karten (PaleTools-Schloss) nie verbauen
-                    </label>
+                <div class="sbc-opt-group-title">Schonen &amp; Verbrauchen</div>
+                <div class="sbc-opt-row sbc-opt-compact">
+                    <label>Seltene Club-Karten schonen</label>
+                    <select id="sbc-opt-scarcity">
+                        <option value="0">Aus (nur Waste zählt)</option>
+                        <option value="8">Leicht</option>
+                        <option value="18" selected>Normal</option>
+                        <option value="35">Stark</option>
+                    </select>
                 </div>
-                <div class="sbc-opt-row">
+                <div class="sbc-opt-row sbc-opt-compact">
                     <label>Rarity-Karten schützen (TOTW/TOTS/FOF/FUTTIES)</label>
                     <select id="sbc-opt-rarityguard">
                         <option value="0">Aus</option>
@@ -3816,6 +3793,35 @@
                         <option value="20">Stark</option>
                     </select>
                 </div>
+                <div class="sbc-opt-row sbc-opt-compact">
+                    <label>Storage-Karten bevorzugt verbrauchen</label>
+                    <select id="sbc-opt-storagebonus">
+                        <option value="0">Aus</option>
+                        <option value="1">Leicht</option>
+                        <option value="2" selected>Normal</option>
+                        <option value="4">Stark</option>
+                    </select>
+                </div>
+                <div class="sbc-opt-row sbc-opt-compact">
+                    <label>Unverkäufliche Karten zuerst verbauen (spart Coins)</label>
+                    <select id="sbc-opt-untradeable">
+                        <option value="0">Aus</option>
+                        <option value="1">Leicht</option>
+                        <option value="3" selected>Normal</option>
+                        <option value="6">Stark</option>
+                    </select>
+                </div>
+                <div class="sbc-opt-group-title">Rating-Kosten</div>
+                <div class="sbc-opt-row">
+                    <label>Rating-Kosten (höher = Karten dieser Stufe mehr schonen)</label>
+                    <div class="sbc-opt-bandhead"><span></span><span>von</span><span>bis</span><span>Kosten</span><span></span></div>
+                    <div id="sbc-opt-bands"></div>
+                    <div class="sbc-opt-inline" style="margin-top:4px;">
+                        <button class="sbc-opt-btn ghost" id="sbc-opt-band-add" style="margin:0;padding:5px;">+ Stufe</button>
+                        <button class="sbc-opt-btn ghost" id="sbc-opt-band-reset" style="margin:0;padding:5px;">Zurücksetzen</button>
+                    </div>
+                </div>
+                <div class="sbc-opt-group-title">Vorgabe-Karte übersteuern</div>
                 <div class="sbc-opt-row">
                     <label>Karte für Rarity-Vorgabe (z.B. TOTW/FUTTIES) - übersteuert die Automatik</label>
                     <input type="text" id="sbc-opt-raritypick-filter" placeholder="Name filtern..." style="margin-bottom:6px;">
@@ -3867,9 +3873,8 @@
             maxwaste: panel.querySelector('#sbc-opt-maxwaste'),
             applyrarity: panel.querySelector('#sbc-opt-applyrarity'),
             specialstorage: panel.querySelector('#sbc-opt-specialstorage'),
-            maxexpEn: panel.querySelector('#sbc-opt-maxexp-en'),
-            maxexpCount: panel.querySelector('#sbc-opt-maxexp-count'),
-            maxexpTh: panel.querySelector('#sbc-opt-maxexp-th'),
+            maxRatingEn: panel.querySelector('#sbc-opt-maxrating-en'),
+            maxRatingVal: panel.querySelector('#sbc-opt-maxrating'),
             scarcity: panel.querySelector('#sbc-opt-scarcity'),
             storagebonus: panel.querySelector('#sbc-opt-storagebonus'),
             untradeable: panel.querySelector('#sbc-opt-untradeable'),
@@ -4751,9 +4756,8 @@
             maxOvershoot: Math.max(0, parseFloat(String(ui.maxwaste.value).replace(',', '.')) || 0),
             applyRarity: ui.applyrarity.checked,
             specialOnlyFromStorage: ui.specialstorage.checked,
-            maxExpensiveEnabled: ui.maxexpEn.checked,
-            maxExpensiveCount: parseInt(ui.maxexpCount.value, 10) || 0,
-            expensiveThreshold: parseInt(ui.maxexpTh.value, 10) || 99,
+            maxRatingEnabled: ui.maxRatingEn.checked,
+            maxRating: parseInt(ui.maxRatingVal.value, 10) || 0,
             scarcityWeight: parseFloat(ui.scarcity.value) || 0,
             storageBonus: parseFloat(ui.storagebonus.value) || 0,
             untradeableBonus: parseFloat(ui.untradeable.value) || 0,

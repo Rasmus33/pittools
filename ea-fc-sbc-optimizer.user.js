@@ -380,7 +380,7 @@
         const ids = o.eligibilityValues || o.values || o.rarityIds || [];
         return Array.isArray(ids) ? ids.map(Number).filter(n => !isNaN(n)) : [];
     }
-    function reqCount(o, parents) {
+    function reqCountRaw(o, parents) {
         // EA hängt den Count ("Min. 4") oft an das ELTERN-Objekt der
         // Requirement-KV-Paare (UTSBCEligibilityRequirement.count), nicht an
         // das Wert-Objekt selbst - deshalb die Eltern-Kette mitprüfen.
@@ -390,11 +390,13 @@
             if (!node || typeof node !== 'object') continue;
             for (const k of keys) {
                 const c = parseInt(node[k], 10);
-                if (!isNaN(c) && c >= 1 && c <= 11) return c;
+                if (!isNaN(c) && c >= 1 && c <= 11) return { count: c, defaulted: false };
             }
         }
-        return 1;
+        return { count: 1, defaulted: true };
     }
+    function reqCount(o, parents) { return reqCountRaw(o, parents).count; }
+    function reqCountDefaulted(o, parents) { return reqCountRaw(o, parents).defaulted; }
     function isDomOrWindow(o) {
         try {
             return (typeof Node !== 'undefined' && o instanceof Node) ||
@@ -406,11 +408,17 @@
      * Team-Rating- und Rarity-Anforderungen sowie squadId.
      */
     function deepScanChallenge(root) {
-        const out = { target: null, rarity: [], squadId: null, slots: null, playerLevel: [], quality: [], rare: [], reqs: [] };
+        const out = { target: null, rarity: [], squadId: null, slots: null, playerLevel: [], quality: [], rare: [], reqs: [], scopesSeen: [] };
         if (!root || typeof root !== 'object') return out;
         const seen = new Set();
         const queue = [{ o: root, d: 0, par: [] }];
         let visited = 0;
+        // JEDER erkannte Scope-String landet hier, unabhaengig von der
+        // reqDump-Whitelist unten (:490-497) - macht eine komplett neue
+        // EA-Scope-Familie sichtbar, statt spurlos zu verschwinden (siehe
+        // docs/roadmap/gaps/sbc-vorgaben-erkennung.md, Mangel 1). Deckel bei
+        // 40 Eintraegen, analog zum bestehenden out.reqs.length < 25-Deckel.
+        const scopesSeenSet = new Set();
         while (queue.length && visited < 20000) {
             const cur = queue.shift();
             const o = cur.o, d = cur.d, par = cur.par;
@@ -423,6 +431,7 @@
             }
             const scope = scopeString(o);
             if (scope) {
+                if (scopesSeenSet.size < 40) scopesSeenSet.add(scope);
                 const v = reqValue(o);
                 // matchedAs zeigt, welcher der unten folgenden, sich
                 // gegenseitig ausschliessenden Zweige tatsaechlich griff -
@@ -532,6 +541,7 @@
         out.rare = dedupe(out.rare || [], r => r.label + '|' + r.count);
         out.quality = dedupe(out.quality, q => q.label + '|' + q.quality + '|' + q.count);
         out.reqs = dedupe(out.reqs, r => r.scope + '|' + r.value + '|' + r.count + '|' + r.ids.join(','));
+        out.scopesSeen = Array.from(scopesSeenSet);
         return out;
     }
     // [SBCSCAN-END]

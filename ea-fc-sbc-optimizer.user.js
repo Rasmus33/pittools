@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.62.0
+// @version      4.63.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.62.0';
+    const VERSION = '4.63.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -731,6 +731,19 @@
         return out;
     }
     /**
+     * Liest die Erschoepfungs-/Ablauf-Felder, die EAs Set-Challenges-Knoten
+     * laut Live-Sample tragen (status, repeatable, timesCompleted, endTime) -
+     * fehlt eines, bleibt es null statt den ganzen Knoten zu verwerfen.
+     */
+    function extractNodeState(n) {
+        return {
+            status: (n && n.status != null) ? n.status : null,
+            repeatable: (n && n.repeatable != null) ? n.repeatable : null,
+            timesCompleted: (n && n.timesCompleted != null) ? n.timesCompleted : null,
+            endTime: (n && n.endTime != null) ? n.endTime : null
+        };
+    }
+    /**
      * Nach einem 404/475 die FRISCHE Instanz derselben SBC finden: Challenge-
      * Liste des Sets neu holen und den Knoten nehmen, dessen Vorgaben zur
      * geplanten Signatur passen (Ziel-OVR + Slots) - NICHT einfach den ersten.
@@ -750,7 +763,12 @@
         const nodes = collectChallengeNodes(json, STATE.diag.scanStats);
         STATE.diag.staleRecover = { setId: setId, oldId: oldId, nodes: nodes.length,
                                     wantTarget: wantTarget, wantSlots: wantSlots };
+        // Der Knoten der ALTEN Id, falls EA ihn in der frischen Liste noch
+        // zeigt - erklaert einen 404/475 (z.B. status "COMPLETE" statt weg).
+        const oldNode = nodes.find(n => String(n.challengeId) === String(oldId));
+        if (oldNode) STATE.diag.staleRecover.nodeState = extractNodeState(oldNode);
         const cands = [];
+        const candDetails = [];
         for (const n of nodes) {
             if (String(n.challengeId) === String(oldId)) continue;
             let scan = null;
@@ -759,9 +777,16 @@
             const okTarget = (wantTarget == null) || (String(scan.target) === String(wantTarget));
             const okSlots = (wantSlots == null) || (scan.slots == null) ||
                             (Number(scan.slots) === Number(wantSlots));
-            if (okTarget && okSlots) cands.push(n.challengeId);
+            if (okTarget && okSlots) {
+                cands.push(n.challengeId);
+                candDetails.push(Object.assign({ id: n.challengeId }, extractNodeState(n)));
+            }
         }
-        STATE.diag.staleRecover.candidates = cands.slice(0, 5);
+        // candidateCount bleibt die WAHRE Anzahl (candidates ist auf 5 gedeckelt) -
+        // submitToSbc() braucht genau 0-vs-nicht-0, um die Erschoepfungs-Meldung
+        // (LEARNINGS 9/35) von der Mehrdeutig-Meldung zu unterscheiden.
+        STATE.diag.staleRecover.candidateCount = cands.length;
+        STATE.diag.staleRecover.candidates = candDetails.slice(0, 5);
         if (cands.length !== 1) {
             // Mehrdeutig oder nichts gefunden: lieber sauber melden als in die
             // falsche SBC schreiben.
@@ -3189,7 +3214,28 @@
             throw new Error('saveChallenge abgelehnt (Status ' + (resp && resp.status) + ').');
         return true;
     }
-    async function submitToSbc(result, _retried) {
+    /**
+     * Meldung nach 404/475, wenn KEINE frische Instanz eindeutig gefunden wurde.
+     * candidateCount unterscheidet zwei Live-Faelle (v4.61.0-Report "84+ TOTW
+     * Upgrade", Runde 9/10): 0 Kandidaten heisst EA bietet die SBC ueberhaupt
+     * nicht mehr an (Limit erreicht oder Mitternachts-Ablauf) - "schliessen und
+     * neu oeffnen" wuerde dort nichts bringen. null (Abruf der frischen Liste
+     * ist fehlgeschlagen, Zaehler unbekannt) faellt konservativ auf denselben
+     * Rat wie >=1 Kandidaten zurueck.
+     */
+    function staleInstanceMessage(msg, candidateCount, batchProgress) {
+        if (candidateCount === 0) {
+            return 'Keine weitere Wiederholung verfügbar (Limit erreicht oder abgelaufen)' +
+                (batchProgress
+                    ? ' — ' + batchProgress.done + ' von ' + batchProgress.total + ' geschafft.'
+                    : '.');
+        }
+        return 'Die SBC-Instanz ist veraltet (Status aus ' + msg + ') und ' +
+            'liess sich nicht eindeutig ersetzen. Wiederholbare SBCs bekommen pro ' +
+            'Durchlauf eine neue ID - bitte die SBC im Spiel einmal schliessen und ' +
+            'neu öffnen, dann erneut optimieren.';
+    }
+    async function submitToSbc(result, _retried, batchProgress) {
         if (!result || !result.players || result.players.length === 0)
             throw new Error('Kein Ergebnis zum Eintragen.');
         const need = result.players.length;
@@ -3231,13 +3277,16 @@
                     log('SBC-Instanz war veraltet - weiter mit frischer ID ' + fresh + '.');
                     setCurrentChallenge(fresh);
                     applyFromSetChallenges();
-                    return await submitToSbc(result, true);
+                    return await submitToSbc(result, true, batchProgress);
                 }
             }
-            throw new Error('Die SBC-Instanz ist veraltet (Status aus ' + msg + ') und ' +
-                'liess sich nicht eindeutig ersetzen. Wiederholbare SBCs bekommen pro ' +
-                'Durchlauf eine neue ID - bitte die SBC im Spiel einmal schliessen und ' +
-                'neu öffnen, dann erneut optimieren.');
+            // setId-Abgleich, weil resolveFreshChallengeId() bei setId==null
+            // oder fehlgeschlagenem Abruf FRUEH zurueckkehrt, OHNE staleRecover
+            // zu schreiben - sonst wuerde hier ein veralteter Stand einer
+            // frueheren, andersartigen SBC faelschlich als "0 Kandidaten" gelesen.
+            const candidateCount = (STATE.diag.staleRecover && STATE.diag.staleRecover.setId === STATE.sbc.setId)
+                ? STATE.diag.staleRecover.candidateCount : null;
+            throw new Error(staleInstanceMessage(msg, candidateCount, batchProgress));
         }
         // 403 heisst NICHT "veraltet", sondern "EA nimmt das so nicht an" -
         // meist eine Vorgabe, die der Solver nicht abdeckt (live: reqDump mit
@@ -5807,7 +5856,7 @@
                 showProgress(i + 1, n, 'trage Team ein (OVR ' + round.ovr + ')...',
                     (doneLog.length ? doneLog.length + ' fertig' : ''));
                 setStatus(tag + ': trage ein...');
-                const sub = await submitToSbc(round);
+                const sub = await submitToSbc(round, false, { done: done, total: n });
                 if (sub && sub.via !== 'app') { await refreshChallengeCache(); refreshOpenSbcView(); }
                 removeFromPool(round.players);
                 showProgress(i + 1, n, 'gebe ab...', (doneLog.length ? doneLog.length + ' fertig' : ''));

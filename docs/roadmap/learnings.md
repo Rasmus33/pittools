@@ -37,3 +37,34 @@ Kumulativ. Git-Log ist die History.
 - Klasse F (Pattern-Discovery): 0 · Klasse G (Mid-Iter-SI): 0 · Klasse Q: 0
 - Variant b (Bug-Task-Einschub): 1 (#12 guard-test-CRLF, P0 — blockierte alle Final-Gates in Worktrees)
 - Eskalationen: 0 (alle Erstversuche auf Standard-Modell erfolgreich)
+
+## Iteration 1 — 2026-08-15
+
+## Iteration 1 — 2026-08-15
+
+### Score-Bewegung
+- Fokus-Iteration (3 von 9 Features): batch-modus 65→69 (Ziel 69, am Deckel-1), diagnose-werkzeuge 76→84 (Ziel 82 übertroffen), rating-solver 89→92 (Ziel 90 übertroffen). Ø Gain der Fokus-Features: +8.3.
+- Gehaltene 6 Features unverändert (per Konstruktion — kein Code-Change, gain N/A).
+- Fokus-Verdict: hit. Tests: 354 → 409, Userscript v4.45.0 → v4.48.0, dazu App-APK v1.7.0 gebaut (Signatur verifiziert) und gebündeltes Asset aktualisiert.
+
+### Methodische Erkenntnisse
+- Fokus-Iterationen funktionieren: 3 gezielte Lifts mit Seeds aus dem Vor-Audit trafen alle Ziele bei einem Bruchteil des Aufwands einer Voll-Iteration.
+- „Strukturell tot" braucht einen Reihenfolge-Beweis, keinen Wahrscheinlichkeits-Verdacht: der Duplikat-Tiebreak konnte erst entfernt werden, als belegt war, dass JEDER Aufrufer nur deduplizierte Teilmengen sieht (405/405 vor = nach dem Schnitt).
+- Vakuum-wahre Tests sind gefährlicher als fehlende: Test 6 bestand jahrelang, ohne je etwas zu prüfen — Ersatz braucht eine Gegenprobe (geflippte Flags), die den Reihenfolge-Zufall ausschließt.
+- Ausnahmen-Listen in Meta-Tests (Symmetrie-Checks) nur mit faktisch verifizierter Begründung pro Eintrag — der Validator hat beide Ausnahmen (lastTap-Indirektion, Alias-Mutation) am Code nachvollzogen statt geglaubt.
+- Auto-Merge + Nachtrag-Commit auf denselben Branch erzeugt verwaiste Post-Squash-PRs (2×: #20, #36) — Nachträge künftig vor dem ersten `review` bündeln oder per Cherry-Pick auf main landen.
+- Die Test-Infrastruktur selbst ist Sicherheitsnetz: der extractFunction-Umbau (#31) lief mit Byte-Gleichheits-Beweisen gegen unabhängige Reimplementierungen — bei Testwerkzeug-Refactorings ist das der einzige belastbare Neutralitätsnachweis.
+
+### Patterns ergänzt / verändert
+- Keine neuen Patterns (Klasse F leer). Adoption vertieft: eingebetteten-code-exakt-testen ist jetzt Infrastruktur (extractMarkerBlock/extractFunction), warum-kommentare-mit-live-belegen um zwei hergeleitete Magic-Number-Belege erweitert (1300/900).
+- Pflegebedarf unverändert offen: helfer-existiert-wird-umgangen (2 aufgelöste Belege aus iter0-#9), Beleg-Registrierung weiter blockiert durch code_geography-Format (#28).
+
+### Shared-Items
+- Gemergt: test-extraktions-helfer (#31) — sofort von #32/#33/#34 konsumiert.
+- Kein neuer SI-Bedarf entdeckt.
+
+### PO-Entscheidungen
+- Klasse C (Re-Spawn/Nachtrag nach Finding): 1 (#31 uiBlock-Migration + IIFE-Begründung)
+- Klasse D (PARTIAL akzeptiert): 0 — drei von vier Validator-Läufen waren glatte PASS
+- Cleanup-Deckung: #24 durch #33, #26 durch #34 geschlossen (abandon-Pfad, FSM erlaubt kein Backlog→Done)
+- Klassen A/B/F/G/H/Q: 0 · Eskalationen: 0

@@ -2509,6 +2509,16 @@
                 if (result) warnings.push('Max. teure Spieler (' + cfg.maxExpensiveCount + ' ab ' + exp.th + '+) ist mit diesem Pool nicht einhaltbar - Beschränkung gelockert.');
             }
             if (!result) {
+                // Unterscheidung "SBC mit diesem Pool tatsächlich unlösbar" von
+                // "internes Suchfenster (stHardCap, s.o.) ausgeschöpft": squadV der
+                // N bestmöglichen verfügbaren Ratings (ohne jede Kosten-/Exp-
+                // Einschränkung) ist das absolute Optimum dieses Pools - erreicht
+                // selbst das NEED nicht, ist der Pool unabhängig vom Suchfenster zu
+                // schwach; erreicht es NEED trotzdem, hat nur das Fenster nicht
+                // gereicht. Rein additiv (kein Einfluss auf reason/ok unten).
+                if (squadV(allDesc) >= NEED) {
+                    warnings.push('Internes Suchfenster ausgeschöpft, ohne eine Lösung zu finden - das rechnerische Optimum dieses Pools erreicht das Ziel aber. Bitte Diagnose schicken.');
+                }
                 return { ok: false, reason: 'Ziel-OVR ' + target + ' ist mit dem aktuellen Pool nicht erreichbar. Filter lockern oder bessere Karten laden.', warnings: warnings };
             }
             return finishTeam(result.team);

@@ -3028,6 +3028,83 @@ function mulberry32(a) {
         src.indexOf('rareflagHistogram: computeRareflagHistogram(STATE.pool)') > -1);
 }
 
+// ========== 36. Ticket #48: Fallback-Deep-Scan in applyFromSetChallenges aktualisiert scanStats ==========
+{
+    const scanBlock = extractMarkerBlock(src, '// [SBCSCAN-BEGIN]', '// [SBCSCAN-END]');
+    check('SBCSCAN-Marker-Block gefunden (36)', !!scanBlock);
+    const findSrc = extractFunction(src, 'findChallengeNode');
+    check('Funktion findChallengeNode gefunden (36)', !!findSrc);
+    const recordSrc = extractFunction(src, 'recordDeepScanStats');
+    check('Funktion recordDeepScanStats gefunden (36)', !!recordSrc);
+    const applySrc = extractFunction(src, 'applyFromSetChallenges');
+    check('Funktion applyFromSetChallenges gefunden (36)', !!applySrc);
+
+    // applyScan() selbst (Rating-/Solver-Anwendung samt UI-Refresh) ist fuer
+    // diesen Test irrelevant - nur scanStats.deepScan wird geprueft, deshalb
+    // als No-Op-Stub hereingereicht statt der riesigen echten Funktion.
+    const buildApplyFromSetChallenges = new Function('STATE', 'applyScan',
+        scanBlock + '\n' + findSrc + '\n' + recordSrc + '\n' + applySrc +
+        '\nreturn applyFromSetChallenges;');
+
+    // Ein Blatt-Knoten 9 Ebenen tief - EXAKT wie in Block 33 - kappt beim
+    // Fallback-Scan (deepScanChallenge: d > 7) selbst konstruiert, damit
+    // deepScan.depthCapped/visitedCount des Fallback-Scans NACHWEISLICH von
+    // einem beliebigen, vorher gesetzten Wert verschieden sind.
+    function chain(depth, leafProps) {
+        let node = Object.assign({ isLeaf: true }, leafProps);
+        for (let i = 0; i < depth; i++) node = { child: node };
+        return node;
+    }
+    const deepNode = Object.assign(chain(9, { scope: 'TEAM_RATING', value: 84 }),
+        { challengeId: 'C1', requirements: [] });
+
+    // (a) Response ohne target: STATE.diag.scanStats.deepScan traegt noch die
+    // Werte eines FRUEHEREN Scans (z.B. aus parseSbcChallenge/Netzwerk) -
+    // deutlich verschieden vom Fallback-Scan, der hier gleich laeuft.
+    const staleValue = { visitedCount: 12345, depthCapped: true, budgetExhausted: true };
+    const STATE_a = {
+        sbc: { challengeId: 'C1' },
+        diag: { scanStats: { deepScan: Object.assign({}, staleValue) } },
+        lastSetChallenges: { data: [deepNode] }
+    };
+    const applyFromSetChallenges_a = buildApplyFromSetChallenges(STATE_a, function () {});
+    applyFromSetChallenges_a();
+    check('Fallback-Scan ueberschreibt den veralteten deepScan-Eintrag (Ticket #48 - vorher stehengeblieben)',
+        JSON.stringify(STATE_a.diag.scanStats.deepScan) !== JSON.stringify(staleValue),
+        JSON.stringify(STATE_a.diag.scanStats.deepScan));
+    check('Fallback-Scan traegt sein eigenes depthCapped ein (Knoten 9 Ebenen tief, Kappung bei d > 7)',
+        STATE_a.diag.scanStats.deepScan.depthCapped === true,
+        JSON.stringify(STATE_a.diag.scanStats.deepScan));
+    check('Fallback-Scan traegt seinen eigenen visitedCount ein statt der veralteten Zahl',
+        STATE_a.diag.scanStats.deepScan.visitedCount !== staleValue.visitedCount,
+        JSON.stringify(STATE_a.diag.scanStats.deepScan));
+
+    // (b) Gegenprobe Normalpfad: findChallengeNode findet KEINEN Knoten (kein
+    // Fallback-Scan noetig, z.B. weil der Netzwerkpfad das Target bereits
+    // hatte) - applyFromSetChallenges() darf dann NICHTS an scanStats.deepScan
+    // aendern (Regression, kein Parse-/Anwendungsverhalten veraendert - AC 3).
+    const STATE_b = {
+        sbc: { challengeId: 'UNBEKANNT' },
+        diag: { scanStats: { deepScan: Object.assign({}, staleValue) } },
+        lastSetChallenges: { data: [deepNode] }
+    };
+    const applyFromSetChallenges_b = buildApplyFromSetChallenges(STATE_b, function () {});
+    applyFromSetChallenges_b();
+    check('Ohne gefundenen Knoten bleibt scanStats.deepScan unveraendert (Regression, kein Seiteneffekt)',
+        JSON.stringify(STATE_b.diag.scanStats.deepScan) === JSON.stringify(staleValue),
+        JSON.stringify(STATE_b.diag.scanStats.deepScan));
+
+    // (c) Regression: die beiden BESTEHENDEN Aufrufstellen (Netzwerk-Antwort /
+    // App-Service-Entity) riefen recordDeepScanStats() schon vor diesem Ticket
+    // korrekt auf - unveraendert, NUR der Fallback-Pfad war die Luecke.
+    const parseSrc = extractFunction(src, 'parseSbcChallenge');
+    const captureSrc = extractFunction(src, 'captureChallengeEntity');
+    check('parseSbcChallenge() ruft weiterhin recordDeepScanStats(scan) auf (Regression)',
+        /recordDeepScanStats\(scan\)/.test(parseSrc));
+    check('captureChallengeEntity() ruft weiterhin recordDeepScanStats(scan) auf (Regression)',
+        /recordDeepScanStats\(scan\)/.test(captureSrc));
+}
+
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt
 // process.exit() die Loader-Tests, bevor sie laufen - sie zählten dann nicht mit
 // und ein Fehler dort wäre unbemerkt geblieben.

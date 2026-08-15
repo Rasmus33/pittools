@@ -30,8 +30,20 @@
 #                 consume-seeds`) — NICHT bei iteration-done geleert. Ersetzt
 #                 das deprecatete gitignored `iteration-seeds.yaml` (ADR #78).
 schema_version: 1.4.0
-iteration: null
-entries: []
+iteration: 9
+entries:
+- at: '2026-08-15T21:58:01Z'
+  issue: 66
+  po_class: null
+  surprises:
+  - 'Die Max-teure-Entfernung legte eine tote generische DP-Dimension frei (exp/expDims
+    an allen Call-Sites null) — dokumentiert statt entfernt (DP-Kern-Verbot); Muster:
+    Feature-Entfernungen hinterlassen tote Generik, die erklaert werden muss.'
+  - Validator verifizierte die ungetestete Filter-Interaktion selbst per Probe-Skript,
+    bevor er sie als Finding meldete — Findings mit eigenem Beweis sind sofort umsetzbar.
+  reasoning: 'Panel-Rework auf User-Wunsch: Max-teure (Soft-Limit, fuehlte sich kaputt
+    an) ersatzlos raus als dokumentierte Ausnahme; harter Max-Rating-Filter am solve()-Eingang
+    (SSOT fuer Einzel+Batch); Erweiterte Einstellungen in 4 Gruppen. v4.62.0, 582/582.'
 discoveries:
   pattern_candidates: []
   antipattern_candidates: []

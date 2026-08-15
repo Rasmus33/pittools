@@ -191,6 +191,20 @@
         if (route) s.route = route;
         if (nucleus) s.nucleusId = nucleus;
     }
+    // [URLCLS-BEGIN]
+    // EA nutzt wahlweise "sbs" oder "sbc" als API-Pfad-Segment (LEARNINGS,
+    // Abschnitt "API-Zugriff") - alle sieben URL-Klassifikationen unten leiten
+    // ihre Regex aus DIESER EINEN Quelle ab statt das Wissen erneut zu
+    // literalisieren. Einmalig kompiliert: kein new RegExp() im heissen
+    // fetch/XHR-Interception-Pfad.
+    const SBS_SBC_PREFIX_RE_SRC = 'sbs|sbc';
+    const RE_SBS_SBC_PREFIX_PATH = new RegExp('\\/ut\\/game\\/[^/]+\\/(' + SBS_SBC_PREFIX_RE_SRC + ')\\/', 'i');
+    const RE_SBC_SET_CHALLENGES = new RegExp('\\/(' + SBS_SBC_PREFIX_RE_SRC + ')\\/setId\\/\\d+\\/challenges', 'i');
+    const RE_SBC_CHALLENGE_BY_SET = new RegExp('\\/(' + SBS_SBC_PREFIX_RE_SRC + ')\\/setId\\/\\d+\\/challengeId\\/\\d+', 'i');
+    const RE_SBC_CHALLENGE_BY_ID = new RegExp('\\/(' + SBS_SBC_PREFIX_RE_SRC + ')\\/challenge\\/\\d+', 'i');
+    const RE_SBC_SETS = new RegExp('\\/(' + SBS_SBC_PREFIX_RE_SRC + ')\\/sets', 'i');
+    const RE_SBC_STORAGE_FALLBACK = new RegExp('\\/(' + SBS_SBC_PREFIX_RE_SRC + ')\\/[^?]*storage', 'i');
+    const RE_SBC_SQUAD_PUT = new RegExp('\\/(' + SBS_SBC_PREFIX_RE_SRC + ')\\/challenge\\/\\d+\\/squad', 'i');
     // API-Base aus einer URL ableiten. Marker ist "/ut/game/{spiel}/" –
     // der Host kann variieren (utas.mob.v1.fut.ea.com, utas.external..., ...).
     function detectApiBase(url) {
@@ -212,7 +226,7 @@
                     if (arr.length > 15) arr.shift();
                 }
                 // sbs- oder sbc-Präfix merken
-                const pm = u.match(/\/ut\/game\/[^/]+\/(sbs|sbc)\//i);
+                const pm = u.match(RE_SBS_SBC_PREFIX_PATH);
                 if (pm) STATE.sbc.apiPrefix = pm[1].toLowerCase();
             }
         } catch (e) {}
@@ -222,17 +236,18 @@
         const u = String(url);
         // Liste aller Challenges eines Sets - HIER stehen die Anforderungen
         // (Ziel-OVR, Rarity) pro Challenge. Live verifiziert (fc26).
-        if (/\/(sbs|sbc)\/setId\/\d+\/challenges/i.test(u)) return 'sbc-set-challenges';
-        if (/\/(sbs|sbc)\/setId\/\d+\/challengeId\/\d+/i.test(u) ||
-            /\/(sbs|sbc)\/challenge\/\d+/i.test(u)) return 'sbc-challenge';
-        if (/\/(sbs|sbc)\/sets/i.test(u)) return 'sbc-sets';
+        if (RE_SBC_SET_CHALLENGES.test(u)) return 'sbc-set-challenges';
+        if (RE_SBC_CHALLENGE_BY_SET.test(u) ||
+            RE_SBC_CHALLENGE_BY_ID.test(u)) return 'sbc-challenge';
+        if (RE_SBC_SETS.test(u)) return 'sbc-sets';
         if (/\/club(\?|$)/i.test(u)) return 'club';
         if (/\/purchased\/items/i.test(u)) return 'unassigned';
         // SBC-Storage - Endpunkt heisst "storagepile". Live verifiziert (fc26).
         if (/\/storagepile(\?|$|\/)/i.test(u)) return 'storage';
-        if (/\/(sbs|sbc)\/[^?]*storage/i.test(u)) return 'storage';
+        if (RE_SBC_STORAGE_FALLBACK.test(u)) return 'storage';
         return null;
     }
+    // [URLCLS-END]
     function handleResponseBody(url, bodyText) {
         const kind = classifyUrl(url);
         if (!kind || !bodyText) return;
@@ -316,7 +331,7 @@
                 // Referenz-Body mitschneiden: So sendet die App selbst einen
                 // SBC-Squad (wenn man manuell einen Spieler einträgt).
                 if (body && this.__sbcMethod === 'PUT' &&
-                    /\/(sbs|sbc)\/challenge\/\d+\/squad/i.test(String(url))) {
+                    RE_SBC_SQUAD_PUT.test(String(url))) {
                     try { STATE.diag.lastSquadPutBody = String(body).slice(0, 3000); } catch (e) {}
                 }
                 if (url && classifyUrl(url)) {
@@ -2593,6 +2608,10 @@
         for (let i = 0; i < total; i++) {
             players.push({ index: i, itemData: { id: byIndex.get(i) || 0, dream: false } });
         }
+        // Bewusst NICHT aus SBS_SBC_PREFIX_RE_SRC abgeleitet: dort steckt eine
+        // Alternation zum MATCHEN einer URL, hier nur ein Default-STRING fuer
+        // den Fall, dass noch kein Praefix beobachtet wurde - andere Semantik,
+        // kein Regex-Duplikat (dasselbe gilt fuer verifySquadCount unten).
         const pfx = STATE.sbc.apiPrefix || 'sbs';
         await apiPut(pfx + '/challenge/' + STATE.sbc.challengeId + '/squad', { players: players });
         return true;

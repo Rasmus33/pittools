@@ -1,224 +1,272 @@
 ---
 feature: android-app-wrapper
-iteration: 0
+iteration: 2
 score_current:
-  RA: 48
+  RA: 72
 score_target:
-  RA: 70
+  RA: 78
 primary_paths:
-  - app/java/com/sbctools/browser/MainActivity.java
-  - app/guard-test.js
-  - app/AndroidManifest.xml
+  - pittools/app/java/com/sbctools/browser/MainActivity.java
+  - pittools/app/guard-test.js
+  - pittools/app/AndroidManifest.xml
+  - pittools/app/README.md
 patterns_required:
-  - ea-grenz-fallback-ketten
   - diagnose-feld-statt-raten
+  - warum-kommentare-mit-live-belegen
   - eingebetteten-code-exakt-testen
-pk_files_to_cite: []
+pk_files_to_cite:
+  - pittools/app/java/com/sbctools/browser/MainActivity.java
+  - pittools/app/guard-test.js
 citation_only: false
 shared_items_required: []
-priority: P2-normal
-effort: M
-analyzed_at: 2026-08-15
+priority: P3-deferred    # Heuristik: Sigma Gain Pflicht-Aktionen 1-3 = 8 < 100
+effort: M                # Heuristik: len(phase_sequence) = 5 (core..release) -> Bracket 5-8
+analyzed_at: '2026-08-15'
 ---
 
 # Lift-Plan — Android-App (WebView-Wrapper mit Script-Injection)
 
 ## Marschroute
 
-Die RA-Lücke (48/80, Schwelle 56) sitzt komplett an einer Stelle: die Netz-/
-Cache-Grenze in `MainActivity.java` verschluckt Fehler ohne `addLog`, wodurch
-der einzige Diagnosekanal am Gerät (⚙ → "Log teilen"/"Log kopieren") genau an
-der Stelle blind ist, an der EAs/Github-CDNs Undokumentiertheit am härtesten
-zuschlägt (Timeout, 4xx/5xx, kaputter Cache). Vier additive Schritte, alle
-innerhalb der drei genannten Dateien, in dieser Reihenfolge (folgt
-`phase_sequence: core → diagnose → tests → docs → release` aus dem
-Vision-Doc):
+RA steht bei 72 (Schwelle 56, Status pass), M3-Ziel dieser Iteration ist 78
+bei einem strukturellen Deckel von 80. Alle fünf Aktionen aus dem
+Gap-Report (Iteration 2) sind lokale, additive Ergänzungen an bereits
+bestehenden Methoden/Klassen in `MainActivity.java` — keine neue anonyme
+Klasse, kein Eingriff in Fallback-Reihenfolge oder Wächter-Timing. Reihenfolge
+folgt dem eisernen Arbeitsablauf aus `CLAUDE.md`: erst die Logik ändern
+(core), dabei sofort die zugehörigen Diagnose-Aufrufe mitziehen (diagnose),
+danach `app/guard-test.js` erweitern und grün bekommen (tests), README auf
+den neuen Ist-Stand bringen (docs), zuletzt `versionCode`/`versionName`
+bumpen (release) — der APK-Build selbst liegt beim PO (Keystore-Zugriff).
 
-1. **core:** rohe `addLog(...)`-Zeilen an jeder stillen Catch-/Early-Return-
-   Stelle nachrüsten (Mangel 1/2/5) — kein Kontrollfluss ändert sich, nur
-   Beobachtbarkeit.
-2. **diagnose:** die so entstandenen Ad-hoc-Strings hinter einem einzigen
-   `reportNetError(String where, String detail)`-Helfer bündeln UND die drei
-   direkten Feldmutationen (`scriptsReady`, `paleStatus`, `paleInjected`)
-   durch Setter ersetzen, die selbst `addLog` aufrufen (Mangel 4) — SSOT für
-   "jede Statusänderung wird geloggt".
-3. **tests:** `app/guard-test.js` um zwei statische Source-Regex-Checks
-   erweitern (Mangel 3): ScriptLoader-Reihenfolge (Fallback-Kette) und
-   Pflicht-`addLog`/`reportNetError` je Netz-/Cache-Methode. Kein Gerät,
-   kein Build nötig — reiner `node`-Lauf.
-4. **docs:** `docs/LEARNINGS.md` bekommt einen Eintrag, der den neuen
-   `reportNetError`-Choke-Point und die drei Setter als "Nicht anfassen ohne
-   Grund"-Kandidaten dokumentiert (Q7: IST-Zustand, kein Änderungsprotokoll).
-5. **release:** `versionCode`/`versionName` in `app/AndroidManifest.xml`
-   bumpen, `node app/guard-test.js` grün, `cd app && ./build.sh`,
-   `apksigner verify --print-certs` = `41f23895…1b17`, APK an Rasmus zur
-   Installation.
-
-Reihenfolge ist bewusst additiv-zuerst (core vor dem SSOT-Refactor in
-diagnose), damit ein Zwischenstand nach core allein schon regressionsfrei und
-auslieferbar wäre, falls der Rest der Iteration abgebrochen werden müsste.
+Aktionen 1–3 sind Pflicht (Gain-Summe +8, konservativ auf das Ziel 78
+gerundet statt auf den rechnerischen Endwert 80 — Einzel-Gains sind
+Schätzungen, keine linear-additive Messung). Aktion 4 ist Absicherung, falls
+1–3 in der Umsetzung weniger Gain liefern als geschätzt. Aktion 5 ist
+optionaler Restposten (Q4/DRY, kein bestätigter Antipattern) und wird nur bei
+Zeitüberschuss gezogen. Da RA bereits `pass` ist, wird hier bewusst nicht auf
+den strukturellen Deckel (80) hin optimiert.
 
 ## Aktionen pro Dimension
 
 ### RA — Robust Architecture
 
-1. **`addLog` an jeder stillen Catch-/Early-Return-Stelle nachrüsten (Build
-   nötig):**
-   - `fetchUrl` (`MainActivity.java:392-401`): im `catch (Exception e)`
-     (:400) vor `return null` einen `addLog("fetchUrl " + u + ": " +
-     e.getClass().getSimpleName() + " " + e.getMessage())`; im
-     `HTTP != 200`-Zweig (:398) vor `return null` einen
-     `addLog("fetchUrl " + u + ": HTTP " + c.getResponseCode())`.
-   - `fetchUrlIfChanged` (`MainActivity.java:409-432`): analog im
-     `catch` (:431), im `304`-Zweig (:420, informativ: "Cache aktuell"), im
-     `HTTP != 200`-Zweig (:421) und im `body == null`-Zweig (:425) — vier
-     Stellen, damit "kein Fortschritt" nicht mehr mit "Fehler" verwechselt
-     werden kann.
-   - `readAsset` (:434-437) und `readCache` (:439-442): je ein `addLog`
-     im `catch` mit Dateiname + `e.getMessage()`.
-   - `writeCache` (:444-451): `addLog` im bestehenden
-     `/* Cache ist optional */`-Catch — der Kommentar bleibt (Q6: erklärt
-     WARUM der Fehler nicht fatal ist), der `addLog`-Aufruf macht ihn
-     zusätzlich sichtbar.
-   - `appVersion` (:130-134): `addLog` im `catch` — betrifft ausgerechnet
-     den Log-Kopf selbst (Mangel-Beleg im Gap-Report).
-   - Rein additiv: alle Rückgabewerte (`null`/Fallback) bleiben unverändert
-     — erfüllt "keine Regression" aus `CLAUDE.md`. Deckt Mangel 1, 2 und 5.
-   - **Erwarteter Gain: +10 bis +14 Pt RA.**
-   - Danach zwingend: `node app/guard-test.js` grün, `versionCode`/
-     `versionName` in `app/AndroidManifest.xml` bumpen, `app/build.sh`,
-     `apksigner verify --print-certs` = `41f23895…1b17`, APK an Rasmus.
+1. **304/Cache-aktuell aus dem Fehler-Choke-Point auslösen (Pflicht).**
+   - *Zielpfad(e):* `app/java/com/sbctools/browser/MainActivity.java:420-427`
+     (`reportNetError`), `:453-488` (`fetchUrlIfChanged`, 304-Zweig
+     `:464-466`); `app/guard-test.js:281-299` (Pflicht-Logging-Checks).
+   - *Schritte:*
+     1. Neue Methode `reportNetNote(String where, String detail)` direkt
+        neben `reportNetError` einfügen — gleicher Aufbau
+        (`addLog("[net-ok] " + where + ": " + detail)`), eigenes Präfix
+        `[net-ok]` statt `[net]`. WARUM-Kommentar mit Live-Bezug: 304 ist
+        kein Fehler, sondern die Bestätigung "Hintergrund-Refresh lief,
+        Cache passt" (`docs/LEARNINGS.md` §20).
+     2. In `fetchUrlIfChanged` den `if (code == 304)`-Zweig (`:464-466`) von
+        `reportNetError(...)` auf `reportNetNote(...)` umstellen. Der
+        Log-Text ("304 (Cache aktuell)") bleibt inhaltlich erhalten —
+        Pflicht-Edge-Case aus dem Gap-Report: die Zeile darf nicht
+        verschwinden, nur das Präfix ändert sich.
+     3. `app/guard-test.js` um einen Check erweitern (Nähe der bestehenden
+        Pflicht-Logging-Schleife `:294-299`): `reportNetNote` existiert und
+        verwendet das `[net-ok]`-Präfix; der 304-Zweig in
+        `fetchUrlIfChanged` ruft `reportNetNote(`, nicht mehr
+        `reportNetError(`.
+   - *Test-Absicherung:* `node app/guard-test.js` (neuer statischer Check,
+     gleiches `extractBraceBlock`-Muster wie die bestehenden
+     Reihenfolge-Checks `:262-279`); `node app/log-test.js` zur Kontrolle,
+     dass der Ringpuffer beide Präfixe unverändert verarbeitet.
+   - *Risiken/Rollback:* Wer den Report bisher stur nach `[net]` filtert
+     (statt 304-Zeilen manuell auszusortieren), sieht 304-Zeilen künftig
+     NICHT mehr unter `[net]` — genau das ist der Zweck der Aktion, aber
+     ein Auswerte-Skript, das exakt auf `[net]`-Vorkommen zählt, müsste
+     mitziehen. Rollback: `reportNetNote`-Aufruf in `fetchUrlIfChanged`
+     durch `reportNetError` ersetzen (Ein-Zeilen-Diff), Methode kann stehen
+     bleiben.
+   - *Erwarteter Gain:* +2 Pt RA.
 
-2. **Zentralen `reportNetError(String where, String detail)`-Helfer
-   einführen und die sechs Stellen aus Aktion 1 darauf umstellen (Build
-   nötig):** eine einzelne benannte Instanzmethode auf `MainActivity`
-   (keine anonyme innere Klasse, kein Lambda — d8-Constraint aus
-   `app/README.md:110-111`/LEARNINGS §8), die `addLog("[net] " + where +
-   ": " + detail)` bündelt. Aufrufer übergeben den bereits gebildeten
-   Detail-String (`e.getMessage()`, `"HTTP " + code`, `"304 (Cache
-   aktuell)"`) — eine Signatur, kein Overload-Set, damit keine
-   Mehrdeutigkeit im d8-Build entsteht. Ersetzt die sechs Ad-hoc-Strings aus
-   Aktion 1 durch einen Aufruf; künftige neue Netz-/Cache-Stellen rufen
-   denselben Helfer statt eine siebte Variante zu erfinden (Q4/Q5). Vor der
-   Umstellung: vollständige Aufrufer-Liste aus Aktion 1 gegenprüfen (Q3),
-   damit keine der sechs Stellen beim Refactor vergessen wird.
-   **Erwarteter Gain: +4 bis +6 Pt RA** (zusätzlich zu Aktion 1 — adressiert
-   Testbarkeit/SSOT statt nur Beobachtbarkeit).
+2. **`scriptSbc`/`scriptPale`/`paleSource` durch loggenden Setter kapseln
+   (Pflicht).**
+   - *Zielpfad(e):* `MainActivity.java:80-81,128` (Felder), `:146-162`
+     (bestehende Setter `setScriptsReady`/`setPaleStatus`/`setPaleInjected`),
+     `:809,833-834` (`ScriptLoader.run`), `:889-890` (`SettingsSave.onClick`).
+   - *Schritte:*
+     1. Neuen Setter `void setLoadedScripts(String sbc, String pale, String
+        source)` neben den drei bestehenden Settern einführen: setzt alle
+        drei Felder in einem Rutsch und ruft `addLog` mit einer
+        Zusammenfassung (Zeichenlängen + Quelle) auf, nur wenn sich
+        mindestens ein Wert tatsächlich ändert (gleiches Vergleichsmuster
+        wie `setPaleStatus`).
+     2. `ScriptLoader.run()` (`:809`, `:833-834`) von den drei
+        Einzel-Feldzuweisungen auf einen Aufruf
+        `a.setLoadedScripts(sbc, pale, source)` umstellen.
+     3. `SettingsSave.onClick()` (`:889-890`, Reset auf `null`) auf
+        `a.setLoadedScripts(null, null, null)` umstellen.
+     4. `app/guard-test.js` um einen statischen Check erweitern: außerhalb
+        des Setter-Methodenkörpers darf im gesamten Java-Source keine
+        `.scriptSbc =`, `.scriptPale =` oder `.paleSource =`-Zuweisung mehr
+        vorkommen (Regex über den vollen Source abzüglich des extrahierten
+        Setter-Blocks, analog zum Pflicht-Logging-Muster `:294-299`).
+   - *Test-Absicherung:* `node app/guard-test.js` (neuer statischer
+     Grep-Check plus alle 18 bestehenden Checks grün — reine Kapselung
+     ohne Logikänderung, die im Feld sichtbaren Endwerte bleiben identisch).
+   - *Risiken/Rollback:* `paleSource` trägt an den zwei Call-Sites
+     unterschiedliche Semantik (`"Cache"`/`"Download"`/`"keine"` in
+     `ScriptLoader` vs. `null` beim Reset) — der neue Setter muss beide
+     Fälle unverändert durchreichen, sonst ändert sich die im Log-Report
+     angezeigte "PaleTools-Quelle" (`:116`). Rollback: die drei
+     Feldzuweisungen an den zwei Call-Sites zurückschreiben; der Setter
+     kann als unbenutzter Code stehen bleiben oder in einem Folge-Commit
+     entfernt werden.
+   - *Erwarteter Gain:* +3 Pt RA.
 
-3. **`guard-test.js` um zwei statische Source-Regex-Checks erweitern (kein
-   Build nötig, reiner Node-Test):** neue Prüf-Funktionen analog zu
-   `extractGuard()` (`app/guard-test.js:25-44`), aber ohne Ausführung —
-   reiner Text-Regex auf die rohe `MainActivity.java` (Technik 3 aus
-   `eingebetteten-code-exakt-testen.md`, da `HttpURLConnection`/
-   Dateizugriffe nicht sinnvoll in `vm` simulierbar sind):
-   - **ScriptLoader-Reihenfolge:** im Textblock von `class ScriptLoader`
-     (`MainActivity.java:730-772`) kommt für den Optimizer-Pfad
-     `a.fetchUrl(` textlich vor `a.readCache(` vor `a.readAsset(`; für den
-     PaleTools-Pfad kommt `a.readCache(` vor `a.fetchUrlIfChanged(`.
-   - **Pflicht-Logging je Methode:** die Methodenkörper von `fetchUrl`,
-     `fetchUrlIfChanged`, `readAsset`, `readCache`, `writeCache`,
-     `appVersion` (per Klammer-Balance ab Methodensignatur extrahiert)
-     enthalten nach Aktion 1/2 je mindestens einen Aufruf von `addLog(`
-     oder `reportNetError(`.
-   - Schließt Mangel 3 (keine automatisierte Prüfung der Fallback-Kette)
-     ohne Gerät/Emulator. **Erwarteter Gain: +4 bis +6 Pt RA.**
+3. **`onReceivedError`/`onReceivedHttpError` in `SbcWebViewClient` ergänzen
+   (Pflicht).**
+   - *Zielpfad(e):* `MainActivity.java:769-791` (bestehende benannte Klasse
+     `SbcWebViewClient`).
+   - *Schritte:*
+     1. Innerhalb der bestehenden Klasse (keine neue anonyme Klasse/Lambda —
+        d8-Constraint, `MainActivity.java:15-18`, `app/README.md:110-111`)
+        zwei Overrides ergänzen: `onReceivedError(WebView, WebResourceRequest,
+        WebResourceError)` und `onReceivedHttpError(WebView,
+        WebResourceRequest, WebResourceResponse)`.
+     2. Beide prüfen `request.isForMainFrame()` und rufen bei `true`
+        `a.addLog("[webview] " + request.getUrl() + ": " + <Code> + " " +
+        <Beschreibung>)` auf; Sub-Ressourcen-Fehler werden mitgeloggt, aber
+        ohne gesondertes Schema — derselbe Ringpuffer.
+     3. Bereits geprüft (Q3): `app/build.sh:84` baut mit
+        `--min-sdk-version 26` — deckt `WebResourceRequest.isForMainFrame()`
+        (API 21) und `onReceivedError`/`onReceivedHttpError` in der
+        3-Parameter-Form (API 23) vollständig ab, kein SDK-Gate nötig.
+     4. `app/guard-test.js` um einen Check erweitern: beide Overrides
+        existieren in der `SbcWebViewClient`-Klasse und ihr jeweiliger
+        Methodenkörper enthält einen `addLog(`-Aufruf (`extractBraceBlock`
+        auf `class SbcWebViewClient`, gleiches Muster wie bei den
+        bestehenden Checks).
+   - *Test-Absicherung:* `node app/guard-test.js` — da beide Methoden reines
+     Android-`WebViewClient`-API sind (kein aus Java-Literalen
+     zusammengesetzter JS-Wächter), reicht ein struktureller Source-Check,
+     keine `vm`-Sandbox-Simulation nötig.
+   - *Risiken/Rollback:* Keine Regression möglich, da `onPageStarted`/
+     `onPageFinished` unverändert bleiben — reine Ergänzung um zwei neue
+     Overrides. Rollback: beide Overrides entfernen, Klasse fällt auf den
+     bisherigen Zwei-Methoden-Stand zurück.
+   - *Erwarteter Gain:* +3 Pt RA.
 
-4. **Zustands-Setter statt direkter Feldmutation (Build nötig):** für
-   `scriptsReady`, `paleStatus`, `paleInjected` je einen Setter
-   (`setScriptsReady(boolean)`, `setPaleStatus(String)`,
-   `setPaleInjected(boolean)`) auf `MainActivity` einführen, der intern
-   `addLog` bei jeder Änderung aufruft (nur bei tatsächlichem Wertwechsel
-   loggen, analog zum bestehenden `!status.equals(a.paleStatus)`-Vergleich
-   in `PalePoll`, `MainActivity.java:649`). Alle bekannten Schreibstellen
-   umstellen:
-   - `scriptsReady`: `ScriptLoader.run()` (:772, `a.scriptsReady = true` →
-     `a.setScriptsReady(true)`) und `SettingsSave.onClick` (:825,
-     `a.scriptsReady = false` → `a.setScriptsReady(false)`).
-   - `paleStatus`: beide Stellen in `PalePoll.onReceiveValue` (:650, :667).
-   - `paleInjected`: `injectPaleLate()` (:254, im eigenen Rumpf von
-     `MainActivity`) und `SbcWebViewClient.onPageStarted` (:714).
-   Felder bleiben package-private (Default-Sichtbarkeit) wie bisher — volle
-   Kapselung (`private` + Getter für alle Lesestellen `:235`, `:253`) würde
-   den Diff über die RA-Lücke hinaus auf reine Lesezugriffe ausweiten, ohne
-   zusätzlichen Beobachtbarkeits-Gewinn, und ist deshalb bewusst außen vor
-   ("Kapselungs-Verbesserung nur soweit d8-kompatibel", kein Selbstzweck).
-   Bleibt d8-kompatibel: nur zusätzliche Methoden auf der bestehenden
-   Top-Level-Klasse, keine neuen anonymen Klassen. Behebt Mangel 4
-   strukturell statt punktuell. **Erwarteter Gain: +3 bis +5 Pt RA.**
+4. **Leer-Body-Erkennung korrigieren (Absicherung).**
+   - *Zielpfad(e):* `MainActivity.java:429-445` (`fetchUrl`), `:453-488`
+     (`fetchUrlIfChanged`, Leer-Body-Check `:474-478`), `:518-528`
+     (`readStream`), `:841-844` (Download-Logzeile in `ScriptLoader`).
+   - *Schritte:*
+     1. In `fetchUrlIfChanged`: `if (body == null)` (`:475`) durch
+        `if (body.isEmpty())` ersetzen. WARUM-Kommentar an der Stelle
+        (Q6): `readStream` (`:518-528`) liefert laut Signatur nie `null`,
+        nur `sb.toString()` (im schlimmsten Fall `""`) — der alte Vergleich
+        konnte strukturell nie zutreffen.
+     2. In `fetchUrl` (`:429-445`) nach `readStream(...)` (`:440`) denselben
+        Leer-Check ergänzen: Ergebnis zwischenspeichern, bei `isEmpty()`
+        `reportNetError("fetchUrl " + u, "leerer Body")` aufrufen und `null`
+        statt des leeren Strings zurückgeben — dieser Pfad hat bisher
+        überhaupt keinen Leer-Body-Schutz.
+     3. Die bestehende Download-Logzeile (`:841-844`, `!= null`-Prüfung
+        "OK") bleibt unverändert, greift aber jetzt tatsächlich, weil beide
+        Fetch-Methoden bei leerem Body konsistent `null` statt `""`
+        liefern.
+     4. `app/guard-test.js` um ein Szenario erweitern (gleiche
+        Sandbox-Technik wie die 7 bestehenden PalePoll-Szenarien
+        `:137-218`): Stub für einen 200er mit leerem Body, prüft dass
+        sowohl `fetchUrl` als auch `fetchUrlIfChanged` `null` liefern UND
+        `reportNetError` mit "leerer Body" aufrufen.
+   - *Test-Absicherung:* `node app/guard-test.js` (neues Szenario); kein
+     Node-Äquivalent zu `node --check` für Java — lokale `javac`-Prüfung vor
+     dem PO-seitigen `./build.sh`.
+   - *Risiken/Rollback:* Grep über alle Aufrufer bestätigt: beide
+     Fetch-Ergebnisse werden ausschließlich auf `!= null` geprüft, bevor sie
+     injiziert werden (`ScriptLoader:804-844`) — kein Aufrufer verlässt sich
+     auf einen leeren, aber nicht-`null` String. Rollback:
+     `body.isEmpty()` zurück zu `body == null` in `fetchUrlIfChanged`, neuen
+     Check in `fetchUrl` entfernen.
+   - *Erwarteter Gain:* +2 Pt RA.
 
-Summe der vier Aktionen: +21 bis +31 Pt RA (Zielkorridor für
-`score_target.RA = 70`, siehe Ambitions-Rechnung unten).
+5. **`PALE_CHUNK`/`shareLog`-Kappung auf eine gemeinsame Konstante ziehen
+   (optional).**
+   - *Zielpfad(e):* `MainActivity.java:76` (`PALE_CHUNK`), `:168`
+     (`shareLog`-Kappung `120000`).
+   - *Schritte:*
+     1. Neue, klar benannte Konstante (z.B. `MAX_LOG_SHARE_CHARS`) einführen,
+        die ihren Bezug zu `PALE_CHUNK`/dem Binder-IPC-Limit im Code
+        ausdrückt statt nur im Kommentar; `shareLog` (`:168`) darauf
+        umstellen.
+     2. Kommentar "dieselbe Grenze wie bei evaluateJavascript" durch den
+        echten Code-Bezug ersetzen (Q4) — Zahlenwert bleibt exakt `120000`.
+     3. Kein neuer Verhaltens-Check nötig (reines Konstanten-Refactoring),
+        bestehende `app/guard-test.js`-Checks müssen grün bleiben.
+   - *Test-Absicherung:* `node app/guard-test.js` (Regressionslauf ohne neue
+     Assertions); manueller Diff-Check, dass `120000` nirgends mehr
+     hartkodiert doppelt vorkommt.
+   - *Risiken/Rollback:* Minimal — reines Konstanten-Refactoring ohne
+     Verhaltensänderung. Rollback: Konstante zurück in das Literal auflösen.
+   - *Erwarteter Gain:* +1 Pt RA (Puffer, nur bei Zeitüberschuss).
 
 ## Phasen-Commit-Mapping
 
 | Phase | Aktionen |
 |-------|----------|
-| core | Aktion 1 — rohe `addLog`-Zeilen an allen sechs Stellen |
-| diagnose | Aktion 2 — `reportNetError`-Helfer + Umstellung; Aktion 4 — Setter für `scriptsReady`/`paleStatus`/`paleInjected` + Umstellung aller Schreibstellen |
-| tests | Aktion 3 — `guard-test.js`: ScriptLoader-Reihenfolge + Pflicht-Logging-Check |
-| docs | `docs/LEARNINGS.md`-Eintrag: `reportNetError`/Setter als neuer Choke-Point, referenziert diese vier Aktionen (kein primary_path, aber Teil des eisernen Arbeitsablaufs) |
-| release | `versionCode`/`versionName` in `app/AndroidManifest.xml` bumpen, `node app/guard-test.js`, `app/build.sh`, `apksigner verify --print-certs` = `41f23895…1b17`, APK an Rasmus |
+| core | Aktion 1 (`reportNetNote` + Umleitung des 304-Zweigs), Aktion 2 (`setLoadedScripts`-Setter + Umstellung der drei Schreibstellen), Aktion 3 (`onReceivedError`/`onReceivedHttpError`-Skelett in `SbcWebViewClient`), Aktion 4 (`isEmpty()`-Fix in `fetchUrlIfChanged` + neuer Leer-Body-Check in `fetchUrl`), Aktion 5 (gemeinsame Konstante) |
+| diagnose | Aktion 3 (`addLog`-Aufrufe in den zwei neuen Overrides), Aktion 4 (`reportNetError("leerer Body")` in `fetchUrl`) — Reflexionsschritt direkt im selben Commit wie core: prüfen, dass jede neue Fehlerstelle tatsächlich geloggt wird (Antipattern `fehler-unsichtbar-verschluckt`) |
+| tests | `app/guard-test.js`-Erweiterungen für Aktionen 1-4 (neue Checks), Regressionslauf für Aktion 5 |
+| docs | `app/README.md` „Technik-Notizen" auf den neuen Ist-Stand bringen (neue Overrides, neue Konstante) |
+| release | `app/AndroidManifest.xml`: `versionCode` 11 → 12, `versionName` „1.7.0" → „1.8.0"; APK-Build + Signaturprüfung (`apksigner verify --print-certs`) obliegt dem PO nach dem Merge — Keystore liegt nicht im Repo |
 
 ## Shared-Item-Bedarf
 
-Keine Shared-Items nötig. Alle vier Aktionen bleiben innerhalb einer Datei
-(`MainActivity.java`) plus deren Test (`guard-test.js`) und haben nur einen
-Konsumenten (dieses Feature) — `reportNetError` und die drei Setter sind
-interne Choke-Points von `MainActivity`, kein wiederverwendbarer Helfer für
-ein anderes Feature (das Userscript hat mit `diagError`/`STATE.diag` bereits
-sein eigenes, strukturell anderes Äquivalent in einer anderen Sprache/Datei).
-`android-app-wrapper.shared-items.json` ist deshalb eine leere Liste.
+Kein Shared-Item-Bedarf in dieser Iteration. Der Gap-Report empfiehlt
+explizit kein Mid-Iter-SI: alle fünf Aktionen sind lokale, additive
+Ergänzungen an bereits bestehenden Methoden/Klassen derselben Datei ohne
+Cross-Feature-Konsum. Sidecar entsprechend leer.
 
 ## Risiken / Edge-Cases
 
-- **Nur `addLog`, nie UI-Aufrufe aus dem Hintergrund-Thread:** `ScriptLoader`
-  läuft in einem eigenen `Thread` (`MainActivity.java:227`,
-  `new Thread(new ScriptLoader(this)).start()`), nicht auf dem UI-Thread.
-  `addLog` ist über `synchronized (logLines)` threadsicher und darf dort
-  aufgerufen werden — ein versehentlich nachgerüsteter
-  `Toast.makeText(...)` oder WebView-Zugriff direkt in
-  `fetchUrl`/`fetchUrlIfChanged`/`readCache`/`writeCache` würde dagegen mit
-  `CalledFromWrongThreadException` abstürzen. Jede der vier Aktionen bleibt
-  strikt auf `addLog`/`reportNetError`/die neuen Setter beschränkt.
-- **d8-Constraint bei neuen Hilfskonstrukten:** `reportNetError` (Aktion 2)
-  und die drei Setter (Aktion 4) müssen benannte Instanzmethoden auf
-  `MainActivity` selbst bleiben — keine anonyme innere Klasse, kein Lambda,
-  sonst crasht der Gradle-lose `d8`-Build am InnerClasses-Attribut
-  (`app/README.md:110-111`, LEARNINGS §8). Ein einziges Overload-freies
-  Signatur-Design für `reportNetError` vermeidet zusätzlich Mehrdeutigkeiten.
-- **Volle Ausliefer-Kette nach jeder Build-nötig-Aktion:** Ohne Rasmus'
-  `app/debug.keystore` (nicht im Repo) lässt sich keine installierbare
-  Update-APK bauen; `versionCode`/`versionName` müssen im Manifest gebumpt
-  werden (aktuell `versionCode="10"`, `versionName="1.6.1"`,
-  `app/AndroidManifest.xml:4-5`), `node app/guard-test.js` muss grün
-  bleiben, und `apksigner verify --print-certs` muss weiter SHA-256
-  `41f23895…1b17` zeigen. Aktionen 1, 2 und 4 sind Code-fertig, aber erst
-  nach Build + Installation durch Rasmus tatsächlich am Gerät wirksam — kein
-  Subagent kann diesen Schritt selbst reproduzieren. Empfehlung: Aktion 1
-  UND 3 zuerst in einem Build/Commit bündeln (kleinstes Risiko, testbar ohne
-  Gerät), Aktion 2+4 (SSOT-Refactor mit mehreren Call-Sites) danach in einem
-  zweiten Build — Q3 verlangt vor dem Refactor die vollständige
-  Aufrufer-Liste, die oben bereits pro Feld aufgeführt ist.
-- **Mid-Iter-Einschub (Klasse G) unwahrscheinlich:** alle vier Aktionen
-  bleiben innerhalb der zwei primary_paths (`MainActivity.java`,
-  `guard-test.js`); ein Einschub käme nur infrage, falls die
-  Aufrufer-Analyse zu Aktion 4 eine bisher unbekannte fünfte Schreibstelle
-  für eines der drei Felder zutage fördert — dann zunächst dort ergänzen,
-  nicht die Aktion aufteilen.
-- **Priorität/Effort-Einordnung:** Die reine Gain-Summe (+21 bis +31) würde
-  nach der Heuristik `Σ Gain < 100 → P3-deferred` einordnen; das Ticket wird
-  hier bewusst auf `P2-normal` gehoben, weil RA laut Gap-Report die größte
-  Einzel-Lücke im gesamten Projekt ist (48/80, am nächsten am
-  `partial`/`fail`-Rand) und `effort: M` gewählt, weil `phase_sequence`
-  5 Phasen umfasst und zwei getrennte Build+APK-Zyklen (siehe oben) mehr
-  Kalenderzeit als ein reiner Code-Diff kosten.
+- **Choke-Point-Umbau darf die eigene Diagnose nicht verstümmeln (Aktion
+  1):** die 304-Zeile muss nach der Reklassifizierung weiterhin sichtbar
+  geloggt werden, nur unter dem Präfix `[net-ok]` statt `[net]` — Rasmus
+  nutzt genau diese Meldung, um die Hintergrund-Auffrischung von PaleTools
+  zu bestätigen (`docs/LEARNINGS.md` §20). Ein ersatzloser Wegfall wäre eine
+  neue, unbeobachtete Lücke an der Stelle, die gerade geschlossen wird.
+- **`guard-test.js` extrahiert den PaleTools-Wächter über inzidentelle
+  String-Literale** (`"(function(){" +` … `"})()", null);`,
+  `app/guard-test.js:48-49`): jede Änderung, die `injectPaleChunked`
+  (`MainActivity.java:301-396`) im Rahmen dieser Aktionen berührt, muss
+  nach dem Edit `node app/guard-test.js` laufen lassen UND stichprobenartig
+  prüfen, dass `extractGuard()` weiterhin den vollständigen Wächter-Code
+  findet — ein verändertes Literal in dessen Nähe würde die Extraktion
+  leise auf einen Teilblock verkürzen statt hart zu scheitern. Keine der
+  fünf Aktionen berührt `injectPaleChunked` direkt; die Prüfung erfolgt
+  trotzdem als Stichprobe, weil derselbe Java-Source-File Ziel aller
+  Edits ist.
+- **d8-Constraint bei Aktion 3:** Die neuen `WebViewClient`-Overrides müssen
+  in der bestehenden benannten `SbcWebViewClient`-Klasse landen, nicht als
+  anonyme Klasse oder Lambda — der direkte `d8`-Build ohne Gradle stolpert
+  sonst über das InnerClasses-Attribut (`MainActivity.java:15-18`,
+  `app/README.md:110-111`).
+- **Reihenfolge-Abhängigkeit Aktion 2 → Aktion 4:** beide ändern
+  Schreibpfade rund um `scriptSbc`/`scriptPale` bzw. deren Quellwerte in
+  `ScriptLoader`. Aktion 2 zuerst umsetzen (Kapselung), danach Aktion 4
+  (Leer-Body-Fix) — vermeidet, dass derselbe Codeblock zweimal in
+  unterschiedlicher Reihenfolge diffed werden muss.
+- **Kein Regressionsrisiko am Userscript:** alle Aktionen betreffen
+  ausschließlich `app/`; `ea-fc-sbc-optimizer.user.js` bleibt unverändert,
+  daher kein `@version`-Bump und kein `node solver-test.js`-Lauf
+  erforderlich — nur `node app/guard-test.js` als Gate.
 
 ## Lift-Plan-Pre-Validation (M2)
 
-Reine RA-Dimension (`manual_rubric`, kein PK-Anteil): `pk_files_to_cite: []`,
-`citation_only: false`. `plan estimate` liefert für diese Iteration keinen
-PK-Endwert (keine Kandidaten zitiert) — die Ziel-Erreichung für RA ist per
-Reasoning/`audit-evaluator` zu prüfen, nicht deterministisch. Ambitions-Rechnung
-(M3): `48 + (min(80, 80) - 48) × 0.7 = 48 + 22.4 → 70` (gerundet), passend zum
-vorgegebenen M3-Target 70. Die Summe der vier Aktions-Gains (+21 bis +31)
-deckt die geforderte Distanz (+22) mit Puffer nach oben UND unten ab.
+Ziel-Delta: 78 − 72 = 6. Pflicht-Aktionen 1–3 summieren sich auf +8 (rechnerisch
+72 + 8 = 80 = `structural_max`), werden aber konservativ auf das Ziel 78
+gerundet, da Einzel-Gains Schätzungen sind, keine linear-additive Messung.
+8 ≥ 6 (Ziel-Delta) erfüllt die M3-Ambitionsregel mit Puffer; selbst wenn nur
+zwei der drei Pflicht-Aktionen den vollen Gain liefern (z.B. +2 und +3 = +5),
+schließt Aktion 4 (+2) die Lücke zum Ziel-Delta. `plan estimate
+--feature=android-app-wrapper` sollte auf Basis von `pk_files_to_cite`
+(`MainActivity.java`, `guard-test.js`) einen Zielwert ≥ 78 und ≤ 80
+(`structural_max`) bestätigen.

@@ -1452,7 +1452,7 @@ function mulberry32(a) {
         /okTarget/.test(rf) && /okSlots/.test(rf));
     check("Der Tausch landet im Report", /staleRecover/.test(rf) && /staleRecover: STATE.diag.staleRecover/.test(src));
     check("Nach dem Tausch wird GENAU EINMAL neu versucht",
-        /submitToSbc\(result, true\)/.test(src) && /if \(!_retried\)/.test(src));
+        /submitToSbc\(result, true, batchProgress\)/.test(src) && /if \(!_retried\)/.test(src));
 
     check("403 wird nicht als 'veraltet' verkauft",
         /EA hat das Eintragen abgelehnt \(403\)/.test(src));
@@ -2075,18 +2075,20 @@ function mulberry32(a) {
     const scanExports = new Function(scanBlock + '\nreturn { deepScanChallenge: deepScanChallenge, isDomOrWindow: isDomOrWindow };')();
     const collectSrc = extractFunction(src, 'collectChallengeNodes');
     check('Funktion collectChallengeNodes gefunden', !!collectSrc);
+    const extractNodeStateSrc = extractFunction(src, 'extractNodeState');
+    check('Funktion extractNodeState gefunden', !!extractNodeStateSrc);
     const resolveSrc = extractFunction(src, 'resolveFreshChallengeId');
     check('Funktion resolveFreshChallengeId gefunden', !!resolveSrc);
 
     function buildResolver(jsonPayload, STATE) {
         return new Function('STATE', 'warn', 'apiGet', 'deepScanChallenge', 'isDomOrWindow',
-            collectSrc + '\n' + resolveSrc + '\nreturn resolveFreshChallengeId;'
+            extractNodeStateSrc + '\n' + collectSrc + '\n' + resolveSrc + '\nreturn resolveFreshChallengeId;'
         )(STATE, function () {}, async function () { return jsonPayload; },
           scanExports.deepScanChallenge, scanExports.isDomOrWindow);
     }
-    function node(cid, slots) {
-        return { challengeId: cid, name: 'Node ' + cid,
-                 requirements: [{ scope: 'TEAM_RATING', minimum: 84 }], slots: slots };
+    function node(cid, slots, extra) {
+        return Object.assign({ challengeId: cid, name: 'Node ' + cid,
+                 requirements: [{ scope: 'TEAM_RATING', minimum: 84 }], slots: slots }, extra || {});
     }
 
     const results = [];
@@ -2097,13 +2099,51 @@ function mulberry32(a) {
         check('resolveFreshChallengeId: waehlt den Knoten mit passenden Slots',
             id === 'A', 'ergebnis=' + id);
         check('resolveFreshChallengeId: lehnt den Knoten mit falschen Slots ab',
-            stA.diag.staleRecover.candidates.indexOf('B') === -1,
+            !stA.diag.staleRecover.candidates.some(c => c.id === 'B'),
             JSON.stringify(stA.diag.staleRecover));
+        check('resolveFreshChallengeId: candidateCount zaehlt die WAHREN Treffer (Ticket #70)',
+            stA.diag.staleRecover.candidateCount === 1, JSON.stringify(stA.diag.staleRecover));
     }));
     // Beide Knoten passen (Slots gleich) -> mehrdeutig, sauber null statt Raten.
     const stB = { sbc: { setId: 1, challengeId: 'OLD', targetOVR: 84, formationSlots: 11 }, diag: {} };
     results.push(buildResolver([node('A', 11), node('B', 11)], stB)().then(id => {
         check('resolveFreshChallengeId: mehrdeutig -> null statt raten', id === null, 'ergebnis=' + id);
+        check('resolveFreshChallengeId: candidateCount=2 bei Mehrdeutigkeit (Ticket #70)',
+            stB.diag.staleRecover.candidateCount === 2, JSON.stringify(stB.diag.staleRecover));
+    }));
+    // Kein Knoten passt -> Erschoepfung/Ablauf (Ticket #70, Live-Fall "84+ TOTW
+    // Upgrade" Runde 9/10: staleRecover war {nodes: 1, candidates: []}).
+    const stC = { sbc: { setId: 1, challengeId: 'OLD', targetOVR: 84, formationSlots: 11 }, diag: {} };
+    results.push(buildResolver([], stC)().then(id => {
+        check('resolveFreshChallengeId: keine Knoten -> null', id === null, 'ergebnis=' + id);
+        check('resolveFreshChallengeId: candidateCount=0 bei Erschoepfung (Ticket #70)',
+            stC.diag.staleRecover.candidateCount === 0, JSON.stringify(stC.diag.staleRecover));
+    }));
+    // nodeState (Ticket #70): der Knoten der ALTEN Id liefert status/repeatable/
+    // timesCompleted/endTime, auch wenn er kein Kandidat ist (er wird ja explizit
+    // ausgeschlossen) - Live-Sample-Felder aus dem Briefing.
+    const stD = { sbc: { setId: 1, challengeId: 'OLD', targetOVR: 84, formationSlots: 11 }, diag: {} };
+    results.push(buildResolver([node('OLD', 11, {
+        status: 'NOT_STARTED', repeatable: false, timesCompleted: 3, endTime: 1755302400
+    })], stD)().then(id => {
+        check('resolveFreshChallengeId: nodeState wird aus dem Knoten der alten Id gelesen (Ticket #70)',
+            stD.diag.staleRecover.nodeState &&
+            stD.diag.staleRecover.nodeState.status === 'NOT_STARTED' &&
+            stD.diag.staleRecover.nodeState.repeatable === false &&
+            stD.diag.staleRecover.nodeState.timesCompleted === 3 &&
+            stD.diag.staleRecover.nodeState.endTime === 1755302400,
+            JSON.stringify(stD.diag.staleRecover));
+    }));
+    // Fehlende Felder werden null statt den Knoten zu verwerfen.
+    const stE = { sbc: { setId: 1, challengeId: 'OLD', targetOVR: 84, formationSlots: 11 }, diag: {} };
+    results.push(buildResolver([node('OLD', 11)], stE)().then(id => {
+        check('resolveFreshChallengeId: nodeState-Felder fehlen -> null statt Absturz (Ticket #70)',
+            stE.diag.staleRecover.nodeState &&
+            stE.diag.staleRecover.nodeState.status === null &&
+            stE.diag.staleRecover.nodeState.repeatable === null &&
+            stE.diag.staleRecover.nodeState.timesCompleted === null &&
+            stE.diag.staleRecover.nodeState.endTime === null,
+            JSON.stringify(stE.diag.staleRecover));
     }));
     pending.push(Promise.all(results));
 
@@ -4607,6 +4647,52 @@ function mulberry32(a) {
     });
     check('readConfig: alte maxexp-UI-Reste im Objekt werfen keinen Fehler',
         legacy.maxRatingEnabled === false && legacy.minRating === 75);
+}
+
+// ========== 56. Ticket #70: staleInstanceMessage() unterscheidet Erschoepfung von Mehrdeutigkeit ==========
+{
+    // Live (Report v4.61.0, "84+ TOTW Upgrade" Runde 9/10): resolveFreshChallengeId()
+    // fand 0 Kandidaten, die Meldung riet trotzdem "schliessen und neu oeffnen" -
+    // das hilft nicht, wenn EA das Set gar nicht mehr wiederholen laesst.
+    const fnSrc = extractFunction(src, 'staleInstanceMessage');
+    check('Funktion staleInstanceMessage gefunden (56)', !!fnSrc);
+    const staleInstanceMessage = new Function(fnSrc + '\nreturn staleInstanceMessage;')();
+
+    const exhausted = staleInstanceMessage('404', 0, { done: 8, total: 10 });
+    check('0 Kandidaten: Erschoepfungs-Text statt "schliessen und neu oeffnen"',
+        /Keine weitere Wiederholung verfügbar/.test(exhausted) &&
+        /Limit erreicht oder abgelaufen/.test(exhausted) &&
+        exhausted.indexOf('schliessen und neu') === -1, exhausted);
+    check('0 Kandidaten: N von M aus dem Plan steht in der Meldung',
+        /8 von 10 geschafft/.test(exhausted), exhausted);
+
+    const exhaustedNoPlan = staleInstanceMessage('404', 0, null);
+    check('0 Kandidaten ohne Batch-Kontext: Erschoepfungs-Text ohne N/M, kein Absturz',
+        /Keine weitere Wiederholung verfügbar/.test(exhaustedNoPlan) &&
+        exhaustedNoPlan.indexOf(' von ') === -1, exhaustedNoPlan);
+
+    const ambiguous = staleInstanceMessage('475', 2, { done: 3, total: 5 });
+    check('>=1 Kandidat (mehrdeutig): der bisherige Rat bleibt (schliessen und neu oeffnen)',
+        /schliessen und neu/.test(ambiguous) &&
+        ambiguous.indexOf('Keine weitere Wiederholung') === -1, ambiguous);
+
+    const unknown = staleInstanceMessage('404', null, { done: 1, total: 4 });
+    check('candidateCount unbekannt (Abruf fehlgeschlagen): faellt konservativ auf den bisherigen Rat zurueck',
+        /schliessen und neu/.test(unknown), unknown);
+
+    // submitToSbc() muss candidateCount aus STATE.diag.staleRecover lesen und an
+    // staleInstanceMessage() weiterreichen - Absicherung gegen Wegrefactorn.
+    const submitSrc = extractFunction(src, 'submitToSbc');
+    check('submitToSbc uebergibt candidateCount und batchProgress an staleInstanceMessage (56)',
+        /staleInstanceMessage\(msg, candidateCount, batchProgress\)/.test(submitSrc));
+    check('submitToSbc verwirft einen staleRecover-Stand von einer anderen setId (56)',
+        /staleRecover\.setId === STATE\.sbc\.setId/.test(submitSrc));
+
+    // Der Batch-Lauf muss done/n als batchProgress durchreichen (sonst bliebe
+    // "N von M geschafft" in der Praxis immer leer).
+    const runFn = extractFunction(src, 'onBatchRunClick');
+    check('onBatchRunClick reicht { done, total: n } an submitToSbc weiter (56)',
+        /submitToSbc\(round, false, \{ done: done, total: n \}\)/.test(runFn));
 }
 
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt

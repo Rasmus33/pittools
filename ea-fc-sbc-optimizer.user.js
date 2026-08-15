@@ -147,7 +147,8 @@
             scanStats: null,         // Traversal-Metriken (visitedCount/depthCapped/budgetExhausted) von deepScan/findNode/collectNodes - reine Beobachtung, kein Abbruchkriterium (LEARNINGS 37)
             utasUnclassified: 0,     // /ut/game/-URLs, die classifyUrl() nicht zuordnen konnte (LEARNINGS 38)
             lastUnclassifiedPaths: [], // 5er-Ring der zugehoerigen Pfade (IDs maskiert)
-            popupDismissCount: 0     // wie oft dismissRewardPopup() seit App-Start wirklich etwas geschlossen hat (analog batchStuckCount, LEARNINGS §27)
+            popupDismissCount: 0,    // wie oft dismissRewardPopup() seit App-Start wirklich etwas geschlossen hat (analog batchStuckCount, LEARNINGS §27)
+            packScan: null           // Pack-Opener Stufe 1 (Ticket #69): myPacks/testRun/storageCounts/missingGlobals/errorForm, siehe mergePackScan() (LEARNINGS §46)
         }
     };
     function log(...args) { try { console.log(LOG_PREFIX, ...args); } catch (e) {} }
@@ -4636,6 +4637,10 @@
             // den Einzelfall - ein wiederkehrender Popup-Typ, der Zeit im
             // 300ms-Fenster frisst, wird erst ueber die Haeufigkeit sichtbar.
             popupDismissCount: STATE.diag.popupDismissCount || 0,
+            // Pack-Opener Stufe 1 (Ticket #69): letzte Enumeration + letzter
+            // Testlauf - beantwortet die vier offenen Mechanik-Fragen aus
+            // docs/roadmap/vision/features/pack-opener.md (LEARNINGS §46).
+            packScan: STATE.diag.packScan || null,
             // Welches Team hat der Solver zuletzt geliefert (id/assetId/rating/
             // storage)? Bei HTTP 460 ist hier direkt zu sehen, ob eine Karte
             // oder ein Spieler doppelt drin war.

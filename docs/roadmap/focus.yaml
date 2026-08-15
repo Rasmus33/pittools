@@ -96,5 +96,18 @@ history:
     Slices mit Restluft — nur additive Toleranz/Diagnose, keine Umbauten an live-verifizierten
     Pfaden. android-app-wrapper (79/80) nur als Infra-Traeger: javac-Gate + markerbasierte
     guard-test-Extraktion (reine Test-/Tooling-Arbeit). Alle uebrigen Features halten.'
-  effectiveness: {}
+  effectiveness:
+    verdict: hit
+    focused_gains:
+      sbc-vorgaben-erkennung:
+        RA: 1
+      ea-app-anbindung:
+        RA: 1
+      android-app-wrapper:
+        RA: 1
+    held_features_regressions: {}
+    notes: 'Thematische EA-Wandel+Infra-Runde: alle drei Fokus-Ziele erreicht — sbc
+      78->79 (Ziel 79), ea-app 74->75 (Deckel), App 79->80 (Deckel, erstmals). ea-app
+      und App sind damit strukturell ausgeschoepft. Gehaltene 6 Features per Konstruktion
+      unveraendert.'
 pending_suggestion: null

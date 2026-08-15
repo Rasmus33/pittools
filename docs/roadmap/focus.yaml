@@ -204,5 +204,15 @@ history:
     aus §41 wird per Fuzzing verifiziert (playerLevelConstraints-Reservierung, strukturell
     identisch zum gefixten Rarity-Pfad). Test-only; Ergebnis ist ein Urteil (sauber/Befund-Pin),
     Fix nur bei bewiesenem Befund.'
-  effectiveness: {}
+  effectiveness:
+    verdict: hit
+    focused_gains:
+      rating-solver:
+        RA: 1
+    held_features_regressions: {}
+    notes: 'Wartezeit-Runde wurde zur Deckel-Runde: der §41-Verdacht wurde per Fuzzing
+      BEWIESEN (#62, Befund gepinnt) und via Generalisierung gefixt (#64, v4.61.0).
+      solver 94->95 = structural_max. Damit 7 von 9 Features exakt am Deckel; nebenbei
+      eine vorbestehende Architektur-Grenze (Joint-Optimierung ueber Constraint-Typen)
+      entdeckt und als Debt dokumentiert.'
 pending_suggestion: null

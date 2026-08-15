@@ -215,4 +215,18 @@ history:
       solver 94->95 = structural_max. Damit 7 von 9 Features exakt am Deckel; nebenbei
       eine vorbestehende Architektur-Grenze (Joint-Optimierung ueber Constraint-Typen)
       entdeckt und als Debt dokumentiert.'
+- iteration: 8
+  decided_at: '2026-08-15T20:31:34Z'
+  dimensions:
+  - RA
+  features:
+  - spieler-pool
+  - diagnose-werkzeuge
+  phases: []
+  mode: soft-regression-guard
+  rationale: 'Sechster User-Neustart — finale Mikro-Runde: die zwei letzten dokumentierten
+    Restpunkte. pool 84/85: removeFromPool-Verhaltenstest + §30-Formulierung (PO-direkt,
+    test-/docs-only). diagnose 84/85: Re-Score mit dem Beleg des Krisenabends (6 Live-Reports
+    -> 4 Hotfixes, jede Diagnose traf). Danach ist nichts Hebbares mehr uebrig.'
+  effectiveness: {}
 pending_suggestion: null

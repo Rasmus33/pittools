@@ -3946,15 +3946,20 @@
                 } catch (e) { return { error: String(e && e.message || e) }; }
             })(),
             // Submit-Diagnose: welcher Weg hat zuletzt gegriffen und ist
-            // ueberhaupt eine Challenge offen?
+            // ueberhaupt eine Challenge offen? findSbcController()/
+            // findLiveChallenge() traversieren dieselbe undokumentierte
+            // EA-Controller-Kette wie hubScan - analog dazu abgesichert, damit
+            // ein EA-seitiger Bruch dort nicht den GESAMTEN Report mitreisst.
             submitInfo: (function () {
-                const svc = window.services && window.services.SBC;
-                const ctrl = findSbcController();
-                return {
-                    saveChallengeThere: !!(svc && typeof svc.saveChallenge === "function"),
-                    liveChallengeThere: !!findLiveChallenge(),
-                    controllerName: (ctrl && ctrl.constructor && ctrl.constructor.name) || null
-                };
+                try {
+                    const svc = window.services && window.services.SBC;
+                    const ctrl = findSbcController();
+                    return {
+                        saveChallengeThere: !!(svc && typeof svc.saveChallenge === "function"),
+                        liveChallengeThere: !!findLiveChallenge(),
+                        controllerName: (ctrl && ctrl.constructor && ctrl.constructor.name) || null
+                    };
+                } catch (e) { return { error: String(e && e.message || e) }; }
             })(),
             // Einstiegspunkt-Diagnose: sitzt der Menüpunkt in der EA-Leiste
             // oder fällt die App auf den FAB zurück? tabBarCount zeigt, ob
@@ -4144,7 +4149,16 @@
             inSbcView: inSbcView(),
             btnAttached: !!document.getElementById(BTN_ID)
         };
-        const report = buildDiagReport();
+        // Das Diagnose-Werkzeug darf bei EA-Wandel nicht selbst lautlos
+        // ausfallen: ein kaputtes Report-Feld liefert sonst gar nichts statt
+        // wenigstens des Fehlers selbst.
+        let report;
+        try {
+            report = buildDiagReport();
+        } catch (e) {
+            reportError('Diagnose-Report fehlgeschlagen', e);
+            report = { version: VERSION, url: location.href, error: String(e && e.message || e) };
+        }
         console.log(LOG_PREFIX + ' ===== DIAGNOSE-REPORT (bitte komplett kopieren) =====');
         console.log(JSON.stringify(report, null, 2));
         console.log(LOG_PREFIX + ' ===== ENDE DIAGNOSE-REPORT =====');

@@ -4183,6 +4183,9 @@
                     containerSelector: '.sbc-button-container',
                     containerCount: document.querySelectorAll('.sbc-button-container').length,
                     containerVisible: !!cont,
+                    // >0 = der Text-Fallback musste einspringen, weil
+                    // .sbc-button-container selbst nichts lieferte.
+                    containerFallbackUsed: containerFallbackUsed,
                     containerRect: cont ? rect(cont) : null,
                     containerChildren: cont ? (function () {
                         const out = [];

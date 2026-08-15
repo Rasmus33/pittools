@@ -184,3 +184,31 @@ Kumulativ. Git-Log ist die History.
 - 2 Mini-/Kleintickets Main-verifiziert statt Validator-gespawnt (#52 Guard-Diff, #54 mit Aufrufer-Grep) — Prüftiefe proportional zum Diff, beide Diffs vollständig gelesen.
 - Popup-Dismiss-Zähler (dünn markiert) wurde mitgenommen, weil er in 2 Zeilen passte — dünne Aktionen sind ok, wenn ihr Preis gegen null geht.
 - Eskalationen: 0. Post-Squash-Regel hielt zum vierten Mal. Alle 29 GitHub-Issues des Projekts abgeschlossen, Backlog leer.
+
+## Iteration 6 — 2026-08-15
+
+## Iteration 6 — 2026-08-15
+
+### Score-Bewegung
+- Verifikations-Runde (3 Features mit Ehrlichkeits-Mandat): rating-solver 92→94, spieler-pool 83→84, diagnose-werkzeuge 84 verifiziert gehalten. Fokus-Verdict: hit.
+- Userscript v4.55.0 → v4.60.0 (Tickets #56/#57/#60 + vier Live-Hotfixes am selben Abend), Tests 503 → 558. Endstand: solver 94/95, pool 84/85, diagnose 84/85, alle übrigen 6 auf structural_max.
+
+### Methodische Erkenntnisse
+- **Die Verifikations-Runde widerlegte die eigene „strukturell fertig"-Behauptung produktiv**: das Ehrlichkeits-Mandat („nichts gefunden ist legitim") lieferte zwei „substanz"-Verdicts — und das daraus beauftragte Fuzzing (#57) fand beim ERSTEN Lauf einen echten Solver-Defekt (Rarity-Reservierung ignorierte das Überschuss-Fenster). Behauptete Deckel sind Hypothesen, bis ein Fuzzing sie geprüft hat.
+- **Abbruch-mit-Befund als Ticket-Erfolgsfall funktioniert**: #57 durfte explizit nicht fixen, sondern musste den Repro dreifach gegen unabhängige Enumerationen beweisen. Der Fix (#60) bekam dadurch ein fertiges Testfundament und der Implementer fand beim Fixen selbst zwei Folge-Teilfehler per Fuzzing, bevor er „fertig" meldete.
+- **Charakterisierungstest-Muster**: ein bewiesener, aber noch nicht gefixter Defekt wird als BEKANNTER-BEFUND-Check gepinnt (Assertion auf das IST-Verhalten) — main bleibt grün, der Fix MUSS den Check drehen. Brücke zwischen „Befund liegt" und „Fix ist da" ohne roten Gate-Lauf.
+- **Die Live-Feedback-Schleife trug einen ganzen Krisenabend**: EA hängte am 15.08. große Kit-Metadaten in die Set-Daten; sechs Reports von Rasmus führten zu vier Hotfixes in unter drei Stunden (v4.57 Daily-Same-Id-Sperre, v4.58 Scan-Priorisierung/Budget, v4.59 Solver-Fix, v4.60 elgReq-Quelle). Jeder Fix wurde von einem Diagnose-Feld aus iter3-6 geleitet (scanStats → budgetExhausted, deepScanBySource → welcher Pfad, usedInstance → Sperr-Beweis). Diagnose-Investition zahlt in Krisen aus.
+- **Zwei eigene Regressionen ehrlich bilanziert**: die iter1-usedChallengeIds-Sperre brach Daily-SBCs (EAs „jede Wiederholung = neue Id"-Annahme gilt nicht universell — Fix: Same-Id + nachweislich leer = frisch), und der global gekeyte Set-Cache ließ den Vorgaben-Scan auf fremden Sets laufen. Beides waren Annahmen, die live verifiziert schienen und es nur für eine Teilmenge waren.
+- **Mid-Ticket-Rebase via SendMessage an denselben Implementer** (Kontext intakt) verkraftete zwei zwischenzeitliche Hotfixes sauber — Konflikte nur an den erwarteten Stellen, Validator prüfte danach gegen den rebasten Stand.
+
+### Patterns ergänzt / verändert
+- Keine neuen Pattern-Docs. diagnose-feld-statt-raten hat sich als KRISEN-Werkzeug bewährt (siehe oben); eingebetteten-code-exakt-testen um Fuzzing-mit-unabhängiger-Referenz erweitert (Sections 46-48, 50).
+
+### Shared-Items
+- Keine.
+
+### PO-Entscheidungen
+- Klasse C: 3 — README-/Test-Kosmetik direkt (Verifikations-Gap diagnose), 4 Live-Hotfixes direkt auf main (eiserner Arbeitsablauf, alle 5 Gates je Push), #60-Rebase-Nachtrag.
+- Validator: #56 PASS, #60 PASS (Formel byte-identisch verifiziert); #57 Main-verifiziert + Befund-Pinning beauftragt.
+- Bewusst offen: playerLevelConstraints-Verdacht (erst fuzzen, dann fixen — §41), LEARNINGS-§30-Formulierung (Politur).
+- Eskalationen: 0. Force-Push auf Ticket-Branch nach Rebase als PO-Handgriff etabliert (--force-with-lease).

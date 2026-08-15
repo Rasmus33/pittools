@@ -30,50 +30,8 @@
 #                 consume-seeds`) — NICHT bei iteration-done geleert. Ersetzt
 #                 das deprecatete gitignored `iteration-seeds.yaml` (ADR #78).
 schema_version: 1.4.0
-iteration: 6
-entries:
-- at: '2026-08-15T16:12:47Z'
-  issue: 56
-  po_class: null
-  surprises:
-  - Der wichtigste iter6-Fund (loadIncomplete in keinem Diagnose-Kanal + Batch-Plan
-    prueft nicht) sass ausgerechnet im Feature mit der zweitbesten Wertung — Verifikations-Runden
-    lohnen sich genau dort, wo man fertig zu sein glaubt.
-  reasoning: Unvollstaendiger Pool ist jetzt in Report (clubLoad.loadIncomplete),
-    App-Log (warn) und Batch-Vorschau (Banner + plan.poolLoadIncomplete) sichtbar
-    — Planen bleibt moeglich, Rasmus entscheidet bei der Freigabe. removeFromPool
-    + Lock-Einzelkey-Fehler haengen am reportError-Chokepoint. v4.56.0, 526/526, Takt
-    zeilenidentisch.
-- at: '2026-08-15T16:40:32Z'
-  issue: 57
-  po_class: null
-  surprises:
-  - 'Das erweiterte Fuzzing fand beim ERSTEN Lauf einen echten Solver-Defekt: die
-    Rarity-Reservierung waehlt rein nach costOf und kann das maxOvershoot-Fenster
-    sprengen, obwohl eine fensterkonforme Loesung existiert (Minimal-Repro: 91er-Storage-Special
-    statt 84er -> waste 3.06 bei Fenster 0). Dreifach gegen unabhaengige Enumerationen
-    verifiziert — die Referenz stimmt, der Solver nicht.'
-  - 'Charakterisierungstest-Muster etabliert: BEKANNTER-BEFUND-Check pinnt das IST-Verhalten
-    (main-Gate bleibt gruen) und schlaegt laut an, sobald der Fix kommt.'
-  reasoning: 'Test-only: Eligible-Gate (Formel-Drift-Schutz) erstmals ausgefuehrt,
-    Fuzzing auf Rarity-/Qualitaets-Quoten + planBatch ausgeweitet (535 Tests). Der
-    gefundene Reservierungs-Defekt wird als eigenes Fix-Ticket umgesetzt — Regel-Hierarchie
-    laut CLAUDE.md: Fenster > Kosten.'
-- at: '2026-08-15T18:01:52Z'
-  issue: 60
-  po_class: null
-  surprises:
-  - 'Der Fuzzing-Befund fuehrte zum tiefsten Solver-Eingriff seit iter0: runSearch
-    musste zu searchTeam parametrisiert werden (Closure->Parameter, Mathe wortgleich
-    — Validator hat jede Zeile verglichen). Zwei Folge-Teilfehler (globalVmin aus
-    rohem vMin; vMinFloor auch final) fand der Implementer selbst per ~6000-Fall-Fuzzing,
-    BEVOR er den Fix als korrekt meldete.'
-  - Mid-Ticket-Rebase auf zwei Live-Hotfixes funktionierte sauber via SendMessage
-    an denselben Implementer (Kontext intakt) — Konflikte nur an den erwarteten Stellen.
-  reasoning: 'Solver respektiert jetzt die dokumentierte Regel-Hierarchie Fenster
-    > Kosten auch bei Rarity-Vorgaben: fensterbewusste Reservierung (Trial-Cap 200,
-    DP-bewertet) mit dem alten Greedy als textuell identischem Fallback. v4.59.0,
-    548/548, Validator-PASS ohne Findings.'
+iteration: null
+entries: []
 discoveries:
   pattern_candidates: []
   antipattern_candidates: []

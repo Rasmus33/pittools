@@ -251,13 +251,12 @@
         if (RE_SBC_STORAGE_FALLBACK.test(u)) return 'storage';
         return null;
     }
-    // [URLCLS-END]
     function handleResponseBody(url, bodyText) {
         const kind = classifyUrl(url);
         if (!kind || !bodyText) return;
         let json;
         try { json = (typeof bodyText === 'string') ? JSON.parse(bodyText) : bodyText; }
-        catch (e) { return; }
+        catch (e) { reportError('handleResponseBody(' + kind + '): parse', e); return; }
         try {
             if (kind === 'sbc-set-challenges') {
                 // Challenge-Liste eines Sets: enthält die Anforderungen pro
@@ -277,9 +276,10 @@
                 harvestItems(json, true);
             }
         } catch (e) {
-            warn('Fehler beim Verarbeiten einer Response:', e);
+            reportError('handleResponseBody(' + kind + ')', e);
         }
     }
+    // [URLCLS-END]
     // ---- fetch() Wrapper ---------------------------------------------------
     const _origFetch = window.fetch ? window.fetch.bind(window) : null;
     if (_origFetch) {
@@ -3927,6 +3927,34 @@
             ' · Services: ' + (servicesAvailable() ? '✓' : '–') +
             ' · utas: ' + STATE.diag.utasSeen;
     }
+    // [RAREHIST-BEGIN]
+    // Reine Funktion (kein STATE-Zugriff ausser dem uebergebenen pool) - so per
+    // Marker isoliert testbar (Verhaltensgleichheit zur vormaligen anonymen
+    // IIFE in buildDiagReport() ist ein eigener Testfall in solver-test.js).
+    function computeRareflagHistogram(pool) {
+        const m = {};
+        for (const p of pool) {
+            const key = String(p.rareflag);
+            m[key] = (m[key] || 0) + 1;
+        }
+        const out = { '0_common': m['0'] || 0, '1_rare': m['1'] || 0,
+                      '3_totw': m['3'] || 0 };
+        const rest = Object.keys(m).filter(k => ['0', '1', '3'].indexOf(k) < 0)
+            .map(k => ({ f: k, n: m[k] }))
+            .sort((a, b) => b.n - a.n);
+        out.topSpecials = rest.slice(0, 5).map(x => x.f + ':' + x.n).join(' ');
+        out.specialFlags = rest.length;
+        out.specialTotal = rest.reduce((a, x) => a + x.n, 0);
+        // Cap 30: haelt den Report auch bei einem theoretischen Pool-Ausreisser
+        // kompakt - in der Praxis liegt specialFlags deutlich darunter. Anders
+        // als topSpecials (nur die Top-5 nach Haeufigkeit) landen hier ALLE
+        // distincten rareflag-Werte OHNE Counts, damit ein neuer, zunaechst
+        // seltener rareflag (z.B. ein frisches Promo-Special mit 1 Karte) immer
+        // sichtbar ist, auch wenn er die Top-5-Haeufigkeitsgrenze nicht erreicht.
+        out.allSpecialFlagValues = rest.map(x => x.f).slice(0, 30).join(',');
+        return out;
+    }
+    // [RAREHIST-END]
     function buildDiagReport() {
         // Bewusst OHNE Session-Token-Werte!
         let servicesKeys = null;
@@ -4192,22 +4220,7 @@
             // GEKUERZT (der Report muss kopierbar bleiben): das volle Histogramm
             // waren ~80 Zeilen. Gebraucht werden Common/Rare - und von den
             // Special-Flags die haeufigsten fuenf plus Restsumme.
-            rareflagHistogram: (function () {
-                const m = {};
-                for (const p of STATE.pool) {
-                    const key = String(p.rareflag);
-                    m[key] = (m[key] || 0) + 1;
-                }
-                const out = { '0_common': m['0'] || 0, '1_rare': m['1'] || 0,
-                              '3_totw': m['3'] || 0 };
-                const rest = Object.keys(m).filter(k => ['0', '1', '3'].indexOf(k) < 0)
-                    .map(k => ({ f: k, n: m[k] }))
-                    .sort((a, b) => b.n - a.n);
-                out.topSpecials = rest.slice(0, 5).map(x => x.f + ':' + x.n).join(' ');
-                out.specialFlags = rest.length;
-                out.specialTotal = rest.reduce((a, x) => a + x.n, 0);
-                return out;
-            })(),
+            rareflagHistogram: computeRareflagHistogram(STATE.pool),
             poolSpecialCount: STATE.pool.filter(p => p.isSpecial).length,
             evoExcluded: STATE.diag.evoExcluded,
             // Struktur-Samples hoher Karten: verrät uns die echten Feldnamen,

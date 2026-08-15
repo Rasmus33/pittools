@@ -124,5 +124,16 @@ history:
     ueber iter0 hinaus geliftet); sbc-vorgaben-erkennung nur fuer den kleinen scanStats-Restfund
     aus dem iter3-Re-Score (applyFromSetChallenges ohne recordDeepScanStats). Alle
     uebrigen Features halten — an/1 Punkt unter Deckel.'
-  effectiveness: {}
+  effectiveness:
+    verdict: hit
+    focused_gains:
+      bedienpanel-ui:
+        RA: 2
+      sbc-vorgaben-erkennung:
+        RA: 1
+    held_features_regressions: {}
+    notes: 'Beide Fokus-Ziele erreicht: bedienpanel 82->84 (Ziel 84), sbc-erkennung
+      79->80 (Deckel, via Mini-Fix #48). Ein Validator-Fund (kosmetisches Doppel-Logging)
+      noch in derselben Iteration als v4.53.0 bereinigt. Gehaltene 7 Features per
+      Konstruktion unveraendert.'
 pending_suggestion: null

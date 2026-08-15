@@ -44,6 +44,21 @@ entries:
     — Planen bleibt moeglich, Rasmus entscheidet bei der Freigabe. removeFromPool
     + Lock-Einzelkey-Fehler haengen am reportError-Chokepoint. v4.56.0, 526/526, Takt
     zeilenidentisch.
+- at: '2026-08-15T16:40:32Z'
+  issue: 57
+  po_class: null
+  surprises:
+  - 'Das erweiterte Fuzzing fand beim ERSTEN Lauf einen echten Solver-Defekt: die
+    Rarity-Reservierung waehlt rein nach costOf und kann das maxOvershoot-Fenster
+    sprengen, obwohl eine fensterkonforme Loesung existiert (Minimal-Repro: 91er-Storage-Special
+    statt 84er -> waste 3.06 bei Fenster 0). Dreifach gegen unabhaengige Enumerationen
+    verifiziert — die Referenz stimmt, der Solver nicht.'
+  - 'Charakterisierungstest-Muster etabliert: BEKANNTER-BEFUND-Check pinnt das IST-Verhalten
+    (main-Gate bleibt gruen) und schlaegt laut an, sobald der Fix kommt.'
+  reasoning: 'Test-only: Eligible-Gate (Formel-Drift-Schutz) erstmals ausgefuehrt,
+    Fuzzing auf Rarity-/Qualitaets-Quoten + planBatch ausgeweitet (535 Tests). Der
+    gefundene Reservierungs-Defekt wird als eigenes Fix-Ticket umgesetzt — Regel-Hierarchie
+    laut CLAUDE.md: Fenster > Kosten.'
 discoveries:
   pattern_candidates: []
   antipattern_candidates: []

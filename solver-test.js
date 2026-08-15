@@ -3709,24 +3709,21 @@ function mulberry32(a) {
     pending.push(Promise.all(results45));
 }
 
-// ========== 46. Ticket #57: Brute-Force-Fuzzing MIT Rarity-Vorgabe (Gruppe 83,
-// Gap-Report Iter. 6, Aktion 2) ==========
+// ========== 46. Ticket #57/#60: Brute-Force-Fuzzing MIT Rarity-Vorgabe
+// (Gruppe 83, Gap-Report Iter. 6) - FIX verifiziert (reserveRarityWindowAware,
+// LEARNINGS 41) ==========
 // bruteBest() generalisiert (quotaOk-Parameter, siehe oben) und randomisiert
 // gegen Configs MIT rarityConstraints laufen lassen - vorher hatte nur der
 // reservierungsfreie Pfad (Test 4) ein Fuzz-Netz.
 //
-// Dieser Test schlaegt bei Seed 57015701 (t=3) reproduzierbar fehl: die
-// Rarity-Reservierung waehlt die Vorgabe-Karte NUR nach ihren eigenen Kosten
-// (solveCore(), rcList-Schleife) und beruecksichtigt dabei nicht, wie sich
-// die Wahl auf das Team-weite V/den Rating-Ueberschuss auswirkt - ein
-// minimaler, unabhaengig konstruierter Repro (4 Slots, maxOvershoot 0) zeigt
-// dieselbe Ursache: eine guenstigere, aber HOEHER geratete Storage-Vorgabe-
-// Karte wird einer teureren, aber ZIELGENAUEN Vereins-Karte vorgezogen,
-// obwohl eine gleich-quotenerfuellende Alternative im selben Pool exakt
-// 0 Ueberschuss erreicht haette. Das ist ein echter, durch dieses Ticket neu
-// gefundener Befund (kein Fehler in dieser Referenz - dreifach gegen eine
-// zweite, unabhaengige Enumeration verifiziert) und bewusst NICHT behoben
-// oder abgeschwaecht (Ticket #57 ist test-only).
+// Die Rarity-Reservierung in solveCore() (rcList-Schleife) probiert fuer
+// Vorgaben MIT gesetztem target jetzt - bounded durch
+// RARITY_WINDOW_TRIAL_CAP - alle infrage kommenden Kandidaten-Kombinationen
+// tatsaechlich per DP durch (reserveRarityWindowAware()) und waehlt die
+// Kombination mit dem kleinsten team-weiten V (Tiebreak Kosten), statt wie
+// zuvor rein nach den Kosten der Vorgabe-Karte selbst zu sortieren. Der
+// Minimal-Repro unten UND die 30x-Fuzz-Schleife pruefen das jetzt gegen die
+// korrekte, per Brute-Force verifizierte Erwartung.
 {
     const rand = mulberry32(57015701);
     let allMatch = true, detail = '';
@@ -3773,18 +3770,13 @@ function mulberry32(a) {
             }
         }
     }
-    // BEKANNTER, VERIFIZIERTER DEFEKT (Regel-Hierarchie aus CLAUDE.md: das
-    // "Max. Rating-Ueberschuss"-Fenster hat Vorrang - Kosten entscheiden NUR
-    // innerhalb davon, "kein Rating verschenken"): die Rarity-Reservierung in
-    // solveCore() (rcList-Schleife) waehlt die Vorgabe-Karte ausschliesslich
-    // nach ihren EIGENEN Kosten und ignoriert dabei, wie sich die Wahl auf den
-    // Team-weiten Rating-Ueberschuss auswirkt. Dieser Minimal-Repro (4 Slots,
-    // maxOvershoot 0) wurde dreifach gegen eine zweite, unabhaengige
-    // Enumeration verifiziert (siehe Commit-Historie #57) - kein Fehler in der
-    // Referenz. Der Check unten PINNT das heutige IST-Ergebnis, damit main
-    // gruen bleibt, OHNE den Befund zu verstecken: wer diesen Defekt behebt,
-    // MUSS den Check auf die korrekte Erwartung drehen (ovrExact === 84,
-    // waste === 0 - die im selben Pool erreichbare, zielgenaue Alternative).
+    // Regel-Hierarchie aus CLAUDE.md: das "Max. Rating-Ueberschuss"-Fenster hat
+    // Vorrang - Kosten entscheiden NUR innerhalb davon, "kein Rating
+    // verschenken". Minimal-Repro (4 Slots, maxOvershoot 0): eine guenstigere,
+    // aber HOEHER geratete Storage-Vorgabe-Karte (X, 91) UND eine teurere,
+    // aber ZIELGENAUE Vereins-Karte (Y, 84) erfuellen beide dieselbe
+    // Gruppe-83-Vorgabe - nur Y erreicht mit dem Rest des Pools 84.00 (waste 0)
+    // exakt im Fenster.
     const minRepro = (function () {
         const X = P(91, { special: true, rareflag: 137, groups: [83], storage: true });
         const Y = P(84, { special: true, rareflag: 137, groups: [83], storage: false });
@@ -3799,12 +3791,12 @@ function mulberry32(a) {
         });
         return SolverCore.solve(pool, c);
     })();
-    check('BEKANNTER BEFUND (Rarity-Reservierung ignoriert Overshoot-Fenster): ' +
-        'Minimal-Repro (4 Slots, maxOvershoot 0, 1x Gruppe-83-Vorgabe) liefert heute ovrExact 87.06 ' +
-        '(waste 3.06) statt der im selben Pool erreichbaren 84.00 (waste 0) - 30x-Fuzzing (Seed ' +
-        '57015701) findet dieselbe Ursache bei t3',
-        minRepro.ok && minRepro.ovrExact === 87.06 && minRepro.waste === 3.06 &&
-        !allMatch && /t3:/.test(detail),
+    check('FIX verifiziert (war: bekannter Befund #57): Minimal-Repro (4 Slots, ' +
+        'maxOvershoot 0, 1x Gruppe-83-Vorgabe) waehlt die zielgenaue Vereins-Karte Y ' +
+        '(84) statt der guenstigeren, aber hoeher geraten Storage-Karte X (91) und ' +
+        'erreicht ovrExact 84.00 (waste 0) - 30x-Fuzzing (Seed 57015701) findet KEINE ' +
+        'Abweichung mehr (allMatch)',
+        minRepro.ok && minRepro.ovrExact === 84 && minRepro.waste === 0 && allMatch,
         'minRepro.ok=' + minRepro.ok + ' ovrExact=' + (minRepro.ok && minRepro.ovrExact) +
         ' waste=' + (minRepro.ok && minRepro.waste) + ' fuzzDetail=' + detail);
 }
@@ -3971,6 +3963,127 @@ function mulberry32(a) {
     // Fund identisch, egal ob die Anforderung frueh oder spaet drankommt.
     check('Priorisierung aendert das Ergebnis bei ausreichendem Budget nicht',
         dflt.target === small.target);
+}
+
+// ========== 50. Ticket #60: reserveRarityWindowAware() - Cap-Fallback,
+// need>1 und Storage-Praeferenz gezielt konstruiert (LEARNINGS 41) ==========
+// Ergaenzt Section 46 (Fuzzing) um gezielt konstruierte Einzelfaelle, deren
+// Erwartungswerte per Brute-Force bzw. per SolverCore.makeCostOf() (SSOT,
+// nicht aus dem Kopf) hergeleitet sind.
+
+// (a) Kombinatorik-Schranke: 25 distinct-rating Gruppe-83-Kandidaten,
+// need=3 -> C(25+3-1,3)=C(27,3)=2925 reisst RARITY_WINDOW_TRIAL_CAP (200)
+// sicher. Erwartet: Ergebnis identisch mit dem UNVERAENDERTEN Kosten-Greedy
+// (kein zweiter Fehlerpfad, additiver Fallback) UND die neue Warnung.
+{
+    const pool = [];
+    for (let r = 60; r <= 84; r++) pool.push(P(r, { special: true, rareflag: 137, groups: [83] }));
+    for (let i = 0; i < 15; i++) pool.push(P(90, { groups: [19] }));
+    const c = cfg(84, {
+        slots: 11, maxOvershoot: 3.0,
+        scarcityWeight: 18, storageBonus: 2,
+        ratingCostSpec: SolverCore.DEFAULT_RATING_COST_SPEC,
+        rarityConstraints: [{ label: 'PLAYER_RARITY_GROUP', ids: [], count: 3, groupId: 83 }]
+    });
+    const res = SolverCore.solve(pool, c);
+    const costOf = SolverCore.makeCostOf(pool, c);
+    const protectedCands = pool.filter(p => p.groups && p.groups.indexOf(83) > -1);
+    // Der heutige (unveraenderte) Kosten-Greedy-Sortier-Ausdruck aus der
+    // rcList-Schleife: Kosten aufsteigend, Rating als Tiebreak.
+    const expectedIds = protectedCands.slice()
+        .sort((a, b) => (costOf(a) - costOf(b)) || (a.rating - b.rating))
+        .slice(0, 3).map(p => p.id).sort((a, b) => a - b);
+    check('Ticket #60: Cap-Ueberschreitung (2925 Kombinationen > Cap 200) faellt ' +
+        'auf den heutigen, unveraenderten Kosten-Greedy zurueck',
+        res.ok && JSON.stringify(res.players.filter(p => p.groups && p.groups.indexOf(83) > -1)
+            .map(p => p.id).sort((a, b) => a - b)) === JSON.stringify(expectedIds),
+        res.ok ? ('picks=' + JSON.stringify(res.players.filter(p => p.groups && p.groups.indexOf(83) > -1).map(p => p.id))
+            + ' expected=' + JSON.stringify(expectedIds)) : res.reason);
+    check('Ticket #60: Cap-Ueberschreitung meldet die neue Fallback-Warnung',
+        res.ok && (res.warnings || []).some(w => /Fensterbewusste Vorgaben-Wahl uebersprungen/.test(w)),
+        JSON.stringify(res.warnings));
+}
+
+// (b) need>1 (2 von 4 Gruppe-83-Kandidaten): eine guenstige, aber zu hoch
+// geratete Storage-Karte (A, 90) darf NICHT vor den beiden zielgenaueren,
+// aber teureren Vereins-Karten (B 84, C 85) gewaehlt werden, wenn das
+// Fenster (maxOvershoot 0) das nicht zulaesst - brute-force-verifiziert.
+{
+    const A = P(90, { special: true, rareflag: 137, groups: [83], storage: true });
+    const B = P(84, { special: true, rareflag: 137, groups: [83], storage: false });
+    const C = P(85, { special: true, rareflag: 137, groups: [83], storage: false });
+    const D = P(88, { special: true, rareflag: 137, groups: [83], storage: true });
+    const gold84 = many(4, 84, { groups: [19] });
+    const pool = [A, B, C, D].concat(gold84);
+    const c = cfg(84, {
+        slots: 6, maxOvershoot: 0,
+        scarcityWeight: 18, storageBonus: 2,
+        ratingCostSpec: SolverCore.DEFAULT_RATING_COST_SPEC,
+        rarityConstraints: [{ label: 'PLAYER_RARITY_GROUP', ids: [], count: 2, groupId: 83 }]
+    });
+    const res = SolverCore.solve(pool, c);
+    const quotaOk = (team) => team.filter(p => Array.isArray(p.groups) && p.groups.indexOf(83) > -1).length === 2;
+    const bb = bruteBest(pool, c, quotaOk);
+    check('Ticket #60: need=2 - brute-force-optimale Kombination (B+C statt A) ' +
+        'exakt getroffen',
+        res.ok && bb !== null && Math.abs(solverObjective(res, pool, c, bb.vMin) - bb.bestObj) < 1e-6,
+        res.ok ? ('solver=' + solverObjective(res, pool, c, bb.vMin) + ' brute=' + (bb && bb.bestObj)) : res.reason);
+}
+
+// (c) Storage-Praeferenz INNERHALB des Fensters: eine Storage-Karte (88)
+// UND eine Vereins-Karte (87, naeher am Ziel 84) sind beide fensterkonform
+// (maxOvershoot 1.0) - die guenstigere Storage-Karte muss gewinnen, obwohl
+// die Vereins-Karte das kleinere V liefern wuerde (Regel-Hierarchie:
+// Fenster zuerst, dann Kosten - CLAUDE.md "Storage vor Verein").
+{
+    const storageCard = P(88, { special: true, rareflag: 137, groups: [83], storage: true });
+    const clubCard = P(87, { special: true, rareflag: 137, groups: [83], storage: false });
+    const gold84 = many(3, 84, { groups: [19] });
+    const pool = [storageCard, clubCard].concat(gold84);
+    const c = cfg(84, {
+        slots: 4, maxOvershoot: 1.0,
+        scarcityWeight: 18, storageBonus: 2,
+        ratingCostSpec: SolverCore.DEFAULT_RATING_COST_SPEC,
+        rarityConstraints: [{ label: 'PLAYER_RARITY_GROUP', ids: [], count: 1, groupId: 83 }]
+    });
+    const res = SolverCore.solve(pool, c);
+    const quotaOk = (team) => team.filter(p => Array.isArray(p.groups) && p.groups.indexOf(83) > -1).length === 1;
+    const bb = bruteBest(pool, c, quotaOk);
+    check('Ticket #60: Storage-Karte (88) gewinnt innerhalb des Fensters gegen ' +
+        'die naeher am Ziel liegende, aber teurere Vereins-Karte (87)',
+        res.ok && bb !== null && Math.abs(solverObjective(res, pool, c, bb.vMin) - bb.bestObj) < 1e-6 &&
+        res.players.some(p => p.groups && p.groups.indexOf(83) > -1 && p.isStorage),
+        res.ok ? ('solver=' + solverObjective(res, pool, c, bb.vMin) + ' brute=' + (bb && bb.bestObj) +
+            ' gotStorage=' + res.players.some(p => p.groups && p.groups.indexOf(83) > -1 && p.isStorage)) : res.reason);
+}
+
+// (d) Gegenprobe OHNE target: reserveRarityWindowAware() greift laut Code nur
+// bei gesetztem target (`if (target && have < needCount)`) - ohne target
+// bleibt die rcList-Schleife exakt beim bisherigen, hier NICHT geaenderten
+// Kosten-Sortier-Ausdruck (derselbe Vergleichs-Ausdruck wie im Cap-Fallback
+// oben). Dasselbe storage/club-Paar wie (c), aber ohne Ziel-OVR: die
+// Auswahl folgt weiterhin reinem Kosten-Vergleich, unabhaengig vom
+// Rating-Abstand zu irgendeinem Ziel (das es hier gar nicht gibt).
+{
+    const storageCard = P(88, { special: true, rareflag: 137, groups: [83], storage: true });
+    const clubCard = P(87, { special: true, rareflag: 137, groups: [83], storage: false });
+    const gold84 = many(3, 84, { groups: [19] });
+    const pool = [storageCard, clubCard].concat(gold84);
+    const c = cfg(null, {
+        slots: 4, targetOVR: null,
+        qualityConstraints: [{ label: 'PLAYER_LEVEL', quality: 3, count: 4 }],
+        scarcityWeight: 18, storageBonus: 2,
+        ratingCostSpec: SolverCore.DEFAULT_RATING_COST_SPEC,
+        rarityConstraints: [{ label: 'PLAYER_RARITY_GROUP', ids: [], count: 1, groupId: 83 }]
+    });
+    const res = SolverCore.solve(pool, c);
+    const costOf = SolverCore.makeCostOf(pool, c);
+    const cands = [storageCard, clubCard];
+    const expected = cands.slice().sort((a, b) => (costOf(a) - costOf(b)) || (a.rating - b.rating))[0];
+    check('Ticket #60 Gegenprobe (ohne target): rcList-Auswahl bleibt der ' +
+        'unveraenderte Kosten-Sortier-Ausdruck (kein Fensterbewusster Pfad)',
+        res.ok && res.players.some(p => p.id === expected.id),
+        res.ok ? ('picks=' + res.players.filter(p => p.groups).map(p => p.id) + ' expected=' + expected.id) : res.reason);
 }
 
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt

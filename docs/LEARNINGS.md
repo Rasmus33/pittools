@@ -1548,6 +1548,104 @@ Optimieren-Klick waehrend eines laufenden Pool-Refreshs mit Toast +
 `setStatus()` ab, statt den Solver gegen den Uebergangs-Pool laufen zu
 lassen.
 
+## 41. Rarity-Reservierung respektiert das Ueberschuss-Fenster (reserveRarityWindowAware)
+
+30x-Fuzzing (Ticket #57, Seed `57015701`) fand einen von der Rating-Formel
+unabhaengigen Solver-Defekt, dreifach gegen eine zweite Enumeration
+verifiziert: die Rarity-Reservierung in `solveCore()` (rcList-Schleife)
+waehlte die Vorgabe-Karte(n) fuer eine `rarityConstraints`-Vorgabe (z.B. "1x
+Gruppe 83") ausschliesslich nach `costOf()`, BEVOR bekannt war, wie sich diese
+Wahl auf den team-weiten Rating-Ueberschuss auswirkt. Minimal-Repro (4 Slots,
+`maxOvershoot 0`, 1x Gruppe-83-Vorgabe): eine guenstige, aber HOEHER geratete
+Storage-Karte X (91) wurde einer teureren, aber ZIELGENAUEN Vereins-Karte Y
+(84) vorgezogen, obwohl Y mit demselben Rest-Pool `84.00` (waste 0) statt
+`87.06` (waste 3.06) erreicht haette. Das verletzt CLAUDE.mds Regel-Hierarchie
+woertlich: "Innerhalb des Fensters ... entscheiden die Karten-Kosten" - das
+Fenster (`maxOvershoot`) hat Vorrang, Kosten entscheiden NUR innerhalb davon.
+Der nachgelagerte DP (`runSearch`) selbst war NICHT das Problem - er bekam nur
+schon einen suboptimal fixierten `reservedSum`/`avail`-Ausgangswert und konnte
+nicht mehr gefragt werden, ob eine andere Kandidaten-Wahl ein kleineres `vMin`
+ermoeglicht haette.
+
+**Fix: `reserveRarityWindowAware()`, additiv VOR dem bisherigen Kosten-Greedy.**
+Nur wenn `target` gesetzt ist (der `!target`-Zweig bleibt unveraendert bei
+`makeFillCmp`, LEARNINGS 15/17 - dort gibt es kein Fenster). Kandidaten werden
+nach Rating gruppiert (Profile), pro Rating nur die (bis zu `stillNeed`)
+guenstigsten behalten (verlustfrei: der V-Beitrag haengt nur vom Rating ab,
+`costOf` ordnet bei gleichem Rating eindeutig). Eine Kombinatorik-Schranke
+(`RARITY_WINDOW_TRIAL_CAP = 200`, ein Performance-Kompromiss, keine
+mathematisch hergeleitete Zahl) begrenzt, wie viele (Rating -> Anzahl)-
+Aufteilungen tatsaechlich per DP durchprobiert werden - eine reine
+Zaehl-Rekursion (`countCombos`) bricht fruehzeitig ab, sobald der Cap
+gerissen wird, ohne die Kombinationen selbst zu materialisieren.
+
+Die DP-Suche selbst (`runSearch`) wurde dafuer zu `searchTeam(reservedArr,
+availArr, expDims, sharedBandCache, vMinFloor)` parametrisiert: mathematisch
+UNVERAENDERT (bandFor/scanSt/Phase 1+2/Auswahl sind Zeile fuer Zeile
+uebernommen, `git diff` zeigt nur systematische Umbenennungen wie
+`avail`->`availArr`, `k`->`kLocal` durch die Parametrisierung selbst) - nur
+die Herkunft von `reserved`/`avail` wechselte von AUSSEN-Closure auf
+Parameter, EIGENTLICH ERST notwendig, weil `reserveRarityWindowAware()`
+dieselbe Suche fuer probeweise reservierte Kombinationen aufrufen muss, BEVOR
+die eigentliche Reservierung feststeht. `cmp`/`NEED`/`windowV` wurden dafuer
+vor die rcList-Schleife vorgezogen (SSOT, keine zweite Kopie an der alten
+Stelle).
+
+**Zwei live per Fuzzing gefundene Teilfehler beim ersten Entwurf, beide
+behoben, bevor der Fix stand:**
+1. Die globale Fenster-Grenze (`globalVmin`) darf NICHT aus dem bereits
+   fenster-optimierten `V` jedes Trials gebildet werden (das verschiebt das
+   Fenster faelschlich nach oben, wenn ein Trial lokal schon eine teurere,
+   aber naeher am Ziel liegende Karte gewaehlt hat) - sondern aus dem ROHEN,
+   von `searchTeam()` separat mitgefuehrten `vMin` (Pass 1: nur `vMin` pro
+   Kombination ermitteln).
+2. Selbst mit korrektem `globalVmin` reicht es NICHT, die gewaehlte
+   Kombination per `searchTeam()` ohne weitere Vorgabe neu zu bewerten - jede
+   Kombination optimiert sonst gegen ihr EIGENES (potenziell breiteres)
+   Fenster um ihr eigenes Minimum, nicht gegen das GEMEINSAME. Pass 2 ruft
+   `searchTeam()` deshalb ein zweites Mal mit `vMinFloor = globalVmin` auf,
+   um die kosten-optimale Wahl INNERHALB des gemeinsamen Fensters zu
+   ermitteln. Aus demselben Grund haelt `solveCore()` das gewaehlte
+   `globalVmin` in `rarityVMinFloor` fest und uebergibt es auch dem FINALEN
+   Such-Aufruf (nach der Reservierung) - sonst haette dieser sein eigenes,
+   selbst entdecktes (und potenziell breiteres) Fenster um die jetzt fest
+   reservierten Karten benutzt und die gerade erst getroffene Wahl wieder
+   unterlaufen. Beide Fehler wurden durch Fuzzing mit deutlich breiterem
+   Wertebereich (mehr Kandidaten, `need` bis 4) als der 30x-Pflichttest
+   aufgedeckt, dann gegen Brute-Force-Referenzen isoliert und bewiesen (ca.
+   6000 randomisierte Faelle liefen danach ohne Abweichung).
+
+**Geteilter Band-Cache ueber Trials hinweg** (Performance, Lift-Plan-Pflicht):
+nur sicher, wenn KEINER der Kandidaten je in `avail` auftauchen koennte -
+sonst haengt `avail` von der konkreten Kombination ab (loser Durchlauf,
+`limitProtected === false`, wo ungenutzte geschuetzte Karten als Fueller
+bleiben duerfen). Die Bedingung wird explizit vor der Cache-Wiederverwendung
+geprueft (`limitProtected && cands.every(isProtectedRarity)`), nicht einfach
+angenommen.
+
+**Fallback (additiv, kein zweiter Fehlerpfad):** reisst die Kombinatorik-
+Schranke ODER liefert keine Kombination ueberhaupt ein loesbares Team,
+reserviert `reserveRarityWindowAware()` NICHTS (Rueckgabe 0) - der
+bestehende, unveraenderte Kosten-Greedy (`while`-Schleife direkt danach)
+greift dann normal. Nur der Cap-Fall meldet eine eigene Warnung
+("Fensterbewusste Vorgaben-Wahl uebersprungen ..."); "keine Kombination
+loesbar" bleibt beim bestehenden `{ok:false}`-Pfad ohne zusaetzliche Meldung
+(kein neues Fehlerbild).
+
+**Offener Verdacht, NICHT Teil dieses Fixes:** dieselbe
+Kosten-zuerst-Reservierung existiert strukturell identisch bei
+`playerLevelConstraints` (z.B. "min. 2x 85+" koennte eine unnoetig hohe
+92er-Karte statt einer knapp reichenden 85er reservieren) - dafuer gibt es
+aber KEINEN brute-force-verifizierten Fund, nur eine Analogie-Vermutung
+(CLAUDE.md: "Erwartungswerte NIE aus dem Kopf"). Folge-Ticket-Kandidat fuer
+eine spaetere Iteration.
+
+Section 46 (`solver-test.js`) pinnte den damals korrekten IST-Zustand (das
+verifizierte Fehlverhalten) und wurde auf die korrekte Erwartung gedreht;
+vier neue, brute-force- bzw. `costOf()`-verifizierte Einzelfaelle ergaenzen
+sie: Cap-Ueberschreitung, `need` > 1, Storage-Praeferenz innerhalb des
+Fensters, Gegenprobe ohne `target`. `node solver-test.js`: alle Tests gruen.
+
 ## 42. Der Vorgaben-Scan kann im Belohnungs-Ast ertrinken - Anforderungs-Aeste zuerst
 
 Live-Fall (Gold-Challenge, Set 1337, Report v4.56.0): der Challenge-Knoten

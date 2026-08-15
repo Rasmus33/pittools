@@ -30,8 +30,20 @@
 #                 consume-seeds`) — NICHT bei iteration-done geleert. Ersetzt
 #                 das deprecatete gitignored `iteration-seeds.yaml` (ADR #78).
 schema_version: 1.4.0
-iteration: null
-entries: []
+iteration: 6
+entries:
+- at: '2026-08-15T16:12:47Z'
+  issue: 56
+  po_class: null
+  surprises:
+  - Der wichtigste iter6-Fund (loadIncomplete in keinem Diagnose-Kanal + Batch-Plan
+    prueft nicht) sass ausgerechnet im Feature mit der zweitbesten Wertung — Verifikations-Runden
+    lohnen sich genau dort, wo man fertig zu sein glaubt.
+  reasoning: Unvollstaendiger Pool ist jetzt in Report (clubLoad.loadIncomplete),
+    App-Log (warn) und Batch-Vorschau (Banner + plan.poolLoadIncomplete) sichtbar
+    — Planen bleibt moeglich, Rasmus entscheidet bei der Freigabe. removeFromPool
+    + Lock-Einzelkey-Fehler haengen am reportError-Chokepoint. v4.56.0, 526/526, Takt
+    zeilenidentisch.
 discoveries:
   pattern_candidates: []
   antipattern_candidates: []

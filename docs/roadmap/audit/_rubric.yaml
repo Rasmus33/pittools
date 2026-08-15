@@ -18,18 +18,17 @@ android-app-wrapper:
 batch-modus:
   RA:
     evidence:
-    - ea-fc-sbc-optimizer.user.js:4951-4955
-    - solver-test.js:1929-1993
-    - solver-test.js:1996-2025
-    - ea-fc-sbc-optimizer.user.js:4631-4632
-    - ea-fc-sbc-optimizer.user.js:4989-4991
-    iteration_scored: 0
-    reasoning: Anker scharf + echter Integrationstest inkl. transientem Brick-Fenster,
-      Orchestrierung statisch abgesichert, zwei neue Diagnose-Zaehler, Q7-Fix, reportError-Adoption.
-      Unter Ziel 67, weil Lift-Plan-Aktion 4 (aktive Abgabe-Plausibilisierung via
-      Squad-Nachpruefung) nur als Haeufigkeits-Zaehler geliefert wurde — die Frage
-      ob die Abgabe wirklich bestaetigt wurde bleibt offen, nur messbar.
-    score: 65.0
+    - ea-fc-sbc-optimizer.user.js:5029-5032
+    - ea-fc-sbc-optimizer.user.js:4590-4600
+    - ea-fc-sbc-optimizer.user.js:5124-5133
+    - solver-test.js:2599-2652
+    - solver-test.js:2542-2597
+    iteration_scored: 1
+    reasoning: 'Alle 4 Aktionen exakt umgesetzt — echte Verhaltenstests statt String-Grep,
+      Sperre + Plausibilisierung additiv, Abbruch-Philosophie unangetastet. Rest zum
+      Max 70: EA-Wandel-Toleranz bewusst nicht adressiert, LEARNINGS-Eintrag offen
+      (Scope-Grenze).'
+    score: 69.0
     source: audit-evaluator
     updated_at: '2026-08-15'
 bedienpanel-ui:
@@ -51,18 +50,17 @@ bedienpanel-ui:
 diagnose-werkzeuge:
   RA:
     evidence:
-    - ea-fc-sbc-optimizer.user.js:110-132
-    - solver-test.js:1711-1772
-    - ea-fc-sbc-optimizer.user.js:147-150
-    - ea-fc-sbc-optimizer.user.js:4127-4138
-    - app/log-test.js:48-58
-    iteration_scored: 0
-    reasoning: 'Alle 4 Aktionen im Code gelandet: uiScan echt differenziert, Duplikat
-      weg + Regressionstest, Schema 6→21 Felder, reportError an 7 Call-Sites konsumiert,
-      app/log-test.js nach SSOT-Extraktionsprinzip. Abzug: Symmetrie-Test prueft nur
-      2 von 3 Richtungen — lastEligible bleibt befuellt-aber-unsichtbar (uiScan-Fehlerklasse
-      in Gegenrichtung), unentdeckt vom eigenen Test.'
-    score: 76.0
+    - ea-fc-sbc-optimizer.user.js:4066-4071
+    - ea-fc-sbc-optimizer.user.js:2795
+    - solver-test.js:1853-1905
+    - ea-fc-sbc-optimizer.user.js:4177-4195
+    - docs/LEARNINGS.md:1165-1208
+    iteration_scored: 1
+    reasoning: 'Alle 3 Aktionen vollstaendig: lastEligible tri-state-sicher im Report,
+      Symmetrie-Test mit 3 Richtungen + engen begruendeten Ausnahmen, Diagnose-Tool
+      selbst gehaertet (Fallback ueber denselben Copy-Pfad, Regressionsblock 31).
+      Rest zum Deckel 85 ist der inhaerente Lag fuer noch-nicht-gedachte Fehlerbilder.'
+    score: 84.0
     source: audit-evaluator
     updated_at: '2026-08-15'
 ea-app-anbindung:
@@ -85,17 +83,17 @@ ea-app-anbindung:
 rating-solver:
   RA:
     evidence:
-    - ea-fc-sbc-optimizer.user.js:1992-2003
-    - ea-fc-sbc-optimizer.user.js:1519-1524
-    - ea-fc-sbc-optimizer.user.js:1601-1613
-    - solver-test.js:857-954
-    - docs/LEARNINGS.md:986-1038
-    iteration_scored: 0
-    reasoning: 'Alle 4 Struktur-Refactorings live verifiziert: reserve()-Funnel strukturell
-      erzwungen inkl. Kollisions-Warnung, Komparator-Factory mit erhaltenem Tiebreak-Unterschied,
-      makeCostOf als mechanische SSOT (Test ruft denselben Code), Totcode raus. Distanz
-      zum Deckel 95: Kern-Formel bleibt reverse-engineered.'
-    score: 89.0
+    - ea-fc-sbc-optimizer.user.js:1495-1507
+    - ea-fc-sbc-optimizer.user.js:2401-2406
+    - ea-fc-sbc-optimizer.user.js:2511-2522
+    - solver-test.js:268-345
+    - docs/LEARNINGS.md:1210-1261
+    iteration_scored: 1
+    reasoning: 'Alle 3 Aktionen vollstaendig und rigoroser als geplant: Tiebreak per
+      Reihenfolge-Beweis entfernt, Test 6 mit Gegenprobe gegen den Vakuum-Wahrheits-Vorwurf
+      ersetzt, Suchgrenzen hergeleitet, neues Diagnose-Signal mit Gegenproben-Testpaar.
+      Rest zum Deckel 95 bleibt strukturell (reverse-engineerte Formel).'
+    score: 92.0
     source: audit-evaluator
     updated_at: '2026-08-15'
 sbc-vorgaben-erkennung:

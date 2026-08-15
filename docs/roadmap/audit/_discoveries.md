@@ -1,18 +1,18 @@
-# Discoveries — Iteration 0
+# Discoveries — Iteration 1
 
-**Stand:** 2026-08-15T02:18:30Z
+**Stand:** 2026-08-15T10:26:33Z
 
 ## Pattern-Discoveries (Klasse F)
 
-_Keine mid-iter ergänzten Patterns in Iter 0._
+_Keine mid-iter ergänzten Patterns in Iter 1._
 
 ## Shared-Item-Mid-Iter-Inserts (Klasse G)
 
-_Keine Shared-Items spät ergänzt in Iter 0._
+_Keine Shared-Items spät ergänzt in Iter 1._
 
 ## Cross-Feature-Smells (gebündelte Cleanup-Sammeltickets)
 
-_Keine `collect_and_bundle`-Discoveries in Iter 0 — kein Bündeln nötig._
+_Keine `collect_and_bundle`-Discoveries in Iter 1 — kein Bündeln nötig._
 
 ## Vision-Hinweise für nächste Iter
 

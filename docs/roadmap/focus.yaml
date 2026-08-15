@@ -149,5 +149,16 @@ history:
     nur fuer den einzigen benannten Rest (STATE.loading-Guard, Mini-Task), batch-modus
     (69/70) fuer den nie gepruefte EA-Wandel-Punkt der Tap-Navigation (Gap mit Ehrlichkeits-Mandat:
     duenn = duenn sagen). Alle uebrigen 7 Features an ihren Deckeln — halten.'
-  effectiveness: {}
+  effectiveness:
+    verdict: hit
+    focused_gains:
+      bedienpanel-ui:
+        RA: 1
+      batch-modus:
+        RA: 1
+    held_features_regressions: {}
+    notes: 'Beide Fokus-Ziele erreicht, beide Features am Deckel: bedienpanel 84->85
+      (#52 loading-Guard), batch 69->70 (#54 titleSource/Tap-Tests/popupDismissCount).
+      Damit 6 von 9 Features exakt auf structural_max; die restlichen 3 (solver 92/95,
+      diagnose 84/85, pool 83/85) haben ausschliesslich strukturell begruendete Restpunkte.'
 pending_suggestion: null

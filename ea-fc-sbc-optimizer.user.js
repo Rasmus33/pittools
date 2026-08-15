@@ -4047,6 +4047,12 @@
             })(),
             refreshLog: STATE.diag.refreshLog || null,
             submitVia: STATE.diag.submitVia || null,
+            // Kein "|| null": lastEligible ist dreiwertig (true = App haelt
+            // Squad fuer abgabefaehig, false = ausdruecklich NICHT abgabefaehig
+            // - der fuer Rasmus wichtigste Fall, null = Pruefung nicht moeglich).
+            // "false || null" wuerde zu null kollabieren und den wichtigsten
+            // Fall ununterscheidbar von "nicht geprueft" machen.
+            lastEligible: typeof STATE.diag.lastEligible !== 'undefined' ? STATE.diag.lastEligible : null,
             controllerScan: controllerScan(),
             // GEKUERZT: von den 23 Slots sind die meisten leer (id 0) - die
             // stehen jetzt nur als Anzahl drin. Wichtig ist, WELCHE Karte auf

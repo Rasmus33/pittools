@@ -128,3 +128,32 @@ Kumulativ. Git-Log ist die History.
 - Restfund aus dem Re-Score als Seed statt Hotfix: applyFromSetChallenges ruft deepScanChallenge ohne recordDeepScanStats (Beobachtbarkeitslücke im Fallback-Pfad der NEUEN Fähigkeit) — klein, additiv fixbar, kein Anlass für eine vierte Runde jetzt.
 - Bewusst verschoben: apiBaseDetectionStuck + sbcHookMisses (dünn, ea-app ist am Deckel).
 - Eskalationen: 0. Post-Squash-Regel (alle Commits vor review bündeln) hielt zum zweiten Mal — 0 verwaiste PRs.
+
+## Iteration 4 — 2026-08-15
+
+## Iteration 4 — 2026-08-15
+
+### Score-Bewegung
+- Fokus-Iteration auf User-Wunsch (2 von 9 Features): bedienpanel-ui 82→84 (Ziel 84, größter Restspielraum des Portfolios), sbc-vorgaben-erkennung 79→80 (structural_max, via Mini-Fix #48). Fokus-Verdict: hit, 2/2.
+- Userscript v4.50.0 → v4.53.0, Tests 464 → 490. Damit stehen 4 der 9 Features exakt auf ihrem strukturellen Deckel (sbc 80/80, ea-app 75/75, android 80/80, team 75/75), die übrigen 1-3 Punkte darunter mit dokumentierten Gründen.
+
+### Methodische Erkenntnisse
+- Mini-Task-Flow etabliert: kind=task ohne Score-Snapshot + Main-Verifikation statt Validator-Spawn bei Ein-Zeilen-Diff (#48) — Prüfaufwand proportional zur Diff-Größe, der Restfund aus dem iter3-Re-Score war in einer halben Stunde geschlossen.
+- Re-Score-Restfunde sind das beste Seed-Material: der iter3-Abzugsgrund (scanStats-Fallback-Pfad) war präzise genug, um ohne neue Gap-Analyse direkt ein Ticket zu schneiden.
+- Validator-PARTIAL noch in derselben Iteration abgeräumt: das kosmetische Doppel-Logging (warn + reportError) wurde als PO-Direktfix v4.53.0 bereinigt statt als Debt verschleppt — inklusive ehrlicherem Fehler-Label (der Catch deckt readConfig UND solve, das Label sagte nur readConfig).
+- Reihenfolge-Beweis als Muster für additive Fallback-Ketten: Fixtur, in der Primär- und Fallback-Weg gleichzeitig treffen, Assertion auf Element-IDENTITÄT plus Fallback-Zähler bleibt 0 — stärker als jede truthiness-Prüfung.
+- Zähler bewusst außerhalb von STATE.diag platzieren, wenn sie in einen bestehenden Report-Block gehören (containerFallbackUsed im launcher-Block wie btnAttachCount): hält den Symmetrie-Test frei von Ausnahmen.
+- Q7-Drift entsteht auch durch die eigene Pipeline: der PO-Cleanup (Label-Umbenennung) machte den frisch geschriebenen §40 falsch — Doku-Angleich gehört in denselben Arbeitsgang wie der Code-Fix.
+
+### Patterns ergänzt / verändert
+- Keine neuen Patterns. ea-grenz-fallback-ketten um den Launcher-Fall vertieft (Text-Discovery aus der Diagnose wurde zur Fallback-Quelle befördert — Diagnose-Felder als Vorstufe künftiger Fallbacks bestätigt sich); fehler-unsichtbar-verschluckt: die drei letzten stillen localStorage-Catches des Panels hängen jetzt am reportError-Chokepoint.
+
+### Shared-Items
+- Keine.
+
+### PO-Entscheidungen
+- Klasse C: 2 — (1) Doppel-Logging-Cleanup als PO-Direktfix v4.53.0 nach Validator-Fund; (2) §40-Label-Angleich nach Re-Score-Fund.
+- Validator: 1× PASS-mit-kosmetischem-Fund (PARTIAL), 1× Main-Verifikation (Mini-Task #48). Kein Re-Spawn.
+- Bewusst offen gelassen: STATE.loading-Guard (dünn — Fenster schmal, nicht korruptierend); readConfig ohne eigenen Guard (Q4-Architekturentscheidung, beide Call-Sites gedeckt).
+- Plugin-Validierungsfehler bei ticket create (task-Spec braucht target_paths + acceptance im Spec-Block) — kein Bug, Spec-Anforderung; beim zweiten Versuch sauber durch. Der rc=42-Report wurde automatisch erfasst.
+- Eskalationen: 0. Post-Squash-Regel hielt zum dritten Mal.

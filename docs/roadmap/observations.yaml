@@ -133,6 +133,18 @@ entries:
   reasoning: PARTIAL → Re-Spawn (1/1) fuer den fehlenden Format-Aequivalenz-Test genutzt
     statt Finding zu verschieben — Bestandsnutzer-Bands sind No-Regression-Kern. Danach
     Merge, v4.42.0 geht live (Panel-Reset liefert erstmals die dokumentierten Defaults).
+- at: '2026-08-15T01:17:49Z'
+  issue: 8
+  po_class: D
+  surprises:
+  - '#8 bringt 53 neue Tests (295/295): Normalisierung/Evolution/Locks erstmals echt
+    ausgefuehrt getestet, alle 11 isEvolution-Verzweigungen. Locks-Ausfall jetzt als
+    dediziertes STATE.diag.locks.error sichtbar (sicherheitsrelevant).'
+  - 'Validator-Funde: extractFunction-Helfer weiter nicht adoptiert (20 Duplikate
+    — SI naechste Iteration) + LEARNINGS-Paragraphen-Drift (CLAUDE.md zeigt fuer Club-Lade-Takt
+    auf jetzt-fremden Paragraph 23) — Doku-Fix macht Main direkt.'
+  reasoning: 'PARTIAL akzeptiert: beide Funde sind Folgearbeit, Akzeptanz komplett.
+    v4.43.0 geht live.'
 discoveries:
   pattern_candidates:
   - slug: symmetrie-test-lesen-schreiben-trennen

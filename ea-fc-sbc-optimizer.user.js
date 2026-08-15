@@ -743,6 +743,7 @@
         const node = findChallengeNode(STATE.lastSetChallenges, STATE.sbc.challengeId, STATE.diag.scanStats);
         if (node) {
             const scan = deepScanChallenge(node);
+            recordDeepScanStats(scan);
             applyScan(scan, 'Set-Challenges');
         }
     }

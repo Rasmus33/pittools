@@ -1,1 +1,19 @@
-[]
+[
+  {
+    "slug": "test-extraktions-helfer",
+    "consumers": [
+      "batch-modus",
+      "spieler-pool",
+      "sbc-vorgaben-erkennung",
+      "diagnose-werkzeuge"
+    ],
+    "proposed_target_path": "solver-test.js",
+    "test_paths": [
+      "solver-test.js"
+    ],
+    "bundle_hint": "test-infrastruktur",
+    "rationale": "Aktion 3 (openNextInstance-Extraktion mit vollständigem Helper-Mocking fuer den Stuck-Recovery-Verhaltenstest) und Aktion 4 (recordBatchStep-Reducer-Extraktion fuer den Mehrrunden-Ringpuffer-Testfall) dieses batch-modus-Lift-Plans sind zwei weitere Konsumenten des in solver-test.js Abschnitt 21 (:1942-1951) bereits einmal ad-hoc implementierten Extraktions-Boilerplates (src.indexOf('function X') -> Textblock ausschneiden -> new Function(...)). docs/roadmap/patterns/aspects/aspect-tests.md dokumentiert das daraus entstandene Antipattern (elffaches Neu-Einlesen der Zieldatei, uneinheitliche Anfuehrungszeichen); ein gemeinsamer extractFunction(src, startMarker[, endMarker])-Helfer verhindert, dass dieser Lift zwei weitere Kopien hinzufuegt statt den bereits als SI-reif erkannten Kandidaten (gaps/_cross-cutting.md) zu nutzen. Reihenfolge-Anforderung: das SI muss vor den Test-Aktionen dieses Feature-Lifts gemergt sein (depends_on); liegt es beim Implementieren noch nicht vor, ist die lokale extractFn-Kopie aus Abschnitt 21 der dokumentierte Uebergangs-Fallback, der nach dem SI-Merge ersetzt werden muss.",
+    "priority": "P1-high",
+    "effort": "S"
+  }
+]

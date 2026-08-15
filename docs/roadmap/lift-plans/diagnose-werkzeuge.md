@@ -1,15 +1,13 @@
 ---
 feature: diagnose-werkzeuge
-iteration: 0
+iteration: 1
 score_current:
-  RA: 58
-score_target:                              # M3 (Ambitions-Regel): 58 + (85-58)*0.7 = 76.9 -> 77
-  RA: 77
+  RA: 76
+score_target:                              # Vorgabe M3-Target 82 (entspricht Ambitions-Regel:
+  RA: 82                                   # 76 + (85-76)*0.7 = 82.3 -> 82)
 primary_paths:
   - ea-fc-sbc-optimizer.user.js
   - solver-test.js
-  - app/java/com/sbctools/browser/MainActivity.java
-  - app/guard-test.js
 patterns_required:                         # formal auf diagnose-werkzeuge anwendbare gute Patterns
                                            # (applies_to_features enthaelt diagnose-werkzeuge) - kein
                                            # PK-Ziel diese Iteration (pk_files_to_cite: []), sie leiten
@@ -19,281 +17,255 @@ patterns_required:                         # formal auf diagnose-werkzeuge anwen
 pk_files_to_cite: []
 citation_only: false
 shared_items_required:
-  - fehler-sichtbarkeit-diagerror
-priority: P3-deferred                      # Sigma Gain ~20.5 < 100 -> Heuristik-Default, keine
-                                           # sicherheitsrelevante Sonderlage wie bei spieler-pool
-                                           # (dort wurde readPaletoolsLocks SELBST gefixt; hier liefert
-                                           # dieses Feature nur den Helfer-Kern, keinen Call-Site-Fix
-                                           # an einer NIEMALS-verbauen-Stelle).
+  - test-extraktions-helfer
+priority: P3-deferred                      # Sigma Gain (Mittelwerte 4+2.5+3=9.5) < 100 -> Heuristik-
+                                           # Default; keine sicherheitsrelevante Sonderlage, alle drei
+                                           # Aktionen additiv/klein.
 effort: S                                  # Override: phase_sequence hat 5 Glieder (fixer 5-Phasen-
-                                           # Workflow, gilt fuer JEDES pittools-Feature identisch aus
-                                           # CLAUDE.md), sagt hier nichts ueber den Umfang. Alle vier
-                                           # Aktionen sind additiv/klein (1 Feld befuellen, 1 Zeile
-                                           # loeschen, 1 Deklarationsblock erweitern, 1 neue Helfer-
-                                           # Funktion, 1 neue Testdatei) - kein Umbau bestehender Logik.
+                                           # Workflow, gilt fuer jedes pittools-Feature identisch aus
+                                           # CLAUDE.md), sagt hier nichts ueber den Umfang. Alle drei
+                                           # Aktionen sind additiv/klein (1 Report-Zeile, 1 erweiterter
+                                           # Testblock, 2 Try/Catch-Bloecke + 1 Regressionstest).
 analyzed_at: '2026-08-15'
 ---
 
-# Lift-Plan — Diagnose-Werkzeuge (Script-Report & App-Log)
+# Lift-Plan — Diagnose-Report um Eligibility-Sichtbarkeit und Fehlerabsicherung erweitern
 
-**Ticket-Titel-Vorschlag (ADR #73):** Diagnose-Report: tote Felder beheben, Schema und Fehler-Helfer nachrüsten
+**Ticket-Titel-Vorschlag (ADR #73):** Diagnose-Report um Eligibility-Sichtbarkeit und Fehlerabsicherung erweitern
 
 ## Marschroute
 
-Vier additive, unabhängig abnehmbare RA-Aktionen entlang `core → diagnose →
-tests → docs → release`. `core` bleibt diese Iteration **leer** — anders als
-bei den meisten anderen pittools-Features IST der Diagnose-Report selbst die
-Kern-Code-Geographie dieses Features (`buildDiagReport`, `onDiagClick`,
-`diagError`, `STATE.diag.*`, `ea-fc-sbc-optimizer.user.js:3701-4008` und
-`:105-122`); alle vier inhaltlichen Änderungen landen deshalb konsequent in
-`diagnose`.
+Drei additive, unabhängig abnehmbare RA-Aktionen entlang `core → diagnose →
+tests → docs → release`, alle live gegen Userscript v4.45.0
+(`const VERSION = '4.45.0';`, `ea-fc-sbc-optimizer.user.js:66`) verifiziert.
+Wie schon in Iteration 0 IST der Diagnose-Report selbst die Kern-Code-
+Geographie dieses Features — `core` bleibt deshalb wieder leer, die
+inhaltlichen Änderungen landen in `diagnose` (neues Report-Feld,
+Fehlerabsicherung) bzw. `tests` (Symmetrie-Test-Erweiterung,
+Regressionstest für die neue Try/Catch-Disziplin).
 
-Keine der vier Aktionen fasst Solver-, Netz- oder Submit-Logik an — reine
-Beobachtbarkeits-/SSOT-Arbeit am Report selbst plus eine neue, isolierte
-App-Testdatei. Der eiserne Arbeitsablauf gilt trotzdem voll: `node --check`,
-`node solver-test.js` (aktuell 180/180 grün) vor und nach jeder Aktion,
-Versionsbump vor Push.
+Reihenfolge der Umsetzung folgt der Gap-Report-Empfehlung, NICHT
+zwangsläufig der Phasen-Commit-Reihenfolge: zuerst Aktion 2 (Symmetrie-Test
+um die dritte Richtung ergänzen — zeigt danach ROT, weil `lastEligible`
+deklariert, aber im Report ungelesen ist), dann Aktion 1 (Report-Zeile
+ergänzen — Test wird GRÜN), dann Aktion 3 (Try/Catch-Härtung +
+Regressionstest dafür). Diese Reihenfolge macht während der Umsetzung
+selbst sichtbar, ob Aktion 1 tatsächlich greift, statt es erst am Ende zu
+hoffen. Die drei Aktionen dieses Plans **decken Cleanup-Kind #24
+(`lastEligible` nie im Report) inhaltlich ab** — beim Merge dieses Lifts
+schließt #24, kein separates Ticket dafür nötig.
 
-Reihenfolge:
-
-1. **`diagnose` — `uiScan` befüllen** (statt zu entfernen — Report-Format-
-   Kontinuität ist laut Gap-Report bereits entschieden, siehe Risiken).
-2. **`diagnose` — Duplikat-Key `rareConstraints` entfernen**, als eigener,
-   kleiner Commit.
-3. **`diagnose` — `STATE.diag`-Schema zentralisieren**, bewusst als
-   SEPARATER, dritter Commit (nicht mit 1/2 zusammengelegt — CLAUDE.md
-   „kleine Diffs", auch vom Gap-Report ausdrücklich so empfohlen), weil dies
-   der Diff mit dem größten Umfang ist.
-4. **`diagnose` — `reportError(label, e)`-Helferkern liefern** (SI
-   `fehler-sichtbarkeit-diagerror`): dieses Feature besitzt `diagError()` und
-   `STATE.diag` bereits in seiner Code-Geographie und liefert deshalb den
-   HELFER-KERN, der `warn()` + `diagError()` in einem Aufruf bündelt. Die
-   sieben im Gap-Report benannten Call-Sites (`fetchStorageViaHttp`,
-   `fetchUnassignedViaHttp`, `fetchUnassignedViaServices`,
-   `fetchStorageViaServices`, `readPaletoolsLocks`,
-   `syncSbcWithOpenChallenge`, `onBatchPlanClick`) liegen NICHT in der
-   Code-Geographie von `diagnose-werkzeuge`, sondern in der von
-   `spieler-pool`, `ea-app-anbindung`, `team-eintragen` bzw. `batch-modus` —
-   drei von vier dieser Features haben in ihren eigenen, bereits auf Platte
-   liegenden Iteration-0-Lift-Plänen einen Teil dieser Stellen schon additiv
-   selbst gefixt (`spieler-pool.md` Aktion 1: `:1334`/`:1346`/`:907`;
-   `ea-app-anbindung.md` Aktion 1: `:1100`/`:1118`/`:762`; `team-eintragen.md`
-   Aktion 3: `:762` erneut). Dieser Plan plant deshalb **keine** dieser
-   Call-Site-Fixes erneut (keine Doppel-Planung derselben Zeilen), sondern
-   ausschließlich den gemeinsamen Helfer, den alle vier Features in einer
-   Folge-Iteration konsumieren können.
-5. **`tests` — App-Log-Ringpuffer testen** (Literal-Extraktion nach
-   `guard-test.js`-Vorbild, reine neue Testdatei `app/log-test.js`, **kein
-   Build nötig**: die Aktion ändert `MainActivity.java` an keiner Stelle,
-   sie liest die bestehende Quelle nur textuell aus — anders als jede
-   Aktion, die den Java-Produktivcode selbst ändert und Rasmus' Build
-   braucht).
-6. **`docs`** — `docs/LEARNINGS.md` um einen Abschnitt zum neuen
-   `reportError`-Helfer und dem `STATE.diag`-Schema ergänzen (Q7,
-   IST-Zustand, kein „vorher/nachher").
-7. **`release`** — Versionsbump (`@version` + `const VERSION`),
-   `node --check` + `node solver-test.js` grün, Push auf `main`.
+Keine der drei Aktionen fasst Solver-, Netz- oder Submit-Logik an — reine
+Beobachtbarkeits- und Abbruch-Disziplin-Arbeit am Report selbst.
+`node --check`, `node solver-test.js` (aktuell grün) vor und nach jeder
+Aktion, Versionsbump vor Push (nächste freie Version über 4.45.0 —
+Implementer prüft den Live-Stand vor dem Bump, CLAUDE.md-Pflicht:
+`@version` UND `const VERSION` müssen übereinstimmen).
 
 ## Aktionen pro Dimension
 
 ### RA — Robust Architecture
 
-1. **`uiScan` befüllen statt entfernen** (Pfad:
-   `ea-fc-sbc-optimizer.user.js:3758` liest bereits `STATE.diag.uiScan ||
-   null`; neue Zuweisungsstelle direkt am Kopf von `onDiagClick()`,
-   `:3991`): beim Auslösen des Diagnose-Klicks ein leichtgewichtiges
-   DOM-Snapshot-Objekt setzen — `inSbcView()`-Rückgabewert
-   (`ea-fc-sbc-optimizer.user.js:3564`) plus Panel-/FAB-Sichtbarkeit
-   (`ui.fab`/`ui.panel`, analog zu den bereits vorhandenen
-   `fabVisible`/`panelOpen`-Feldern im `launcher`-Sub-Objekt,
-   `:3893-3896`) — bevor `buildDiagReport()` aufgerufen wird. Rein additiv,
-   kein bestehendes Verhalten ändert sich. **Erwarteter Gain: +3 bis +4 Pt**
-   (Kriterium „Beobachtbarkeit" — behebt den einzigen im Report dauerhaft
-   toten Feld-Fund).
+1. **`lastEligible` additiv in den Report aufnehmen — Tri-State-sicher:**
+   in `buildDiagReport()` (`ea-fc-sbc-optimizer.user.js`) direkt nach
+   `submitVia: STATE.diag.submitVia || null,` (Zeile 4036, vor
+   `controllerScan: controllerScan(),` in Zeile 4037) eine neue Zeile
+   ergänzen:
+   ```js
+   lastEligible: typeof STATE.diag.lastEligible !== 'undefined' ? STATE.diag.lastEligible : null,
+   ```
+   Bewusst NICHT das im übrigen Report übliche `STATE.diag.X || null`-Idiom
+   (siehe `locks`, `refreshLog`, `lastTeam`, `submitCandidates` in derselben
+   Funktion) — `STATE.diag.lastEligible` ist an seiner Schreibstelle
+   (`ea-fc-sbc-optimizer.user.js:2777`, direkt vor dem 403-Error-Throw in
+   der `submitToSbc`-Fehlerbehandlung) dreiwertig: `true` = App hält Squad
+   für abgabefähig, `false` = ausdrücklich NICHT abgabefähig (der für
+   Rasmus wichtigste Fall — zeigt, dass eine Vorgabe fehlt, die der Solver
+   nicht abdeckt), `null` = Prüfung nicht möglich. `|| null` würde
+   `false || null` zu `null` kollabieren und den wichtigsten Fall
+   ununterscheidbar von „nicht geprüft" machen. Reine Ergänzung, keine
+   vorhandene Report-Zeile wird umbenannt oder entfernt (Report-Format-
+   Kontinuität). **Erwarteter Gain: +3 bis +5 Pt** (Kriterium
+   „Beobachtbarkeit" — schließt den einzigen von audit-evaluator benannten
+   Abzugsgrund und Cleanup-Kind #24).
 
-2. **Duplikat-Key `rareConstraints` entfernen + Dedupe-Regressionstest**
-   (Pfad: `ea-fc-sbc-optimizer.user.js:3927-3928`, verifiziert: beide Zeilen
-   lesen identisch `STATE.sbc.rareConstraints || []`, das Feld selbst ist
-   real und einzeln geführt — `STATE.sbc.rareConstraints` wird an genau
-   einer Stelle geschrieben (`:490`, `:695`), `rarityConstraints` ist ein
-   eigenständiges, unabhängiges Feld daneben; die Dopplung ist reiner
-   Copy-Paste-Rest, kein zweiter Datenfluss unter gleichem Namen — Q3
-   erledigt): die falsch eingerückte Zeile `:3927` entfernen, `:3928`
-   bleibt. Zusätzlich in `solver-test.js` einen neuen statischen Testblock,
-   der den Quelltext zwischen `function buildDiagReport` und dessen
-   schließendem `}` slice't und per Regex prüft, dass im `sbc:
-   {...}`-Objekt-Literal kein Property-Name doppelt vorkommt (verhindert
-   Wiederholung derselben Fehlerklasse an dieser oder späteren
-   Report-Erweiterungen). **Erwarteter Gain: +2 bis +3 Pt** (SSOT +
-   Testbarkeit).
+2. **Symmetrie-Test um die 3. Richtung ergänzen + Lesen/Schreiben trennen**
+   (Pattern-Kandidat `symmetrie-test-lesen-schreiben-trennen`, hier als
+   Beleg gestärkt): `solver-test.js:1711-1773` (Block 17) additiv erweitern,
+   ohne die bestehenden Checks (a)/(b) zu verändern:
+   - **Neue Prüfung (c):** „jedes deklarierte `STATE.diag`-Feld wird auch
+     INNERHALB von `buildDiagReport()` gelesen" — spiegelbildlich zur
+     bestehenden Prüfung (b, Zeilen 1751-1753), diesmal mit der `declared`-
+     Menge als Ausgangspunkt statt `readNames`:
+     ```js
+     const missingFromReport = Array.from(declared).filter(n => !readNames.has(n));
+     check('Jedes deklarierte STATE.diag-Feld wird auch INNERHALB von buildDiagReport() gelesen',
+         missingFromReport.length === 0, missingFromReport.join(','));
+     ```
+     Vor Aktion 1 wäre dieser Check ROT (`lastEligible` fehlt in
+     `readNames`), nach Aktion 1 GRÜN — genau der Regressionsschutz, der
+     den `uiScan`-Fehlerfall aus Iteration 0 und den `lastEligible`-Fund
+     dieser Iteration künftig automatisch aufdeckt.
+   - **Bestehende Prüfung (Zeilen 1762-1772) verschärfen:** die aktuelle
+     Regex `STATE\.diag\.NAME\b` matcht jede Erwähnung außerhalb des
+     Funktionskörpers — auch eine reine Lesestelle (`if (STATE.diag.X)`)
+     zählt fälschlich als „befüllt". Ersetzen durch ein Muster, das nur
+     echte Schreibzugriffe zählt: Zuweisung `=` (nicht `==`/`===`/`!==`),
+     `.push(`, `.shift(`, `++`, `--`:
+     ```js
+     const writeRe = new RegExp(
+         'STATE\\.diag\\.' + name + '\\s*=[^=]' +          // Zuweisung, kein ==/===
+         '|STATE\\.diag\\.' + name + '\\.(push|shift)\\(' + // Ringpuffer-Mutation
+         '|STATE\\.diag\\.' + name + '\\s*(\\+\\+|--)',     // Zaehler
+         'g');
+     ```
+     angewendet auf den Text außerhalb von `fnOpen`/`fnClose` (gleiche
+     Fundstellen-Iteration wie bisher, nur die Match-Bedingung ändert
+     sich). Aktuell hat zwar jedes der 21 deklarierten Felder eine echte
+     Schreibstelle (kein Live-Bug, per Volltextsuche verifiziert) — die
+     Verschärfung garantiert das aber strukturell für jedes künftige neue
+     Feld, statt es dem Zufall zu überlassen.
+   - Beide Ergänzungen bleiben additiv im selben Testblock 17 (kein neuer
+     Block nötig, `declared`/`readNames`/`fnOpen`/`fnClose` sind bereits
+     vorhanden und werden wiederverwendet — Q4).
+   **Erwarteter Gain: +2 bis +3 Pt** (Kriterium „Testbarkeit" — verhindert
+   strukturell, dass Aktion 1 oder ein künftiges Feld unbemerkt in
+   denselben toten Report-Zustand zurückfällt).
 
-3. **`STATE.diag`-Schema zentralisieren** (Pfad:
-   `ea-fc-sbc-optimizer.user.js:105-112`): die Deklaration von aktuell 6 auf
-   alle 18 tatsächlich verwendeten Felder erweitern (per Volltextsuche
-   verifiziert: `lastSquadPutBody`, `staleRecover`, `locks`, `clubLoad`,
-   `submitVia`, `lastEligible`, `refreshLog`, `submitCandidates`,
-   `submitChallengeVia`, `lastTap`, `batchSteps`, `lastTeam` — plus `uiScan`
-   aus Aktion 1), jedes mit Kurzzweck-Kommentar analog zum bestehenden Stil
-   (`lastUtasPaths: [], // letzte utas-Pfade`). Dazu ein neuer statischer
-   Test in `solver-test.js`: (a) extrahiert die Feldnamen aus dem
-   `diag: {...}`-Objekt-Literal der `STATE`-Deklaration, (b) extrahiert alle
-   `STATE.diag.<name>`-LESE-Vorkommen aus dem `buildDiagReport()`-Funktions-
-   körper, (c) prüft, dass jeder gelesene Name in der deklarierten Liste
-   steht, (d) prüft zusätzlich (symmetrisch), dass jeder deklarierte Name
-   an mindestens einer Stelle im gesamten File auch zugewiesen wird
-   (`STATE.diag.<name>\s*=`). Das ist genau der Test, der den `uiScan`-Fund
-   aus Aktion 1 künftig automatisch aufgedeckt hätte, und verhindert das
-   Wiederauftreten derselben Fehlerklasse bei jedem künftigen neuen Feld.
-   Bewusst als **eigener, separater Commit** (größter Diff dieses Plans,
-   Q1/Q2 „kleine Diffs"). **Erwarteter Gain: +5 bis +8 Pt** (größter
-   Einzelhebel: SSOT + Beobachtbarkeit gemeinsam, laut Gap-Report Wurzel-
-   ursache hinter den Mängeln 1 und 3).
+3. **`submitInfo`-Block absichern + `buildDiagReport()`-Aufruf selbst gegen
+   Ausfall wappnen:**
+   - `ea-fc-sbc-optimizer.user.js:3942-3950` (`submitInfo`-IIFE, ruft
+     `findSbcController()`/`findLiveChallenge()` auf — beide traversieren
+     die undokumentierte EA-Controller-Kette über `getControllerChain()`)
+     in ein eigenes Try/Catch fassen, analog zum strukturell gleichrangigen
+     Nachbarblock `hubScan` (`:3914-3939`, bereits `try { … } catch (e) {
+     return { error: … } }`):
+     ```js
+     submitInfo: (function () {
+         try {
+             const svc = window.services && window.services.SBC;
+             const ctrl = findSbcController();
+             return {
+                 saveChallengeThere: !!(svc && typeof svc.saveChallenge === "function"),
+                 liveChallengeThere: !!findLiveChallenge(),
+                 controllerName: (ctrl && ctrl.constructor && ctrl.constructor.name) || null
+             };
+         } catch (e) { return { error: String(e && e.message || e) }; }
+     })(),
+     ```
+   - `onDiagClick()` (`:4139`, `const report = buildDiagReport();`) selbst
+     in ein Try/Catch nehmen, das im Fehlerfall `reportError('Diagnose-
+     Report fehlgeschlagen', e)` aufruft (Helfer existiert bereits,
+     `ea-fc-sbc-optimizer.user.js:147-150`, Block 16 in `solver-test.js`
+     testet ihn) und trotzdem einen minimalen Fallback-Report loggt/kopiert:
+     ```js
+     let report;
+     try { report = buildDiagReport(); }
+     catch (e) {
+         reportError('Diagnose-Report fehlgeschlagen', e);
+         report = { version: VERSION, url: location.href, error: String(e && e.message || e) };
+     }
+     ```
+   - Neuer Regressionstest in `solver-test.js` (neuer Block, Nummer 26):
+     jeder Top-Level-IIFE-Sub-Block innerhalb von `buildDiagReport()`, der
+     EA-Controller-Traversal aufruft (`findSbcController`,
+     `findLiveChallenge`, `getControllerChain`), hat einen eigenen
+     `catch`-Zweig — konkret: für die drei bekannten Sub-Blöcke `hubScan`,
+     `submitInfo`, `launcher` per Regex prüfen, dass zwischen dem jeweiligen
+     `(function () {` und dessen schließendem `})()` ein `catch (e)`
+     vorkommt (gleiche Extraktionslogik wie in Block 17 — `matchingBrace`
+     aus Block 17 wiederverwenden statt neu zu schreiben, Q4).
+   Diese Aktion ist der einzige Grund, warum der Diagnose-Kanal selbst
+   NICHT unter [[fehler-unsichtbar-verschluckt]] fallen darf: das
+   Werkzeug, das EA-Wandel sichtbar machen soll, darf bei genau dieser
+   Fehlerklasse nicht selbst lautlos verstummen (kein Toast, kein
+   `diagError`, keine Konsolenzeile). **Erwarteter Gain: +2 bis +4 Pt**
+   (Kriterium „Abbruch-Disziplin"/Fehlertoleranz gegen EA-Wandel).
 
-4. **`reportError(label, e)`-Helferkern liefern (SI
-   `fehler-sichtbarkeit-diagerror`)** (Pfad:
-   `ea-fc-sbc-optimizer.user.js:116-122`, direkt neben der bestehenden
-   `diagError`-Definition): neue Funktion, die das an mindestens 10
-   Call-Sites über 5 Features wortgleich wiederholte Paar `warn(label + ':',
-   e && e.message || e); diagError(label + ': ' + (e && e.message || e));`
-   in einem Aufruf bündelt — SSOT für die „dieser Fehler muss in den
-   Report"-Entscheidung (Q5, Wurzelursache laut
-   `patterns/bad/fehler-unsichtbar-verschluckt.md`, Abschnitt
-   „Beziehungen"). Diese Iteration **migriert keine bestehende Call-Site**
-   auf den neuen Helfer (reine Neu-Einführung, additiv, kein Verhaltens-
-   Umbau an fremdem Feature-Code) — die vier Konsumenten-Features
-   (`spieler-pool`, `ea-app-anbindung`, `android-app-wrapper`,
-   `batch-modus`) migrieren ihre jeweiligen Catch-Blöcke in einer eigenen
-   Folge-Iteration, sobald der Helfer gemergt ist (siehe
-   Shared-Item-Bedarf). Neuer Testblock in `solver-test.js`: extrahiert
-   `reportError` per Marker-Slice, ruft sie mit einem Fake-Error auf, prüft
-   per `console.warn`-Spy, dass `warn()` ausgelöst wurde, UND dass
-   `STATE.diag.lastErrors` den erwarteten, gekürzten String enthält.
-   **Erwarteter Gain: +3 bis +5 Pt** (Kriterium „Dokumentierte Begründung"
-   + Vorbereitung der Testbarkeit für die künftige Konsolidierung; kein
-   PK-Gain, da PK für dieses Feature kein Ziel ist).
-
-5. **App-Log-Ringpuffer testen** (Pfad: neue Datei `app/log-test.js`,
-   referenziert `app/java/com/sbctools/browser/MainActivity.java:89-125`
-   — `LOG_MAX=400`, `LOG_LINE_MAX=600`, `addLog()`, `buildLogReport()` —
-   **keine Änderung an `MainActivity.java` selbst, daher kein
-   Build/Signatur-Schritt nötig**): nach dem Vorbild von `app/guard-test.js`
-   (Literal-Extraktion aus der Java-Quelle statt Neuschreiben) baut der
-   neue Test:
-   - `LOG_MAX`/`LOG_LINE_MAX` per Regex direkt aus der Java-Quelle
-     extrahieren (SSOT — der Test hält keine eigene `400`/`600`-Kopie, die
-     driften könnte, Q4/Q5, analog zur bereits im Projekt dokumentierten
-     Rating-Kosten-Tabellen-Drift in `patterns/bad/wissens-duplikate-ohne-
-     ssot.md`).
-   - eine reine JS-Portierung der Ringpuffer-Logik (Zeilen-Kürzung bei
-     Überschreiten von `LOG_LINE_MAX` inkl. „…[gekürzt]"-Suffix,
-     FIFO-Eviction bei Überschreiten von `LOG_MAX`), parametrisiert mit den
-     extrahierten Konstanten, gegen Fixtures ausführen (401 Zeilen
-     schreiben → erste ist evicted; eine 700-Zeichen-Zeile → auf 600 + Suffix
-     gekürzt).
-   - zusätzlich einen statischen Regex-Check auf den Funktionskörper von
-     `buildLogReport()`, dass die erwarteten Kopfdaten-Label
-     („App-Version", „Android", „Optimizer", „PaleTools",
-     „PaleTools-Status") im Quelltext vorkommen — verhindert, dass ein
-     künftiger Refactor eines dieser Kopf-Felder unbemerkt entfernt.
-   **Erwarteter Gain: +3 bis +5 Pt** (Testbarkeits-Rubrik geht für die
-   App-Seite dieses Features von 0 % auf eine erste Abdeckung).
-
-**Erwarteter Gesamt-Gain: ~+20 Pt RA** (58 → ~78, Summe der Mittelwerte
-3.5+2.5+6.5+4+4 = 20.5; komfortabel über dem M3-Ziel 77 und über der
-90-%-Miss-Risk-Schwelle von +17.1).
+**Erwarteter Gesamt-Gain: ~+9.5 Pt RA** (76 → ~85.5, gecappt auf
+`structural_max=85`; Summe der Mittelwerte 4+2.5+3=9.5, komfortabel über
+dem M3-Ziel-Gain von +6 und über der 90-%-Miss-Risk-Schwelle von +5.4).
 
 ## Phasen-Commit-Mapping
 
-| Phase | Aktionen |
-|-------|----------|
+| Phase    | Aktionen |
+|----------|----------|
 | core     | — (leer diese Iteration: die gesamte Code-Geographie dieses Features IST bereits die Diagnose-Ebene, kein separater „Business-Logik"-Layer betroffen) |
-| diagnose | Aktion 1 (`uiScan` befüllen), Aktion 2 (Duplikat-Key entfernen), Aktion 3 (`STATE.diag`-Schema, eigener Commit), Aktion 4 (`reportError`-Helferkern) |
-| tests    | Regressionstest zu Aktion 2 (Dedupe-Scan), Validierungstest zu Aktion 3 (Schema-Konsistenz), Testblock zu Aktion 4 (`reportError`), Aktion 5 (`app/log-test.js`) |
-| docs     | `docs/LEARNINGS.md`-Abschnitt zu `reportError` + `STATE.diag`-Schema (Q7, IST-Zustand) |
-| release  | `@version`/`const VERSION` bumpen, `node --check` + `node solver-test.js` (180/180 inkl. neuer Blöcke) final, Push auf `main` |
+| diagnose | Aktion 1 (`lastEligible` additiv in den Report), Aktion 3 Teil A (`submitInfo`-Try/Catch + `onDiagClick`-Absicherung) |
+| tests    | Aktion 2 (Symmetrie-Test 3. Richtung + Lesen/Schreiben-Trennung, Block 17), Aktion 3 Teil B (neuer Regressionstest Block 26 für Try/Catch-Disziplin um EA-Controller-Traversal) |
+| docs     | `docs/LEARNINGS.md`-Abschnitt: WARUM `lastEligible` bewusst ohne `\|\| null`-Idiom eingebunden wurde (Tri-State-Begründung), WARUM `submitInfo` jetzt wie `hubScan` gekapselt ist (Q7, IST-Zustand, kein „vorher/nachher") |
+| release  | `@version`/`const VERSION` bumpen (nächste freie Version über 4.45.0), `node --check` + `node solver-test.js` final grün, Push auf `main` |
 
 ## Shared-Item-Bedarf
 
-Ein SI-Kandidat, Details und `rationale` im Sidecar
-`diagnose-werkzeuge.shared-items.json`:
+Ein SI-Kandidat, Details im Sidecar `diagnose-werkzeuge.shared-items.json`:
 
-- **`fehler-sichtbarkeit-diagerror`**: dieses Feature ist der **Lieferant**
-  des Helfer-Kerns (Aktion 4), nicht bloß Konsument — `diagError()` und
-  `STATE.diag` liegen in seiner eigenen Code-Geographie. Die vier anderen
-  Features, die laut `patterns/bad/fehler-unsichtbar-verschluckt.md`
-  (`applies_to_features`) denselben Antipattern an ihren jeweiligen
-  Call-Sites zeigen (`spieler-pool`, `ea-app-anbindung`,
-  `android-app-wrapper`, `batch-modus`), sind die Konsumenten einer
-  Folge-Iteration, die ihre Catch-Blöcke auf `reportError(...)` umstellt.
-  Drei davon (`spieler-pool`, `ea-app-anbindung`, `team-eintragen`) haben
-  in dieser Iteration ihre konkreten Fehlerpfade bereits eigenständig
-  additiv mit `warn()`+`diagError()` (nicht dem neuen Helfer) geschlossen —
-  das bleibt bestehen und wird durch den neuen Helfer nicht ungültig,
-  sondern in einer Folge-Iteration konsolidierbar.
+- **`test-extraktions-helfer`**: Aktion 2 (erweiterter Block 17) und Aktion 3
+  (neuer Block 26) lesen beide erneut `ea-fc-sbc-optimizer.user.js` per
+  `fs.readFileSync` und schneiden per klammernzählendem `matchingBrace()`
+  einen benannten Funktionskörper heraus — exakt das Muster, das laut
+  `gaps/_cross-cutting.md` bereits an über 10 Stellen in `solver-test.js`
+  über mehrere Features dupliziert ist (SI-Kandidat als „reif" markiert).
+  Dieser Plan registriert `diagnose-werkzeuge` deshalb als weiteren
+  Konsumenten, statt selbst eine zusätzliche, lokale Kopie der Extraktion
+  zu schreiben. **Kein harter Blocker:** ist der Helfer zum Zeitpunkt der
+  Umsetzung noch nicht gemergt, nutzt der Implementer das bereits in Block
+  17 vorhandene lokale `matchingBrace()` weiter (wie in dieser Iteration
+  ohnehin für Aktion 2/3 beschrieben) und markiert die Migration auf den
+  Helfer als `surprises[]`-Followup (Q4) für eine Folge-Iteration.
 
 ## Risiken / Edge-Cases
 
-- **`uiScan`/`launcher`-Überlappung (Mid-Iter-Beobachtung für den
-  Implementer):** das bereits bestehende `launcher`-Sub-Objekt in
-  `buildDiagReport()` (`:3821-3897`) berechnet `fabVisible`/`panelOpen`
-  bereits live bei JEDEM Report-Aufruf. Ein `uiScan`, das inhaltlich
-  identisch wäre, würde Q4 verletzen (zwei Felder, eine Tatsache). Der
-  Implementer muss beim Umsetzen von Aktion 1 entweder eine echte
-  semantische Differenzierung sicherstellen (z.B. `uiScan` als Snapshot
-  „zum Zeitpunkt des letzten Klicks", `launcher` als „zum Zeitpunkt des
-  Report-Baus" — bei mehreren Report-Aufrufen zwischen zwei Klicks
-  unterscheidbar) oder, falls keine sinnvolle Differenzierung entsteht,
-  einen `aborted-quality-violation`-Befund mit Verweis auf dieses Risiko
-  melden statt eine Bedeutungslose Kopie zu bauen.
-- **Report-Format-Kontinuität (aus dem Gap-Report übernommen, hier
-  bindend):** `uiScan` NICHT entfernen oder umbenennen — Rasmus vergleicht
-  Reports per Copy-Paste über die Zeit, und
-  `patterns/bad/fehler-unsichtbar-verschluckt.md` zitiert den Feldnamen
-  bereits wörtlich. Jede Änderung an `buildDiagReport()` bleibt additiv.
-- **Rareflag-Constraint-Semantik bereits verifiziert (kein offenes Risiko
-  mehr):** `STATE.sbc.rareConstraints` wird an genau einer Stelle
-  geschrieben (`:490`, `:695`) und ist ein eigenständiges Feld neben
-  `rarityConstraints` — die Dedupe in Aktion 2 verliert keine zweite
-  Datenquelle.
-- **Cross-Feature-Überschneidung bei den 7 Fehlerpfaden ist bewusst NICHT
-  Teil dieses Plans:** drei der vier anderen Konsumenten-Features
-  (`spieler-pool`, `ea-app-anbindung`, `team-eintragen`) haben in ihren
-  eigenen, bereits vorliegenden Iteration-0-Lift-Plänen Teile derselben
-  Call-Sites bereits geplant/gefixt — dieser Plan dupliziert das nicht.
-  `onBatchPlanClick` (`:4798ff`, Catch nahe `:4831-4833`) ist laut aktuell
-  vorliegendem `batch-modus.md` NOCH NICHT abgedeckt — das bleibt eine
-  offene Lücke für eine künftige `batch-modus`-Iteration, die den neuen
-  `reportError`-Helfer dann direkt konsumieren kann, statt erneut
-  `warn()`+`diagError()` von Hand zu duplizieren.
-- **Zeilenangaben aus dem Gap-Report können leicht gedriftet sein:** die
-  in diesem Plan zitierten Zeilennummern wurden gegen den aktuellen
-  Dateistand neu verifiziert (`:105-122`, `:3701-3990`, `:3927-3928`,
-  `:3991`, App-Seite `:89-125`); die sieben Fehlerpfad-Zeilen in anderen
-  Features wurden NICHT neu verifiziert, da dieser Plan sie nicht editiert
-  — die Verifikation obliegt den jeweiligen Feature-Lift-Plänen.
-- **Testinfrastruktur ohne Gradle/Keystore-Berührung:** `app/log-test.js`
-  (Aktion 5) darf keinen APK-Build/Signaturpfad anstoßen — rein
-  quelltextbasiert wie `guard-test.js`, `app/build.sh` bleibt unberührt.
+- **`\|\| null`-Idiom nicht kopieren (bindend aus dem Gap-Report):** der
+  Tri-State von `lastEligible` (`true`/`false`/`null`) geht bei
+  `STATE.diag.lastEligible || null` verloren — `false` (der wichtigste
+  Fall: EA hat abgelehnt, WEIL der Squad wirklich nicht abgabefähig war)
+  würde ununterscheidbar von „nicht geprüft". Aktion 1 verwendet deshalb
+  explizit `typeof … !== 'undefined' ? … : null`, keine Abkürzung.
+- **Reihenfolge Aktion 2 vor Aktion 1 ist beabsichtigt, nicht zufällig:**
+  wird Aktion 1 zuerst umgesetzt und Aktion 2 danach vergessen, bleibt der
+  neue Regressionsschutz aus und ein künftiges Feld kann denselben
+  `lastEligible`-Fehlerfall unbemerkt wiederholen. Beide Aktionen gehören
+  in denselben Lift-Durchlauf, auch wenn sie in unterschiedlichen Phasen-
+  Commits (`diagnose` bzw. `tests`) landen.
+- **Cleanup-Kind #24:** wird durch Aktion 1 inhaltlich erledigt — beim
+  Merge dieses Lift-Plans schließt #24, kein separates Ticket dafür
+  aufmachen.
+- **`submitInfo`/`launcher`-Try/Catch nicht mit bestehendem `hubScan`
+  verwechseln:** `hubScan` liefert bei Fehler bereits `{ error: … }` —
+  Aktion 3 spiegelt exakt dieses Muster für `submitInfo`, ändert an
+  `hubScan` selbst nichts (bereits konform, kein Ziel dieses Plans).
+- **`onDiagClick`-Fallback darf den Report nicht verstummen lassen:** der
+  minimale Fallback-Report (`{ version, url, error }`) muss trotzdem
+  geloggt UND in die Zwischenablage kopiert werden (dieselben zwei
+  Ausgabewege wie der volle Report) — sonst bleibt der Diagnose-Kanal bei
+  einem kaputten Feld weiterhin stumm, nur eine Stufe später.
+  Regressionstest (Block 26) deckt nur die Try/Catch-Kapselung der
+  Sub-Blöcke ab, nicht das Fallback-Verhalten selbst (nicht per Regex
+  robust prüfbar) — hier zählt die Implementer-Sorgfalt.
+- **Zeilenangaben live gegen v4.45.0 neu verifiziert:** `:4036-4037`
+  (`lastEligible`-Einfügestelle), `:2777` (Schreibstelle), `:3942-3950`
+  (`submitInfo`), `:4139` (`onDiagClick`), `solver-test.js:1711-1773`
+  (Block 17) — falls die tatsächliche Ausführung auf einem anderen
+  Live-Stand aufsetzt, sind die Zeilen erneut zu prüfen, die Feldnamen und
+  die Struktur der Änderung bleiben gültig.
 - **Voller eiserner Arbeitsablauf auch für „nur Diagnose"-Änderungen:**
-  jede der vier Userscript-Aktionen löst `node --check`, vollen
-  `solver-test.js`-Lauf und einen Versionsbump aus — jeder Push auf `main`
-  ist sofort Deployment auf beide Handys (CLAUDE.md).
-- **Mid-Iter-G-Vermutung:** sollte beim Bau von Aktion 4 auffallen, dass
-  eine der vier Konsumenten-Iterationen (`spieler-pool`,
-  `ea-app-anbindung`, `batch-modus`) noch im selben Zyklus läuft, ist ein
-  vorgezogenes Mid-Iter-SI-Merge denkbar (Main entscheidet) — kein Blocker
-  für diesen Plan, da Aktion 4 auch ohne sofortige Konsumenten-Migration
-  eigenständig wertvoll ist (Helferkern existiert, wird getestet).
+  jede Aktion löst `node --check`, vollen `solver-test.js`-Lauf und einen
+  Versionsbump aus — jeder Push auf `main` ist sofort Deployment auf beide
+  Handys (CLAUDE.md).
+- **Mid-Iter-G-Vermutung:** keine — beide Aktionen bleiben in der eigenen
+  Code-Geographie, kein Cross-Feature-Konflikt zu erwarten (kein anderer
+  Iteration-1-Lift-Plan berührt `buildDiagReport`/`onDiagClick`/Block 17).
 
 ## Lift-Plan-Pre-Validation (M2)
 
 Dimension RA ist `manual_rubric` (kein `pattern_adoption`-Adapter) —
-`pk_files_to_cite` bleibt leer, `citation_only: false` (echte
-Code-/Test-Änderungen, keine reine Beleg-Registrierung). `plan estimate
---feature=diagnose-werkzeuge` prüft daher nur `score_target.RA (77) ≤
+`pk_files_to_cite` bleibt leer, `citation_only: false` (echte Code-/Test-
+Änderungen, keine reine Beleg-Registrierung). `plan estimate
+--feature=diagnose-werkzeuge` prüft daher nur `score_target.RA (82) ≤
 min(structural_max=85, achievable_ceiling)` sowie die Abwesenheit von
-Targets auf nicht-fokussierten Dimensionen (FOCUSED_DIMENSIONS ist leer,
-keine Einschränkung). Erwarteter RA-Endwert aus der Summe der
-Aktions-Mittelwerte (3.5+2.5+6.5+4+4 = 20.5) auf `score_current.RA=58`
-ergibt ~78.5, deutlich über der 90-%-Miss-Risk-Schwelle von
-`77 × 0.9 = 69.3` bzw. dem geforderten Gain `+17.1`.
+Targets auf nicht-fokussierten Dimensionen (FOCUSED_DIMENSIONS=["RA"],
+diese Iteration hat ohnehin nur RA). Erwarteter RA-Endwert aus der Summe
+der Aktions-Mittelwerte (4+2.5+3=9.5) auf `score_current.RA=76` ergibt
+~85.5, gecappt auf 85 — deutlich über der 90-%-Miss-Risk-Schwelle von
+`6 × 0.9 = 5.4` bzw. dem geforderten Gain `+6`.

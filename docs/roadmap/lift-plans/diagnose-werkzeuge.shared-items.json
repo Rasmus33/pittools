@@ -1,17 +1,15 @@
 [
   {
-    "slug": "fehler-sichtbarkeit-diagerror",
+    "slug": "test-extraktions-helfer",
     "consumers": [
-      "spieler-pool",
-      "ea-app-anbindung",
-      "android-app-wrapper",
-      "batch-modus"
+      "diagnose-werkzeuge",
+      "spieler-pool"
     ],
-    "proposed_target_path": "ea-fc-sbc-optimizer.user.js (neuer reportError(label, e)-Helfer direkt neben der bestehenden diagError()-Definition, ca. Z. 116-122)",
+    "proposed_target_path": "solver-test.js (gemeinsamer extractFunction(src, name)-Helfer nahe den bestehenden Marker-Extraktionen, z.B. neben der matchingBrace()-Hilfsfunktion aus Block 17, solver-test.js:1718-1725)",
     "test_paths": [
       "solver-test.js"
     ],
-    "bundle_hint": "beobachtbarkeit",
-    "rationale": "Das Antipattern 'fehler-unsichtbar-verschluckt' (applies_to_features: spieler-pool, ea-app-anbindung, android-app-wrapper, diagnose-werkzeuge, batch-modus) tritt an mindestens 10 Call-Sites ueber 5 Features auf: ein Catch ruft nur warn() statt zusaetzlich diagError(), obwohl der Fehler reportwuerdig ist. Die im Pattern-Dokument selbst benannte Wurzelursache (Q5/SSOT) ist das Fehlen eines gemeinsamen reportError(msg, e)-Wrappers, der warn()+diagError() in einem Aufruf buendelt und die Report-Pflicht strukturell erzwingt statt sie vom Autor-Moment an jeder einzelnen Call-Site abhaengig zu machen. diagnose-werkzeuge besitzt diagError() und STATE.diag bereits in seiner eigenen Code-Geographie (buildDiagReport, STATE.diag.*, ea-fc-sbc-optimizer.user.js:105-122 und :3701-4008) und ist damit das einzige Feature, das den Helfer-Kern OHNE Cross-Feature-Abhaengigkeit liefern kann - Aktion 4 dieses Lift-Plans liefert genau diesen Kern inkl. Testblock, migriert aber bewusst KEINE bestehende Call-Site (die liegen ausserhalb der eigenen Code-Geographie). spieler-pool, ea-app-anbindung und team-eintragen haben in ihren eigenen, bereits vorliegenden Iteration-0-Lift-Plaenen einen Teil ihrer sieben im Gap-Report benannten Fehlerpfade bereits additiv mit warn()+diagError() (nicht dem neuen Helfer) geschlossen; onBatchPlanClick in batch-modus (ca. Z. 4831-4833) ist noch offen. Alle vier bleiben Konsumenten einer Folge-Iteration, die ihre Catch-Bloecke auf reportError(...) umstellt, sobald dieser Kern gemergt ist - kein depends_on-Blocker fuer die aktuelle Iteration, da jede der vier bestehenden Einzel-Loesungen unabhaengig funktioniert und durch die spaetere Umstellung nur wartbarer wird."
+    "bundle_hint": "test-infrastruktur",
+    "rationale": "diagnose-werkzeuge ist diese Iteration Konsument, nicht Lieferant: Aktion 2 (Symmetrie-Test-Erweiterung, Block 17) und Aktion 3 (neuer Regressionstest Block 26 fuer Try/Catch-Disziplin um EA-Controller-Traversal in buildDiagReport()) lesen beide erneut ea-fc-sbc-optimizer.user.js per fs.readFileSync und schneiden per klammernzaehlendem matchingBrace() einen benannten Funktionskoerper heraus. Genau dieses Muster ist laut gaps/_cross-cutting.md (Iteration 1) bereits an ueber 10 Stellen in solver-test.js ueber mehrere Features dupliziert und dort als 'SI reif' markiert (vorher nur 1 Konsument: spieler-pool, siehe shared-items/_index.md). Dieser Plan registriert diagnose-werkzeuge als weiteren Konsumenten, damit die Extraktion konsolidiert statt ein drittes Mal lokal dupliziert wird. Kein harter Blocker fuer diese Iteration: ist der Helfer zum Zeitpunkt der Umsetzung noch nicht gemergt, nutzt der Implementer das in solver-test.js:1718-1725 bereits vorhandene lokale matchingBrace() weiter und meldet die Migration auf den Helfer als surprises[]-Followup (Q4) fuer eine Folge-Iteration."
   }
 ]

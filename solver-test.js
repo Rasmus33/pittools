@@ -4995,16 +4995,16 @@ function mulberry32(a) {
                 calls.requestUnassigned++;
                 return { items: drawnItems };
             }),
-            searchStorageItems: () => {
+            searchStorageItems: overrides.searchStorageImpl || (() => {
                 calls.searchStorage++;
                 return { items: storageBacking.slice() };
-            },
-            move: (arr, pile) => {
+            }),
+            move: overrides.moveImpl || ((arr, pile) => {
                 calls.move.push({ arr: arr, pile: pile });
                 if (pile === 'STORAGE') storageBacking = storageBacking.concat(arr);
                 return { success: true };
-            },
-            redeem: (it) => { calls.redeem.push(it); return { success: true }; }
+            }),
+            redeem: overrides.redeemImpl || ((it) => { calls.redeem.push(it); return { success: true }; })
         };
         const store = { getPacks: () => ({ packs: [{ id: 5, isMyPack: true, packName: 'Prime', tradable: false }] }) };
         const win = {
@@ -5121,6 +5121,118 @@ function mulberry32(a) {
                 JSON.stringify(r.drawn));
             check('runPackTestOpen: kein move() Richtung STORAGE, wenn nichts hineinpasst',
                 !sb.calls.move.some(m => m.pile === 'STORAGE'));
+        }));
+    }
+
+    // Validator-Fund: ein AUFGELOESTES {success:false} (kein Throw) muss an
+    // JEDEM Verteil-Schritt genauso abbrechen wie ein Exception - vorher
+    // wurde nur auf Throw geprueft, ein von EA abgelehnter Schritt waere also
+    // als Erfolg durchgegangen.
+
+    // requestUnassignedItems liefert {success:false} -> Abbruch VOR jeder
+    // Verteilung (kein move()/redeem()).
+    {
+        const sb = makeSandbox({ requestUnassignedImpl: () => { sb.calls.requestUnassigned++; return { success: false, status: 500 }; } });
+        results59.push(sb.run('5').then(r => {
+            check('runPackTestOpen: requestUnassignedItems success:false -> ok:false, "unassigned" in der Begruendung',
+                r.ok === false && /unassigned/.test(r.reason), JSON.stringify(r));
+            check('runPackTestOpen: requestUnassignedItems-Ablehnung verhindert jede Verteilung',
+                sb.calls.move.length === 0 && sb.calls.redeem.length === 0);
+            check('runPackTestOpen: Fehlerform (Status) landet in packScan.errorForm (collect)',
+                sb.STATE.diag.packScan.errorForm && sb.STATE.diag.packScan.errorForm.step === 'collect' &&
+                sb.STATE.diag.packScan.errorForm.status === 500, JSON.stringify(sb.STATE.diag.packScan.errorForm));
+        }));
+    }
+
+    // searchStorageItems (VOR der Verteilung, entscheidet die Kapazitaet)
+    // liefert {success:false} -> Abbruch VOR jeder Verteilung.
+    {
+        let storageCalls = 0;
+        const sb = makeSandbox({
+            searchStorageImpl: () => { storageCalls++; return storageCalls === 1 ? { success: false, status: 503 } : { items: [] }; }
+        });
+        results59.push(sb.run('5').then(r => {
+            check('runPackTestOpen: searchStorageItems (vorher) success:false -> ok:false',
+                r.ok === false, JSON.stringify(r));
+            check('runPackTestOpen: searchStorageItems-Ablehnung verhindert jede Verteilung',
+                sb.calls.move.length === 0 && sb.calls.redeem.length === 0);
+            check('runPackTestOpen: Fehlerform (Status) landet in packScan.errorForm (storageCount)',
+                sb.STATE.diag.packScan.errorForm && sb.STATE.diag.packScan.errorForm.step === 'storageCount' &&
+                sb.STATE.diag.packScan.errorForm.status === 503, JSON.stringify(sb.STATE.diag.packScan.errorForm));
+        }));
+    }
+
+    // redeem() liefert {success:false} -> Abbruch statt Weiterlaufen (vorher
+    // lief die toMisc-Schleife nach einer Ablehnung einfach weiter).
+    {
+        const sb = makeSandbox({ redeemImpl: () => ({ success: false, status: 422 }) });
+        results59.push(sb.run('5').then(r => {
+            check('runPackTestOpen: redeem() success:false -> ok:false, "unassigned" in der Begruendung',
+                r.ok === false && /unassigned/.test(r.reason), JSON.stringify(r));
+            check('runPackTestOpen: redeem()-Ablehnung bricht VOR jedem move() ab',
+                sb.calls.move.length === 0);
+            check('runPackTestOpen: Fehlerform (Status) landet in packScan.errorForm (redeem)',
+                sb.STATE.diag.packScan.errorForm && sb.STATE.diag.packScan.errorForm.step === 'redeem' &&
+                sb.STATE.diag.packScan.errorForm.status === 422, JSON.stringify(sb.STATE.diag.packScan.errorForm));
+        }));
+    }
+
+    // move() Richtung CLUB liefert {success:false} -> Abbruch, move() Richtung
+    // STORAGE wird dann gar nicht mehr versucht.
+    {
+        const sb = makeSandbox({
+            moveImpl: (arr, pile) => { sb.calls.move.push({ arr: arr, pile: pile }); return { success: false, status: 409 }; }
+        });
+        results59.push(sb.run('5').then(r => {
+            check('runPackTestOpen: move()->CLUB success:false -> ok:false, "unassigned" in der Begruendung',
+                r.ok === false && /unassigned/.test(r.reason), JSON.stringify(r));
+            check('runPackTestOpen: move()->CLUB-Ablehnung bricht VOR move()->STORAGE ab (genau ein move()-Versuch)',
+                sb.calls.move.length === 1 && sb.calls.move[0].pile === 'CLUB', JSON.stringify(sb.calls.move));
+            check('runPackTestOpen: Fehlerform (Status) landet in packScan.errorForm (moveClub)',
+                sb.STATE.diag.packScan.errorForm && sb.STATE.diag.packScan.errorForm.step === 'moveClub' &&
+                sb.STATE.diag.packScan.errorForm.status === 409, JSON.stringify(sb.STATE.diag.packScan.errorForm));
+        }));
+    }
+
+    // move() Richtung STORAGE liefert {success:false} -> Abbruch (CLUB-Move
+    // war zu dem Zeitpunkt bereits erfolgreich durch).
+    {
+        const sb = makeSandbox({
+            moveImpl: (arr, pile) => {
+                sb.calls.move.push({ arr: arr, pile: pile });
+                return pile === 'STORAGE' ? { success: false, status: 409 } : { success: true };
+            }
+        });
+        results59.push(sb.run('5').then(r => {
+            check('runPackTestOpen: move()->STORAGE success:false -> ok:false, "unassigned" in der Begruendung',
+                r.ok === false && /unassigned/.test(r.reason), JSON.stringify(r));
+            check('runPackTestOpen: move()->CLUB lief bereits erfolgreich, STORAGE wurde versucht und abgelehnt',
+                sb.calls.move.length === 2 && sb.calls.move[0].pile === 'CLUB' && sb.calls.move[1].pile === 'STORAGE',
+                JSON.stringify(sb.calls.move));
+            check('runPackTestOpen: Fehlerform (Status) landet in packScan.errorForm (moveStorage)',
+                sb.STATE.diag.packScan.errorForm && sb.STATE.diag.packScan.errorForm.step === 'moveStorage' &&
+                sb.STATE.diag.packScan.errorForm.status === 409, JSON.stringify(sb.STATE.diag.packScan.errorForm));
+        }));
+    }
+
+    // searchStorageItems (NACHZAEHLUNG, rein beobachtend) liefert
+    // {success:false} -> KEIN Abbruch (Verteilung ist bereits erledigt),
+    // aber storageCountAfter bleibt null statt einer aus dem abgelehnten
+    // Payload falsch abgeleiteten Zahl.
+    {
+        let storageCalls = 0;
+        const sb = makeSandbox({
+            searchStorageImpl: () => {
+                storageCalls++;
+                return storageCalls === 1 ? { items: [] } : { success: false, status: 503 };
+            }
+        });
+        results59.push(sb.run('5').then(r => {
+            check('runPackTestOpen: Storage-Nachzaehlung success:false -> Lauf bleibt trotzdem ok:true',
+                r.ok === true, JSON.stringify(r));
+            check('runPackTestOpen: storageCountAfter bleibt null statt einer falschen Zahl',
+                sb.STATE.diag.packScan.storageCountAfter === null,
+                JSON.stringify(sb.STATE.diag.packScan));
         }));
     }
 

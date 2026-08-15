@@ -6397,47 +6397,97 @@
         catch (e) {
             reportError('Pack-Testlauf: requestUnassignedItems fehlgeschlagen', e);
             mergePackScan({ errorForm: { step: 'collect', message: String(e && e.message || e) } });
-            return { ok: false, reason: 'Karten einsammeln fehlgeschlagen: ' + (e.message || e) };
+            return { ok: false, reason: 'Karten einsammeln fehlgeschlagen: ' + (e.message || e) + ' Karten bleiben unassigned.' };
+        }
+        // Ein AUFGELOESTES {success:false} ist kein Throw - ohne diesen Check
+        // wuerde responseItems() auf dem abgelehnten Payload einfach [] liefern
+        // und der Lauf faelschlich als "0 Karten gezogen" statt als Ablehnung
+        // durchgehen (Validator-Fund).
+        if (!responseOk(itemsResp)) {
+            reportError('Pack-Testlauf: requestUnassignedItems abgelehnt', new Error('Status ' + (itemsResp && itemsResp.status)));
+            mergePackScan({ errorForm: { step: 'collect', status: itemsResp && itemsResp.status,
+                keys: itemsResp ? Object.keys(itemsResp) : [] } });
+            return { ok: false, reason: 'Karten einsammeln abgelehnt (Status ' + (itemsResp && itemsResp.status) + '). Karten bleiben unassigned.' };
         }
         const items = responseItems(itemsResp);
         let storageBefore;
         try {
             const storageResp = await obsPromise(g.item.searchStorageItems(new g.SearchCriteria()));
+            if (!responseOk(storageResp)) {
+                reportError('Pack-Testlauf: searchStorageItems abgelehnt', new Error('Status ' + (storageResp && storageResp.status)));
+                mergePackScan({ errorForm: { step: 'storageCount', status: storageResp && storageResp.status,
+                    keys: storageResp ? Object.keys(storageResp) : [] } });
+                return { ok: false, reason: 'Storage-Stand abgelehnt (Status ' + (storageResp && storageResp.status) + '). Karten bleiben unassigned.' };
+            }
             storageBefore = responseItems(storageResp).length;
         } catch (e) {
             reportError('Pack-Testlauf: searchStorageItems fehlgeschlagen', e);
             mergePackScan({ errorForm: { step: 'storageCount', message: String(e && e.message || e) } });
-            return { ok: false, reason: 'Storage-Stand konnte nicht geprüft werden: ' + (e.message || e) };
+            return { ok: false, reason: 'Storage-Stand konnte nicht geprüft werden: ' + (e.message || e) + ' Karten bleiben unassigned.' };
         }
         mergePackScan({ storageCountBefore: storageBefore });
         const decision = decidePackDistribution(items, storageBefore, PACK_STORAGE_CAPACITY_ASSUMED, g.GameCurrency);
         for (const it of decision.toMisc) {
             await sleep(packTakt());
-            try { await obsPromise(g.item.redeem(it)); }
-            catch (e) { reportError('Pack-Testlauf: redeem() fehlgeschlagen', e); }
+            let redeemResp;
+            try { redeemResp = await obsPromise(g.item.redeem(it)); }
+            catch (e) {
+                reportError('Pack-Testlauf: redeem() fehlgeschlagen', e);
+                mergePackScan({ errorForm: { step: 'redeem', message: String(e && e.message || e) } });
+                return { ok: false, reason: 'Einlösen (Misc/Währung) fehlgeschlagen: ' + (e.message || e) + ' Rest bleibt unassigned.' };
+            }
+            // Konsistent mit dem eigenen Versprechen "JEDER Fehler bricht ab" -
+            // vorher lief die Schleife nach einer Ablehnung einfach weiter.
+            if (!responseOk(redeemResp)) {
+                reportError('Pack-Testlauf: redeem() abgelehnt', new Error('Status ' + (redeemResp && redeemResp.status)));
+                mergePackScan({ errorForm: { step: 'redeem', status: redeemResp && redeemResp.status,
+                    keys: redeemResp ? Object.keys(redeemResp) : [] } });
+                return { ok: false, reason: 'Einlösen (Misc/Währung) abgelehnt (Status ' + (redeemResp && redeemResp.status) + '). Rest bleibt unassigned.' };
+            }
         }
         if (decision.toClub.length) {
             await sleep(packTakt());
-            try { await obsPromise(g.item.move(decision.toClub, g.ItemPile.CLUB)); }
+            let clubResp;
+            try { clubResp = await obsPromise(g.item.move(decision.toClub, g.ItemPile.CLUB)); }
             catch (e) {
                 reportError('Pack-Testlauf: move->CLUB fehlgeschlagen', e);
                 mergePackScan({ errorForm: { step: 'moveClub', message: String(e && e.message || e) } });
-                return { ok: false, reason: 'Verteilen in den Verein fehlgeschlagen: ' + (e.message || e) };
+                return { ok: false, reason: 'Verteilen in den Verein fehlgeschlagen: ' + (e.message || e) + ' Karten bleiben unassigned.' };
+            }
+            if (!responseOk(clubResp)) {
+                reportError('Pack-Testlauf: move->CLUB abgelehnt', new Error('Status ' + (clubResp && clubResp.status)));
+                mergePackScan({ errorForm: { step: 'moveClub', status: clubResp && clubResp.status,
+                    keys: clubResp ? Object.keys(clubResp) : [] } });
+                return { ok: false, reason: 'Verteilen in den Verein abgelehnt (Status ' + (clubResp && clubResp.status) + '). Karten bleiben unassigned.' };
             }
         }
         if (decision.toStorage.length) {
             await sleep(packTakt());
-            try { await obsPromise(g.item.move(decision.toStorage, g.ItemPile.STORAGE)); }
+            let storageMoveResp;
+            try { storageMoveResp = await obsPromise(g.item.move(decision.toStorage, g.ItemPile.STORAGE)); }
             catch (e) {
                 reportError('Pack-Testlauf: move->STORAGE fehlgeschlagen', e);
                 mergePackScan({ errorForm: { step: 'moveStorage', message: String(e && e.message || e) } });
-                return { ok: false, reason: 'Verteilen in den Storage fehlgeschlagen: ' + (e.message || e) };
+                return { ok: false, reason: 'Verteilen in den Storage fehlgeschlagen: ' + (e.message || e) + ' Karten bleiben unassigned.' };
+            }
+            if (!responseOk(storageMoveResp)) {
+                reportError('Pack-Testlauf: move->STORAGE abgelehnt', new Error('Status ' + (storageMoveResp && storageMoveResp.status)));
+                mergePackScan({ errorForm: { step: 'moveStorage', status: storageMoveResp && storageMoveResp.status,
+                    keys: storageMoveResp ? Object.keys(storageMoveResp) : [] } });
+                return { ok: false, reason: 'Verteilen in den Storage abgelehnt (Status ' + (storageMoveResp && storageMoveResp.status) + '). Karten bleiben unassigned.' };
             }
         }
         let storageAfter = null;
         try {
             const afterResp = await obsPromise(g.item.searchStorageItems(new g.SearchCriteria()));
-            storageAfter = responseItems(afterResp).length;
+            // Rein beobachtend: die Verteilung ist an dieser Stelle bereits
+            // abgeschlossen, ein Abbruch wuerde einen tatsaechlich erfolgreichen
+            // Lauf faelschlich als Fehlschlag melden. Trotzdem KEIN Blindflug bei
+            // Ablehnung: storageAfter bleibt null statt aus einem abgelehnten
+            // Payload eine falsche Zahl abzuleiten (dasselbe Validator-Argument,
+            // nur ohne Abbruch der bereits erledigten Verteilung).
+            if (responseOk(afterResp)) storageAfter = responseItems(afterResp).length;
+            else reportError('Pack-Testlauf: Storage-Nachzählung abgelehnt', new Error('Status ' + (afterResp && afterResp.status)));
         } catch (e) { reportError('Pack-Testlauf: Storage-Nachzählung fehlgeschlagen', e); }
         mergePackScan({ storageCountAfter: storageAfter });
         // Beantwortet Mechanik-Frage (a): sinkt die Anzahl gleicher Instanzen

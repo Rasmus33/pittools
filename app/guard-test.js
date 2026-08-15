@@ -224,6 +224,24 @@ function ok(name, cond, detail) {
         literalsFromJavaBlock(crlfBlock) === 'a(1)',
         JSON.stringify(literalsFromJavaBlock(crlfBlock)));
 
+    // 0b. Byte-Gleichheit Marker- vs. Literal-Pfad (lift-plan android-app-
+    //     wrapper, Aktion 4/5): solange beide Extraktionswege existieren,
+    //     muss ein Reformat, das nur einen der beiden bricht, durch die
+    //     jeweils andere Fehlermeldung auffallen statt eine STILLE
+    //     Divergenz zu erzeugen. Vergleich auf dem bereits normalisierten
+    //     Ergebnis (nach literalsFromJavaBlock/unescapeJava), kein Rohtext-
+    //     Diff über die CRLF-behaftete Java-Quelle selbst.
+    const guardSrc = fs.readFileSync(JAVA, 'utf8');
+    const viaMarker = extractGuardViaMarkers(guardSrc);
+    const viaLiteral = extractGuardViaLiterals(guardSrc);
+    ok('Marker-Pfad liefert ein vollständiges Extrakt', viaMarker.ok, viaMarker.reason);
+    ok('Literal-Pfad liefert ein vollständiges Extrakt', viaLiteral.ok, viaLiteral.reason);
+    ok('Marker- und Literal-Pfad liefern byte-identisches Extrakt',
+        viaMarker.ok && viaLiteral.ok && viaMarker.guard === viaLiteral.guard,
+        viaMarker.ok && viaLiteral.ok
+            ? 'Marker-Länge=' + viaMarker.guard.length + ' Literal-Länge=' + viaLiteral.guard.length
+            : 'einer der beiden Pfade lieferte kein Ergebnis');
+
     const guard = extractGuard();
 
     // 1. Syntax

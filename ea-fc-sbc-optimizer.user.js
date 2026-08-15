@@ -4471,6 +4471,17 @@
         }
     }
     async function onRunClick() {
+        // Waehrend eines laufenden Pool-Refreshs ist STATE.pool ein
+        // Uebergangszustand (onLoadClick leert ihn beim Voll-Refresh und
+        // befuellt ihn asynchron neu) - ohne diesen Guard wuerde der Solver
+        // unbemerkt gegen einen unvollstaendigen Pool loesen, ohne dass die
+        // uebliche loadIncomplete-Warnung greift (analog zum bestehenden
+        // Re-Entrancy-Schutz in onLoadClick).
+        if (STATE.loading) {
+            toast('Pool lädt noch - gleich nochmal versuchen.', 'error');
+            setStatus('Pool lädt noch...');
+            return;
+        }
         // Erkennung IMMER mit der offen sichtbaren Challenge abgleichen -
         // der Hook-Zustand kann nach Pack-Öffnen/Submit veraltet sein.
         syncSbcWithOpenChallenge();

@@ -1,6 +1,6 @@
-# Audit — `team-eintragen` — Iteration 5
+# Audit — `team-eintragen` — Iteration 6
 
-**Stand:** 2026-08-15T15:22:57Z
+**Stand:** 2026-08-15T18:38:12Z
 ## Score-Stand
 
 | Dim | Ist (raw) | Capped (struct_max) | Schwellwert | Status | Provenance |
@@ -18,7 +18,7 @@
 
 ## Regression / Effektivität
 
-🟢 Keine Regression — Σ Ist 76.0 (≥ 0.0 Iter 4).
+🟢 Keine Regression — Σ Ist 76.0 (≥ 0.0 Iter 5).
 
 **Effektivität:** all-held
 (0.0 von 0.0 = 0.0% Reach über 0 Fokus-Dim, 1 Dim held)

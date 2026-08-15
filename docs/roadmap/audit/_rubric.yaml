@@ -69,18 +69,16 @@ ea-app-anbindung:
 rating-solver:
   RA:
     evidence:
-    - ea-fc-sbc-optimizer.user.js:1495-1507
-    - ea-fc-sbc-optimizer.user.js:2401-2406
-    - ea-fc-sbc-optimizer.user.js:2511-2522
-    - solver-test.js:268-345
-    - docs/LEARNINGS.md:1210-1261
-    iteration_scored: 1
-    reasoning: 'Alle 3 Aktionen vollstaendig und rigoroser als geplant: Tiebreak per
-      Reihenfolge-Beweis entfernt, Test 6 mit Gegenprobe gegen den Vakuum-Wahrheits-Vorwurf
-      ersetzt, Suchgrenzen hergeleitet, neues Diagnose-Signal mit Gegenproben-Testpaar.
-      Rest zum Deckel 95 bleibt strukturell (reverse-engineerte Formel).'
-    score: 92.0
-    source: audit-evaluator
+    - ea-fc-sbc-optimizer.user.js:2526-2657
+    - ea-fc-sbc-optimizer.user.js:2378-2513
+    - solver-test.js:3712-3802
+    - docs/LEARNINGS.md:1551-1641
+    notes: 'Post-iter6: Fuzzing fand echten Reservierungs-Defekt (Fenster ignoriert),
+      Fix via reserveRarityWindowAware (Trial-Cap 200, Greedy-Fallback textuell identisch),
+      randomisiertes Testnetz fuer Quoten-Pfade. Rest zum Deckel: reverse-engineerte
+      Formel + offener playerLevel-Verdacht (dokumentiert, unverifiziert).'
+    score: 94.0
+    source: user-manual
     updated_at: '2026-08-15'
 sbc-vorgaben-erkennung:
   RA:
@@ -97,20 +95,16 @@ sbc-vorgaben-erkennung:
 spieler-pool:
   RA:
     evidence:
-    - ea-fc-sbc-optimizer.user.js:147-150
-    - ea-fc-sbc-optimizer.user.js:937-978
-    - solver-test.js:1376-1461
-    - solver-test.js:1464-1520
-    - docs/LEARNINGS.md:1040-1067
-    iteration_scored: 0
-    reasoning: 'Uebertrifft den Plan: reportError-Wrapper (SSOT) greift an allen 7
-      Pool-/Lock-/Batch-Catches statt der 3 geplanten; locks.error macht sicherheitsrelevante
-      Teilausfaelle sichtbar; Normalisierung/Locks erstmals end-to-end getestet (alle
-      11 Evolution-Varianten, Reihenfolge-Falle); Doku konsistent (Paragraph 29/30).
-      Abzug: Fehlertoleranz/Abbruch-Disziplin bewusst nicht angefasst, struktureller
-      Deckel unveraendert.'
-    score: 83.0
-    source: audit-evaluator
+    - ea-fc-sbc-optimizer.user.js:1546-1552
+    - ea-fc-sbc-optimizer.user.js:1099-1121
+    - solver-test.js:3549-3641
+    - docs/LEARNINGS.md:1061-1097
+    notes: 'Post-iter6: loadIncomplete in Report/App-Log/Batch-Vorschau sichtbar,
+      removeFromPool + Lock-Einzelkey-Fehler am reportError-Chokepoint (der Pro-Key-Skip
+      fing noch am selben Abend einen echten Live-Fall). Takt zeilenidentisch. Rest:
+      removeFromPool ohne eigenen Test, ein pre-existierender Q7-Ausreisser in §30.'
+    score: 84.0
+    source: user-manual
     updated_at: '2026-08-15'
 team-eintragen:
   RA:

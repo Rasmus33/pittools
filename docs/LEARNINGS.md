@@ -1906,3 +1906,43 @@ Meldung ("alle N Kandidaten liegen ueber Max-Rating X") statt nur als
 Warnung darunter. Und der Report traegt einen cfgSnapshot (aktive
 Panel-Einstellungen inkl. lockedCount) - der Live-Fall war ohne Kenntnis
 der aktiven Filter nicht diagnostizierbar.
+
+## 48. Ticket #73: Plan-Check mit Confidence-Score - reine Auswertung, kein Solver-Eingriff
+
+Rasmus' O-Ton: er scrollte bisher jedes geplante Team von Hand durch, um
+Abweichungen wie 84.xx statt 84 oder doppeltes TOTW zu finden - "vielleicht
+waere so eine kleine Uebersicht cool am Anfang mit Confidence ... und wenn
+die Confidence nicht bei 100 ist dann sollte kurz erklaert sein warum".
+Nachtrag: die Team-Details sollen aufklappbar sein, damit man schneller zum
+Freigabe-Button kommt.
+
+`computeBatchPlanCheck(plan, cfg)` ist eine reine Funktion ausserhalb des
+Solver-Blocks (SOLVER-BEGIN/END bleibt unveraendert) - sie wertet nur das
+fertig geplante `planBatch()`-Ergebnis aus, ruft nichts aus dem Solver neu
+auf. Pro Runde zaehlen IMMER 4 Pruefungen (Waste innerhalb `cfg.maxOvershoot`,
+Gruppe-83-Anzahl (TOTW/TOTS/FOF/FUTTIES) EXAKT gegen die geforderte Anzahl,
+Min-Rating je Spieler, Storage-Anteil), global IMMER 2 (keine doppelte
+Karten-Id ueber alle Teams, `plan.poolLoadIncomplete` aus Ticket #56) - ein
+fester Nenner, damit der Score in jedem Szenario dieselbe Grundlage hat statt
+je nach Fall unterschiedlich viele Pruefungen zu zaehlen. Die Min-Rating-
+Pruefung setzt sich bei Bronze/Silber-Vorgaben selbst auf 0 herab (CLAUDE.md:
+"Min-Rating wird dabei komplett ignoriert") - sonst waere jeder Bronze/Silber-
+Batch strukturell nie bei 100%.
+
+Score = bestandene / gesamte Pruefungen, gerundet. "Hinweis" (Storage-Anteil,
+`poolLoadIncomplete`) zaehlt im Score mit, ist aber separat gelabelt und
+faerbt wie eine bestehende Warnung (`sbc-opt-batch-warn`) statt wie ein
+Fehler (`sbc-opt-batch-bad`) - 100% ist deshalb nur erreichbar, wenn ALLE
+Pruefungen bestehen, aber ein Hinweis liest sich in der Zusammenfassungszeile
+anders als ein Fehler ("98% - 1 Hinweis").
+
+`renderBatchPreview()` zeigt die Zusammenfassung (Team-Anzahl, Score, je
+Abweichung eine Klartext-Zeile mit Team-Nummer) ganz oben, direkt danach den
+Freigabe-Button, die Karten je Team stehen in einem zusammengeklappten
+`<details>` ("Teams im Detail (N)", Default zu). Die Aufklapp-Optik teilt sich
+`.sbc-opt-details-toggle` mit den bestehenden "Erweiterten Einstellungen"
+statt eines zweiten CSS-Blocks. Getestet ueber das etablierte Pattern
+"extrahierte Check-Funktion (Testblock 61) + gestubbtes Rendering
+(Testblock 43)" - die Layout-Reihenfolge Zusammenfassung -> Button -> Details
+ist eine reine String-Assertion auf das von `buildPanel()` erzeugte Markup
+(Testblock 43b).

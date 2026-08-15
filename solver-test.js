@@ -3613,35 +3613,88 @@ function mulberry32(a) {
     }));
 }
 
-// ========== 43. Ticket #56: renderBatchPreview zeigt das poolLoadIncomplete-Banner ==========
+// ========== 43. Ticket #73: renderBatchPreview zeigt die Plan-Check-Zusammenfassung
+// oben, Team-Details wandern in ein zusammengeklapptes details/summary ==========
+// computeBatchPlanCheck() wird gestubbt (eigener Testblock 60 prüft die echte
+// Auswertung) - hier geht es NUR um das Rendering/Layout, Pattern
+// "extrahierte Check-Funktion + gestubbtes Rendering" aus dem Ticket.
 {
     const renderFnSrc = extractFunction(src, 'renderBatchPreview');
     check('Funktion renderBatchPreview gefunden (43)', !!renderFnSrc);
 
-    function runRender(plan) {
+    function runRender(plan, planCheckResult) {
         const box = { innerHTML: '' };
-        const ui = { batchPreview: box, batchRun: { style: {}, disabled: false } };
+        const detailBody = { innerHTML: '' };
+        const batchDetails = { style: {} };
+        const batchDetailSummary = { textContent: '' };
+        const ui = {
+            batchPreview: box,
+            batchRun: { style: {}, disabled: false },
+            batchDetails: batchDetails,
+            batchDetailSummary: batchDetailSummary,
+            batchDetailBody: detailBody
+        };
         const sandbox = {
             ui: ui,
             escapeHtml: (s) => String(s),
             displayName: (p) => '#' + p.id,
-            rarityLabel: () => 'Gold'
+            rarityLabel: () => 'Gold',
+            computeBatchPlanCheck: () => planCheckResult
         };
         const keys = Object.keys(sandbox);
         const fn = new Function(keys.join(','), renderFnSrc + '\nreturn renderBatchPreview;')
             .apply(null, keys.map(function (k) { return sandbox[k]; }));
         fn(plan);
-        return box.innerHTML;
+        return {
+            html: box.innerHTML, detailHtml: detailBody.innerHTML,
+            detailSummary: batchDetailSummary.textContent,
+            batchDetailsDisplay: batchDetails.style.display,
+            batchRunDisplay: ui.batchRun.style.display
+        };
     }
 
     const plan = { planned: 1, requested: 1, rounds: [{ ovr: 84, ovrExact: 84.0, players: [], warnings: [] }] };
-    const htmlIncomplete = runRender(Object.assign({}, plan, { poolLoadIncomplete: true }));
-    check('renderBatchPreview: Banner erscheint bei poolLoadIncomplete=true',
-        /unvollständig geladen/.test(htmlIncomplete), htmlIncomplete);
 
-    const htmlComplete = runRender(Object.assign({}, plan, { poolLoadIncomplete: false }));
-    check('renderBatchPreview: KEIN Banner bei poolLoadIncomplete=false',
-        !/unvollständig geladen/.test(htmlComplete), htmlComplete);
+    const okResult = runRender(plan, { score: 100, errors: 0, hints: 0, lines: [] });
+    check('renderBatchPreview: 100% ohne Abweichungszeilen im Erfolgsfall', /Confidence <b>100%<\/b>/.test(okResult.html), okResult.html);
+    check('renderBatchPreview: kein Fehler/Hinweis-Suffix bei 100%', !/—/.test(okResult.html), okResult.html);
+
+    const devResult = runRender(plan, {
+        score: 75, errors: 1, hints: 1,
+        lines: [
+            { level: 'error', text: 'Team 1: kaputt.' },
+            { level: 'hint', text: 'Team 1: nur ein Hinweis.' }
+        ]
+    });
+    check('renderBatchPreview: Confidence + Fehler/Hinweis-Suffix', /75%.*1 Fehler \+ 1 Hinweis/.test(devResult.html), devResult.html);
+    check('renderBatchPreview: Fehler-Zeile mit ✗ und sbc-opt-batch-bad', /sbc-opt-batch-bad">✗ Team 1: kaputt\./.test(devResult.html), devResult.html);
+    check('renderBatchPreview: Hinweis-Zeile mit ⚠ und sbc-opt-batch-warn (optisch getrennt)', /sbc-opt-batch-warn">⚠ Team 1: nur ein Hinweis\./.test(devResult.html), devResult.html);
+
+    const stoppedResult = runRender(Object.assign({}, plan, { stoppedReason: 'Kein Team mehr möglich.' }), { score: 100, errors: 0, hints: 0, lines: [] });
+    check('renderBatchPreview: stoppedReason bleibt Teil der Zusammenfassung', /Nur 1 von 1 möglich: Kein Team mehr möglich\./.test(stoppedResult.html), stoppedResult.html);
+
+    check('renderBatchPreview: Team-Details wandern in ui.batchDetailBody statt in die Zusammenfassung',
+        !/OVR 84/.test(okResult.html) && /OVR 84/.test(okResult.detailHtml), JSON.stringify(okResult));
+    check('renderBatchPreview: Detail-Summary nennt die Team-Anzahl', okResult.detailSummary === 'Teams im Detail (1)', okResult.detailSummary);
+    check('renderBatchPreview: Detail-Block sichtbar wenn Teams geplant sind', okResult.batchDetailsDisplay === 'block', okResult.batchDetailsDisplay);
+
+    const emptyResult = runRender({ planned: 0, requested: 1, rounds: [] }, { score: 100, errors: 0, hints: 0, lines: [] });
+    check('renderBatchPreview: Detail-Block versteckt ohne geplante Teams', emptyResult.batchDetailsDisplay === 'none', emptyResult.batchDetailsDisplay);
+}
+
+// ========== 43b. Ticket #73: Layout-Reihenfolge im Panel-HTML - Zusammenfassung
+// (sbc-opt-batch-preview) vor dem Freigabe-Button (sbc-opt-batch-run) vor den
+// aufklappbaren Team-Details (sbc-opt-batch-details). Reine String-Assertion auf
+// das von buildPanel erzeugte Markup, ohne DOM zu stubben. ==========
+{
+    const panelFnSrc = extractFunction(src, 'buildPanel');
+    check('Funktion buildPanel gefunden (43b)', !!panelFnSrc);
+    const idxPreview = panelFnSrc.indexOf('id="sbc-opt-batch-preview"');
+    const idxRun = panelFnSrc.indexOf('id="sbc-opt-batch-run"');
+    const idxDetails = panelFnSrc.indexOf('id="sbc-opt-batch-details"');
+    check('Layout-Reihenfolge: Zusammenfassung vor Freigabe-Button vor Team-Details',
+        idxPreview > -1 && idxRun > -1 && idxDetails > -1 && idxPreview < idxRun && idxRun < idxDetails,
+        JSON.stringify({ idxPreview: idxPreview, idxRun: idxRun, idxDetails: idxDetails }));
 }
 
 // ========== 44. Ticket #56: readPaletoolsLocks - Pro-Key-Fehler zaehlen statt nur uebersprungen ==========
@@ -5361,6 +5414,139 @@ function mulberry32(a) {
         check('Specials-nur-Storage: Verein-Special ohne TOTW bleibt weiter ausgeschlossen',
             !res.ok || !res.players.some(p => p.id === 'FUT88'),
             res.ok ? res.players.map(p => p.id).join(',') : 'n/a');
+    }
+}
+
+// ========== 61. Ticket #73: computeBatchPlanCheck() - reine Auswertung eines
+// fertig geplanten Batches (Confidence-Score + Klartext-Abweichungen) ==========
+// Konstruierte plan/cfg-Objekte statt eines echten planBatch()-Laufs (der
+// Solver selbst ist unveraendert und bleibt in Testblock 48 gefuzzt) - genau
+// das Pattern "extrahierte Check-Funktion", das das Ticket verlangt.
+{
+    const fnSrc = extractFunction(src, 'computeBatchPlanCheck');
+    check('Funktion computeBatchPlanCheck gefunden (61)', !!fnSrc);
+    const computeBatchPlanCheck = new Function(fnSrc + '\nreturn computeBatchPlanCheck;')();
+
+    function round(players, opts) {
+        opts = opts || {};
+        return {
+            players: players,
+            waste: opts.waste != null ? opts.waste : 0,
+            ovrExact: opts.ovrExact != null ? opts.ovrExact : 84,
+            ovr: opts.ovr != null ? opts.ovr : 84
+        };
+    }
+    function planOf(rounds, opts) {
+        return Object.assign({ rounds: rounds, planned: rounds.length, requested: rounds.length,
+            poolLoadIncomplete: false }, opts || {});
+    }
+    // Ein "sauberes" Team: 11 normale Karten, davon eine aus dem Storage,
+    // alle >= Min-Rating, kein Gruppe-83-Spieler - erfuellt alle 4 Pruefungen.
+    function cleanTeam() {
+        return [P(85, { storage: true })].concat(many(10, 84));
+    }
+
+    // ---- 100%-Fall ----
+    {
+        const plan = planOf([round(cleanTeam()), round(cleanTeam())]);
+        const pc = computeBatchPlanCheck(plan, cfg(84));
+        check('100%-Fall: score === 100', pc.score === 100, JSON.stringify(pc));
+        check('100%-Fall: keine Abweichungszeilen', pc.lines.length === 0, JSON.stringify(pc.lines));
+        check('100%-Fall: errors === 0 und hints === 0', pc.errors === 0 && pc.hints === 0);
+    }
+
+    // ---- Waste-Abweichung (mit ovrExact-Text) ----
+    {
+        const plan = planOf([round(cleanTeam(), { waste: 0.5, ovrExact: 84.5 })]);
+        const pc = computeBatchPlanCheck(plan, cfg(84, { maxOvershoot: 0.10 }));
+        const wasteLine = pc.lines.find(l => /Rating-Überschuss/.test(l.text));
+        check('Waste-Abweichung: eigene Fehler-Zeile', !!wasteLine, JSON.stringify(pc.lines));
+        check('Waste-Abweichung: Level "error"', wasteLine && wasteLine.level === 'error');
+        check('Waste-Abweichung: exaktes ovrExact steht in der Zeile (84.50)',
+            wasteLine && /84\.50/.test(wasteLine.text), wasteLine && wasteLine.text);
+        check('Waste-Abweichung: score < 100', pc.score < 100, pc.score);
+    }
+
+    // ---- 2x Gruppe-83 statt geforderter 1x ----
+    {
+        const team = cleanTeam();
+        team[0] = P(85, { storage: true, groups: [83] });
+        team[1] = P(84, { groups: [83] });
+        const plan = planOf([round(team)]);
+        const pc = computeBatchPlanCheck(plan, cfg(84, { rarityConstraints: [{ groupId: 83, count: 1 }] }));
+        const g83Line = pc.lines.find(l => /Gruppe-83/.test(l.text));
+        check('2x Gruppe-83: eigene Fehler-Zeile mit IST/SOLL', !!g83Line && /2x .* statt geforderter 1/.test(g83Line.text),
+            JSON.stringify(pc.lines));
+        check('2x Gruppe-83: Level "error"', g83Line && g83Line.level === 'error');
+    }
+    // Gegenprobe: ohne Vorgabe wird 0 Gruppe-83 erwartet (CLAUDE.md "ohne
+    // Vorgabe keine") - ein Team GANZ ohne Gruppe-83-Karte besteht die Pruefung.
+    {
+        const plan = planOf([round(cleanTeam())]);
+        const pc = computeBatchPlanCheck(plan, cfg(84));
+        check('Kein Gruppe-83-Vorgabe: keine Abweichung bei 0 Gruppe-83-Karten', pc.lines.length === 0, JSON.stringify(pc.lines));
+    }
+
+    // ---- Min-Rating-Verstoss ----
+    {
+        const team = cleanTeam();
+        team[1] = P(70);
+        const plan = planOf([round(team)]);
+        const pc = computeBatchPlanCheck(plan, cfg(84, { minRating: 75 }));
+        const minLine = pc.lines.find(l => /Min-Rating/.test(l.text));
+        check('Min-Rating-Verstoss: eigene Fehler-Zeile mit Rating der Karte', !!minLine && /\(70\)/.test(minLine.text),
+            JSON.stringify(pc.lines));
+        check('Min-Rating-Verstoss: Level "error"', minLine && minLine.level === 'error');
+    }
+    // Produktregel (CLAUDE.md): Bronze/Silber ignorieren Min-Rating komplett -
+    // eine Bronze-Karte unter dem Min-Rating ist KEINE Abweichung.
+    {
+        const team = [P(55)].concat(many(10, 60));
+        const plan = planOf([round(team, { waste: 0 })]);
+        const pc = computeBatchPlanCheck(plan, cfg(null, { minRating: 75, qualityConstraints: [{ quality: 1, count: 1 }] }));
+        check('Bronze-Vorgabe: Min-Rating wird nicht als Abweichung gewertet',
+            !pc.lines.some(l => /Min-Rating/.test(l.text)), JSON.stringify(pc.lines));
+    }
+
+    // ---- doppelte Karte ueber zwei Runden ----
+    {
+        const shared = P(84);
+        const teamA = [shared].concat(many(10, 84));
+        const teamB = [shared].concat(many(10, 84));
+        const plan = planOf([round(teamA), round(teamB)]);
+        const pc = computeBatchPlanCheck(plan, cfg(84));
+        const dupeLine = pc.lines.find(l => /mehreren Teams verbaut/.test(l.text));
+        check('Doppelte Karte: eigene Fehler-Zeile', !!dupeLine, JSON.stringify(pc.lines));
+        check('Doppelte Karte: Level "error"', dupeLine && dupeLine.level === 'error');
+    }
+
+    // ---- loadIncomplete ----
+    {
+        const plan = planOf([round(cleanTeam())], { poolLoadIncomplete: true });
+        const pc = computeBatchPlanCheck(plan, cfg(84));
+        const loadLine = pc.lines.find(l => /unvollständig geladen/.test(l.text));
+        check('loadIncomplete: eigene Zeile', !!loadLine, JSON.stringify(pc.lines));
+        check('loadIncomplete: Level "hint" (Hinweis-Stufe, keine harte Fehlermeldung)', loadLine && loadLine.level === 'hint');
+    }
+
+    // ---- Storage-Hinweis (NUR Hinweis-Stufe) ----
+    {
+        const team = many(11, 84); // keine Storage-Karte dabei
+        const plan = planOf([round(team)]);
+        const pc = computeBatchPlanCheck(plan, cfg(84));
+        const storeLine = pc.lines.find(l => /keine Storage-Karte/.test(l.text));
+        check('Storage-Hinweis: eigene Zeile', !!storeLine, JSON.stringify(pc.lines));
+        check('Storage-Hinweis: Level "hint", nicht "error"', storeLine && storeLine.level === 'hint');
+        check('Storage-Hinweis: senkt den Score (zaehlt mit), aber bleibt getrennt gelabelt',
+            pc.score < 100 && pc.errors === 0 && pc.hints === 1, JSON.stringify(pc));
+    }
+
+    // ---- Score deterministisch: 1 Fehler auf 6 Pruefungen (1 Runde: 4 + global 2) -> 5/6 = 83% ----
+    {
+        const plan = planOf([round(cleanTeam(), { waste: 0.5, ovrExact: 84.5 })]);
+        const pc = computeBatchPlanCheck(plan, cfg(84, { maxOvershoot: 0.10 }));
+        check('Score deterministisch: 5 von 6 bestandenen Pruefungen -> 83%',
+            pc.total === 6 && pc.passed === 5 && pc.score === 83, JSON.stringify(pc));
     }
 }
 

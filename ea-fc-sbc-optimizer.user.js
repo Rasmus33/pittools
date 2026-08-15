@@ -5233,6 +5233,13 @@
             return;
         }
         if (!STATE.pool.length) { toast('Pool leer. Bitte zuerst "Spieler laden".', 'error'); return; }
+        // Analog zur Warnung in onRunClick (:4509): der Batch darf trotzdem
+        // planen und abgeben (Rasmus entscheidet bei der einen Freigabe,
+        // CLAUDE.md "Batch darf abgeben") - nur informieren, nicht blockieren.
+        if (STATE.loadIncomplete) {
+            toast('ACHTUNG: Der Pool war beim Planen unvollständig geladen (' + STATE.pool.length +
+                ' Karten) - der Plan kann auf fehlenden Karten beruhen. Am besten erst "Spieler laden" erneut ausführen, dann neu planen.', 'warn');
+        }
         const want = Math.max(1, Math.min(10, parseInt(ui.batchCount.value, 10) || 1));
         ui.batchPlan.disabled = true;
         setStatus('plane ' + want + ' Teams...');
@@ -5241,6 +5248,11 @@
             // Anker ist das SET plus die Vorgaben - die challengeId aendert
             // sich pro Wiederholung und taugt nicht als Vergleich.
             plan.setId = STATE.sbc.setId;
+            // Fuer die Vorschau festgehalten (renderBatchPreview): der Toast
+            // oben ist nach ein paar Sekunden weg, die Freigabe kommt aber oft
+            // erst deutlich spaeter - der Zustand muss in der Vorschau stehen
+            // bleiben.
+            plan.poolLoadIncomplete = STATE.loadIncomplete;
             plan.targetOVR = STATE.sbc.targetOVR;
             plan.slots = STATE.sbc.formationSlots;
             plan.usedChallengeIds = [];
@@ -5276,6 +5288,9 @@
         const box = ui.batchPreview;
         if (!box) return;
         let html = '';
+        if (plan.poolLoadIncomplete) {
+            html += '<div class="sbc-opt-batch-round sbc-opt-batch-warn">⚠ Pool war beim Planen unvollständig geladen - Plan kann auf fehlenden Karten beruhen. Vor der Freigabe ggf. "Spieler laden" erneut ausführen und neu planen.</div>';
+        }
         plan.rounds.forEach(function (r, i) {
             const nStore = r.players.filter(p => p.isStorage).length;
             const nUntr = r.players.filter(p => p.untradeable).length;

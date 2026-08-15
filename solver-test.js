@@ -1884,6 +1884,35 @@ function mulberry32(a) {
         const emptyFn = SolverCore.parseRatingCosts('');
         check('parseRatingCosts(\'\') liefert fuer jedes Rating 0',
             [0, 50, 84, 93, 99].every(r => emptyFn(r) === 0));
+
+        // Format-Aequivalenz Lang-/Kurzform: bandsToSpec() emittiert seit
+        // Ticket #7 Kurzform (lo:cost bei lo===hi, lo+:cost bei hi===99).
+        // Bestandsnutzer mit gespeicherten Bands bekommen dadurch ein
+        // anderes SPEC-STRING-Format als vorher - parseRatingCosts()
+        // muss beide Formen fuer JEDES Rating 0..99 identisch behandeln,
+        // sonst aendern sich die Kosten fuer Bestandsnutzer unbemerkt.
+        const longForm = '0-80:0, 81-83:2, 84-84:1, 85-88:2, 89-90:3, 91-92:4, 93-99:12';
+        const shortForm = SolverCore.DEFAULT_RATING_COST_SPEC;
+        const longFn = SolverCore.parseRatingCosts(longForm);
+        const shortFn = SolverCore.parseRatingCosts(shortForm);
+        let parseMismatch = -1;
+        for (let r = 0; r <= 99; r++) {
+            if (longFn(r) !== shortFn(r)) { parseMismatch = r; break; }
+        }
+        check('parseRatingCosts: Lang- und Kurzform liefern fuer alle Ratings 0..99 identische Kosten',
+            parseMismatch === -1, 'erster Unterschied bei Rating ' + parseMismatch);
+
+        const equivPool = [];
+        for (let r = 0; r <= 99; r++) equivPool.push({ rating: r, isStorage: false, groups: [], untradeable: false });
+        const costOfLong = SolverCore.makeCostOf(equivPool, { ratingCostSpec: longForm });
+        const costOfShort = SolverCore.makeCostOf(equivPool, { ratingCostSpec: shortForm });
+        let costMismatch = -1;
+        for (let r = 0; r <= 99; r++) {
+            const p = { rating: r, isStorage: false, groups: [], untradeable: false };
+            if (costOfLong(p) !== costOfShort(p)) { costMismatch = r; break; }
+        }
+        check('makeCostOf: Lang- und Kurzform liefern fuer alle Ratings 0..99 identische Kartenkosten',
+            costMismatch === -1, 'erster Unterschied bei Rating ' + costMismatch);
     }
 }
 

@@ -38,24 +38,8 @@ discoveries:
   shared_item_candidates: []
   cross_feature_smells: []
 seeds_next:
-  seeded_at: '2026-08-15T12:15:06Z'
+  seeded_at: null
   patterns: []
   shared_items: []
-  features:
-  - EA-Wandel-Toleranz-Achse in iter0-2 bewusst nie angefasst — Kandidat, falls eine
-    Iteration sie heben soll (betrifft sbc-vorgaben-erkennung/ea-app-anbindung/team-eintragen
-    gleichermassen)
-  - 'android-app-wrapper steht bei 79/80 — praktisch am Deckel, kein weiterer Lift
-    sinnvoll; einzig offener Testbarkeits-Restposten: guard-test-Waechter-Extraktion
-    ueber inzidentelle String-Literale (Weak Signal, bewusst deferred)'
-  discoveries:
-  - 'Cleanup-Kind #29 (classifyUrl storage-Fallback erreichbar machen ODER dokumentieren)
-    ist das letzte offene Kind im Sammelticket #30'
-  - 'Kein automatisiertes Java-Compile-Gate: Implementer #40 hat freiwillig lokal
-    per javac (--release 11, android-36 classpath) kompiliert — Kandidat fuer ein
-    commands.*-Gate, wuerde Java-Syntaxfehler vor dem PO-Build fangen'
-  - 'Post-Squash-PR-Problem in iter2 durch Prozess vermieden: ALLE Commits (inkl.
-    Nachtraege) VOR ticket review buendeln — hat funktioniert, als Arbeitsregel beibehalten'
-  - APK v1.8.0 gebaut+signaturverifiziert, Installation durch Rasmus stand bei Iterationsende
-    noch aus — beim naechsten App-Ticket vorher pruefen, welche Version wirklich auf
-    den Geraeten laeuft
+  features: []
+  discoveries: []

@@ -132,7 +132,9 @@
             submitWithoutResponseCount: 0, // wie oft submitChallengeToEa ohne auswertbare Response als Erfolg durchging (LEARNINGS §9, v4.36.0: offen, ob Abgabe wirklich bestätigt war)
             submitConfirmations: null, // Post-Submit-Plausibilisierung im "ohne Response"-Zweig: via/hadResponse/squadEmptyAfter/ms je Versuch (reine Beobachtung, kein Abbruchkriterium)
             lastTap: null,           // letzter simulierter Tap: Events/Position/Abdeckung/Popup
-            scanStats: null          // Traversal-Metriken (visitedCount/depthCapped/budgetExhausted) von deepScan/findNode/collectNodes - reine Beobachtung, kein Abbruchkriterium (LEARNINGS 37)
+            scanStats: null,         // Traversal-Metriken (visitedCount/depthCapped/budgetExhausted) von deepScan/findNode/collectNodes - reine Beobachtung, kein Abbruchkriterium (LEARNINGS 37)
+            utasUnclassified: 0,     // /ut/game/-URLs, die classifyUrl() nicht zuordnen konnte (LEARNINGS 38)
+            lastUnclassifiedPaths: [] // 5er-Ring der zugehoerigen Pfade (IDs maskiert)
         }
     };
     function log(...args) { try { console.log(LOG_PREFIX, ...args); } catch (e) {} }
@@ -251,6 +253,25 @@
         if (RE_SBC_STORAGE_FALLBACK.test(u)) return 'storage';
         return null;
     }
+    // Eigener Zaehler + 5er-Ring fuer /ut/game/-URLs, die classifyUrl() NICHT
+    // zuordnen kann - der generische lastUtasPaths-Ring (15 Slots, ALLER
+    // utas-Traffic) kann einen seltenen neuen Endpunkt durch haeufigen
+    // bekannten Traffic (Club-Pagination, Storage) verdraengen, bevor je ein
+    // Diagnose-Report gezogen wird. Bewusst KEIN warn/diagError: das ist keine
+    // Fehlermeldung, sondern eine reine Beobachtung unbekannten, aber
+    // regulaeren Traffics.
+    function noteUnclassifiedUtas(url) {
+        try {
+            const u = String(url);
+            if (/\/ut\/game\//i.test(u) && classifyUrl(u) === null) {
+                STATE.diag.utasUnclassified = (STATE.diag.utasUnclassified || 0) + 1;
+                const path = u.replace(/^https?:\/\/[^/]+/, '').split('?')[0]
+                    .replace(/\d{4,}/g, '{id}');
+                STATE.diag.lastUnclassifiedPaths.push(path);
+                if (STATE.diag.lastUnclassifiedPaths.length > 5) STATE.diag.lastUnclassifiedPaths.shift();
+            }
+        } catch (e) {}
+    }
     function handleResponseBody(url, bodyText) {
         const kind = classifyUrl(url);
         if (!kind || !bodyText) return;
@@ -296,6 +317,7 @@
             return _origFetch(input, init).then(function (resp) {
                 try {
                     const url = (typeof input === 'string') ? input : (input && input.url);
+                    if (url) noteUnclassifiedUtas(url);
                     if (url && classifyUrl(url)) {
                         resp.clone().text().then(function (txt) {
                             handleResponseBody(url, txt);
@@ -338,6 +360,7 @@
                     RE_SBC_SQUAD_PUT.test(String(url))) {
                     try { STATE.diag.lastSquadPutBody = String(body).slice(0, 3000); } catch (e) {}
                 }
+                if (url) noteUnclassifiedUtas(url);
                 if (url && classifyUrl(url)) {
                     this.addEventListener('load', function () {
                         try {
@@ -3982,9 +4005,11 @@
             counts: {
                 fetchSeen: STATE.diag.fetchSeen,
                 xhrSeen: STATE.diag.xhrSeen,
-                utasSeen: STATE.diag.utasSeen
+                utasSeen: STATE.diag.utasSeen,
+                utasUnclassified: STATE.diag.utasUnclassified
             },
             lastUtasPaths: STATE.diag.lastUtasPaths,
+            lastUnclassifiedPaths: STATE.diag.lastUnclassifiedPaths,
             lastErrors: STATE.diag.lastErrors,
             uiScan: STATE.diag.uiScan || null,
             // Gesperrte Karten: wurden PaleTools-Locks gefunden und wie viele?

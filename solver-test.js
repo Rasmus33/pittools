@@ -2719,7 +2719,7 @@ function mulberry32(a) {
     pending.push(Promise.all(results27));
 }
 
-// ========== 28. usedChallengeIds als echte Sperre: isFreshMatchingInstance ==========
+// ========== 28. usedChallengeIds-Sperre mit Daily-Ausnahme: isFreshMatchingInstance ==========
 {
     const matchesSrc = extractFunction(src, 'matchesPlannedSbc');
     const freshSrc = extractFunction(src, 'isFreshMatchingInstance');
@@ -2730,14 +2730,38 @@ function mulberry32(a) {
             '\nreturn isFreshMatchingInstance;')(STATE);
     }
 
-    // Sperr-Fall (Pflicht, Gap-Report): dieselbe challengeId steckt bereits in
-    // plan.usedChallengeIds - false, OBWOHL matchesPlannedSbc allein true waere.
+    // Daily-Ausnahme (LIVE-Regression v4.46.0-v4.56.0, zwei Reports belegt):
+    // Daily-SBCs setzen DIESELBE challengeId zurueck - die urspruengliche harte
+    // Sperre (same-id -> immer false) blockierte dort jede zweite Runde
+    // ("Batch gestoppt nach 1/6"). Seit v4.57.0 gilt: benutzte challengeId +
+    // NACHWEISLICH leere Instanz (squadEmpty === true) = wieder frisch;
+    // plan.sameIdReuse zaehlt das fuer die Diagnose mit.
     {
         const STATE = { sbc: { targetOVR: 84, formationSlots: 11, challengeId: '777' } };
         const plan = { targetOVR: 84, slots: 11, usedChallengeIds: ['777'] };
-        check('isFreshMatchingInstance: false trotz passendem targetOVR/formationSlots, ' +
-            'weil die challengeId schon in usedChallengeIds steht',
-            buildFresh(STATE)(plan, STATE.sbc, true) === false);
+        check('isFreshMatchingInstance: true bei benutzter challengeId, wenn die ' +
+            'Instanz nachweislich leer ist (Daily-Wiederverwendung, v4.57.0)',
+            buildFresh(STATE)(plan, STATE.sbc, true) === true);
+        check('isFreshMatchingInstance: sameIdReuse-Diagnosezaehler wurde erhoeht',
+            plan.sameIdReuse === 1);
+    }
+    // Die Sperre traegt weiter, wo sie hingehoert: benutzte challengeId und
+    // Leerheit UNBEKANNT (null) bleibt gesperrt - "unbekannt" reicht nicht.
+    {
+        const STATE = { sbc: { targetOVR: 84, formationSlots: 11, challengeId: '777' } };
+        const plan = { targetOVR: 84, slots: 11, usedChallengeIds: ['777'] };
+        check('isFreshMatchingInstance: false bei benutzter challengeId und ' +
+            'squadEmpty===null (unbekannt bleibt gesperrt)',
+            buildFresh(STATE)(plan, STATE.sbc, null) === false);
+    }
+    // Benutzte challengeId + volles Squad (fehlgeschlagene/alte Abgabe) bleibt
+    // ebenfalls gesperrt.
+    {
+        const STATE = { sbc: { targetOVR: 84, formationSlots: 11, challengeId: '777' } };
+        const plan = { targetOVR: 84, slots: 11, usedChallengeIds: ['777'] };
+        check('isFreshMatchingInstance: false bei benutzter challengeId und ' +
+            'squadEmpty===false (volles Squad bleibt gesperrt)',
+            buildFresh(STATE)(plan, STATE.sbc, false) === false);
     }
     // Normalfall/Re-Plan-Edge-Case (Pflicht, Gap-Report): frischer Plan, leere
     // usedChallengeIds wie onBatchPlanClick sie initialisiert - weiterhin true,

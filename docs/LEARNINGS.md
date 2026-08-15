@@ -1294,17 +1294,24 @@ Unlösbarkeit, Flag darf NICHT erscheinen).
 
 Zwei Absicherungen aus v4.46.0, die im Batch-Lauf zusammenspielen:
 
-**Die Sperre.** Der Anker fuer die naechste Runde ist SET + Vorgaben (§9),
-NICHT die challengeId - die wechselt pro Wiederholung. Kehrseite: eine
-bereits abgegebene Instanz erfuellt denselben Anker weiterhin. Serviert EA
-nach dem Abgeben kurz noch den alten Zustand (Cache, langsamer Refresh),
-haette der Batch dieselbe Instanz erneut als "frisch" akzeptiert und doppelt
-eingetragen. Deshalb fuehrt jeder Plan `plan.usedChallengeIds`: nach jedem
-Abgeben wird die verbrauchte Id gepusht, und `isFreshMatchingInstance()`
-verlangt fuer "frisch" DREI Dinge - Anker passt (`matchesPlannedSbc`), Squad
-ist leer, und die challengeId steht NICHT in `usedChallengeIds`. Die Sperre
-lebt am Plan (nicht in STATE), stirbt also mit ihm - ein neuer Plan startet
-unbelastet, auch fuer dieselbe SBC.
+**Die Sperre - und ihre Daily-Ausnahme (v4.57.0).** Der Anker fuer die
+naechste Runde ist SET + Vorgaben (§9), NICHT die challengeId. Die
+urspruengliche Annahme "die challengeId wechselt pro Wiederholung" stimmt
+fuer die Rating-Upgrade-Sets, aber NICHT fuer Daily-SBCs: "Daily Bronze
+Upgrade" (challengeId 3068) wird von EA einfach ZURUECKGESETZT, dieselbe Id
+kommt wieder. Die in v4.46.0 eingefuehrte harte Sperre (benutzte Id -> nie
+wieder frisch) blockierte dort deshalb jede zweite Runde - der Batch stand
+nachweislich in der korrekten, leeren, passenden Instanz und weigerte sich,
+sie zu befuellen ("Batch gestoppt nach 1/6", zwei Live-Reports v4.56.0).
+Seit v4.57.0 verlangt `isFreshMatchingInstance()`: Anker passt, Squad nicht
+voll - und eine BENUTZTE challengeId ist genau dann wieder frisch, wenn die
+Instanz NACHWEISLICH leer ist (`squadEmpty === true`, strikt; `null` =
+unbekannt bleibt gesperrt). Das deckt beide Welten: eine fehlgeschlagene
+oder gecachte alte Abgabe hinterlaesst ein volles Squad und bleibt
+blockiert; eine von EA zurueckgesetzte Daily-Instanz ist leer und darf
+weiterlaufen. `plan.sameIdReuse` zaehlt die Wiederverwendungen fuer die
+Diagnose (im done-Step von batchSteps sichtbar). Die Sperr-Liste lebt am
+Plan (nicht in STATE), stirbt also mit ihm.
 
 **Die Plausibilisierung.** Manche Submit-Wege liefern keine auswertbare
 Server-Antwort. Statt blind weiterzumachen, liest der Batch in diesem Zweig

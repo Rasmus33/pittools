@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.56.0
+// @version      4.57.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.56.0';
+    const VERSION = '4.57.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -4872,7 +4872,8 @@
             try { if (sq && typeof sq.isSquadEmpty === 'function') empty = sq.isSquadEmpty(); }
             catch (e) {}
             if (ctrl && sq && isFreshMatchingInstance(plan, STATE.sbc, empty)) {
-                steps.push({ ms: Date.now() - t0, done: true, clicked: clicked });
+                steps.push({ ms: Date.now() - t0, done: true, clicked: clicked,
+                    sameIdReuse: plan.sameIdReuse || 0 });
                 return { ok: true, steps: steps };
             }
             // Die App blieb nach dem Abgeben im SQUAD-VIEW haengen (live,
@@ -5238,15 +5239,25 @@
         if (Number(STATE.sbc.formationSlots || 0) !== Number(plan.slots || 0)) return false;
         return true;
     }
-    // Sperre gegen eine bereits abgegebene Instanz: passt die offene SBC den
-    // Vorgaben nach, aber ihre challengeId steckt schon in plan.usedChallengeIds
-    // (onBatchRunClick traegt sie dort nach jeder Abgabe ein), ist es im
-    // Retry-Fenster die ALTE Instanz, nicht die neue - "jede Wiederholung hat
-    // eine eigene challengeId" (CLAUDE.md). Bisher nur beobachtet
-    // (usedInstance im stuck-Diagnosezweig), hier erstmals durchgesetzt.
+    // Schutz gegen eine bereits abgegebene Instanz - mit Daily-Ausnahme.
+    // "Jede Wiederholung hat eine eigene challengeId" (LEARNINGS §9) gilt NUR
+    // fuer die Rating-Upgrade-Sets. Daily-SBCs (live belegt: "Daily Bronze
+    // Upgrade", challengeId 3068, zwei Reports v4.56.0) setzen DIESELBE
+    // challengeId einfach zurueck - die harte Sperre auf usedChallengeIds
+    // blockierte dort jede zweite Runde ("Batch gestoppt nach 1/6", das Squad
+    // wurde nie befuellt). Deshalb: eine benutzte challengeId gilt wieder als
+    // frisch, wenn die Instanz NACHWEISLICH leer ist (squadEmpty === true,
+    // strikt - null heisst "unbekannt" und bleibt gesperrt). Eine
+    // fehlgeschlagene Abgabe hinterlaesst ein volles Squad und bleibt blockiert.
     function isFreshMatchingInstance(plan, sbcState, squadEmpty) {
-        return !!(matchesPlannedSbc(plan) && squadEmpty !== false &&
-            (plan.usedChallengeIds || []).indexOf(String(sbcState.challengeId)) === -1);
+        if (!matchesPlannedSbc(plan) || squadEmpty === false) return false;
+        const used = (plan.usedChallengeIds || []).indexOf(String(sbcState.challengeId)) > -1;
+        if (!used) return true;
+        if (squadEmpty === true) {
+            plan.sameIdReuse = (plan.sameIdReuse || 0) + 1; // Diagnose: Daily-Wiederverwendung
+            return true;
+        }
+        return false;
     }
     async function onBatchPlanClick() {
         syncSbcWithOpenChallenge();

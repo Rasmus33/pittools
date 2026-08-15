@@ -40,18 +40,13 @@ bedienpanel-ui:
 diagnose-werkzeuge:
   RA:
     evidence:
-    - ea-fc-sbc-optimizer.user.js:4066-4071
-    - ea-fc-sbc-optimizer.user.js:2795
-    - solver-test.js:1853-1905
-    - ea-fc-sbc-optimizer.user.js:4177-4195
-    - docs/LEARNINGS.md:1165-1208
-    iteration_scored: 1
-    reasoning: 'Alle 3 Aktionen vollstaendig: lastEligible tri-state-sicher im Report,
-      Symmetrie-Test mit 3 Richtungen + engen begruendeten Ausnahmen, Diagnose-Tool
-      selbst gehaertet (Fallback ueber denselben Copy-Pfad, Regressionsblock 31).
-      Rest zum Deckel 85 ist der inhaerente Lag fuer noch-nicht-gedachte Fehlerbilder.'
-    score: 84.0
-    source: audit-evaluator
+    - docs/LEARNINGS.md:1685-1740
+    - ea-fc-sbc-optimizer.user.js:1102-1120
+    notes: 'Post-iter8: der Lag war im Deckel bereits eingepreist (Doppelzaehlung
+      korrigiert); Krisenabend 15.08. als staerkster Live-Beleg (6 Reports -> 4 Hotfixes
+      <3h, jede Wurzelursache per Diagnose-Feld benannt). Structural_max 85 erreicht.'
+    score: 85.0
+    source: user-manual
     updated_at: '2026-08-15'
 ea-app-anbindung:
   RA:
@@ -94,15 +89,12 @@ sbc-vorgaben-erkennung:
 spieler-pool:
   RA:
     evidence:
-    - ea-fc-sbc-optimizer.user.js:1546-1552
-    - ea-fc-sbc-optimizer.user.js:1099-1121
-    - solver-test.js:3549-3641
-    - docs/LEARNINGS.md:1061-1097
-    notes: 'Post-iter6: loadIncomplete in Report/App-Log/Batch-Vorschau sichtbar,
-      removeFromPool + Lock-Einzelkey-Fehler am reportError-Chokepoint (der Pro-Key-Skip
-      fing noch am selben Abend einen echten Live-Fall). Takt zeilenidentisch. Rest:
-      removeFromPool ohne eigenen Test, ein pre-existierender Q7-Ausreisser in §30.'
-    score: 84.0
+    - solver-test.js:4438-4496
+    - ea-fc-sbc-optimizer.user.js:1224-1237
+    - docs/LEARNINGS.md:1099-1119
+    notes: 'Post-iter8: beide iter6-Restpunkte geschlossen (removeFromPool-Verhaltenstest
+      Block 54, §30 Ist-Form). Structural_max 85 erreicht.'
+    score: 85.0
     source: user-manual
     updated_at: '2026-08-15'
 team-eintragen:

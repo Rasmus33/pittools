@@ -1,6 +1,6 @@
-# Audit-Summary — Iteration 7
+# Audit-Summary — Iteration 8
 
-**Stand:** 2026-08-15T20:07:19Z
+**Stand:** 2026-08-15T20:36:34Z
 **Features:** 9 · **Dimensionen:** 1
 **Coverage:** 9 / 9 Rubric-Zellen
 
@@ -14,24 +14,24 @@
 70.0 | 69 | 1.0 |
 | `bedienpanel-ui` | 85.0 / 84 / 1.0 |
 85.0 | 84 | 1.0 |
-| `diagnose-werkzeuge` | 84.0 / 82 / 2.0 |
-84.0 | 82 | 2.0 |
+| `diagnose-werkzeuge` | 85.0 / 82 / 3.0 |
+85.0 | 82 | 3.0 |
 | `ea-app-anbindung` | 75.0 / 75 / 0.0 |
 75.0 | 75 | 0.0 |
 | `rating-solver` | 95.0 / 93 / 2.0 |
 95.0 | 93 | 2.0 |
 | `sbc-vorgaben-erkennung` | 80.0 / 79 / 1.0 |
 80.0 | 79 | 1.0 |
-| `spieler-pool` | 84.0 / 80 / 4.0 |
-84.0 | 80 | 4.0 |
+| `spieler-pool` | 85.0 / 80 / 5.0 |
+85.0 | 80 | 5.0 |
 | `team-eintragen` | 76.0 / 70 / 6.0 |
 76.0 | 70 | 6.0 |
 
 ## Aggregat
 
-- **Σ Ist** über alle Features: 729.0
+- **Σ Ist** über alle Features: 731.0
 - **Σ Soll**: 712
-- **Σ Gain**: 12.0 (400.0%)
+- **Σ Gain**: 14.0 (1400.0%)
 - **Features mit Regression** (Ist < vorherige Iter): 0
 - **Features unter Target**: 0 / 9
 

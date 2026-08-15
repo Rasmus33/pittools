@@ -1,8 +1,8 @@
-# PO-Decisions — Iteration 7
+# PO-Decisions — Iteration 8
 
-**Stand:** 2026-08-15T20:07:19Z
+**Stand:** 2026-08-15T20:36:34Z
 
-Voller Audit-Trail aller Decision-Comments dieser Iteration. Aggregat aus `roadmap.py decision query --iteration=7`.
+Voller Audit-Trail aller Decision-Comments dieser Iteration. Aggregat aus `roadmap.py decision query --iteration=8`.
 
 ## Aggregat-Kennzahlen
 
@@ -16,8 +16,8 @@ Voller Audit-Trail aller Decision-Comments dieser Iteration. Aggregat aus `roadm
 
 ## Decision-Liste
 
-_Keine Decision-Marker in Iter 7 — clean iteration ohne Klasse-A-H-Eskalation._
+_Keine Decision-Marker in Iter 8 — clean iteration ohne Klasse-A-H-Eskalation._
 
 ## Blocked-Final Detail (User-Aktion empfohlen)
 
-_Keine Blocked-Final-Tickets in Iter 7._
+_Keine Blocked-Final-Tickets in Iter 8._

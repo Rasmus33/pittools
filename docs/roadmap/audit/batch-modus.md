@@ -1,6 +1,6 @@
-# Audit — `batch-modus` — Iteration 7
+# Audit — `batch-modus` — Iteration 8
 
-**Stand:** 2026-08-15T20:07:19Z
+**Stand:** 2026-08-15T20:36:34Z
 ## Score-Stand
 
 | Dim | Ist (raw) | Capped (struct_max) | Schwellwert | Status | Provenance |
@@ -18,7 +18,7 @@
 
 ## Regression / Effektivität
 
-🟢 Keine Regression — Σ Ist 70.0 (≥ 69.0 Iter 6).
+🟢 Keine Regression — Σ Ist 70.0 (≥ 69.0 Iter 7).
 
 **Effektivität:** in-range
 (1.0 von 0.0 = 100.0% Reach über 1 Fokus-Dim)

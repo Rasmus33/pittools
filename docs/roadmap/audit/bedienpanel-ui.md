@@ -1,6 +1,6 @@
-# Audit — `bedienpanel-ui` — Iteration 7
+# Audit — `bedienpanel-ui` — Iteration 8
 
-**Stand:** 2026-08-15T20:07:19Z
+**Stand:** 2026-08-15T20:36:34Z
 ## Score-Stand
 
 | Dim | Ist (raw) | Capped (struct_max) | Schwellwert | Status | Provenance |
@@ -18,7 +18,7 @@
 
 ## Regression / Effektivität
 
-🟢 Keine Regression — Σ Ist 85.0 (≥ 82.0 Iter 6).
+🟢 Keine Regression — Σ Ist 85.0 (≥ 82.0 Iter 7).
 
 **Effektivität:** in-range
 (3.0 von 2.0 = 150.0% Reach über 1 Fokus-Dim)

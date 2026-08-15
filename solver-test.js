@@ -426,7 +426,10 @@ function mulberry32(a) {
         missing.length ? ('fehlt: ' + missing.join(', ')) : (refs.size + ' Referenzen geprüft'));
     // Und die Listener dürfen nur auf ui-Felder gehen, die auch gesetzt werden.
     const uiFields = new Set();
-    const uiBlock = src.slice(src.indexOf('        ui = {'), src.indexOf('        panel.querySelector(\'#sbc-opt-close\')'));
+    const uiKey = src.indexOf('        ui = {');
+    const uiOpen = src.indexOf('{', uiKey);
+    const uiClose = matchingBraceIndex(src, uiOpen);
+    const uiBlock = src.slice(uiOpen + 1, uiClose);
     const re3 = /^\s*([a-zA-Z]+):/gm;
     while ((m = re3.exec(uiBlock)) !== null) uiFields.add(m[1]);
     const used = new Set();
@@ -1149,6 +1152,11 @@ function mulberry32(a) {
     // hubScan lieferte 40 Zeilen (pro Set sechs: Kachel, Header, Titel, Content,
     // Rewards, Status). Jetzt eine Zeile pro Set - mit Status, denn der sagt,
     // ob sich das Set noch wiederholen laesst.
+    // "hubScan: (function () {...})()" ist ein Property-Key mit anonymer IIFE,
+    // keine benannte Funktionsdeklaration und kein Marker-Paar - passt strukturell
+    // zu keinem der beiden Extraktions-Helfer (extractFunction sucht "function
+    // NAME", extractMarkerBlock ein Kommentar-Markerpaar). Bewusste
+    // Einzelfall-Extraktion per indexOf/slice statt erzwungener Helfer-Nutzung.
     const hub = src.slice(src.indexOf("hubScan: (function"), src.indexOf("submitInfo: (function"));
     check("hubScan liefert eine Zeile pro Set",
         /out.sets.push/.test(hub) && /ut-sbc-set-tile-view/.test(hub));

@@ -54,5 +54,10 @@ history:
     rating-solver um 1 (toter Tiebreak). Die uebrigen 6 Features sind an/nahe ihren
     Deckeln — halten statt heben. Dazu SI test-extraktions-helfer (reif) und die cleanup-iter0-Substanz,
     die in den drei Lifts mit erledigt wird.'
-  effectiveness: {}
+  effectiveness:
+    RA:
+      before: 65
+      after: 84
+      target: 82
+      verdict: hit
 pending_suggestion: null

@@ -5077,27 +5077,41 @@
         const want = String(plan.setName || '').trim().toLowerCase();
         if (!want) return { ok: false, why: 'kein Set-Name gemerkt', tiles: tiles.length };
         if (!tiles.length) return { ok: false, why: 'keine Set-Kacheln sichtbar', tiles: 0 };
+        // WARUM titleSource: findet titleOf() keines der Titel-Elemente (EA baut
+        // nur die INNEREN Elemente um, .ut-sbc-set-tile-view selbst bleibt
+        // bestehen), faellt es auf den GESAMTEN Kachel-Text zurueck - genau der
+        // Zustand, der laut LEARNINGS §9 (v4.23.0) live zum Teilstring-Fehlgriff
+        // fuehrte ("Upgrade" steckt in jeder zweiten Kachel). Die Matching-Logik
+        // selbst bleibt unveraendert, titleSource macht nur sichtbar, OB dieser
+        // fragile Pfad gerade griff.
         function titleOf(t) {
             const h = t.querySelector('.tileTitle, .tileHeader, h1');
-            return ((h && h.textContent) || t.textContent || '')
+            const text = ((h && h.textContent) || t.textContent || '')
                 .replace(/\s+/g, ' ').trim().toLowerCase();
+            return { text: text, source: h ? 'element' : 'fulltext' };
         }
-        let hit = null, how = null;
-        for (const t of tiles) { if (titleOf(t) === want) { hit = t; how = 'exakt'; break; } }
+        let hit = null, how = null, hitSource = null;
+        for (const t of tiles) {
+            const ti = titleOf(t);
+            if (ti.text === want) { hit = t; how = 'exakt'; hitSource = ti.source; break; }
+        }
         if (!hit) {
             for (const t of tiles) {
                 const ti = titleOf(t);
-                if (ti.indexOf(want) === 0 || want.indexOf(ti) === 0) { hit = t; how = 'Anfang'; break; }
+                if (ti.text.indexOf(want) === 0 || want.indexOf(ti.text) === 0) {
+                    hit = t; how = 'Anfang'; hitSource = ti.source; break;
+                }
             }
         }
         if (!hit) {
             for (const t of tiles) {
-                if (titleOf(t).indexOf(want) > -1) { hit = t; how = 'enthalten'; break; }
+                const ti = titleOf(t);
+                if (ti.text.indexOf(want) > -1) { hit = t; how = 'enthalten'; hitSource = ti.source; break; }
             }
         }
         if (!hit) {
             return { ok: false, why: 'Set nicht gefunden', want: want, tiles: tiles.length,
-                     titles: tiles.slice(0, 8).map(titleOf) };
+                     titles: tiles.slice(0, 8).map(function (t) { return titleOf(t).text; }) };
         }
         // Erst die Kachel, dann ihr Titel-Element - manche Views haengen ihren
         // Tap-Handler am Kind, nicht am Container.
@@ -5106,7 +5120,7 @@
         const inner = hit.querySelector('.tileHeader, .tileTitle, h1');
         if (inner) clickLike(inner);
         return { ok: true, why: 'Set-Kachel geklickt (' + how + ')',
-                 want: want, hitTitle: titleOf(hit), tap: tap,
+                 want: want, hitTitle: titleOf(hit).text, titleSource: hitSource, tap: tap,
                  tapInner: inner ? (STATE.diag.lastTap || null) : null };
     }
     /** Challenge-Zeile in der geoeffneten Set-Ansicht anklicken. */

@@ -13,12 +13,10 @@ phase_sequence:
 - release
 confidence: 0.6
 code_geography:
-- ea-fc-sbc-optimizer.user.js — buildDiagReport, onDiagClick, diagError, STATE.diag.*
-  (ca. Z. 3701–4008)
-- app/java/com/sbctools/browser/MainActivity.java — addLog, buildLogReport, shareLog/copyLog,
-  onConsoleMessage
-- CLAUDE.md — Debugging-Konvention
-last_updated: '2026-08-14'
+- ea-fc-sbc-optimizer.user.js
+- app/java/com/sbctools/browser/MainActivity.java
+- CLAUDE.md
+last_updated: '2026-08-15'
 ---
 
 # Diagnose-Werkzeuge (Script-Report & App-Log)

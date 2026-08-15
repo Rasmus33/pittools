@@ -35,35 +35,17 @@
    das die Requests nativ ausführt und das Ergebnis zurückgibt — erst angehen,
    wenn wirklich diese Features fehlen.
    Ein GM_-Shim ist NICHT nötig (PaleTools hat Fallbacks, LEARNINGS §8).
-1b. **Batch: der letzte fehlende Schritt ist die Navigation** (Stand v4.18.1).
-   Was funktioniert: planen, eintragen, abgeben, Belohnungs-Dialog wegraeumen,
-   die frische challengeId ueber `requestChallengesForSet` finden.
-   Was NICHT funktioniert: die Challenge-Ansicht zurueckbekommen. Nach dem
-   Abgeben steht die App im SBC-HUB (`UTSBCHubViewController`,
-   `containerCount: 0`, kein Squad-Controller - dreimal belegt), und
-   `services.SBC.loadChallenge(frischeId)` laedt nur Daten, ohne die Ansicht zu
-   wechseln. Ein dokumentierter Weg, eine Challenge programmatisch zu OEFFNEN,
-   ist nicht gefunden: `UTGameFlowNavigationController` hat
-   `pushViewController`, dafuer muesste man aber einen korrekt initialisierten
-   `UTSBCSquadSplitViewController` bauen.
-   Auch geprueft und verworfen: `#repeat-sbc` ("Repeat Search") ist EAs eigener
-   Button am `UTSBCSquadDetailPanelView` (`getRepeatSbcButton()`, PaleTools
-   haengt sich per addTarget nur dran) - dem Namen nach wiederholt er die
-   Squad-Builder-SUCHE, nicht die SBC. Und er existiert nur IN der
-   Challenge-Ansicht, ist im Hub also ohnehin weg.
-   **Naechster (und letzter) Ansatz:** im Hub die Kachel anklicken, so wie
-   Rasmus es von Hand macht. Dafuer liefert v4.18.1 das Diagnose-Feld
-   `hubScan` (sichtbare Kachel-Kandidaten mit Klasse, Text, Groesse). Mit
-   EINEM Report aus dem Hub ist das treffsicher baubar; klappt es dann nicht,
-   ist das Feature nicht sinnvoll umsetzbar.
-
-1c. **Batch am Handy: Runde 2 gegenpruefen** (v4.30.0). Das Abgeben laeuft
-   (`submitChallengeVia: ctrl._submitChallenge`), offen ist der Kachel-Tap.
-   Im Report zeigt `batchSteps[].setTile.tap`, ob `touchstart,touchend`
-   rausgingen, ob ein Handler sie verarbeitet hat (`touchHandled`) und ob die
-   Kachel im Bild war (`inViewport`). Bleibt `hubScan.inHub` true, greift EA
-   den Tap anders ab - dann bleibt nur, die Tap-Handler der View-Instanz
-   direkt zu rufen.
+1b. ~~Batch: Navigation zur naechsten Instanz~~ — GELOEST. Die Navigation
+   laeuft ueber simulierte Touch-Events wie beim Handbetrieb:
+   `clickSetTile` (Set-Kachel im Hub antippen) → `clickChallengeRow`
+   (Challenge-Zeile in der Set-Ansicht oeffnen), Orchestrierung in
+   `openNextInstance`. Die frische `challengeId` kommt weiterhin ueber
+   `requestChallengesForSet` (LEARNINGS §9), bereits abgegebene Instanzen sind
+   per `usedChallengeIds` gesperrt. Haengt die App nach dem Abgeben noch im
+   Squad-View statt im Hub, klickt `clickBackButton` zurueck (seit v4.36.0).
+   Die verworfenen Ansaetze von damals (programmatisches
+   `pushViewController`, `#repeat-sbc`) stehen der Historie halber in
+   LEARNINGS — nicht wieder aufgreifen.
 2. **APK beim Kollegen testen**: v1.3.0 (PitTools, Hochformat, Pitroipa-Icon,
    GitHub-URL als Default) ist gebaut, aber der EA-Login im WebView ist erst auf
    EINEM Gerät verifiziert. Mögliche Stolpersteine: SSO-Popups, Captcha.

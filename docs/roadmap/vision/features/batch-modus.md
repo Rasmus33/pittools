@@ -13,13 +13,10 @@ phase_sequence:
 - release
 confidence: 0.9
 code_geography:
-- ea-fc-sbc-optimizer.user.js — onBatchPlanClick/onBatchRunClick, openNextInstance,
-  submitChallengeToEa, popupState/dismissRewardPopup, clickLike, clickSetTile/clickAllFilter/clickChallengeRow/clickBackButton,
-  setLooksRepeatable, matchesPlannedSbc, renderBatchPreview (ca. Z. 4220–4980)
-- ea-fc-sbc-optimizer.user.js — planBatch (im Solver-Block)
-- docs/LEARNINGS.md — §9, §21
-- docs/ROADMAP.md — Batch-Navigation
-last_updated: '2026-08-14'
+- ea-fc-sbc-optimizer.user.js
+- docs/LEARNINGS.md
+- docs/ROADMAP.md
+last_updated: '2026-08-15'
 ---
 
 # Batch-Modus (Mehrfach-Abgabe)

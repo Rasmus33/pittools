@@ -13,10 +13,9 @@ phase_sequence:
 - release
 confidence: 0.85
 code_geography:
-- ea-fc-sbc-optimizer.user.js — toItemEntity, getControllerChain, findSbcController,
-  refreshOpenSbcView, submitToSbc (ca. Z. 2671–2811, 4998–5048)
-- docs/LEARNINGS.md — §5, §6 (Eindeutigkeit pro assetId, sonst HTTP 460), §19
-last_updated: '2026-08-14'
+- ea-fc-sbc-optimizer.user.js
+- docs/LEARNINGS.md
+last_updated: '2026-08-15'
 ---
 
 # Team ins SBC eintragen (Submit-Weg)

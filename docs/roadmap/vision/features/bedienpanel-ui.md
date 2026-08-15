@@ -13,14 +13,9 @@ phase_sequence:
 - release
 confidence: 0.75
 code_geography:
-- ea-fc-sbc-optimizer.user.js — injectStyles, buildPanel, readConfig, renderResult,
-  toast, setStatus, refreshSbcInfoUI (ca. Z. 2927–3358, 4008–4220)
-- 'ea-fc-sbc-optimizer.user.js — Band-Editor: defaultBands, bandsToSpec, saveBands,
-  initBandEditor (ca. Z. 3358–3459)'
-- ea-fc-sbc-optimizer.user.js — makeDraggable, inSbcView, togglePanel, buildSbcButton,
-  syncLauncher (ca. Z. 3478–3701)
-- docs/LEARNINGS.md — §10
-last_updated: '2026-08-14'
+- ea-fc-sbc-optimizer.user.js
+- docs/LEARNINGS.md
+last_updated: '2026-08-15'
 ---
 
 # Bedienpanel & Einstiegspunkte

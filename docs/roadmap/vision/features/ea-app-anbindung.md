@@ -13,14 +13,9 @@ phase_sequence:
 - release
 confidence: 0.7
 code_geography:
-- ea-fc-sbc-optimizer.user.js — fetch/XHR-Wrapper, absorbSessionHeaders, detectApiBase,
-  classifyUrl, handleResponseBody (ca. Z. 116–312)
-- ea-fc-sbc-optimizer.user.js — servicesAvailable, obsPromise, responseOk, apiHeaders,
-  httpErrText (ca. Z. 1008–1350)
-- ea-fc-sbc-optimizer.user.js — installServicesHooks, boot, findLiveChallenge (ca.
-  Z. 4982–5145)
-- docs/LEARNINGS.md — §3, §4
-last_updated: '2026-08-14'
+- ea-fc-sbc-optimizer.user.js
+- docs/LEARNINGS.md
+last_updated: '2026-08-15'
 ---
 
 # EA-Web-App-Anbindung (Session & API-Zugriff)

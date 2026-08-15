@@ -13,12 +13,10 @@ phase_sequence:
 - release
 confidence: 0.95
 code_geography:
-- 'ea-fc-sbc-optimizer.user.js — Block [SOLVER-BEGIN]…[SOLVER-END] (ca. Z. 1411–2446):
-  squadRating/squadRatingExact/squadV, parseRatingCosts/costOf, matchesRarity, buildDp,
-  solve/solveCore, finishTeam, planBatch'
-- solver-test.js — Testsuite (extrahiert den Block per Marker, Brute-Force-Paritaet)
-- docs/LEARNINGS.md — §1 (Rating-Formel, V-Mass)
-last_updated: '2026-08-14'
+- ea-fc-sbc-optimizer.user.js
+- solver-test.js
+- docs/LEARNINGS.md
+last_updated: '2026-08-15'
 ---
 
 # Rating-Solver (Team-Optimierung)

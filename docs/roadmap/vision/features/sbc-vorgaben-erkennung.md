@@ -13,12 +13,9 @@ phase_sequence:
 - release
 confidence: 0.85
 code_geography:
-- ea-fc-sbc-optimizer.user.js — deepScanChallenge, findChallengeNode, collectChallengeNodes,
-  applyFromSetChallenges, parseSbcChallenge, captureChallengeEntity, applyScan, syncSbcWithOpenChallenge
-  (ca. Z. 317–770)
-- ea-fc-sbc-optimizer.user.js — detectSquadSlotTotal (ca. Z. 2483–2537)
-- docs/LEARNINGS.md — §6, §11
-last_updated: '2026-08-14'
+- ea-fc-sbc-optimizer.user.js
+- docs/LEARNINGS.md
+last_updated: '2026-08-15'
 ---
 
 # SBC-Vorgaben-Erkennung

@@ -1259,3 +1259,30 @@ gezielt: ein Pool, dessen einzig mögliche Lösung außerhalb von `stHardCap`
 liegt (Fenster erschöpft, Flag MUSS erscheinen), und ein Pool, dessen
 bestmögliches Team das Ziel selbst im Optimum nicht erreicht (echte
 Unlösbarkeit, Flag darf NICHT erscheinen).
+
+## 35. Batch-Sperre gegen Doppel-Abgabe + Plausibilisierung nach Submit ohne Antwort
+
+Zwei Absicherungen aus v4.46.0, die im Batch-Lauf zusammenspielen:
+
+**Die Sperre.** Der Anker fuer die naechste Runde ist SET + Vorgaben (§9),
+NICHT die challengeId - die wechselt pro Wiederholung. Kehrseite: eine
+bereits abgegebene Instanz erfuellt denselben Anker weiterhin. Serviert EA
+nach dem Abgeben kurz noch den alten Zustand (Cache, langsamer Refresh),
+haette der Batch dieselbe Instanz erneut als "frisch" akzeptiert und doppelt
+eingetragen. Deshalb fuehrt jeder Plan `plan.usedChallengeIds`: nach jedem
+Abgeben wird die verbrauchte Id gepusht, und `isFreshMatchingInstance()`
+verlangt fuer "frisch" DREI Dinge - Anker passt (`matchesPlannedSbc`), Squad
+ist leer, und die challengeId steht NICHT in `usedChallengeIds`. Die Sperre
+lebt am Plan (nicht in STATE), stirbt also mit ihm - ein neuer Plan startet
+unbelastet, auch fuer dieselbe SBC.
+
+**Die Plausibilisierung.** Manche Submit-Wege liefern keine auswertbare
+Server-Antwort. Statt blind weiterzumachen, liest der Batch in diesem Zweig
+nach kurzer Wartezeit nach, ob das Squad jetzt leer ist, und protokolliert
+je Versuch `via/hadResponse/squadEmptyAfter/ms` nach
+`STATE.diag.submitConfirmations`. Bewusst REINE Beobachtung, kein
+Abbruchkriterium: die Abbruch-Philosophie ("bei jeder Unstimmigkeit
+anhalten") haengt weiter an den bestehenden Checks; submitConfirmations
+macht im Report nur sichtbar, ob eine antwortlose Abgabe tatsaechlich
+durchging. Testfaelle decken Sperr-Fall (gleiche Id nochmal -> nicht
+frisch) und Re-Plan-Normalfall (neuer Plan, leere Sperrliste) ab.

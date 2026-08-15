@@ -1791,9 +1791,13 @@ function mulberry32(a) {
     // wuerde genau diese beiden bestehenden, echten Felder faelschlich als
     // "nie zugewiesen" melden). Ein Feld OHNE jede Stelle ausserhalb des
     // Reports ist exakt der uiScan-Fall vor diesem Fix.
+    // "diag." statt zwingend "STATE.diag." erfasst auch reine Reducer-Helfer
+    // wie recordBatchStep(diag, ...), die STATE.diag nur als Parameter
+    // durchgereicht bekommen und intern "diag.<feld>" schreiben - eine reine
+    // "STATE.diag."-Suche wuerde deren Felder faelschlich als unbefuellt melden.
     const unassigned = [];
     for (const name of declared) {
-        const re = new RegExp('STATE\\.diag\\.' + name + '\\b', 'g');
+        const re = new RegExp('\\bdiag\\.' + name + '\\b', 'g');
         let mm, foundOutside = false;
         while ((mm = re.exec(src))) {
             if (mm.index < fnOpen || mm.index >= fnClose) { foundOutside = true; break; }
@@ -2021,8 +2025,14 @@ function mulberry32(a) {
     const nextFn = extractFunction(src, 'openNextInstance');
     check('stuck-Diagnosezweig bei i===2/20/45 vorhanden',
         nextFn.indexOf('i === 2 || i === 20 || i === 45') > -1);
-    check('clickBackButton-Zweig bei i===5/25 vorhanden',
-        nextFn.indexOf('i === 5 || i === 25') > -1 && nextFn.indexOf('clickBackButton()') > -1);
+    // Die i===5/25-Bedingung selbst steckt seit der Extraktion in shouldTryBack
+    // (echter Verhaltenstest statt Text-Match, Abschnitt 29) - hier bleibt nur
+    // die Verdrahtungsstelle geprueft.
+    check('clickBackButton-Zweig ruft shouldTryBack(i) auf',
+        nextFn.indexOf('shouldTryBack(i)') > -1 && nextFn.indexOf('clickBackButton()') > -1);
+    check('openNextInstance nutzt isFreshMatchingInstance(plan, STATE.sbc, empty) ' +
+        'statt der alten Inline-Bedingung',
+        nextFn.indexOf('isFreshMatchingInstance(plan, STATE.sbc, empty)') > -1);
 }
 
 // ========== 23. Band-Editor: SSOT-Ableitung + Edge-Cases ==========
@@ -2365,6 +2375,228 @@ function mulberry32(a) {
         check('extractFunction(' + name + ') byte-gleich zur alten Klammer-Zaehlung',
             extractFunction(src, name) === oldExtractFunction(name));
     }
+}
+
+// ========== 27. Additive Post-Submit-Plausibilisierung: submitChallengeToEa ("ohne Response") ==========
+// Fuehrt den echten "ohne Response"-Zweig aus submitChallengeToEa aus (Mock-
+// Controller/Squad statt statischem Text-Match) - Beleg, dass die neue
+// Plausibilisierung REIN additiv ist: in BEIDEN Faellen (isSquadEmpty true/false,
+// dazu unlesbar) bleibt der Rueckgabewert { via: 'controller' } unveraendert,
+// nur submitConfirmations unterscheidet sich (Edge-Case aus dem Gap-Report:
+// kein throw/Retry allein wegen squadEmptyAfter === false).
+{
+    const fnSrc = extractFunction(src, 'submitChallengeToEa');
+    check('Funktion submitChallengeToEa gefunden (27)', !!fnSrc);
+
+    function runSubmit(squadEmptyAfter, opts) {
+        opts = opts || {};
+        const STATE = { diag: {
+            submitCandidates: null, submitChallengeVia: null,
+            submitWithoutResponseCount: 0, submitConfirmations: null
+        } };
+        const squad = {
+            isSBCSquadEligible: () => true,
+            isSquadEmpty: () => {
+                if (opts.throwOnRead) throw new Error('boom (simuliert)');
+                return squadEmptyAfter;
+            }
+        };
+        const ctrl = { _squad: squad, submitChallenge: () => true }; // kein .then/.subscribe/.observe -> "ohne Response"
+        const sandbox = {
+            STATE: STATE,
+            findSbcController: () => ctrl,
+            getControllerChain: () => [],
+            obsPromise: async (r) => r,
+            responseOk: () => true,
+            batchWait: () => Promise.resolve()
+        };
+        const keys = Object.keys(sandbox);
+        const fn = new Function(keys.join(','),
+            fnSrc + '\nreturn submitChallengeToEa;').apply(null, keys.map(k => sandbox[k]));
+        return fn().then(r => ({ result: r, STATE: STATE }));
+    }
+
+    const results27 = [];
+    results27.push(runSubmit(true).then(r => {
+        check('Ohne Response + isSquadEmpty()===true: weiterhin { via: "controller" }',
+            r.result && r.result.via === 'controller', JSON.stringify(r.result));
+        const conf = (r.STATE.diag.submitConfirmations || [])[0];
+        check('submitConfirmations traegt squadEmptyAfter=true',
+            !!conf && conf.squadEmptyAfter === true && conf.hadResponse === false, JSON.stringify(conf));
+    }));
+    results27.push(runSubmit(false).then(r => {
+        check('Ohne Response + isSquadEmpty()===false: DENNOCH { via: "controller" } ' +
+            '(kein Abbruch/Retry - False-Positive-Edge-Case aus dem Gap-Report)',
+            r.result && r.result.via === 'controller', JSON.stringify(r.result));
+        const conf = (r.STATE.diag.submitConfirmations || [])[0];
+        check('submitConfirmations traegt squadEmptyAfter=false',
+            !!conf && conf.squadEmptyAfter === false, JSON.stringify(conf));
+    }));
+    results27.push(runSubmit(null, { throwOnRead: true }).then(r => {
+        check('isSquadEmpty() wirft: DENNOCH { via: "controller" }, kein throw nach aussen',
+            r.result && r.result.via === 'controller', JSON.stringify(r.result));
+        const conf = (r.STATE.diag.submitConfirmations || [])[0];
+        check('nicht lesbar -> squadEmptyAfter bleibt "unknown" statt einer geratenen Aussage',
+            !!conf && conf.squadEmptyAfter === 'unknown', JSON.stringify(conf));
+    }));
+    pending.push(Promise.all(results27));
+}
+
+// ========== 28. usedChallengeIds als echte Sperre: isFreshMatchingInstance ==========
+{
+    const matchesSrc = extractFunction(src, 'matchesPlannedSbc');
+    const freshSrc = extractFunction(src, 'isFreshMatchingInstance');
+    check('Funktion isFreshMatchingInstance gefunden (28)', !!freshSrc);
+
+    function buildFresh(STATE) {
+        return new Function('STATE', matchesSrc + '\n' + freshSrc +
+            '\nreturn isFreshMatchingInstance;')(STATE);
+    }
+
+    // Sperr-Fall (Pflicht, Gap-Report): dieselbe challengeId steckt bereits in
+    // plan.usedChallengeIds - false, OBWOHL matchesPlannedSbc allein true waere.
+    {
+        const STATE = { sbc: { targetOVR: 84, formationSlots: 11, challengeId: '777' } };
+        const plan = { targetOVR: 84, slots: 11, usedChallengeIds: ['777'] };
+        check('isFreshMatchingInstance: false trotz passendem targetOVR/formationSlots, ' +
+            'weil die challengeId schon in usedChallengeIds steht',
+            buildFresh(STATE)(plan, STATE.sbc, true) === false);
+    }
+    // Normalfall/Re-Plan-Edge-Case (Pflicht, Gap-Report): frischer Plan, leere
+    // usedChallengeIds wie onBatchPlanClick sie initialisiert - weiterhin true,
+    // damit die Sperre den allerersten Batch-Schritt nicht blockiert.
+    {
+        const STATE = { sbc: { targetOVR: 84, formationSlots: 11, challengeId: '777' } };
+        const plan = { targetOVR: 84, slots: 11, usedChallengeIds: [] };
+        check('isFreshMatchingInstance: true bei frischem Plan (leere usedChallengeIds)',
+            buildFresh(STATE)(plan, STATE.sbc, true) === true);
+    }
+    // squadEmpty === false blockiert weiterhin (unveraendertes Altverhalten).
+    {
+        const STATE = { sbc: { targetOVR: 84, formationSlots: 11, challengeId: '999' } };
+        const plan = { targetOVR: 84, slots: 11, usedChallengeIds: [] };
+        check('isFreshMatchingInstance: false bei squadEmpty===false (unveraendert)',
+            buildFresh(STATE)(plan, STATE.sbc, false) === false);
+    }
+    // Verhaltensneutralitaet der Extraktion (Pflicht, Lift-Plan): OHNE Sperr-
+    // Input (kein usedChallengeIds-Treffer) liefert isFreshMatchingInstance
+    // GENAU dasselbe wie die alte Inline-Bedingung
+    // "matchesPlannedSbc(plan) && empty !== false".
+    {
+        const STATE = { sbc: { targetOVR: 84, formationSlots: 11, challengeId: '1' } };
+        const plan = { targetOVR: 84, slots: 11 }; // kein usedChallengeIds -> Altzustand
+        const oldMatches = new Function('STATE', matchesSrc + '\nreturn matchesPlannedSbc;')(STATE);
+        const oldCond = !!(oldMatches(plan) && true !== false);
+        check('Verhaltensneutralitaet: isFreshMatchingInstance ohne Sperr-Input == alte Bedingung',
+            buildFresh(STATE)(plan, STATE.sbc, true) === oldCond);
+    }
+
+    // Statischer Regressions-Check: der Re-Plan-Reset bleibt vorhanden - sonst
+    // wuerde ein kuenftiger Refactor den allerersten Batch-Schritt lautlos
+    // sperren (Edge-Case aus dem Gap-Report).
+    const planFn = extractFunction(src, 'onBatchPlanClick');
+    check('onBatchPlanClick setzt plan.usedChallengeIds beim Planen auf [] zurueck',
+        planFn.indexOf('plan.usedChallengeIds = []') > -1);
+}
+
+// ========== 29. Verhaltenstest statt String-Grep: shouldTryBack + Mock-Ausfuehrung von openNextInstance ==========
+{
+    // Testfall A: reine Wertetabelle statt Text-Match.
+    const fn = extractFunction(src, 'shouldTryBack');
+    check('Funktion shouldTryBack gefunden (29)', !!fn);
+    const shouldTryBack = new Function(fn + '\nreturn shouldTryBack;')();
+    check('shouldTryBack(5) === true', shouldTryBack(5) === true);
+    check('shouldTryBack(25) === true', shouldTryBack(25) === true);
+    check('shouldTryBack(6) === false', shouldTryBack(6) === false);
+    check('shouldTryBack(0) === false', shouldTryBack(0) === false);
+
+    // Testfall B: die echte openNextInstance-Schleife mit Mock-Helfern
+    // ausfuehren - Beleg, dass wentBack tatsaechlich gesetzt wird und die
+    // Schleife danach per continue neu bewertet (indirekte Assertion ueber den
+    // dokumentierten Seiteneffekt: clickChallengeRow wird bei i===10 erreicht,
+    // obwohl "clicked" nie true wird).
+    const nextFn = extractFunction(src, 'openNextInstance');
+    check('Funktion openNextInstance gefunden (29)', !!nextFn);
+
+    let iCounter = -1;
+    const ctrlObj = { _squad: { isSquadEmpty: () => true } };
+    const chRowCalls = [];
+    const backCalls = [];
+    const STATE29 = { sbc: { challengeId: 'x', formationSlots: 11 }, diag: { batchStuckCount: 0 } };
+    const plan29 = { setName: 'TestSet', usedChallengeIds: [], targetOVR: 84, slots: 11 };
+    const sandbox29 = {
+        STATE: STATE29,
+        dismissRewardPopup: () => {},
+        syncSbcWithOpenChallenge: () => {},
+        // ctrl bei i<=5 vorhanden (shouldTryBack-Zweig erreichbar), danach null
+        // (simuliert den Ruecksprung in den Hub nach dem Zurueck-Klick).
+        findSbcController: () => { iCounter++; return iCounter <= 5 ? ctrlObj : null; },
+        popupState: () => ({ overlays: false, shield: { up: false } }),
+        clickSetTile: () => ({ ok: false }),        // clicked bleibt false (Vorgabe des Testfalls)
+        clickAllFilter: () => ({ ok: false }),
+        clickChallengeRow: () => { chRowCalls.push(iCounter); return { ok: true }; },
+        clickBackButton: () => { backCalls.push(iCounter); return { ok: true }; },
+        setLooksRepeatable: () => ({ repeatable: true, status: 'Repeatable' }),
+        matchesPlannedSbc: () => false,
+        isFreshMatchingInstance: () => false,   // die "done"-Bedingung soll hier NIE greifen
+        shouldTryBack: shouldTryBack,            // die echte, oben bereits gepruefte Funktion
+        batchWait: () => Promise.resolve()
+    };
+    const keys29 = Object.keys(sandbox29);
+    const runNext = new Function(keys29.join(','),
+        nextFn + '\nreturn openNextInstance;').apply(null, keys29.map(k => sandbox29[k]));
+
+    pending.push(runNext(plan29).then(function () {
+        check('clickBackButton wird bei i===5 aufgerufen (shouldTryBack-Zweig erreicht)',
+            backCalls.indexOf(5) > -1, JSON.stringify(backCalls));
+        check('wentBack (indirekt): clickChallengeRow wird bei i===10 erreicht, ' +
+            'obwohl "clicked" nie true wurde',
+            chRowCalls.indexOf(10) > -1, JSON.stringify(chRowCalls));
+    }));
+}
+
+// ========== 30. batchSteps-Ringpuffer um verlustfreie Fehler-Historie erweitert: recordBatchStep ==========
+{
+    const fn = extractFunction(src, 'recordBatchStep');
+    check('Funktion recordBatchStep gefunden (30)', !!fn);
+    const recordBatchStep = new Function(fn + '\nreturn recordBatchStep;')();
+
+    // Mehrrunden-Testfall (Pflicht): frueh scheiternde Runde 2, dann mehr als
+    // 6 weitere Runden - Runde 2 verschwindet aus dem 6er-Ring, bleibt aber in
+    // batchFailedSteps auffindbar (die reale Konstellation statt der im
+    // Gap-Report genannten, mit max. 10 Batch-Runden nicht erreichbaren
+    // "Runde 9 von 12" - siehe Praezisierung im Lift-Plan).
+    const diag = { batchSteps: null, batchFailedSteps: null };
+    recordBatchStep(diag, 1, { ok: true, steps: [] });
+    recordBatchStep(diag, 2, { ok: false, steps: [{ why: 'stuck' }] });
+    for (let round = 3; round <= 9; round++) {
+        recordBatchStep(diag, round, { ok: true, steps: [] });
+    }
+    check('batchSteps (6er-Ring, unveraendert): Runde 2 ist verdraengt',
+        !diag.batchSteps.some(s => s.round === 2), JSON.stringify(diag.batchSteps.map(s => s.round)));
+    check('batchSteps behaelt weiterhin genau die letzten 6 Runden',
+        diag.batchSteps.length === 6 && diag.batchSteps[0].round === 4 &&
+        diag.batchSteps[5].round === 9, JSON.stringify(diag.batchSteps.map(s => s.round)));
+    check('batchFailedSteps: Runde 2 bleibt auffindbar (verlustfrei ueber den 6er-Ring hinaus)',
+        !!diag.batchFailedSteps && diag.batchFailedSteps.some(s => s.round === 2 && s.ok === false),
+        JSON.stringify(diag.batchFailedSteps));
+    check('batchFailedSteps enthaelt nur gescheiterte Runden',
+        diag.batchFailedSteps.length === 1);
+
+    // Cap 30 (statt "unbegrenzt"): ueber mehrere Batch-Laeufe hinweg (der Ring
+    // wird zwischen Laeufen nie zurueckgesetzt) fliegt die AELTESTE Runde raus.
+    const diag2 = { batchSteps: null, batchFailedSteps: null };
+    for (let round = 1; round <= 35; round++) {
+        recordBatchStep(diag2, round, { ok: false, steps: [] });
+    }
+    check('batchFailedSteps: Cap bei 30 Eintraegen', diag2.batchFailedSteps.length === 30);
+    check('batchFailedSteps: aelteste Runden fliegen zuerst raus (35 Runden -> 6..35 bleiben)',
+        diag2.batchFailedSteps[0].round === 6 && diag2.batchFailedSteps[29].round === 35,
+        JSON.stringify(diag2.batchFailedSteps.map(s => s.round)));
+
+    const runFn = extractFunction(src, 'onBatchRunClick');
+    check('onBatchRunClick ruft recordBatchStep(STATE.diag, i + 1, next) statt der Inline-Zeile',
+        runFn.indexOf('recordBatchStep(STATE.diag, i + 1, next)') > -1);
 }
 
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt

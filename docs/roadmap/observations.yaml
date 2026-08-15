@@ -38,20 +38,8 @@ discoveries:
   shared_item_candidates: []
   cross_feature_smells: []
 seeds_next:
-  seeded_at: '2026-08-15T20:07:24Z'
+  seeded_at: null
   patterns: []
   shared_items: []
-  features:
-  - 'ENDSTAND iter7: 7 von 9 Features exakt auf structural_max (solver 95/95 NEU,
-    batch 70/70, bedienpanel 85/85, sbc 80/80, ea-app 75/75, android 80/80, team 75/75);
-    pool 84/85 und diagnose 84/85 mit dokumentierten Restgruenden. Kein hebbarer Punkt
-    mehr ohne neuen Anlass.'
-  discoveries:
-  - 'Architektur-Debt (collect_and_bundle): sequenzielle Vorgaben-Reservierung optimiert
-    nicht GEMEINSAM ueber Constraint-Typen (playerLevel-Reservierung kann eine Dual-Zweck-Karte
-    greifen und die Rarity-Reservierung aushebeln) — dokumentiert in §41 Bekannte
-    Grenze, relevant erst bei SBCs mit mehreren gleichzeitigen Vorgabe-Typen und engen
-    Fenstern'
-  - Live-Bewaehrung von v4.60/v4.61 durch Rasmus stand beim Seed noch aus (letzter
-    Report war v4.58 mit serverseitig verschwundener Challenge)
-  - APK v1.8.0-Installation weiterhin ausstehend
+  features: []
+  discoveries: []

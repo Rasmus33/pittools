@@ -1548,7 +1548,7 @@ Optimieren-Klick waehrend eines laufenden Pool-Refreshs mit Toast +
 `setStatus()` ab, statt den Solver gegen den Uebergangs-Pool laufen zu
 lassen.
 
-## 41. Rarity-Reservierung respektiert das Ueberschuss-Fenster (reserveRarityWindowAware)
+## 41. Vorgaben-Reservierung respektiert das Ueberschuss-Fenster (reserveWindowAware)
 
 30x-Fuzzing (Ticket #57, Seed `57015701`) fand einen von der Rating-Formel
 unabhaengigen Solver-Defekt, dreifach gegen eine zweite Enumeration
@@ -1567,7 +1567,7 @@ schon einen suboptimal fixierten `reservedSum`/`avail`-Ausgangswert und konnte
 nicht mehr gefragt werden, ob eine andere Kandidaten-Wahl ein kleineres `vMin`
 ermoeglicht haette.
 
-**Fix: `reserveRarityWindowAware()`, additiv VOR dem bisherigen Kosten-Greedy.**
+**Fix: `reserveWindowAware()`, additiv VOR dem bisherigen Kosten-Greedy.**
 Nur wenn `target` gesetzt ist (der `!target`-Zweig bleibt unveraendert bei
 `makeFillCmp`, LEARNINGS 15/17 - dort gibt es kein Fenster). Kandidaten werden
 nach Rating gruppiert (Profile), pro Rating nur die (bis zu `stillNeed`)
@@ -1585,11 +1585,12 @@ UNVERAENDERT (bandFor/scanSt/Phase 1+2/Auswahl sind Zeile fuer Zeile
 uebernommen, `git diff` zeigt nur systematische Umbenennungen wie
 `avail`->`availArr`, `k`->`kLocal` durch die Parametrisierung selbst) - nur
 die Herkunft von `reserved`/`avail` wechselte von AUSSEN-Closure auf
-Parameter, EIGENTLICH ERST notwendig, weil `reserveRarityWindowAware()`
-dieselbe Suche fuer probeweise reservierte Kombinationen aufrufen muss, BEVOR
-die eigentliche Reservierung feststeht. `cmp`/`NEED`/`windowV` wurden dafuer
-vor die rcList-Schleife vorgezogen (SSOT, keine zweite Kopie an der alten
-Stelle).
+Parameter, EIGENTLICH ERST notwendig, weil `reserveWindowAware()` dieselbe
+Suche fuer probeweise reservierte Kombinationen aufrufen muss, BEVOR die
+eigentliche Reservierung feststeht. `cmp`/`NEED`/`windowV` stehen dafuer VOR
+der Spieler-Level- UND der Rarity-Reservierungs-Schleife (SSOT, keine zweite
+Kopie an der alten Stelle) - beide Vorgaben-Typen teilen sich dieselbe
+Maschinerie (Ticket #64, siehe unten).
 
 **Zwei live per Fuzzing gefundene Teilfehler beim ersten Entwurf, beide
 behoben, bevor der Fix stand:**
@@ -1606,62 +1607,81 @@ behoben, bevor der Fix stand:**
    `searchTeam()` deshalb ein zweites Mal mit `vMinFloor = globalVmin` auf,
    um die kosten-optimale Wahl INNERHALB des gemeinsamen Fensters zu
    ermitteln. Aus demselben Grund haelt `solveCore()` das gewaehlte
-   `globalVmin` in `rarityVMinFloor` fest und uebergibt es auch dem FINALEN
-   Such-Aufruf (nach der Reservierung) - sonst haette dieser sein eigenes,
-   selbst entdecktes (und potenziell breiteres) Fenster um die jetzt fest
-   reservierten Karten benutzt und die gerade erst getroffene Wahl wieder
-   unterlaufen. Beide Fehler wurden durch Fuzzing mit deutlich breiterem
-   Wertebereich (mehr Kandidaten, `need` bis 4) als der 30x-Pflichttest
-   aufgedeckt, dann gegen Brute-Force-Referenzen isoliert und bewiesen (ca.
-   6000 randomisierte Faelle liefen danach ohne Abweichung).
+   `globalVmin` in `reservationVMinFloor` fest und uebergibt es auch dem
+   FINALEN Such-Aufruf (nach der Reservierung) - sonst haette dieser sein
+   eigenes, selbst entdecktes (und potenziell breiteres) Fenster um die jetzt
+   fest reservierten Karten benutzt und die gerade erst getroffene Wahl
+   wieder unterlaufen. Laeuft nach einer erfolgreichen Reservierung noch eine
+   WEITERE window-aware Reservierung (Spieler-Level UND Rarity in derselben
+   SBC, Spieler-Level zuerst), ueberschreibt deren eigenes, mit den dann schon
+   fest reservierten Karten neu ermitteltes Minimum diesen Wert - das ist
+   erwuenscht (praeziser, weil mit mehr Kontext berechnet). Beide Fehler
+   wurden durch Fuzzing mit deutlich breiterem Wertebereich (mehr Kandidaten,
+   `need` bis 4) als der 30x-Pflichttest aufgedeckt, dann gegen
+   Brute-Force-Referenzen isoliert und bewiesen (ca. 6000 randomisierte
+   Faelle liefen danach ohne Abweichung).
 
 **Geteilter Band-Cache ueber Trials hinweg** (Performance, Lift-Plan-Pflicht):
 nur sicher, wenn KEINER der Kandidaten je in `avail` auftauchen koennte -
 sonst haengt `avail` von der konkreten Kombination ab (loser Durchlauf,
 `limitProtected === false`, wo ungenutzte geschuetzte Karten als Fueller
-bleiben duerfen). Die Bedingung wird explizit vor der Cache-Wiederverwendung
-geprueft (`limitProtected && cands.every(isProtectedRarity)`), nicht einfach
-angenommen.
+bleiben duerfen). `reserveWindowAware()` selbst bleibt dabei neutral: der
+Aufrufer (Rarity- oder Spieler-Level-Wrapper) berechnet diese Bedingung und
+uebergibt sie als `canShareBandCache`-Parameter. Fuer Rarity gilt weiterhin
+`limitProtected && cands.every(isProtectedRarity)`; fuer Spieler-Level ist
+das strukturell nicht herleitbar (Kandidaten sind ueber ein Rating-Schwelle
+definiert, nicht ueber eine von `avail` ausgeschlossene Gruppe) - der
+Spieler-Level-Wrapper uebergibt deshalb immer `false` (korrekt, nur
+konservativer als noetig).
 
 **Fallback (additiv, kein zweiter Fehlerpfad):** reisst die Kombinatorik-
 Schranke ODER liefert keine Kombination ueberhaupt ein loesbares Team,
-reserviert `reserveRarityWindowAware()` NICHTS (Rueckgabe 0) - der
-bestehende, unveraenderte Kosten-Greedy (`while`-Schleife direkt danach)
-greift dann normal. Nur der Cap-Fall meldet eine eigene Warnung
-("Fensterbewusste Vorgaben-Wahl uebersprungen ..."); "keine Kombination
-loesbar" bleibt beim bestehenden `{ok:false}`-Pfad ohne zusaetzliche Meldung
-(kein neues Fehlerbild).
+reserviert `reserveWindowAware()` NICHTS (Rueckgabe 0) - der bestehende,
+unveraenderte Kosten-Greedy (`while`-Schleife direkt danach, sowohl bei
+Rarity als auch bei Spieler-Level) greift dann normal. Nur der Cap-Fall
+meldet eine eigene Warnung ("Fensterbewusste Vorgaben-Wahl uebersprungen
+..."); "keine Kombination loesbar" bleibt beim bestehenden `{ok:false}`-Pfad
+ohne zusaetzliche Meldung (kein neues Fehlerbild).
 
-**Offener Verdacht, NICHT Teil dieses Fixes:** dieselbe
-Kosten-zuerst-Reservierung existiert strukturell identisch bei
-`playerLevelConstraints` (z.B. "min. 2x 85+" koennte eine unnoetig hohe
-92er-Karte statt einer knapp reichenden 85er reservieren) - dafuer gibt es
-aber KEINEN brute-force-verifizierten Fund, nur eine Analogie-Vermutung
-(CLAUDE.md: "Erwartungswerte NIE aus dem Kopf"). Folge-Ticket-Kandidat fuer
-eine spaetere Iteration.
+**Ticket #64: `reserveRarityWindowAware()` generalisiert zu
+`reserveWindowAware(stillNeed, cands, describeCard, canShareBandCache)` und
+auf `playerLevelConstraints` angewendet.** Der urspruengliche Verdacht
+(Ticket #57/#60: dieselbe Kosten-zuerst-Reservierung existiert strukturell
+identisch bei Spieler-Level-Vorgaben) wurde in Ticket #62 per 30x-Fuzzing
+(Section 52, Seed `62006200`) brute-force-bestaetigt (Minimal-Repro: 4 Slots,
+`maxOvershoot 0`, "mind. 1x 88+" reservierte die guenstigere, aber hoeher
+geratete Storage-Karte (93, Kosten 13) statt der teureren, aber naeher an der
+Vorgabe liegenden Vereins-Karte (92, Kosten 22) und lieferte `ovrExact 84.56`
+statt der im selben Pool erreichbaren `84.13`) und in Ticket #64 behoben: die
+plList-Schleife ruft jetzt ebenfalls - nur mit gesetztem `target`, dasselbe
+Muster wie bei Rarity - `reserveWindowAware()` ueber einen duennen
+`reservePlayerLevelForConstraint()`-Wrapper (Kandidaten = `pool.filter(p =>
+freeCard(p) && p.rating >= pl.minRating)`, `describeCard` liefert den
+"Vorgabe X+: ..."-Warnungstext, `canShareBandCache` immer `false`, siehe
+oben). Der Rarity-Pfad bekam analog einen `reserveRarityForConstraint()`-
+Wrapper; beide rufen dieselbe, jetzt VOR der Spieler-Level-Schleife
+deklarierte `reserveWindowAware()` auf. Section 52 wurde auf die korrekte
+Erwartung gedreht (`ovrExact 84.13`, `waste 6.13`, 30x-Fuzzing `allMatch`);
+Section 53 ergaenzt Cap-Ueberschreitung (Fallback-Warnung), eine Gegenprobe
+ohne `playerLevelConstraints` (byte-gleiches Verhalten) und einen
+kombinierten Rarity+Spieler-Level-Fuzz gegen `bruteBest()` mit gemeinsamem
+`quotaOk`.
 
-Section 46 (`solver-test.js`) pinnte den damals korrekten IST-Zustand (das
-verifizierte Fehlverhalten) und wurde auf die korrekte Erwartung gedreht;
-vier neue, brute-force- bzw. `costOf()`-verifizierte Einzelfaelle ergaenzen
-sie: Cap-Ueberschreitung, `need` > 1, Storage-Praeferenz innerhalb des
-Fensters, Gegenprobe ohne `target`. `node solver-test.js`: alle Tests gruen.
-
-**Ist-Stand (Ticket #62): der Verdacht ist bestaetigt, nicht mehr nur
-Analogie.** 30x-Fuzzing (Section 52, Seed `62006200`) gegen die
-`playerLevelConstraints`-Reservierung (plList-Schleife, dieselbe Datei,
-Zeile ~2293-2307) findet bei `t2` eine Abweichung von der Brute-Force-
-Referenz, dreifach verifiziert (Rueckwaertssuche + unabhaengige
-Bitmask-Enumeration + Code-Lesen - Protokoll wie #57): Minimal-Repro (4
-Slots, `maxOvershoot 0`, "mind. 1x 88+") reserviert die guenstigere,
-aber hoeher geratete Storage-Karte (93, Kosten 13) statt der teureren,
-aber naeher an der Vorgabe liegenden Vereins-Karte (92, Kosten 22) und
-liefert `ovrExact 84.56` (waste 6.56) statt der im selben Pool
-erreichbaren `84.13` (waste 6.13) - derselbe Kosten-vor-Fenster-Fehler wie
-bei der Rarity-Reservierung, nur ohne deren `reserveRarityWindowAware()`-
-Gegenstueck. Ticket #62 war TEST-ONLY: der Befund ist als BEKANNTER
-BEFUND in Section 52 gepinnt (main-Gate bleibt gruen), NICHT behoben -
-Folge-Ticket-Kandidat fuer den eigentlichen Fix (analog zu
-`reserveRarityWindowAware()`).
+**Bekannte Grenze (Ticket #64, ausserhalb des Ticket-Umfangs):** die
+Reservierung mehrerer VERSCHIEDENER Vorgaben-Typen in derselben SBC laeuft
+sequenziell (erst Spieler-Level, dann Rarity) - jede `reserveWindowAware()`-
+Instanz optimiert nur GEGEN BEREITS FEST reservierte Karten, nicht
+vorausschauend gegen eine SPAETER laufende, andersartige Vorgabe. Kann
+DIESELBE Karte sowohl die Spieler-Level- als auch die Rarity-Vorgabe erfuellen
+("Doppelnutzen", z.B. eine 84er TOTW bei "mind. 1x 83+" UND "1x Gruppe 83"),
+kann die zuerst laufende Spieler-Level-Reservierung diese Karte fuer sich
+GREIFEN, obwohl das team-weit teurer ist als zwei getrennte, aufeinander
+abgestimmte Reservierungen (brute-force-verifiziert per Debug-Repro, siehe
+Ticket #64 Konversation). Der kombinierte Fuzz-Test in Section 53 haelt
+Rarity- und Spieler-Level-Kandidaten deshalb bewusst in disjunkten
+Rating-Bereichen (keine Karte kann beide Vorgaben gleichzeitig erfuellen) -
+eine echte Joint-Optimierung ueber mehrere Vorgaben-Typen hinweg ist ein
+eigenstaendiges, groesseres Vorhaben und kein Bestandteil dieses Fixes.
 
 ## 42. Der Vorgaben-Scan kann im Belohnungs-Ast ertrinken - Anforderungs-Aeste zuerst
 

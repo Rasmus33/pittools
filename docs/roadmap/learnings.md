@@ -157,3 +157,30 @@ Kumulativ. Git-Log ist die History.
 - Bewusst offen gelassen: STATE.loading-Guard (dünn — Fenster schmal, nicht korruptierend); readConfig ohne eigenen Guard (Q4-Architekturentscheidung, beide Call-Sites gedeckt).
 - Plugin-Validierungsfehler bei ticket create (task-Spec braucht target_paths + acceptance im Spec-Block) — kein Bug, Spec-Anforderung; beim zweiten Versuch sauber durch. Der rc=42-Report wurde automatisch erfasst.
 - Eskalationen: 0. Post-Squash-Regel hielt zum dritten Mal.
+
+## Iteration 5 — 2026-08-15
+
+## Iteration 5 — 2026-08-15
+
+### Score-Bewegung
+- Letzte Polish-Runde (2 von 9 Features): bedienpanel-ui 84→85 (structural_max, via Mini-Task #52 STATE.loading-Guard), batch-modus 69→70 (structural_max, via #54 titleSource/Tap-Tests/popupDismissCount). Fokus-Verdict: hit, 2/2.
+- Userscript v4.53.0 → v4.55.0, Tests 490 → 503.
+- **Endstand des Portfolios: 6 von 9 Features exakt auf structural_max** (batch 70/70, bedienpanel 85/85, sbc-erkennung 80/80, ea-app 75/75, android 80/80, team 75/75). Die 3 verbleibenden Restpunkte sind ausschließlich strukturell begründet: solver 92/95 (reverse-engineerte Formel), diagnose 84/85 (inhärenter Vorlauf für unbekannte Fehlerbilder), pool 83/85 (Fehlertoleranz bewusst unangetastet — Club-Lade-Takt ist Nicht-anfassen-Zone). Die Roadmap ist fertig.
+
+### Methodische Erkenntnisse
+- Das Ehrlichkeits-Mandat an Gap-Analysten funktioniert: der Batch-Gap durfte „nichts gefunden" liefern und fand stattdessen einen präzisen echten Kern — der titleOf()-Volltext-Fallback hätte bei einem EA-Umbau der Kachel-Innenelemente still die live gefixte §9-Teilstring-Fehlerklasse reaktiviert. Die Linse „was passiert, wenn EA X ändert" bleibt das schärfste Werkzeug gegen fertige Features.
+- Sichtbar machen statt abklemmen: der degradierte Fallback-Pfad wurde NICHT entfernt (kein Live-Beleg für Fehlverhalten, nachgelagertes matchesPlannedSbc-Netz existiert), sondern als titleSource beobachtbar gemacht — dieselbe Philosophie wie scanStats (§37). Diagnose-Felder sind die Vorstufe künftiger Fixes, nicht deren Ersatz.
+- Re-Score-Restlücken als Ticket-Quelle bestätigt (zweite Iteration in Folge): präzise benannte Abzugsgründe (loading-Guard, scanStats-Fallback) lassen sich ohne neue Gap-Analyse direkt in Mini-Tasks übersetzen.
+- git stash verliert im CRLF-Worktree still den staged/unstaged-Split — der #54-Implementer wich auf git-show-Snapshots für Phasen-Verifikation aus. Als Worktree-Eigenheit für künftige Implementer-Briefings gemerkt.
+- Formänderung einer lokalen Helper-Rückgabe ({text, source} statt String) ist sicher, wenn ALLE Aufrufer per Grep bewiesen lokal liegen — die Prüfung kostet eine Minute und ersetzt Spekulation.
+
+### Patterns ergänzt / verändert
+- Keine neuen Patterns. diagnose-feld-statt-raten und abbruch-disziplin je um einen Lehrbuch-Fall vertieft (titleSource bzw. loading-Guard); eingebetteten-code-exakt-testen deckt jetzt auch den Tap-Pfad (letzter komplett ungetesteter Batch-Baustein).
+
+### Shared-Items
+- Keine.
+
+### PO-Entscheidungen
+- 2 Mini-/Kleintickets Main-verifiziert statt Validator-gespawnt (#52 Guard-Diff, #54 mit Aufrufer-Grep) — Prüftiefe proportional zum Diff, beide Diffs vollständig gelesen.
+- Popup-Dismiss-Zähler (dünn markiert) wurde mitgenommen, weil er in 2 Zeilen passte — dünne Aktionen sind ok, wenn ihr Preis gegen null geht.
+- Eskalationen: 0. Post-Squash-Regel hielt zum vierten Mal. Alle 29 GitHub-Issues des Projekts abgeschlossen, Backlog leer.

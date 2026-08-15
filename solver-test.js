@@ -4086,6 +4086,116 @@ function mulberry32(a) {
         res.ok ? ('picks=' + res.players.filter(p => p.groups).map(p => p.id) + ' expected=' + expected.id) : res.reason);
 }
 
+// ========== 51. v4.60.0: Set-Challenges pro Set gekeyt + aktives Nachladen der elgReq-Quelle ==========
+// Live-Fall (84+ TOTW, Report v4.58.0): lastSetChallenges hielt die Antwort
+// eines ANDEREN Sets, der Knoten-Scan lief auf einem Stub und fand die
+// TOTW-Vorgabe nie. Fix: (a) Cache pro setId, (b) applyFromSetChallenges
+// bevorzugt den Pro-Set-Eintrag, (c) onRunClick laedt die Set-Challenges
+// aktiv nach, wenn die Vorgaben leer/abgeschnitten aussehen.
+{
+    // (a) handleResponseBody keyt pro setId und kappt bei 5 (FIFO).
+    const urlClsBlock51 = extractMarkerBlock(src, '// [URLCLS-BEGIN]', '// [URLCLS-END]');
+    check('URLCLS-Block gefunden (51)', !!urlClsBlock51);
+    function makeHandle51(STATE) {
+        return new Function('STATE', 'reportError', 'applyFromSetChallenges',
+            'parseSbcChallenge', 'harvestItems',
+            urlClsBlock51 + '\nreturn handleResponseBody;')(
+            STATE, () => {}, () => {}, () => {}, () => {});
+    }
+    {
+        const STATE = { sbc: {}, diag: {}, lastSetChallenges: null,
+            lastChallengeRaw: null, setChallengesBySet: {} };
+        const handle = makeHandle51(STATE);
+        const base = 'https://utas.mob.v5.prd.futc-ext.gcp.ea.com/ut/game/fc26/sbs/setId/';
+        handle(base + '1017/challenges', JSON.stringify({ marker: 'set1017' }));
+        handle(base + '1356/challenges', JSON.stringify({ marker: 'set1356' }));
+        check('Set-Challenges werden PRO setId gecacht (beide Sets nebeneinander)',
+            STATE.setChallengesBySet[1017] && STATE.setChallengesBySet[1017].marker === 'set1017' &&
+            STATE.setChallengesBySet[1356] && STATE.setChallengesBySet[1356].marker === 'set1356',
+            JSON.stringify(Object.keys(STATE.setChallengesBySet)));
+        check('lastSetChallenges zeigt weiter auf die letzte Antwort (Kompatibilitaet)',
+            STATE.lastSetChallenges && STATE.lastSetChallenges.marker === 'set1356');
+        for (let i = 0; i < 6; i++) handle(base + (2000 + i) + '/challenges', JSON.stringify({ n: i }));
+        check('Pro-Set-Cache ist bei 5 Eintraegen gekappt (FIFO)',
+            Object.keys(STATE.setChallengesBySet).length <= 5,
+            JSON.stringify(Object.keys(STATE.setChallengesBySet)));
+    }
+    // (b) applyFromSetChallenges bevorzugt den Pro-Set-Eintrag vor dem
+    // (moeglicherweise fremden) lastSetChallenges.
+    {
+        const applySrc = extractFunction(src, 'applyFromSetChallenges');
+        check('Funktion applyFromSetChallenges gefunden (51)', !!applySrc);
+        const seen = { firstArg: null };
+        const STATE = {
+            sbc: { setId: 1017, challengeId: 3026 },
+            diag: {},
+            lastSetChallenges: { marker: 'fremdesSet' },
+            setChallengesBySet: { 1017: { marker: 'richtigesSet' } }
+        };
+        const apply = new Function('STATE', 'findChallengeNode', 'deepScanChallenge',
+            'recordDeepScanStats', 'applyScan',
+            applySrc + '\nreturn applyFromSetChallenges;')(
+            STATE,
+            (root) => { seen.firstArg = root; return null; },
+            () => ({}), () => {}, () => {});
+        apply();
+        check('applyFromSetChallenges sucht im Pro-Set-Eintrag, nicht im fremden lastSetChallenges',
+            seen.firstArg && seen.firstArg.marker === 'richtigesSet',
+            JSON.stringify(seen.firstArg));
+        seen.firstArg = null;
+        STATE.setChallengesBySet = {};
+        apply();
+        check('Fallback auf lastSetChallenges bleibt erhalten (kein Pro-Set-Eintrag)',
+            seen.firstArg && seen.firstArg.marker === 'fremdesSet');
+    }
+    // (c) onRunClick laedt aktiv nach, wenn die Vorgaben leer sind - und
+    // arbeitet mit dem Ergebnis weiter (kein blinder Abbruch mehr).
+    {
+        const runFnSrc51 = extractFunction(src, 'onRunClick');
+        function makeSandbox51(ensureImpl) {
+            const calls = { toast: [], solve: 0, submit: 0, ensure: 0 };
+            const STATE = {
+                loading: false, loadIncomplete: false,
+                pool: [{ rating: 84 }],
+                setChallengesBySet: {},
+                sbc: { targetOVR: null, playerLevelConstraints: [], rarityConstraints: [],
+                       qualityConstraints: [], rareConstraints: [], setId: 1017 }
+            };
+            const ui = { run: { disabled: false } };
+            const sandbox = {
+                STATE: STATE, ui: ui,
+                syncSbcWithOpenChallenge: () => {},
+                toast: (msg, kind) => { calls.toast.push({ msg: msg, kind: kind }); },
+                setStatus: () => {},
+                readConfig: () => ({}),
+                SolverCore: { solve: () => { calls.solve++; return { ok: true, ovr: 84, players: [] }; } },
+                renderResult: () => {},
+                submitCurrentResult: () => { calls.submit++; return Promise.resolve(); },
+                reportError: () => {},
+                anyDeepScanTruncated: () => false,
+                ensureSetChallenges: () => { calls.ensure++; return Promise.resolve(ensureImpl(STATE)); }
+            };
+            const keys = Object.keys(sandbox);
+            const fn = new Function(keys.join(','), runFnSrc51 + '\nreturn onRunClick;')
+                .apply(null, keys.map(function (k) { return sandbox[k]; }));
+            return { fn: fn, calls: calls };
+        }
+        const okCase = makeSandbox51((STATE) => { STATE.sbc.targetOVR = 84; return true; });
+        pending.push(okCase.fn().then(function () {
+            check('onRunClick: leere Vorgaben -> ensureSetChallenges wird gerufen',
+                okCase.calls.ensure === 1);
+            check('onRunClick: nachgeladene Vorgabe wird genutzt (solve laeuft)',
+                okCase.calls.solve === 1, JSON.stringify(okCase.calls));
+        }));
+        const failCase = makeSandbox51(() => false);
+        pending.push(failCase.fn().then(function () {
+            check('onRunClick: bleibt alles leer, greift weiter der Abbruch mit Meldung',
+                failCase.calls.solve === 0 && failCase.calls.toast.length === 1,
+                JSON.stringify(failCase.calls));
+        }));
+    }
+}
+
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt
 // process.exit() die Loader-Tests, bevor sie laufen - sie zählten dann nicht mit
 // und ein Fehler dort wäre unbemerkt geblieben.

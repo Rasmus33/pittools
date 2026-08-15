@@ -1675,3 +1675,30 @@ Drei Gegenmassnahmen (v4.58.0):
    (Boilerplate-Scopes), diese hier ueber ein hartes Traversal-Faktum.
    `scanStats.deepScanBySource` zeigt seitdem, WELCHER der drei Scan-Pfade
    (netzwerk/set-node/entity) betroffen war.
+
+## 43. Die verlaesslichste Vorgaben-Quelle ist elgReq - pro Set gecacht und aktiv nachgeladen
+
+Fortsetzung von §42, Live-Fall "84+ TOTW Upgrade" (Report v4.58.0): trotz
+Scan-Priorisierung blieb die TOTW-Rarity-Vorgabe unerkannt. Das neue
+`deepScanBySource`-Feld zeigte warum: die Netzwerk-Antwort der Challenge
+selbst enthaelt keine elgReq, der Live-Entity-Scan ertrinkt trotz
+Priorisierung im App-Objektgraphen (20000er-Budget dort bewusst behalten),
+und der Set-Knoten-Scan lief auf einem 5-Knoten-Stub - weil
+`lastSetChallenges` GLOBAL gecacht war und die Antwort eines ANDEREN,
+zuletzt geoeffneten Sets hielt.
+
+Dabei ist die Set-Challenges-Antwort die beste Quelle ueberhaupt: ihr
+`elgReq`-Block ist klein und exakt (`{type: "PLAYER_RARITY_GROUP",
+eligibilityValue: 83}`, `{type: "TEAM_RATING_1_TO_100", eligibilityValue:
+89}` - live belegt im selben Report-Abend). Drei Massnahmen (v4.60.0):
+
+1. **Cache pro setId** (`STATE.setChallengesBySet`, Kappung 5/FIFO) -
+   `applyFromSetChallenges()` bevorzugt den Eintrag des AKTUELLEN Sets,
+   `lastSetChallenges` bleibt als Fallback (Kompatibilitaet).
+2. **Aktives Nachladen**: sehen die Vorgaben leer/abgeschnitten aus, holt
+   `ensureSetChallenges()` die Set-Challenges per apiGet (ein GET, laeuft
+   durch die normale 401-Kaskade) und wendet sie an - onRunClick wartet
+   darauf, BEVOR es "keine Vorgaben" meldet; der Batch-Plan ebenso.
+3. Nach dem Nachladen bewusst KEIN erneutes syncSbcWithOpenChallenge -
+   der Entity-Scan koennte die frisch gefundenen elgReq-Vorgaben sonst
+   wieder ueberdecken.

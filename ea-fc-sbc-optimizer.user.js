@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.59.0
+// @version      4.60.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.59.0';
+    const VERSION = '4.60.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -104,6 +104,11 @@
         locksSkipReported: false,    // schon einmal reportError() fuer einen uebersprungenen Lock-Key gemeldet? (verhindert Spam bei vielen korrupten Keys)
         lastChallengeRaw: null,      // letzte SBC-Response (fürs Debugging)
         lastSetChallenges: null,     // gecachte Challenge-Liste des geöffneten Sets
+        // Set-Challenges PRO setId. Live-Fall (84+ TOTW, Report v4.58.0):
+        // lastSetChallenges hielt die Antwort eines ANDEREN Sets, der
+        // Knoten-Scan lief auf einem 5-Knoten-Stub und fand die
+        // TOTW-Vorgabe nie - der Cache muss nach Set gekeyt sein.
+        setChallengesBySet: {},
         // Offene Ablage fuer Laufzeitzustand, den buildDiagReport() kopiert -
         // jedes tatsaechlich verwendete Feld MUSS hier deklariert sein
         // (solver-test.js prueft das symmetrisch: gelesen <-> deklariert <->
@@ -287,7 +292,15 @@
                 STATE.lastSetChallenges = json;
                 STATE.lastChallengeRaw = json;
                 const sm = String(url).match(/setId\/(\d+)/i);
-                if (sm) STATE.sbc.setId = parseInt(sm[1], 10);
+                if (sm) {
+                    const sid = parseInt(sm[1], 10);
+                    STATE.sbc.setId = sid;
+                    // Pro-Set-Cache (Kappung 5, FIFO): lastSetChallenges allein
+                    // wurde live vom zuletzt geoeffneten Set ueberschrieben.
+                    STATE.setChallengesBySet[sid] = json;
+                    const sids = Object.keys(STATE.setChallengesBySet);
+                    if (sids.length > 5) delete STATE.setChallengesBySet[sids[0]];
+                }
                 applyFromSetChallenges();
             } else if (kind === 'sbc-challenge' || kind === 'sbc-sets') {
                 STATE.lastChallengeRaw = json;
@@ -759,9 +772,14 @@
     }
     // Anforderungen der aktuellen Challenge aus der gecachten Set-Liste ziehen.
     function applyFromSetChallenges() {
-        if (!STATE.lastSetChallenges || STATE.sbc.challengeId == null) return;
+        // Bevorzugt den Pro-Set-Cache: lastSetChallenges kann vom zuletzt
+        // geoeffneten ANDEREN Set stammen (Live-Fall 84+ TOTW, v4.58.0-Report).
+        const src = (STATE.sbc.setId != null &&
+            (STATE.setChallengesBySet || {})[STATE.sbc.setId]) ||
+            STATE.lastSetChallenges;
+        if (!src || STATE.sbc.challengeId == null) return;
         STATE.diag.scanStats = STATE.diag.scanStats || {};
-        const node = findChallengeNode(STATE.lastSetChallenges, STATE.sbc.challengeId, STATE.diag.scanStats);
+        const node = findChallengeNode(src, STATE.sbc.challengeId, STATE.diag.scanStats);
         if (node) {
             const scan = deepScanChallenge(node, 60000);
             recordDeepScanStats(scan, 'set-node');
@@ -791,6 +809,28 @@
     function anyDeepScanTruncated() {
         const by = (STATE.diag.scanStats || {}).deepScanBySource || {};
         for (const k in by) { if (by[k] && by[k].budgetExhausted) return true; }
+        return false;
+    }
+    // Set-Challenges fuer das AKTUELLE Set aktiv nachladen (ein GET, laeuft
+    // durch die normale 401-Kaskade von apiGet). Die zuverlaessigste Quelle
+    // fuer Vorgaben ist der elgReq-Block dieser Antwort (klein, exakt,
+    // req/elig-priorisiert gescannt) - der Live-Entity-Scan kann dagegen im
+    // App-Objektgraphen ertrinken (Live-Fall 84+ TOTW: Vorgabe nie gefunden).
+    // Rein additiv: laedt nur, wenn fuer dieses Set noch nichts gecacht ist.
+    async function ensureSetChallenges(reason) {
+        const sid = STATE.sbc.setId;
+        if (sid == null) return false;
+        if (STATE.setChallengesBySet[sid]) { applyFromSetChallenges(); return true; }
+        try {
+            const json = await apiGet((STATE.sbc.apiPrefix || 'sbs') + '/setId/' + sid + '/challenges');
+            if (json) {
+                STATE.setChallengesBySet[sid] = json;
+                STATE.lastSetChallenges = json;
+                applyFromSetChallenges();
+                log('Set-Challenges nachgeladen (' + reason + '), setId', sid);
+                return true;
+            }
+        } catch (e) { reportError('ensureSetChallenges(' + reason + ')', e); }
         return false;
     }
     function parseSbcChallenge(json, url) {
@@ -4767,6 +4807,21 @@
         // Erkennung IMMER mit der offen sichtbaren Challenge abgleichen -
         // der Hook-Zustand kann nach Pack-Öffnen/Submit veraltet sein.
         syncSbcWithOpenChallenge();
+        // Sehen die Vorgaben leer/abgeschnitten aus, die verlaesslichste
+        // Quelle aktiv holen: elgReq aus den Set-Challenges (Live-Fall
+        // 84+ TOTW - Entity-Scan ertrank, Set-Cache hielt ein fremdes Set).
+        const constraintsEmpty = () => !STATE.sbc.targetOVR &&
+            !(STATE.sbc.playerLevelConstraints || []).length &&
+            !(STATE.sbc.rarityConstraints || []).length &&
+            !(STATE.sbc.qualityConstraints || []).length &&
+            !(STATE.sbc.rareConstraints || []).length;
+        if (constraintsEmpty() || anyDeepScanTruncated()) {
+            // ensureSetChallenges ruft applyFromSetChallenges selbst - KEIN
+            // erneutes syncSbcWithOpenChallenge danach, sonst koennte der
+            // Entity-Scan die frisch gefundenen elgReq-Vorgaben wieder
+            // ueberdecken.
+            await ensureSetChallenges('onRunClick');
+        }
         if (!STATE.sbc.targetOVR && !(STATE.sbc.playerLevelConstraints || []).length &&
             !(STATE.sbc.rarityConstraints || []).length &&
             !(STATE.sbc.qualityConstraints || []).length) {
@@ -5541,6 +5596,11 @@
                 ' Karten) - der Plan kann auf fehlenden Karten beruhen. Am besten erst "Spieler laden" erneut ausführen, dann neu planen.', 'warn');
         }
         if (anyDeepScanTruncated()) {
+            // Wie in onRunClick: die verlaesslichste Vorgaben-Quelle (elgReq
+            // aus den Set-Challenges) aktiv nachladen, bevor geplant wird.
+            await ensureSetChallenges('onBatchPlanClick');
+        }
+        if (anyDeepScanTruncated() && !STATE.setChallengesBySet[STATE.sbc.setId]) {
             toast('Hinweis: Der Vorgaben-Scan wurde abgeschnitten - der Plan könnte auf unvollständigen Vorgaben beruhen. Vorschau prüfen.', 'warn');
         }
         const want = Math.max(1, Math.min(10, parseInt(ui.batchCount.value, 10) || 1));

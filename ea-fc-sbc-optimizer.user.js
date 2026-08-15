@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.42.0
+// @version      4.43.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.42.0';
+    const VERSION = '4.43.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -919,6 +919,12 @@
         const ids = new Set();
         let keysScanned = 0;
         const keyInfo = [];
+        // Bricht die Schleife mitten drin ab, bleibt die Sperrliste unvollstaendig,
+        // OHNE dass der Report das zeigt (CLAUDE.md: gesperrte Karten NIEMALS
+        // verbauen - ein stiller Teilausfall koennte das unterlaufen). scanError
+        // macht das im Report explizit sichtbar statt nur ueber niedrige Zahlen
+        // erraten zu werden.
+        let scanError = null;
         try {
             for (let i = 0; i < localStorage.length; i++) {
                 const k = localStorage.key(i);
@@ -948,13 +954,17 @@
                 else if (/lock/i.test(k)) harvestIds(obj, ids, 0);
                 else findLockBranches(obj, ids, 0);
             }
-        } catch (e) { warn('Locks lesen fehlgeschlagen:', e && e.message); }
+        } catch (e) {
+            scanError = (e && e.message) || String(e);
+            reportError('Locks lesen fehlgeschlagen', e);
+        }
         STATE.diag.locks = {
             keysScanned: keysScanned,
             found: ids.size,
             sample: Array.from(ids).slice(0, 5),
             // Nur noetig, wenn found = 0: daran ist der richtige Key ablesbar.
-            keys: keyInfo.slice(0, 12)
+            keys: keyInfo.slice(0, 12),
+            error: scanError
         };
         return ids;
     }
@@ -1375,7 +1385,7 @@
                 const p = normalizePlayer(it, false);
                 if (p) out.push(p);
             }
-        } catch (e) { warn('Unassigned-Fetch Fehler:', e); }
+        } catch (e) { reportError('Unassigned-Fetch Fehler', e); }
         return out;
     }
     async function fetchStorageViaHttp() {
@@ -1387,7 +1397,7 @@
                 const p = normalizePlayer(it, true);
                 if (p) out.push(p);
             }
-        } catch (e) { warn('storagepile-Fetch Fehler:', e.message); }
+        } catch (e) { reportError('storagepile-Fetch Fehler', e); }
         return out;
     }
     // ---- Kombinierter Pool-Load ---------------------------------------------

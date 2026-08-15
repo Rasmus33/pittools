@@ -1036,3 +1036,32 @@ manueller Rarity-Pick) wurde beim Haerten der Invariante nicht nachgezogen.
 Ein zweiter, unabhaengiger Schutzmechanismus kann dieselbe Luecke lange
 unsichtbar halten, ohne dass jemand merkt, dass die dokumentierte Garantie
 nur zufaellig haelt.
+
+## 29. Pool-/Lock-Fehlerpfade rufen reportError(), Normalisierung + Lock-Traversierung sind End-to-End getestet
+
+`fetchUnassignedViaHttp`, `fetchStorageViaHttp` und der Gesamt-Catch von
+`readPaletoolsLocks` rufen bei einem Fehlschlag `reportError(label, e)` statt
+nur `warn()` - konsistent mit dem Vorbild in `apiGet`/`apiPut` und dem
+Services-Fallback von `loadPool`. `readPaletoolsLocks` traegt zusaetzlich ein
+`error`-Feld in `STATE.diag.locks` (neben `keysScanned`/`found`/`sample`/
+`keys`): bricht die `localStorage`-Scan-Schleife mitten drin ab (z.B.
+`localStorage.key()` wirft), zeigt der Report die Fehlermeldung direkt statt
+sie nur ueber eine niedrigere `keysScanned`/`found`-Zahl erraten zu muessen -
+sicherheitsrelevant, weil ein stiller Teilausfall die "gesperrte Karten
+NIEMALS verbauen"-Regel unterlaufen koennte. Bereits gefundene IDs vor dem
+Abbruch bleiben dabei erhalten (die Schleife fuellt `ids` fortlaufend, der
+Catch umschliesst nur die Traversierung selbst).
+
+`solver-test.js` (Abschnitte 8b-5/8b-6) extrahiert `isEvolution`/
+`normalizePlayer`/`resolvePlayerName` bzw. `looksLikeItemId`/`harvestIds`/
+`findLockBranches`/`readPaletoolsLocks` per Marker aus der ausgelieferten
+Datei und spielt sie gegen rohe EA-Feldnamen bzw. simuliertes `localStorage`
+durch (Muster [[eingebetteten-code-exakt-testen]]): jede dokumentierte
+Evolution-Flag-Variante (`academyId`, `academyItemId`, `academyAttributes` als
+Array/Objekt, `evolutionId`, `evolutionData`, `evoPath`, `isEvo`, `isAcademy`,
+`tradableBeforeAcademy`, `isAcademyItem()`), Leihspieler/Konzept-Karten
+inklusive der Reihenfolge-Falle (Leihspieler mit sonst vollstaendig gueltigen
+Feldern bleibt ausgeschlossen), sowie `lockedItems` als Array UND
+`lockedItemsMap` als Objekt-Keys (ein `false`-Eintrag zaehlt nicht),
+`lockedPacks` koexistierend in derselben `localStorage`-Instanz (bleibt
+ausgeschlossen) und ein verschachtelter Zweig ueber `findLockBranches`.

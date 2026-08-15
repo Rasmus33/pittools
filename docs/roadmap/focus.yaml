@@ -228,5 +228,15 @@ history:
     Restpunkte. pool 84/85: removeFromPool-Verhaltenstest + §30-Formulierung (PO-direkt,
     test-/docs-only). diagnose 84/85: Re-Score mit dem Beleg des Krisenabends (6 Live-Reports
     -> 4 Hotfixes, jede Diagnose traf). Danach ist nichts Hebbares mehr uebrig.'
-  effectiveness: {}
+  effectiveness:
+    verdict: hit
+    focused_gains:
+      spieler-pool:
+        RA: 1
+      diagnose-werkzeuge:
+        RA: 1
+    held_features_regressions: {}
+    notes: 'Finale Mikro-Runde: pool 84->85 (removeFromPool-Test + §30-Politur, PO-direkt),
+      diagnose 84->85 (Doppelzaehlungs-Korrektur + Krisenabend als Live-Beleg). PORTFOLIO
+      KOMPLETT: alle 9 Features exakt auf structural_max.'
 pending_suggestion: null

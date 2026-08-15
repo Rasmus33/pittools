@@ -83,6 +83,16 @@ entries:
     und packScan-Diagnose (beantwortet die 4 offenen Mechanik-Fragen live). Max 1
     Pack strukturell, alle Verteil-Schritte responseOk-geprueft, kein Quicksell/Transfer.
     v4.65.0, 696/696.'
+- at: '2026-08-15T23:50:34Z'
+  issue: 73
+  po_class: null
+  surprises:
+  - Zwei Mid-Ticket-Rebases (v4.66 + v4.67 Hotfixes) am selben Ticket via SendMessage
+    sauber verkraftet — Block-/Paragraph-Umnummerierung als Standard-Konfliktloesung
+    etabliert.
+  reasoning: 'Plan-Check: Confidence-Score + Klartext-Abweichungen oben, Freigabe-Button
+    direkt darunter, Teams eingeklappt (User-Nachtrag), Max-Rating-Zeile in die Erweiterten
+    Einstellungen umgezogen (User-Nachtrag 2). v4.68.0, 735/735, Main-verifiziert.'
 discoveries:
   pattern_candidates: []
   antipattern_candidates: []

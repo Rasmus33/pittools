@@ -17,9 +17,12 @@ code_geography:
 - app/AndroidManifest.xml
 - app/assets/sbc-optimizer.user.js
 - app/build.sh
+- app/sdk-env.sh
+- app/compile-check.sh
 - app/guard-test.js
+- app/log-test.js
 - app/README.md
-last_updated: '2026-08-14'
+last_updated: '2026-08-15'
 ---
 
 # Android-App (WebView-Wrapper mit Script-Injection)
@@ -33,8 +36,11 @@ Eigenstaendige App 'PitTools': WebView um die EA-Web-App, injiziert bei jedem St
 - `app/java/com/sbctools/browser/MainActivity.java`
 - `app/AndroidManifest.xml`
 - `app/assets/sbc-optimizer.user.js`
-- `app/build.sh`
-- `app/guard-test.js`
+- `app/build.sh` — Voll-Build (javac/d8/aapt2/zipalign/apksigner), SDK-Findung via sdk-env.sh
+- `app/sdk-env.sh` — gemeinsame SDK-/Tool-Findung für build.sh und compile-check.sh
+- `app/compile-check.sh` — javac-Gate ohne Keystore (Compile-Check vor dem PO-Build)
+- `app/guard-test.js` — PaleTools-Wächter (marker-basierte Extraktion + Literal-Fallback) und App-Invarianten
+- `app/log-test.js` — Ringpuffer-Tests
 - `app/README.md`
 
 ## Strukturelle Maxima — Begründung

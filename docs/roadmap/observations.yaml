@@ -40,6 +40,18 @@ entries:
     waehrend eines Pool-Refreshs sauber ab (gleicher Stil wie onLoadClick), statt
     gegen einen Uebergangs-Pool zu loesen. v4.54.0, 494/494. Main-verifiziert (Mini-Task,
     Diff = 1 Guard + Test + Doku).'
+- at: '2026-08-15T15:20:08Z'
+  issue: 54
+  po_class: null
+  surprises:
+  - git stash verlor im CRLF-Worktree still den staged/unstaged-Split — Implementer
+    wich auf git-show-Snapshots aus (Verifikations-Methode, kein Repo-Schaden); als
+    Worktree-Eigenheit merken.
+  - titleOf-Formaenderung ({text, source} statt String) blieb sauber lokal — alle
+    5 Aufrufstellen liegen in clickSetTile selbst, per Grep bewiesen.
+  reasoning: 'Letzter Batch-Punkt: der degradierte Volltext-Titel-Fallback (LEARNINGS-§9-Fehlerklasse)
+    ist jetzt als titleSource in batchSteps sichtbar, der Tap-Pfad erstmals getestet,
+    popupDismissCount zaehlt wiederkehrende Popups. v4.55.0, 503/503. Main-verifiziert.'
 discoveries:
   pattern_candidates: []
   antipattern_candidates: []

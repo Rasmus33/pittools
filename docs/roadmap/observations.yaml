@@ -145,7 +145,15 @@ discoveries:
       von Lesen unterscheiden statt nur Referenz-ausserhalb zu pruefen — sonst besteht
       ein nur-gelesenes Feld (uiScan-Klasse). 1 Beleg, noch unreif.
   antipattern_candidates: []
-  shared_item_candidates: []
+  shared_item_candidates:
+  - slug: test-extraktions-helfer
+    evidence:
+    - 'solver-test.js (>10 Marker-Extraktions-Stellen nach #8)'
+    issues:
+    - 8
+    note: extractFunction(src, name[, endMarker]) als gemeinsamer Test-Helfer — Kandidat
+      war schon in der Plan-Phase notiert (1 Konsument), jetzt >10 Stellen ueber 4
+      Features. Reif fuer naechste Iteration.
   cross_feature_smells:
   - slug: reportneterror-304-nicht-fehler
     evidence:

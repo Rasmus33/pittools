@@ -1547,3 +1547,33 @@ bestehenden Re-Entrancy-Schutz in `onLoadClick()`) und lehnt einen
 Optimieren-Klick waehrend eines laufenden Pool-Refreshs mit Toast +
 `setStatus()` ab, statt den Solver gegen den Uebergangs-Pool laufen zu
 lassen.
+
+## 42. Der Vorgaben-Scan kann im Belohnungs-Ast ertrinken - Anforderungs-Aeste zuerst
+
+Live-Fall (Gold-Challenge, Set 1337, Report v4.56.0): der Challenge-Knoten
+aus der Set-Liste enthielt so viel Belohnungs-Metadaten (Kit-Namen,
+"4 OF 10 84+ PLAYER PICK"), dass deepScanChallenge sein 20000er-Budget im
+Belohnungs-Ast erschoepfte, BEVOR die Gold-Anforderung erreicht war
+(`scanStats.deepScan.budgetExhausted: true` - der erste Live-Treffer dieses
+iter3-Diagnosefelds). Ergebnis: KEINE Vorgaben erkannt, der Solver baute
+regellos (Bronze/Silber statt Gold), EA lehnte ab.
+
+Drei Gegenmassnahmen (v4.58.0):
+
+1. **Anforderungs-Aeste zuerst.** Schluessel, die nach Anforderungen
+   aussehen (`/req|elig|constraint/i` - elgReq, requirements, eligibility),
+   werden per unshift VOR allem anderen gescannt. Bei ausreichendem Budget
+   aendert das nichts am Ergebnis (die Sammel-Logik ist
+   reihenfolgeunabhaengig, target nimmt das Maximum) - bei knappem Budget
+   entscheidet es, dass die Vorgaben VOR dem Belohnungs-Rauschen drankommen.
+2. **Budget parametrisiert.** JSON-Baeume (Netzwerk-Response, Set-Knoten)
+   duerfen 60000 Knoten - reine Daten, Zyklen unmoeglich, Millisekunden.
+   Der Live-Entity-Scan bleibt bei 20000 (Objektgraph der App).
+3. **Ehrliche Warnung statt stillem Regellos-Bauen.** Wenn ein Scan
+   abgeschnitten wurde (`anyDeepScanTruncated()`) und NICHTS erkannt ist,
+   sagt der Fehlertext das jetzt explizit ("Scan wurde abgeschnitten");
+   wurde ETWAS erkannt, laeuft alles weiter mit Warn-Toast. Das ist NICHT
+   die zurueckgenommene v4.34.0-Warnung: die urteilte ueber reqDump-INHALTE
+   (Boilerplate-Scopes), diese hier ueber ein hartes Traversal-Faktum.
+   `scanStats.deepScanBySource` zeigt seitdem, WELCHER der drei Scan-Pfade
+   (netzwerk/set-node/entity) betroffen war.

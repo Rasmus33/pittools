@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.57.0
+// @version      4.58.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.57.0';
+    const VERSION = '4.58.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -434,9 +434,16 @@
      * Durchsucht ein Objekt (Response-JSON oder Challenge-Entity) nach
      * Team-Rating- und Rarity-Anforderungen sowie squadId.
      */
-    function deepScanChallenge(root) {
+    // budget: Traversal-Deckel (Default 20000). JSON-Baeume (Netzwerk/Set-Liste)
+    // duerfen mehr (60000): live belegt (Gold-Challenge, Set 1337) enthielt der
+    // Challenge-Knoten so viel Belohnungs-Metadaten (Kit-Namen, Player-Picks),
+    // dass 20000 Knoten erschoepft waren, BEVOR die Gold-Anforderung erreicht
+    // wurde - Ergebnis: keinerlei Vorgaben erkannt, Solver baute regellos.
+    // Der Live-Entity-Scan bleibt bei 20000 (Objektgraph der App, unbegrenzt).
+    function deepScanChallenge(root, budget) {
         const out = { target: null, rarity: [], squadId: null, slots: null, playerLevel: [], quality: [], rare: [], reqs: [], scopesSeen: [] };
         if (!root || typeof root !== 'object') return out;
+        const BUDGET = (budget > 0) ? budget : 20000;
         const seen = new Set();
         const queue = [{ o: root, d: 0, par: [] }];
         let visited = 0;
@@ -452,7 +459,7 @@
         // tatsaechliches Abschneiden des Traversals an (siehe
         // docs/roadmap/gaps/sbc-vorgaben-erkennung.md, Mangel 2).
         let depthSkipped = false;
-        while (queue.length && visited < 20000) {
+        while (queue.length && visited < BUDGET) {
             const cur = queue.shift();
             const o = cur.o, d = cur.d, par = cur.par;
             if (!o || typeof o !== 'object' || seen.has(o) || isDomOrWindow(o)) continue;
@@ -557,7 +564,19 @@
                     let child;
                     try { child = o[k]; } catch (e) { continue; }
                     if (child && typeof child === 'object' && typeof child !== 'function') {
-                        queue.push({ o: child, d: d + 1, par: childPar });
+                        // Anforderungs-Aeste ZUERST scannen (elgReq, requirements,
+                        // eligibility, constraints ...): live belegt (Gold-
+                        // Challenge, Set 1337) frass ein riesiger Belohnungs-Ast
+                        // (Kits/Player-Picks) das komplette Budget, bevor die
+                        // Vorgaben dran waren. Die Priorisierung aendert bei
+                        // ausreichendem Budget NICHTS am Ergebnis (Sammel-Logik
+                        // ist reihenfolgeunabhaengig, target nimmt das Maximum) -
+                        // sie entscheidet nur, was bei knappem Budget zuerst kommt.
+                        if (/req|elig|constraint/i.test(k)) {
+                            queue.unshift({ o: child, d: d + 1, par: childPar });
+                        } else {
+                            queue.push({ o: child, d: d + 1, par: childPar });
+                        }
                     }
                 }
             }
@@ -583,7 +602,7 @@
         // gefunden haben, bevor Budget/Tiefe ausgeschoepft war.
         out.visitedCount = visited;
         out.depthCapped = depthSkipped;
-        out.budgetExhausted = (visited >= 20000 && queue.length > 0);
+        out.budgetExhausted = (visited >= BUDGET && queue.length > 0);
         return out;
     }
     // [SBCSCAN-END]
@@ -744,19 +763,35 @@
         STATE.diag.scanStats = STATE.diag.scanStats || {};
         const node = findChallengeNode(STATE.lastSetChallenges, STATE.sbc.challengeId, STATE.diag.scanStats);
         if (node) {
-            const scan = deepScanChallenge(node);
-            recordDeepScanStats(scan);
+            const scan = deepScanChallenge(node, 60000);
+            recordDeepScanStats(scan, 'set-node');
             applyScan(scan, 'Set-Challenges');
         }
     }
     // Traversal-Metriken von deepScanChallenge() (Aktion 2, LEARNINGS 37) in
     // denselben STATE.diag.scanStats-Zweig wie findChallengeNode()/
     // collectChallengeNodes() uebernehmen - reine Beobachtung, kein
-    // Abbruchkriterium.
-    function recordDeepScanStats(scan) {
+    // Abbruchkriterium. source unterscheidet die drei Aufrufer (netzwerk/
+    // set-node/entity) - noetig geworden, weil beim Gold-Challenge-Fall nicht
+    // erkennbar war, WELCHER Scan das Budget erschoepft hatte; deepScanBySource
+    // sammelt den jeweils letzten Stand pro Quelle.
+    function recordDeepScanStats(scan, source) {
         STATE.diag.scanStats = STATE.diag.scanStats || {};
-        STATE.diag.scanStats.deepScan = { visitedCount: scan.visitedCount,
-            depthCapped: scan.depthCapped, budgetExhausted: scan.budgetExhausted };
+        const entry = { visitedCount: scan.visitedCount,
+            depthCapped: scan.depthCapped, budgetExhausted: scan.budgetExhausted,
+            source: source || null };
+        STATE.diag.scanStats.deepScan = entry;
+        STATE.diag.scanStats.deepScanBySource = STATE.diag.scanStats.deepScanBySource || {};
+        if (source) STATE.diag.scanStats.deepScanBySource[source] = entry;
+    }
+    // Wurde IRGENDEIN Vorgaben-Scan abgeschnitten? Anders als die (zurueck-
+    // genommene) v4.34.0-Warnung urteilt das NICHT ueber reqDump-Inhalte,
+    // sondern ueber ein hartes Traversal-Faktum - und wird nur als Hinweis
+    // benutzt, nie als Abbruch.
+    function anyDeepScanTruncated() {
+        const by = (STATE.diag.scanStats || {}).deepScanBySource || {};
+        for (const k in by) { if (by[k] && by[k].budgetExhausted) return true; }
+        return false;
     }
     function parseSbcChallenge(json, url) {
         const u = String(url);
@@ -791,8 +826,8 @@
                 }
             }
         } catch (e) {}
-        const scan = deepScanChallenge(json);
-        recordDeepScanStats(scan);
+        const scan = deepScanChallenge(json, 60000);
+        recordDeepScanStats(scan, 'netzwerk');
         applyScan(scan, 'Netzwerk');
         // Response selbst enthielt keinen Ziel-OVR (z.B. nur das Squad)?
         // -> Anforderungen aus der gecachten Challenge-Liste des Sets holen.
@@ -828,7 +863,7 @@
             }
         } catch (e) {}
         const scan = deepScanChallenge(challenge);
-        recordDeepScanStats(scan);
+        recordDeepScanStats(scan, 'entity');
         applyScan(scan, 'App-Service');
         if (STATE.sbc.targetOVR == null) applyFromSetChallenges();
     }
@@ -4518,12 +4553,25 @@
         if (!STATE.sbc.targetOVR && !(STATE.sbc.playerLevelConstraints || []).length &&
             !(STATE.sbc.rarityConstraints || []).length &&
             !(STATE.sbc.qualityConstraints || []).length) {
-            toast('Kein Ziel-OVR erkannt. Bitte SBC-Challenge im Spiel öffnen (und ggf. Diagnose-Button nutzen).', 'error');
+            // Unterscheidung nach Ursache (live: Gold-Challenge Set 1337, der
+            // Scan erschoepfte sein Budget im Belohnungs-Ast und fand NICHTS):
+            // abgeschnittener Scan heisst "wir wissen es nicht", nicht "es
+            // gibt keine Vorgaben".
+            if (anyDeepScanTruncated()) {
+                toast('Vorgaben nicht erkannt: der Challenge-Scan wurde abgeschnitten. Challenge bitte neu öffnen; bleibt es dabei, Diagnose schicken.', 'error');
+            } else {
+                toast('Kein Ziel-OVR erkannt. Bitte SBC-Challenge im Spiel öffnen (und ggf. Diagnose-Button nutzen).', 'error');
+            }
             return;
         }
         if (STATE.pool.length === 0) {
             toast('Pool leer. Bitte zuerst "Spieler laden".', 'error');
             return;
+        }
+        // Scan abgeschnitten, aber ETWAS erkannt: weitermachen (kein Abbruch),
+        // aber sichtbar machen, dass die Vorgaben unvollstaendig sein koennten.
+        if (anyDeepScanTruncated()) {
+            toast('Hinweis: Der Vorgaben-Scan wurde abgeschnitten - erkannte Vorgaben könnten unvollständig sein. Ergebnis vor dem Abgeben prüfen.', 'warn');
         }
         // KEINE Vorab-Warnung aus reqDump-Scopes (war v4.34.0 und ist wieder
         // raus): "PLAYER"/"CLUB MEMBER" stehen bei JEDER SBC drin, die Warnung
@@ -5274,6 +5322,9 @@
         if (STATE.loadIncomplete) {
             toast('ACHTUNG: Der Pool war beim Planen unvollständig geladen (' + STATE.pool.length +
                 ' Karten) - der Plan kann auf fehlenden Karten beruhen. Am besten erst "Spieler laden" erneut ausführen, dann neu planen.', 'warn');
+        }
+        if (anyDeepScanTruncated()) {
+            toast('Hinweis: Der Vorgaben-Scan wurde abgeschnitten - der Plan könnte auf unvollständigen Vorgaben beruhen. Vorschau prüfen.', 'warn');
         }
         const want = Math.max(1, Math.min(10, parseInt(ui.batchCount.value, 10) || 1));
         ui.batchPlan.disabled = true;

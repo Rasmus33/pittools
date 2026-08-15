@@ -3199,10 +3199,12 @@ function mulberry32(a) {
     // korrekt auf - unveraendert, NUR der Fallback-Pfad war die Luecke.
     const parseSrc = extractFunction(src, 'parseSbcChallenge');
     const captureSrc = extractFunction(src, 'captureChallengeEntity');
-    check('parseSbcChallenge() ruft weiterhin recordDeepScanStats(scan) auf (Regression)',
-        /recordDeepScanStats\(scan\)/.test(parseSrc));
-    check('captureChallengeEntity() ruft weiterhin recordDeepScanStats(scan) auf (Regression)',
-        /recordDeepScanStats\(scan\)/.test(captureSrc));
+    // Seit v4.58.0 traegt der Aufruf ein Quell-Label (recordDeepScanStats(scan,
+    // 'netzwerk'|'entity'|'set-node')) - die Invariante ist der AUFRUF selbst.
+    check('parseSbcChallenge() ruft weiterhin recordDeepScanStats(scan, ...) auf (Regression)',
+        /recordDeepScanStats\(scan[,)]/.test(parseSrc));
+    check('captureChallengeEntity() ruft weiterhin recordDeepScanStats(scan, ...) auf (Regression)',
+        /recordDeepScanStats\(scan[,)]/.test(captureSrc));
 }
 
 // ========== 37. Ticket #50: sbcButtonContainer() - additiver Text-Fallback ohne Primaerpfad-Verdraengung ==========
@@ -3354,7 +3356,8 @@ function mulberry32(a) {
             SolverCore: { solve: () => { calls.solve++; return { ok: true, ovr: 84, players: [] }; } },
             renderResult: () => {},
             submitCurrentResult: () => { calls.submit++; return Promise.resolve(); },
-            reportError: () => { calls.reportError++; }
+            reportError: () => { calls.reportError++; },
+            anyDeepScanTruncated: () => false
         };
         const keys = Object.keys(sandbox);
         const fn = new Function(keys.join(','), runFnSrc + '\nreturn onRunClick;')
@@ -3479,7 +3482,8 @@ function mulberry32(a) {
             SolverCore: { planBatch: () => { calls.planBatch++; return { planned: 1, requested: 3, rounds: [] }; } },
             findSbcController: () => null,
             renderBatchPreview: (plan) => { calls.renderBatchPreview.push(plan); },
-            reportError: () => { calls.reportError++; }
+            reportError: () => { calls.reportError++; },
+            anyDeepScanTruncated: () => false
         };
         const keys = Object.keys(sandbox);
         const fn = new Function(keys.join(','), planFnSrc + '\nreturn onBatchPlanClick;')
@@ -3922,6 +3926,51 @@ function mulberry32(a) {
     }
     check('15x planBatch-Mehrrunden-Fuzzing: jede Runde brute-force-optimal, ' +
         'Pool-Verbrauch ueber Runden korrekt nachvollzogen', allMatch, detail);
+}
+
+// ========== 49. v4.58.0: Scan-Budget parametrisierbar + Anforderungs-Aeste zuerst ==========
+// Live-Fall (Gold-Challenge, Set 1337): der Challenge-Knoten enthielt so viel
+// Belohnungs-Metadaten (Kit-Namen, Player-Picks), dass das 20000er-Budget im
+// Belohnungs-Ast erschoepft war, BEVOR die Gold-Anforderung erreicht wurde -
+// Ergebnis: keinerlei Vorgaben erkannt. Zwei Gegenmassnahmen: (a) Schluessel,
+// die nach Anforderungen aussehen (req/elig/constraint), werden VOR allem
+// anderen gescannt; (b) JSON-Aufrufer duerfen ein hoeheres Budget mitgeben.
+{
+    const scanBlock = extractMarkerBlock(src, '// [SBCSCAN-BEGIN]', '// [SBCSCAN-END]');
+    check('SBCSCAN-Marker-Block gefunden (49)', !!scanBlock);
+    const deepScanChallenge = new Function(scanBlock + '\nreturn deepScanChallenge;')();
+
+    // Nachbau des Live-Falls: breiter Belohnungs-Ast VOR dem Anforderungs-Ast
+    // (Schluessel-Reihenfolge wie im Objekt-Literal), Anforderung unter elgReq.
+    function bigAwards(n) {
+        const arr = [];
+        for (let i = 0; i < n; i++) arr.push({ kitName: 'KIT ' + i });
+        return arr;
+    }
+    const root = {
+        awards: bigAwards(500),
+        elgReq: [{ scope: 'TEAM_RATING', value: 84 }]
+    };
+
+    // (a) Priorisierung: mit Mini-Budget 50 waere der awards-Ast allein schon
+    // groesser - OHNE die unshift-Priorisierung bliebe target null (der
+    // Anforderungs-Knoten stuende hinter 500 Kit-Knoten in der Queue).
+    const small = deepScanChallenge(root, 50);
+    check('Anforderungs-Ast (elgReq) wird trotz Mini-Budget VOR dem Belohnungs-Ast gefunden',
+        small.target === 84, JSON.stringify({ target: small.target, visited: small.visitedCount }));
+    check('Mini-Budget wird als budgetExhausted markiert (Queue nicht leer)',
+        small.budgetExhausted === true);
+
+    // (b) Budget-Parameter: ohne Argument gilt der Default - 502 Knoten liegen
+    // weit darunter, alles wird gescannt, kein Exhaust-Flag.
+    const dflt = deepScanChallenge(root);
+    check('Default-Budget scannt denselben Baum vollstaendig (kein budgetExhausted)',
+        dflt.budgetExhausted === false && dflt.target === 84);
+
+    // Ergebnis-Neutralitaet der Priorisierung: bei ausreichendem Budget ist der
+    // Fund identisch, egal ob die Anforderung frueh oder spaet drankommt.
+    check('Priorisierung aendert das Ergebnis bei ausreichendem Budget nicht',
+        dflt.target === small.target);
 }
 
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt

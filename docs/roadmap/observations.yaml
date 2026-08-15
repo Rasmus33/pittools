@@ -112,6 +112,17 @@ entries:
     Zeilen) — Validator hat die ADR-87-Registrierung auf :4910 korrigiert.
   reasoning: 'PARTIAL akzeptiert und gemergt: Kontrollfluss byte-identisch additiv,
     Abbruch-Disziplin unveraendert, 224/224. v4.40.0 geht live.'
+- at: '2026-08-15T00:39:28Z'
+  issue: 6
+  po_class: null
+  surprises:
+  - reserve()-Bypass war ueber die oeffentliche API strukturell unerreichbar (Dedup
+    laeuft vorher, dupeScore bevorzugt anchorId/rarityPickId) — Fix ist Defense-in-Depth,
+    Tests weisen ehrlich Verhaltensgleichheit nach statt kaputt→repariert.
+  - cardCostFn-Ersatz durch SolverCore.makeCostOf bestand sofort mit 224 Alt-Tests
+    — es gab nie echten Formel-Drift, nur das strukturelle Risiko.
+  reasoning: 'Heikelstes Ticket sauber durch: Validator PASS, Rating-Formel/V-Mass/DP-Kern
+    byte-identisch, 236/236. v4.41.0 geht live.'
 discoveries:
   pattern_candidates:
   - slug: symmetrie-test-lesen-schreiben-trennen

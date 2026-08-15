@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.45.0
+// @version      4.48.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.45.0';
+    const VERSION = '4.48.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -123,11 +123,13 @@
             refreshLog: null,        // Protokoll des View-Refresh nach dem Abgeben
             uiScan: null,            // Panel/FAB/inSbcView-Snapshot zum Diagnose-Klick
             batchSteps: null,        // letzte Batch-Runden: ok/steps beim Oeffnen der naechsten Instanz
+            batchFailedSteps: null,  // wie batchSteps, aber NUR ok:false-Runden, Cap 30 statt 6er-Ring (ueberlebt laengere Batches, siehe recordBatchStep)
             batchStuckCount: 0,      // wie oft der stuck-Diagnosezweig in openNextInstance auslöste (v4.36.0-Vorfall über mehrere Läufe hinweg messbar statt anekdotisch)
             lastTeam: null,          // zuletzt vom Solver geliefertes Team (ok/reason/cards/usedAssetsCount)
             submitCandidates: null,  // Controller.Methode-Kandidaten fuers Abgeben
             submitChallengeVia: null, // welcher Controller-/Service-Weg beim Abgeben gegriffen hat
             submitWithoutResponseCount: 0, // wie oft submitChallengeToEa ohne auswertbare Response als Erfolg durchging (LEARNINGS §9, v4.36.0: offen, ob Abgabe wirklich bestätigt war)
+            submitConfirmations: null, // Post-Submit-Plausibilisierung im "ohne Response"-Zweig: via/hadResponse/squadEmptyAfter/ms je Versuch (reine Beobachtung, kein Abbruchkriterium)
             lastTap: null            // letzter simulierter Tap: Events/Position/Abdeckung/Popup
         }
     };
@@ -1490,32 +1492,26 @@
             if (!p.isStorage && p.isGold) return 3;
             return 4; // Verein + Special
         }
-        // Konsum-Reihenfolge innerhalb eines Ratings:
-        //  1. Priorität (Storage-Gold -> Storage-Special -> Verein-Gold -> Verein-Special)
-        //  2. Spieler-Duplikate: vom GRÖSSTEN Stapel desselben Spielers zuerst
-        function makeConsumeCmp(list) {
-            const counts = new Map();
-            for (const p of list) {
-                const k = (p.assetId != null) ? p.assetId : p.name;
-                counts.set(k, (counts.get(k) || 0) + 1);
-            }
+        // Konsum-Reihenfolge innerhalb eines Ratings: Priorität
+        // (Storage-Gold -> Storage-Special -> Verein-Gold -> Verein-Special).
+        // Kein Duplikat-Stapel-Tiebreak nötig: die SPIELER-EINDEUTIGKEIT weiter
+        // oben lässt pro assetId strukturell nur eine Karte in pool/avail
+        // übrig, bevor makeConsumeCmp() überhaupt aufgerufen wird - ein
+        // zweites Vergleichsglied nach Stapelgröße könnte hier nie mehr als
+        // eine Karte je Schlüssel sehen (jeder Aufrufer bekommt ausschließlich
+        // schon deduplizierte Listen, siehe reserveCmp/cmp unten).
+        function makeConsumeCmp() {
             return function (a, b) {
-                const pa = priorityOf(a), pb = priorityOf(b);
-                if (pa !== pb) return pa - pb;
-                const ka = (a.assetId != null) ? a.assetId : a.name;
-                const kb = (b.assetId != null) ? b.assetId : b.name;
-                return (counts.get(kb) || 0) - (counts.get(ka) || 0);
+                return priorityOf(a) - priorityOf(b);
             };
         }
         // Sortier-Komparator "Storage vor Verein -> niedrigstes Rating ->
         // Kosten -> Tiebreak", an vier Stellen im Solver identisch gebraucht
         // (Bronze/Silber-Quoten, Rare-ohne-Ziel-Reservierung, Gold-Rare-
-        // Reservierung ohne Ziel-OVR, Auffüll-Karten ohne Ziel-OVR). Der
-        // Tiebreak-Comparator MUSS Parameter bleiben: zwei der vier Stellen
-        // schließen mit makeConsumeCmp(pool) ab, zwei mit makeConsumeCmp(avail)
-        // - unterschiedliche (gefilterte) Kartenmengen. Ein hartkodierter
-        // gemeinsamer Tiebreak würde an zwei Stellen die Reihenfolge
-        // stillschweigend ändern.
+        // Reservierung ohne Ziel-OVR, Auffüll-Karten ohne Ziel-OVR).
+        // tiebreakCmp kommt von zwei Konstruktionsstellen: reserveCmp
+        // (makeConsumeCmp() am Lösungs-Pool) und cmp (makeConsumeCmp() am
+        // Rest-Pool nach Reservierung).
         function makeFillCmp(costOf, tiebreakCmp) {
             return function (a, b) {
                 return ((b.isStorage ? 1 : 0) - (a.isStorage ? 1 : 0)) ||
@@ -1674,7 +1670,7 @@
             const ratings = Array.from(groups.keys()).sort((a, b) => a - b);
             // Verbrauchsreihenfolge innerhalb eines Ratings: KOSTEN zuerst
             // (Rarity-Schutz & Band-Kosten wirken), Konsum-Präferenz
-            // (Storage, Duplikat-Stapel) als Tiebreak.
+            // (Storage) als Tiebreak.
             for (const r of ratings) groups.get(r).sort((a, b) => (costOf(a) - costOf(b)) || cmp(a, b));
             const E = exp ? Math.max(0, exp.budget) + 1 : 1;
             const S = Math.max(0, sMax) + 1;
@@ -1979,7 +1975,7 @@
             const used = new Set();
             const usedAssets = new Set();
             const reserved = [];
-            const reserveCmp = makeConsumeCmp(pool);
+            const reserveCmp = makeConsumeCmp();
             // Jede Reservierung MUSS hierueber laufen: sie fuehrt used und
             // usedAssets zusammen nach. Zwei Karten desselben Spielers im Team
             // sind HTTP 460 (LEARNINGS 6). Anker und manueller Rarity-Pick
@@ -2209,7 +2205,7 @@
             if (avail.length < k) {
                 return { ok: false, reason: 'Nicht genug passende Spieler im Pool (' + (avail.length + reserved.length) + ' < ' + N + '). Erst "Spieler laden" ausführen oder Filter lockern.', warnings: warnings };
             }
-            const cmp = makeConsumeCmp(avail);
+            const cmp = makeConsumeCmp();
             // Pool-Transparenz: woraus wurde überhaupt gewählt?
             const poolInfo = (function () {
                 if (!pool.length) return null;
@@ -2402,6 +2398,11 @@
                     if (!band) {
                         const lowP = avail.filter(p => p.rating < rBoost);
                         const highP = avail.filter(p => p.rating >= rBoost);
+                        // 1300 als Band-Summen-Deckel bindet für die aktuell einzige
+                        // Aufrufer-Konfiguration nie: Formationsgröße ist N<=11, k<=N,
+                        // also k*99<=1089<1300 selbst im Extremfall (alle Boosterkarten
+                        // Rating 99). Reine Sicherheitsobergrenze gegen eine künftig
+                        // größere Formation, kein aktuell wirksames Limit.
                         const sMaxLow = Math.min(k * Math.max(0, rBoost - 1), 1300);
                         const sMaxHigh = Math.min(k * 99, 1300);
                         band = {
@@ -2452,6 +2453,13 @@
                     }
                 }
                 // Phase 1: erste machbare Lösung -> obere Schranke für V
+                // 900 als Suchfenster über stLow: die reale Summenspanne bei N<=11
+                // und dem üblichen Gold-Rating-Band 75-99 ist höchstens
+                // 11 * (99-75) = 264 - weit innerhalb von 900. Wird stHardCap
+                // trotzdem je erreicht, ohne dass Phase 1 eine Lösung fand,
+                // unterscheidet die Prüfung unten ("internes Suchfenster
+                // ausgeschöpft" vs. "Ziel rechnerisch unerreichbar"), statt beide
+                // Fälle in derselben Meldung zu verstecken.
                 const stHardCap = stLow + 900;
                 let vBound = -1;
                 for (let st = stLow; st <= stHardCap && vBound < 0; st++) {
@@ -2501,6 +2509,16 @@
                 if (result) warnings.push('Max. teure Spieler (' + cfg.maxExpensiveCount + ' ab ' + exp.th + '+) ist mit diesem Pool nicht einhaltbar - Beschränkung gelockert.');
             }
             if (!result) {
+                // Unterscheidung "SBC mit diesem Pool tatsächlich unlösbar" von
+                // "internes Suchfenster (stHardCap, s.o.) ausgeschöpft": squadV der
+                // N bestmöglichen verfügbaren Ratings (ohne jede Kosten-/Exp-
+                // Einschränkung) ist das absolute Optimum dieses Pools - erreicht
+                // selbst das NEED nicht, ist der Pool unabhängig vom Suchfenster zu
+                // schwach; erreicht es NEED trotzdem, hat nur das Fenster nicht
+                // gereicht. Rein additiv (kein Einfluss auf reason/ok unten).
+                if (squadV(allDesc) >= NEED) {
+                    warnings.push('Internes Suchfenster ausgeschöpft, ohne eine Lösung zu finden - das rechnerische Optimum dieses Pools erreicht das Ziel aber. Bitte Diagnose schicken.');
+                }
                 return { ok: false, reason: 'Ziel-OVR ' + target + ' ist mit dem aktuellen Pool nicht erreichbar. Filter lockern oder bessere Karten laden.', warnings: warnings };
             }
             return finishTeam(result.team);
@@ -3887,6 +3905,9 @@
             // Instanz öffnen wollte? (Die Abbruchmeldung verweist darauf -
             // in v4.18.0 fehlte das Feld im Report, mein Fehler.)
             batchSteps: STATE.diag.batchSteps || null,
+            // Verlustfreies Gegenstueck dazu, Cap 30 statt 6er-Ring: die frueheste
+            // gescheiterte Runde bleibt auch bei einem spaeten Abbruch sichtbar.
+            batchFailedSteps: STATE.diag.batchFailedSteps || null,
             // Wie oft loeste der stuck-Zweig oben schon aus? Macht den
             // v4.36.0-Live-Vorfall ueber mehrere Laeufe hinweg messbar statt
             // nur aus einem einzelnen LEARNINGS-Eintrag ablesbar.
@@ -3907,6 +3928,9 @@
             // trotzdem als Erfolg? (LEARNINGS §9, v4.36.0: offen gelassene Frage,
             // ob EA die Abgabe wirklich bestaetigt hat.)
             submitWithoutResponseCount: STATE.diag.submitWithoutResponseCount || 0,
+            // Griff eine Abgabe "ohne Response" wirklich? isSquadEmpty() 400ms danach
+            // erneut gelesen - reine Beobachtung (kein throw/Retry), siehe submitChallengeToEa.
+            submitConfirmations: STATE.diag.submitConfirmations || null,
             // Der letzte fehlende Schritt: nach dem Abgeben landet die App im
             // SBC-HUB (mehrfach belegt), und loadChallenge() bringt die Ansicht
             // nicht zurück. Um die SBC wie von Hand anzuklicken, brauche ich die
@@ -3938,15 +3962,20 @@
                 } catch (e) { return { error: String(e && e.message || e) }; }
             })(),
             // Submit-Diagnose: welcher Weg hat zuletzt gegriffen und ist
-            // ueberhaupt eine Challenge offen?
+            // ueberhaupt eine Challenge offen? findSbcController()/
+            // findLiveChallenge() traversieren dieselbe undokumentierte
+            // EA-Controller-Kette wie hubScan - analog dazu abgesichert, damit
+            // ein EA-seitiger Bruch dort nicht den GESAMTEN Report mitreisst.
             submitInfo: (function () {
-                const svc = window.services && window.services.SBC;
-                const ctrl = findSbcController();
-                return {
-                    saveChallengeThere: !!(svc && typeof svc.saveChallenge === "function"),
-                    liveChallengeThere: !!findLiveChallenge(),
-                    controllerName: (ctrl && ctrl.constructor && ctrl.constructor.name) || null
-                };
+                try {
+                    const svc = window.services && window.services.SBC;
+                    const ctrl = findSbcController();
+                    return {
+                        saveChallengeThere: !!(svc && typeof svc.saveChallenge === "function"),
+                        liveChallengeThere: !!findLiveChallenge(),
+                        controllerName: (ctrl && ctrl.constructor && ctrl.constructor.name) || null
+                    };
+                } catch (e) { return { error: String(e && e.message || e) }; }
             })(),
             // Einstiegspunkt-Diagnose: sitzt der Menüpunkt in der EA-Leiste
             // oder fällt die App auf den FAB zurück? tabBarCount zeigt, ob
@@ -4034,6 +4063,12 @@
             })(),
             refreshLog: STATE.diag.refreshLog || null,
             submitVia: STATE.diag.submitVia || null,
+            // Kein "|| null": lastEligible ist dreiwertig (true = App haelt
+            // Squad fuer abgabefaehig, false = ausdruecklich NICHT abgabefaehig
+            // - der fuer Rasmus wichtigste Fall, null = Pruefung nicht moeglich).
+            // "false || null" wuerde zu null kollabieren und den wichtigsten
+            // Fall ununterscheidbar von "nicht geprueft" machen.
+            lastEligible: typeof STATE.diag.lastEligible !== 'undefined' ? STATE.diag.lastEligible : null,
             controllerScan: controllerScan(),
             // GEKUERZT: von den 23 Slots sind die meisten leer (id 0) - die
             // stehen jetzt nur als Anzahl drin. Wichtig ist, WELCHE Karte auf
@@ -4136,7 +4171,16 @@
             inSbcView: inSbcView(),
             btnAttached: !!document.getElementById(BTN_ID)
         };
-        const report = buildDiagReport();
+        // Das Diagnose-Werkzeug darf bei EA-Wandel nicht selbst lautlos
+        // ausfallen: ein kaputtes Report-Feld liefert sonst gar nichts statt
+        // wenigstens des Fehlers selbst.
+        let report;
+        try {
+            report = buildDiagReport();
+        } catch (e) {
+            reportError('Diagnose-Report fehlgeschlagen', e);
+            report = { version: VERSION, url: location.href, error: String(e && e.message || e) };
+        }
         console.log(LOG_PREFIX + ' ===== DIAGNOSE-REPORT (bitte komplett kopieren) =====');
         console.log(JSON.stringify(report, null, 2));
         console.log(LOG_PREFIX + ' ===== ENDE DIAGNOSE-REPORT =====');
@@ -4535,6 +4579,25 @@
                     (resp ? '' : ' (ohne Response)');
                 if (!resp) {
                     STATE.diag.submitWithoutResponseCount = (STATE.diag.submitWithoutResponseCount || 0) + 1;
+                    // Additive Plausibilisierung, KEIN Abbruchkriterium: solange kein
+                    // zweiter Live-Beleg zeigt, dass isSquadEmpty()===false nach einer
+                    // "ohne Response"-Abgabe wirklich einen Fehlschlag bedeutet, darf das
+                    // NICHT zu throw/Retry fuehren (False-Positive-Risiko: Netzwerk-Race,
+                    // Squad-Objekt noch nicht aktualisiert - "2 von 5 fertig" waere sonst
+                    // schlechter dran als ohne diese Pruefung). Nicht lesbar -> 'unknown',
+                    // dann bleibt es reine Beobachtung statt einer geratenen Aussage.
+                    const tConfirm = Date.now();
+                    let squadEmptyAfter = 'unknown';
+                    await batchWait(400);
+                    try {
+                        if (liveSquad && typeof liveSquad.isSquadEmpty === 'function') {
+                            squadEmptyAfter = liveSquad.isSquadEmpty();
+                        }
+                    } catch (e) {}
+                    STATE.diag.submitConfirmations = (STATE.diag.submitConfirmations || []).concat([{
+                        via: cand.w + '.' + cand.m, hadResponse: false,
+                        squadEmptyAfter: squadEmptyAfter, ms: Date.now() - tConfirm
+                    }]).slice(-6);
                 }
                 return { via: 'controller' };
             } catch (e) {
@@ -4604,7 +4667,7 @@
             let empty = null;
             try { if (sq && typeof sq.isSquadEmpty === 'function') empty = sq.isSquadEmpty(); }
             catch (e) {}
-            if (ctrl && sq && matchesPlannedSbc(plan) && empty !== false) {
+            if (ctrl && sq && isFreshMatchingInstance(plan, STATE.sbc, empty)) {
                 steps.push({ ms: Date.now() - t0, done: true, clicked: clicked });
                 return { ok: true, steps: steps };
             }
@@ -4633,7 +4696,7 @@
                     empty: empty
                 } });
             }
-            if (ctrl && (i === 5 || i === 25)) {
+            if (ctrl && shouldTryBack(i)) {
                 const b = clickBackButton();
                 steps.push({ ms: Date.now() - t0, back: b });
                 if (b.ok) { wentBack = true; await batchWait(900); continue; }
@@ -4889,6 +4952,10 @@
         // Die erste Zeile ist die noch offene Wiederholung.
         return { ok: clickLike(rows[0]), why: rows.length + ' Zeile(n), erste geklickt' };
     }
+    // Eigene, pur testbare Bedingung statt inline in openNextInstance - der
+    // v4.36.0-Live-Vorfall (App blieb im Squad-View haengen) war bisher nur per
+    // Text-Match belegt, nicht per Verhaltenstest.
+    function shouldTryBack(i) { return i === 5 || i === 25; }
     /**
      * Den Zurueck-Pfeil der App-Kopfleiste klicken. Gebraucht, wenn die App
      * nach dem Abgeben im Squad-View haengen bleibt (live beim 4/5-Abbruch):
@@ -4952,6 +5019,16 @@
         if (String(STATE.sbc.targetOVR || '') !== String(plan.targetOVR || '')) return false;
         if (Number(STATE.sbc.formationSlots || 0) !== Number(plan.slots || 0)) return false;
         return true;
+    }
+    // Sperre gegen eine bereits abgegebene Instanz: passt die offene SBC den
+    // Vorgaben nach, aber ihre challengeId steckt schon in plan.usedChallengeIds
+    // (onBatchRunClick traegt sie dort nach jeder Abgabe ein), ist es im
+    // Retry-Fenster die ALTE Instanz, nicht die neue - "jede Wiederholung hat
+    // eine eigene challengeId" (CLAUDE.md). Bisher nur beobachtet
+    // (usedInstance im stuck-Diagnosezweig), hier erstmals durchgesetzt.
+    function isFreshMatchingInstance(plan, sbcState, squadEmpty) {
+        return !!(matchesPlannedSbc(plan) && squadEmpty !== false &&
+            (plan.usedChallengeIds || []).indexOf(String(sbcState.challengeId)) === -1);
     }
     async function onBatchPlanClick() {
         syncSbcWithOpenChallenge();
@@ -5038,6 +5115,22 @@
         ui.batchRun.disabled = false;
         ui.batchRun.textContent = 'Alle ' + plan.planned + ' eintragen + abgeben';
     }
+    // Reiner Reducer (keine DOM-/Netzwerkabhaengigkeit, isoliert testbar): pflegt
+    // den bestehenden 6er-Ring diag.batchSteps unveraendert UND haelt zusaetzlich
+    // jede gescheiterte Runde verlustfrei in diag.batchFailedSteps fest, Cap 30
+    // statt 6 (analog lastErrors) - sonst ueberschreibt der 6er-Ring bei
+    // laengeren Batches die frueheste problematische Runde, bevor ein spaeter
+    // Abbruch sie ueberhaupt meldet.
+    function recordBatchStep(diag, round, next) {
+        diag.batchSteps = (diag.batchSteps || []).concat([{
+            round: round, ok: next.ok, steps: next.steps
+        }]).slice(-6);
+        if (!next.ok) {
+            diag.batchFailedSteps = (diag.batchFailedSteps || []).concat([{
+                round: round, ok: next.ok, steps: next.steps
+            }]).slice(-30);
+        }
+    }
     /**
      * Arbeitet den Plan ab: eintragen -> abgeben -> naechste Instanz oeffnen.
      * Bricht bei jeder Unstimmigkeit ab - "2 von 5 fertig" ist besser als eine
@@ -5095,9 +5188,7 @@
                     showProgress(i + 2, n, 'öffne die nächste SBC...', (doneLog.length ? doneLog.length + ' fertig' : ''));
                     setStatus(tag + ': öffne die nächste Runde...');
                     const next = await openNextInstance(plan);
-                    STATE.diag.batchSteps = (STATE.diag.batchSteps || []).concat([{
-                        round: i + 1, ok: next.ok, steps: next.steps
-                    }]).slice(-6);
+                    recordBatchStep(STATE.diag, i + 1, next);
                     if (!next.ok) {
                         if (next.exhausted) {
                             // Kein Fehler, sondern eine Auskunft: EA laesst das

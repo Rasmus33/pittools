@@ -63,38 +63,17 @@ function cfg(target, extra) {
     }, extra || {});
 }
 
-// Karten-Kosten wie im Solver (Band + Scarcity, Storage halb minus Bonus,
-// Rarity-Schutz-Aufschlag für Gruppe-83-Karten und Untradeable-Rabatt NACH dem
-// Storage-Rabatt).
-// MUSS synchron zu costOf() im Userscript bleiben - sonst vergleichen die
-// Brute-Force-Tests gegen ein anderes Kostenmodell als der Solver benutzt.
-function cardCostFn(pool, c) {
-    let alpha = c.scarcityWeight || 0, beta = c.storageBonus || 0;
-    if (alpha <= 0) alpha = 1e-6;
-    if (beta <= 0) beta = 1e-7;
-    const guard = Math.max(0, c.rarityGuardCost != null ? c.rarityGuardCost : 8);
-    const untr = Math.max(0, c.untradeableBonus != null ? c.untradeableBonus : 3);
-    const band = SolverCore.parseRatingCosts(
-        c.ratingCostSpec != null ? c.ratingCostSpec : SolverCore.DEFAULT_RATING_COST_SPEC);
-    const counts = new Map();
-    for (const p of pool) counts.set(p.rating, (counts.get(p.rating) || 0) + 1);
-    return function (p) {
-        const n = counts.get(p.rating) || 1;
-        const base = alpha / n + band(p.rating);
-        const prot = guard > 0 && Array.isArray(p.groups) && p.groups.indexOf(83) > -1;
-        return (p.isStorage ? (base / 2 - beta) : base) + (prot ? guard : 0)
-               - (p.untradeable ? untr : 0);
-    };
-}
-
 // Brute force über das V-Ziel (V = N² * exaktes Rating).
 // Nur für Configs OHNE Reservierungen korrekt.
+// Karten-Kosten kommen von SolverCore.makeCostOf() - der SSOT aus dem
+// Userscript selbst (SOLVER-Block), keine eigenständige Nachbildung mehr
+// (vorher cardCostFn(), nur per Kommentar synchron gehalten).
 function bruteBest(pool, c) {
     const N = c.slots || 11;
     const T = c.targetOVR;
     const NEED = N * N * T - Math.floor(N / 2);
     const windowV = Math.round((c.maxOvershoot != null ? c.maxOvershoot : 0.10) * N * N);
-    const cardCost = cardCostFn(pool, c);
+    const cardCost = SolverCore.makeCostOf(pool, c);
     const n = pool.length;
     const feasible = [];
     const ratings = [];
@@ -124,7 +103,7 @@ function bruteBest(pool, c) {
     return { vMin: vMin, bestObj: best };
 }
 function solverObjective(res, pool, c, vMin) {
-    const cardCost = cardCostFn(pool, c);
+    const cardCost = SolverCore.makeCostOf(pool, c);
     let cost = 0;
     for (const p of res.players) cost += cardCost(p);
     const V = SolverCore.squadV(res.players.map(p => p.rating));
@@ -868,6 +847,127 @@ function mulberry32(a) {
         /doppelt im Team/.test(srcJs) && /Nichts eingetragen/.test(srcJs));
     check('Endkontrolle liefert einen teamDump fuer die Diagnose',
         /teamDump/.test(srcJs));
+}
+
+// ========== 8b-2e. reserve()-Funnel: Anker + manueller Rarity-Pick mit
+// kollidierender assetId (Brute-Force) ==========
+{
+    // Der Anker- und der manuelle Rarity-Pick-Pfad reservierten frueher
+    // "used.add(...); reserved.push(...)" inline statt ueber reserve() zu
+    // laufen - usedAssets blieb dabei fuer beide Pfade unbefuellt. Folgenlos
+    // war das nur, weil die SPIELER-EINDEUTIGKEIT (oben im Solver) pool/
+    // poolAll schon VOR der Anker-/Rarity-Pick-Auswahl pro assetId
+    // deduplizert: ein zweiter Eintrag mit derselben assetId wie der Anker
+    // (bzw. der manuelle Pick) kann den Anker-/Pick-Fund darum gar nicht
+    // ueberleben. Diese zwei Tests konstruieren genau diese Kollision
+    // (zwei Karten, eine assetId) UND machen sie wirtschaftlich verlockend
+    // (die "zweite Karte desselben Spielers" ist zusaetzlich die guenstigere
+    // Storage-Karte) - ein Solver, der die Dedupe/den Funnel nicht durchsetzt,
+    // haette einen echten Anreiz, sie trotzdem zu waehlen. Erwartungswerte
+    // sind per Brute-Force ermittelt (nie aus dem Kopf, CLAUDE.md) und dieser
+    // Test lief unveraendert VOR UND NACH dem reserve()-Umbau gruen (per
+    // manuellem Abgleich gegen den Stand vor dem Refactor bestaetigt).
+    function bruteBestFixed(pool, c, requiredIds, excludedIds) {
+        const N = c.slots || 11;
+        const T = c.targetOVR;
+        const NEED = N * N * T - Math.floor(N / 2);
+        const windowV = Math.round((c.maxOvershoot != null ? c.maxOvershoot : 0.10) * N * N);
+        const cardCost = SolverCore.makeCostOf(pool, c);
+        const required = pool.filter(p => requiredIds.has(p.id));
+        const rest = pool.filter(p => !requiredIds.has(p.id) && !excludedIds.has(p.id));
+        const need = N - required.length;
+        const reqRatings = required.map(p => p.rating);
+        const reqCost = required.reduce((s, p) => s + cardCost(p), 0);
+        const feasible = [];
+        const idx = [];
+        (function rec(start, cnt) {
+            if (cnt === need) {
+                const ratings = reqRatings.concat(idx.map(i => rest[i].rating));
+                const V = SolverCore.squadV(ratings);
+                if (V >= NEED) {
+                    const cost = reqCost + idx.reduce((s, i) => s + cardCost(rest[i]), 0);
+                    feasible.push({ V: V, cost: cost });
+                }
+                return;
+            }
+            if (rest.length - start < need - cnt) return;
+            for (let i = start; i < rest.length; i++) { idx.push(i); rec(i + 1, cnt + 1); idx.pop(); }
+        })(0, 0);
+        if (!feasible.length) return null;
+        let vMin = Infinity;
+        for (const f of feasible) if (f.V < vMin) vMin = f.V;
+        let best = Infinity;
+        for (const f of feasible) if (f.V <= vMin + windowV) {
+            const obj = f.cost + (f.V - vMin) * 1e-4;
+            if (obj < best) best = obj;
+        }
+        return { vMin: vMin, bestObj: best };
+    }
+
+    // ---- Anker-Pfad ----
+    const anchor = P(90, { assetId: 7001, storage: false });
+    const twin = P(90, { assetId: 7001, storage: true }); // gleicher Spieler, guenstiger (Storage)
+    const fillersA = [].concat(many(5, 79), many(5, 84), many(3, 90));
+    const poolA = [].concat([anchor, twin], fillersA);
+    const cA = cfg(84, { scarcityWeight: 0, storageBonus: 2, ratingCostSpec: '0-99:0', anchorId: anchor.id });
+    const resA = SolverCore.solve(poolA, cA);
+    check('Anker: Team erreicht Ziel', resA.ok && resA.ovr >= 84, resA.ok ? '' : resA.reason);
+    check('Anker: Anker selbst im Team', resA.ok && resA.players.some(p => p.id === anchor.id));
+    check('Anker: Zwilling (gleicher Spieler) NICHT im Team',
+        resA.ok && !resA.players.some(p => p.id === twin.id));
+    check('Anker: kein Spieler doppelt (assetId)', resA.ok &&
+        new Set(resA.players.map(p => String(p.assetId))).size === resA.players.length);
+    const bfA = bruteBestFixed(poolA, cA, new Set([anchor.id]), new Set([twin.id]));
+    check('Anker: Brute-Force-Optimum erreicht (V + Kosten)', resA.ok && bfA &&
+        SolverCore.squadV(resA.players.map(p => p.rating)) === bfA.vMin &&
+        Math.abs(solverObjective(resA, poolA, cA, bfA.vMin) - bfA.bestObj) < 1e-6,
+        resA.ok ? ('V=' + SolverCore.squadV(resA.players.map(p => p.rating)) + ' vs vMin=' + (bfA && bfA.vMin)) : resA.reason);
+
+    // ---- Manueller Rarity-Pick-Pfad ----
+    const pick = P(85, { assetId: 8001, groups: [83], special: true, rareflag: 3, storage: false });
+    const twinPick = P(92, { assetId: 8001, groups: [83], special: true, rareflag: 3, storage: true });
+    const fillersB = [].concat(many(5, 82, { groups: [19] }), many(5, 84, { groups: [19] }), many(5, 86, { groups: [19] }));
+    const poolB = [].concat([pick, twinPick], fillersB);
+    const cB = cfg(84, {
+        scarcityWeight: 0, storageBonus: 2, ratingCostSpec: '0-99:0',
+        rarityPickId: pick.id,
+        rarityConstraints: [{ label: 'PLAYER_RARITY_GROUP', ids: [], count: 1, groupId: 83 }]
+    });
+    const resB = SolverCore.solve(poolB, cB);
+    check('Rarity-Pick: Team erreicht Ziel', resB.ok && resB.ovr >= 84, resB.ok ? '' : resB.reason);
+    check('Rarity-Pick: manuelle Karte selbst im Team', resB.ok && resB.players.some(p => p.id === pick.id));
+    check('Rarity-Pick: Zwilling (gleicher Spieler) NICHT im Team',
+        resB.ok && !resB.players.some(p => p.id === twinPick.id));
+    check('Rarity-Pick: genau eine Gruppe-83-Karte', resB.ok &&
+        resB.players.filter(p => p.groups && p.groups.indexOf(83) > -1).length === 1);
+    check('Rarity-Pick: kein Spieler doppelt (assetId)', resB.ok &&
+        new Set(resB.players.map(p => String(p.assetId))).size === resB.players.length);
+    const bfB = bruteBestFixed(poolB, cB, new Set([pick.id]), new Set([twinPick.id]));
+    check('Rarity-Pick: Brute-Force-Optimum erreicht (V + Kosten)', resB.ok && bfB &&
+        SolverCore.squadV(resB.players.map(p => p.rating)) === bfB.vMin &&
+        Math.abs(solverObjective(resB, poolB, cB, bfB.vMin) - bfB.bestObj) < 1e-6,
+        resB.ok ? ('V=' + SolverCore.squadV(resB.players.map(p => p.rating)) + ' vs vMin=' + (bfB && bfB.vMin)) : resB.reason);
+}
+
+// ========== 8b-2f. Sortier-Komparator (makeFillCmp): Snapshot bei Kosten-/
+// Rating-Gleichstand ==========
+{
+    // Vier woertlich duplizierte Sortier-Komparatoren wurden durch eine
+    // Factory (makeFillCmp) ersetzt. Dieser Test prueft NICHT nur das
+    // aggregierte V/Kosten-Ergebnis, sondern WELCHE konkrete Karte bei einem
+    // echten Gleichstand (Storage/Rating/Kosten identisch) gewinnt: Club-Gold
+    // vor Club-Special (priorityOf 3 vor 4, makeConsumeCmp). Lief unveraendert
+    // vor und nach dem Comparator-Refactor (manuell gegen den Stand vor dem
+    // Umbau bestaetigt).
+    const seed = P(95, { storage: true });
+    const golds = many(10, 80, {});
+    const special = P(80, { special: true, rareflag: 24 });
+    const pool = [].concat([seed], golds, [special]);
+    const res = SolverCore.solve(pool, cfg(null, { anchorId: seed.id }));
+    check('Auffuellen ohne Ziel-OVR: bei Gleichstand gewinnt Gold vor Special',
+        res.ok && !res.players.some(p => p.id === special.id) &&
+        golds.every(g => res.players.some(p => p.id === g.id)),
+        res.ok ? res.players.map(p => p.name).join(',') : res.reason);
 }
 
 // ========== 8b-2d. Gemischte Qualitaets-Vorgaben (Bronze + Silber) ==========

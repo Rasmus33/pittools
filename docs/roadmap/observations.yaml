@@ -74,8 +74,23 @@ discoveries:
   shared_item_candidates: []
   cross_feature_smells: []
 seeds_next:
-  seeded_at: null
+  seeded_at: '2026-08-15T13:42:53Z'
   patterns: []
   shared_items: []
-  features: []
-  discoveries: []
+  features:
+  - 'Roadmap ist konvergiert: alle 9 Features an/1 Punkt unter ihren strukturellen
+    Deckeln (android 80/80, ea-app 75/75, team 75/75, sbc 79/80, batch 69/70, diagnose
+    84/85, spieler-pool 83/85, bedienpanel 82/85, solver 92/95). Weitere Lifts nur
+    bei neuem Anlass (EA-Umbau, Live-Befund, Cap-Revision durch neue Erkenntnisse).'
+  - 'sbc-vorgaben-erkennung: applyFromSetChallenges ruft deepScanChallenge(node) ohne
+    recordDeepScanStats — scanStats.deepScan zeigt im haeufigen Fallback-Pfad (Response
+    ohne target) die Metriken des frueheren Scans (Restfund aus dem iter3-Re-Score,
+    klein, additiv fixbar)'
+  discoveries:
+  - 'ea-app-anbindung: apiBaseDetectionStuck + sbcHookMisses bewusst verschoben (duenn,
+    0 Punkte Luft am Deckel)'
+  - 'APK-Installation durch Rasmus weiter ausstehend: v1.8.0 liegt in app/build/ —
+    die Userscript-Updates v4.49/4.50 kommen dagegen automatisch auf beide Handys'
+  - 'compile-check.sh ist da, aber noch NICHT als final_gate in config/system.yaml
+    registriert — Kandidat: als vierter commands-Eintrag aufnehmen, dann laeuft es
+    bei jedem kuenftigen Ticket automatisch'

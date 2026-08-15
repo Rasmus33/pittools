@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.58.0
+// @version      4.59.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.58.0';
+    const VERSION = '4.59.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -1720,6 +1720,13 @@
         // wird in localStorage gemerkt - eine Änderung hier greift nur, wenn
         // dort noch nichts gespeichert ist oder "Zurücksetzen" gedrückt wird.
         const DEFAULT_RATING_COST_SPEC = '0-80:0, 81-83:2, 84:1, 85-88:2, 89-90:3, 91-92:4, 93+:12';
+        // Kombinatorik-Schranke fuer reserveRarityWindowAware() (Ticket #60,
+        // LEARNINGS 41): Anzahl der (Rating -> Anzahl)-Aufteilungen, die pro
+        // Rarity-Vorgabe tatsaechlich per DP durchprobiert werden, bevor auf
+        // den Kosten-Greedy zurueckgefallen wird. Konservativ fuer Reaktionszeit
+        // am Handy geschaetzt (Lift-Plan), nicht am realen Geraet gemessen -
+        // ein spaeterer Live-Befund kann den Wert mit eigenem Beleg anpassen.
+        const RARITY_WINDOW_TRIAL_CAP = 200;
         function parseRatingCosts(spec) {
             const costs = new Array(100).fill(0);
             if (spec) {
@@ -2290,10 +2297,338 @@
                     : (p.rating >= qResLo && p.rating <= qResHi)) &&
                 // Bronze/Silber: keine Specials, auch nicht als Vorgabe-Karte.
                 !(qualityLow && p.isSpecial);
+            // cmp/NEED werden hier (statt an ihrer alten Stelle nach der
+            // rcList-Schleife) berechnet, weil reserveRarityWindowAware()/
+            // searchTeam() (Ticket #60, LEARNINGS 41) sie schon WAEHREND der
+            // Rarity-Reservierung brauchen - beide Ausdruecke sind reine
+            // Funktionen von bereits bekannten Werten (N/target), das Vorziehen
+            // aendert also nichts an ihrem Ergebnis, nur am Zeitpunkt der
+            // Berechnung. Die alte Stelle weiter unten entfaellt (SSOT: eine
+            // einzige `NEED`/`cmp`-Deklaration statt zweier synchron zu
+            // haltender Kopien).
+            const cmp = makeConsumeCmp();
+            const NEED = target ? (N * N * target - Math.floor(N / 2)) : null;
+            // windowV ebenfalls vorgezogen (reine Funktion von cfg.maxOvershoot/N,
+            // SSOT mit searchTeam()s frueherer lokaler Kopie) - reserveRarityWindowAware()
+            // braucht denselben Wert, um ueber ALLE Trials hinweg (nicht pro
+            // Trial einzeln) das global guenstigste Ergebnis IM Fenster zu waehlen.
+            const windowV = target ? Math.max(0, Math.round(
+                (cfg.maxOvershoot != null ? cfg.maxOvershoot : 0.10) * N * N)) : 0;
+            // Wird reserveRarityWindowAware() fuendig, haelt sie hier das ueber
+            // ALLE Kandidaten-Kombinationen ermittelte globale Minimum fest
+            // (Schritt 5). Der FINALE Such-Aufruf am Ende dieser Funktion nutzt
+            // es als vMinFloor: die endgueltige Team-Zusammenstellung darf NICHT
+            // erneut ihr EIGENES (potenziell breiteres) Fenster um die fest
+            // reservierten Vorgabe-Karten herum entdecken - sonst waere die
+            // Reservierungs-Entscheidung fuer ein Fenster getroffen worden, das
+            // die spaetere Auffuellung gar nicht mehr einhaelt (live per
+            // Fuzzing gefunden, LEARNINGS 41). Bleibt null, wenn keine
+            // fensterbewusste Reservierung stattfand - der finale Aufruf
+            // verhaelt sich dann exakt wie zuvor (Selbst-Entdeckung).
+            let rarityVMinFloor = null;
+            // ---- searchTeam(): DP-Suche, parametrisiert statt Closure -------
+            // Mathematisch UNVERAENDERT gegenueber der bisherigen runSearch()
+            // (bandFor/scanSt/Phase 1+2/Auswahl sind byte-identisch uebernommen,
+            // siehe LEARNINGS 41 fuer den Diff-Beleg) - nur reserved/avail kommen
+            // jetzt als Parameter statt als Closure ueber die (erst nach der
+            // gesamten Reservierung feststehenden) Aussen-Variablen, damit
+            // reserveRarityWindowAware() dieselbe Suche fuer probeweise
+            // reservierte Kandidaten-Kombinationen aufrufen kann, BEVOR die
+            // eigentliche Reservierung feststeht (Schritt 4 im Lift-Plan).
+            function searchTeam(reservedArr, availArr, expDims, sharedBandCache, vMinFloor) {
+                const kLocal = N - reservedArr.length;
+                // Beim echten (finalen) Aufruf ist das bereits vorher geprueft
+                // (":avail.length < k" weiter oben); ein Trial-Aufruf aus
+                // reserveRarityWindowAware() hat diese Pruefung nicht - eine zu
+                // knappe Kombination ist dort einfach "nicht loesbar", kein Fehler.
+                if (availArr.length < kLocal) return null;
+                const reservedSumLocal = reservedArr.reduce((s, p) => s + p.rating, 0);
+                const sortedAscLocal = availArr.slice().sort((a, b) => a.rating - b.rating);
+                let kCheapestLocal = 0;
+                for (let i = 0; i < kLocal; i++) kCheapestLocal += sortedAscLocal[i].rating;
+                const stLowLocal = reservedSumLocal + kCheapestLocal;
+                const allDescLocal = reservedArr.map(p => p.rating)
+                    .concat(availArr.map(p => p.rating))
+                    .sort((a, b) => b - a)
+                    .slice(0, N);
+                function quickUBLocal(st) {
+                    let best = N * st; // b = 0
+                    let hs = 0;
+                    for (let b = 1; b <= allDescLocal.length; b++) {
+                        hs += allDescLocal[b - 1];
+                        const v = N * st + N * hs - b * st;
+                        if (v > best) best = v;
+                    }
+                    return best;
+                }
+                // windowV ist bereits vor der rcList-Schleife berechnet (SSOT,
+                // siehe dort) - eine einzige Deklaration statt zweier synchron
+                // zu haltender Kopien.
+                const bandCache = sharedBandCache || new Map();
+                function bandFor(st) {
+                    const rBoost = Math.floor(st / N) + 1;
+                    let band = bandCache.get(rBoost);
+                    if (!band) {
+                        const lowP = availArr.filter(p => p.rating < rBoost);
+                        const highP = availArr.filter(p => p.rating >= rBoost);
+                        const sMaxLow = Math.min(kLocal * Math.max(0, rBoost - 1), 1300);
+                        const sMaxHigh = Math.min(kLocal * 99, 1300);
+                        band = {
+                            rBoost: rBoost,
+                            dpLow: buildDp(lowP, kLocal, sMaxLow, costOf, expDims, cmp),
+                            dpHigh: buildDp(highP, kLocal, sMaxHigh, costOf, expDims, cmp)
+                        };
+                        bandCache.set(rBoost, band);
+                    }
+                    return band;
+                }
+                function scanSt(st, vCap, cb) {
+                    const band = bandFor(st);
+                    const S_target = st - reservedSumLocal;
+                    if (S_target < 0) return;
+                    let bRes = 0, HRes = 0;
+                    for (const p of reservedArr) {
+                        if (p.rating >= band.rBoost) { bRes++; HRes += p.rating; }
+                    }
+                    const budget = expDims ? expDims.budget : 0;
+                    for (let bA = 0; bA <= kLocal; bA++) {
+                        const b = bRes + bA;
+                        const base = N * st + N * HRes - b * st;
+                        const HAmin = Math.max(0, bA * band.rBoost,
+                            Math.ceil((NEED - base) / N - 1e-9));
+                        const HAcap = (vCap === Infinity)
+                            ? Infinity : Math.floor((vCap - base) / N + 1e-9);
+                        const HAmax = Math.min(band.dpHigh.S - 1, S_target, HAcap);
+                        for (let HA = HAmin; HA <= HAmax; HA++) {
+                            const sLow = S_target - HA;
+                            const V = base + N * HA;
+                            for (let eH = 0; eH <= budget; eH++) {
+                                const cH = band.dpHigh.cost(bA, eH, HA);
+                                if (cH === Infinity) continue;
+                                for (let eL = 0; eL + eH <= budget; eL++) {
+                                    const cL = band.dpLow.cost(kLocal - bA, eL, sLow);
+                                    if (cL === Infinity) continue;
+                                    cb(V, cH + cL, { st: st, bA: bA, HA: HA, eH: eH, eL: eL, sLow: sLow });
+                                    if (!expDims) break;
+                                }
+                                if (!expDims) break;
+                            }
+                        }
+                    }
+                }
+                const stHardCapLocal = stLowLocal + 900;
+                // vMinFloor (Ticket #60, LEARNINGS 41): reserveRarityWindowAware()
+                // ruft searchTeam() in einem ZWEITEN Durchlauf mit einem von
+                // AUSSEN vorgegebenen Fenster-Boden (dem ueber ALLE Kombinationen
+                // ermittelten globalen Minimum) statt des selbst entdeckten
+                // vBound auf - eine Kombination, deren EIGENES Minimum hoeher
+                // liegt als das globale, darf sonst faelschlich ihr EIGENES (zu
+                // weites) Fenster ausnutzen und eine Karten-Wahl ausserhalb des
+                // tatsaechlich gueltigen, globalen Fensters zurueckliefern (live
+                // per Fuzzing gefunden). Der normale (finale) Aufruf unten
+                // uebergibt hier weiterhin nichts und verhaelt sich exakt wie
+                // zuvor (Phase 1 unveraendert).
+                let vMin;
+                if (vMinFloor != null) {
+                    vMin = vMinFloor;
+                } else {
+                    let vBound = -1;
+                    for (let st = stLowLocal; st <= stHardCapLocal && vBound < 0; st++) {
+                        if (quickUBLocal(st) < NEED) continue;
+                        let found = -1;
+                        scanSt(st, Infinity, function (V) {
+                            if (found < 0 || V < found) found = V;
+                        });
+                        if (found >= 0) vBound = found;
+                    }
+                    if (vBound < 0) return null;
+                    vMin = vBound;
+                }
+                const bestByV = new Map();
+                for (let st = stLowLocal; st <= stHardCapLocal; st++) {
+                    if (N * st > vMin + windowV) break;
+                    if (quickUBLocal(st) < NEED) continue;
+                    scanSt(st, vMin + windowV, function (V, cost, ref) {
+                        if (V < NEED) return;
+                        const cur = bestByV.get(V);
+                        if (!cur || cost < cur.cost - 1e-12) {
+                            bestByV.set(V, { cost: cost, ref: ref });
+                        }
+                        if (V < vMin) vMin = V;
+                    });
+                }
+                let chosen = null;
+                bestByV.forEach(function (cand, V) {
+                    if (V > vMin + windowV) return;
+                    const obj = cand.cost + (V - vMin) * 1e-4;
+                    if (!chosen || obj < chosen.obj - 1e-12) {
+                        chosen = { obj: obj, V: V, ref: cand.ref };
+                    }
+                });
+                if (!chosen) return null;
+                const band = bandFor(chosen.ref.st);
+                const high = band.dpHigh.reconstruct(chosen.ref.bA, chosen.ref.eH, chosen.ref.HA);
+                const low = band.dpLow.reconstruct(kLocal - chosen.ref.bA, chosen.ref.eL, chosen.ref.sLow);
+                return { team: reservedArr.concat(high, low), V: chosen.V, vMin: vMin };
+            }
+            // ---- reserveRarityWindowAware() (Ticket #60, LEARNINGS 41) ------
+            // Ersetzt fuer rcList-Vorgaben MIT gesetztem target die reine
+            // Kosten-Sortierung durch eine fensterbewusste Auswahl: probiert
+            // - bounded durch RARITY_WINDOW_TRIAL_CAP - ALLE moeglichen
+            // (Rating -> Anzahl)-Aufteilungen der `stillNeed` Vorgabe-Karten
+            // tatsaechlich durch dieselbe DP-Suche (searchTeam) und reserviert
+            // die Kombination mit dem kleinsten erreichten V (Tiebreak Kosten -
+            // CLAUDE.mds Regel-Hierarchie "Fenster > Kosten"). Reserviert NICHTS
+            // (Rueckgabe 0) wenn die Kombinatorik den Cap reisst oder keine
+            // Kombination ueberhaupt ein loesbares Team ergibt - der bestehende
+            // Kosten-Greedy direkt nach dem Aufruf greift dann unveraendert
+            // (additiver Fallback, kein zweiter Fehlerpfad).
+            function reserveRarityWindowAware(rc, stillNeed) {
+                if (stillNeed <= 0) return 0;
+                const cands = poolAll.filter(p => p.rating >= minRating && freeCard(p) &&
+                    inQualityBand(p) && matchesRarity(p, rc) &&
+                    (!cfg.specialOnlyFromStorage || p.isStorage || !p.isSpecial || isTotw(p)));
+                if (!cands.length) return 0;
+                // Schritt 2 (Lift-Plan): pro Rating nur die (bis zu stillNeed)
+                // guenstigsten Kandidaten behalten - verlustfrei, weil der
+                // V-Beitrag einer Karte ausschliesslich von ihrem Rating abhaengt
+                // (squadV) und costOf bei gleichem Rating eindeutig ordnet.
+                const byRating = new Map();
+                for (const p of cands) {
+                    if (!byRating.has(p.rating)) byRating.set(p.rating, []);
+                    byRating.get(p.rating).push(p);
+                }
+                const profiles = Array.from(byRating.keys()).sort((a, b) => a - b).map(function (r) {
+                    const list = byRating.get(r).sort((a, b) => (costOf(a) - costOf(b)) || reserveCmp(a, b));
+                    return { rating: r, cards: list.slice(0, Math.min(stillNeed, list.length)) };
+                });
+                // Schritt 3: Kombinatorik-Schranke. Zaehlt NUR, ob die Anzahl
+                // moeglicher Aufteilungen den Cap ueberschreitet - bricht dafuer
+                // frueh ab (kein Materialisieren von mehr als noetig fuer die
+                // Cap-Entscheidung selbst).
+                function countCombos(idx, remain, budget) {
+                    if (remain === 0) return 1;
+                    if (idx >= profiles.length) return 0;
+                    let total = 0;
+                    const maxTake = Math.min(remain, profiles[idx].cards.length);
+                    for (let take = 0; take <= maxTake; take++) {
+                        total += countCombos(idx + 1, remain - take, budget - total);
+                        if (total > budget) return total;
+                    }
+                    return total;
+                }
+                const comboCount = countCombos(0, stillNeed, RARITY_WINDOW_TRIAL_CAP);
+                if (comboCount === 0) return 0;
+                if (comboCount > RARITY_WINDOW_TRIAL_CAP) {
+                    warnings.push('Fensterbewusste Vorgaben-Wahl uebersprungen (zu viele Kandidaten) - Kosten-Reihenfolge verwendet.');
+                    return 0;
+                }
+                // Geteilter Band-Cache ist nur sicher, wenn KEINER der Kandidaten
+                // je in "avail" landen koennte - sonst haengt avail von der
+                // konkreten Kombination ab (loser Durchlauf, limitProtected===false,
+                // wo ungenutzte geschuetzte Karten als Fueller bleiben duerfen).
+                const canShareBandCache = limitProtected && cands.every(function (p) { return isProtectedRarity(p); });
+                const sharedBandCache = canShareBandCache ? new Map() : null;
+                const sharedAvail = canShareBandCache
+                    ? pool.filter(function (p) { return !used.has(p.id) && !isProtectedRarity(p); })
+                    : null;
+                // Schritt 5 (Lift-Plan): ERST alle Trials sammeln, DANN ueber
+                // ALLE hinweg das kleinste erreichte V (globalVmin) bestimmen -
+                // ein einzelner Trial darf NICHT vorschnell nur gegen den bis
+                // dahin kleinsten V-Wert tiebreaken, sonst gewinnt ein Trial mit
+                // minimal kleinerem V eine teurere Kombination, obwohl eine
+                // andere Kombination NUR wenig hoeher liegt (noch im selben
+                // Fenster) aber deutlich billiger ist - CLAUDE.mds Regel-Hierarchie
+                // "Fenster > Kosten, Kosten entscheiden IM Fenster" gilt fuer die
+                // Reservierungs-ENTSCHEIDUNG selbst, nicht nur fuer die Auffuellung.
+                // Pass 1: pro Kombination NUR das rohe (nicht fenster-
+                // optimierte) Minimum vMin ermitteln (searchTeam() ohne
+                // vMinFloor - Phase 1 unveraendert). searchTeam() optimiert
+                // sonst intern gegen das EIGENE Fenster [vMin, vMin+windowV]
+                // dieser einen Kombination - das kann eine Wahl ausserhalb des
+                // TATSAECHLICHEN, ueber ALLE Kombinationen gemeinsamen Fensters
+                // liefern (live per Fuzzing gefunden), darum Pass 2 unten.
+                function trialRawVMin(comboCards) {
+                    for (const p of comboCards) reserve(p);
+                    const trialAvail = canShareBandCache ? sharedAvail :
+                        pool.filter(function (p) { return !used.has(p.id) && (!limitProtected || !isProtectedRarity(p)); });
+                    const trialResult = searchTeam(reserved, trialAvail, null, canShareBandCache ? sharedBandCache : null);
+                    for (const p of comboCards) {
+                        used.delete(p.id);
+                        if (p.assetId != null && p.assetId !== 0) usedAssets.delete(String(p.assetId));
+                        reserved.pop();
+                    }
+                    return trialResult ? trialResult.vMin : null;
+                }
+                const combos = [];
+                (function generate(idx, remain, chosen) {
+                    if (remain === 0) { combos.push(chosen.slice()); return; }
+                    if (idx >= profiles.length) return;
+                    const maxTake = Math.min(remain, profiles[idx].cards.length);
+                    for (let take = 0; take <= maxTake; take++) {
+                        for (let i = 0; i < take; i++) chosen.push(profiles[idx].cards[i]);
+                        generate(idx + 1, remain - take, chosen);
+                        chosen.length -= take;
+                    }
+                })(0, stillNeed, []);
+                const rawVMins = combos.map(function (c) { return { combo: c, vMin: trialRawVMin(c) }; })
+                    .filter(function (t) { return t.vMin != null; });
+                if (!rawVMins.length) return 0;
+                let globalVmin = Infinity;
+                for (const t of rawVMins) if (t.vMin < globalVmin) globalVmin = t.vMin;
+                // Pass 2: nur fuer Kombinationen, deren eigenes Minimum
+                // ueberhaupt innerhalb des GLOBALEN Fensters liegen kann,
+                // searchTeam() ERNEUT aufrufen - diesmal mit vMinFloor =
+                // globalVmin, damit die kosten-optimale Wahl INNERHALB des
+                // gemeinsamen (nicht des eigenen) Fensters ermittelt wird.
+                let best = null;
+                for (const t of rawVMins) {
+                    if (t.vMin > globalVmin + windowV) continue;
+                    for (const p of t.combo) reserve(p);
+                    const trialAvail = canShareBandCache ? sharedAvail :
+                        pool.filter(function (p) { return !used.has(p.id) && (!limitProtected || !isProtectedRarity(p)); });
+                    const refined = searchTeam(reserved, trialAvail, null,
+                        canShareBandCache ? sharedBandCache : null, globalVmin);
+                    for (const p of t.combo) {
+                        used.delete(p.id);
+                        if (p.assetId != null && p.assetId !== 0) usedAssets.delete(String(p.assetId));
+                        reserved.pop();
+                    }
+                    if (!refined) continue;
+                    let cost = 0;
+                    for (const p of refined.team) cost += costOf(p);
+                    if (!best || cost < best.cost - 1e-9 ||
+                        (Math.abs(cost - best.cost) <= 1e-9 && refined.V < best.V)) {
+                        best = { V: refined.V, cost: cost, combo: t.combo };
+                    }
+                }
+                if (!best) return 0;
+                for (const p of best.combo) {
+                    reserve(p);
+                    warnings.push('Vorgabe ' + (rc.label || 'Rarity') + ': ' + p.name + ' (' + p.rating +
+                        (p.isSpecial ? ', Special' : '') + ') reserviert.');
+                }
+                // Der finale Such-Aufruf (Ende dieser Funktion) muss dasselbe
+                // Fenster respektieren, das diese Wahl gerade erst begruendet
+                // hat - sonst entdeckt er fuer die jetzt FEST reservierten
+                // Karten sein EIGENES (potenziell breiteres) Fenster erneut.
+                rarityVMinFloor = globalVmin;
+                return best.combo.length;
+            }
             for (const rc of rcList) {
                 const needCount = rc.count || 1;
                 let have = reserved.filter(p => matchesRarity(p, rc) ||
                     (forcedPickId != null && p.id === forcedPickId)).length;
+                // Fensterbewusste Wahl NUR mit gesetztem target (Schritt 1,
+                // Lift-Plan) - der !target-Zweig direkt darunter bleibt beim
+                // heutigen, dafuer bereits korrekten makeFillCmp-Weg (LEARNINGS
+                // 15/17: dort gilt "niedrigstes Rating zuerst", kein
+                // maxOvershoot-Fenster). Erfolgreiche Reservierung hebt `have`
+                // sofort auf `needCount` - die anschliessende while-Schleife
+                // laeuft dann gar nicht mehr an (0 Iterationen bei Erfolg).
+                if (target && have < needCount) {
+                    have += reserveRarityWindowAware(rc, needCount - have);
+                }
                 while (have < needCount) {
                     // Quellen-Regel für Vorgaben (Rasmus):
                     //  - Storage: jede passende Karte (Special/TOTW) erlaubt
@@ -2357,7 +2692,8 @@
             if (avail.length < k) {
                 return { ok: false, reason: 'Nicht genug passende Spieler im Pool (' + (avail.length + reserved.length) + ' < ' + N + '). Erst "Spieler laden" ausführen oder Filter lockern.', warnings: warnings };
             }
-            const cmp = makeConsumeCmp();
+            // cmp ist bereits vor der rcList-Schleife berechnet (siehe dort) -
+            // eine einzige Deklaration statt zweier synchron zu haltender Kopien.
             // Pool-Transparenz: woraus wurde überhaupt gewählt?
             const poolInfo = (function () {
                 if (!pool.length) return null;
@@ -2516,149 +2852,30 @@
                     exp = { th: th, budget: budget };
                 }
             }
-            const NEED = N * N * target - Math.floor(N / 2);
-            const sortedAsc = avail.slice().sort((a, b) => a.rating - b.rating);
-            let kCheapest = 0;
-            for (let i = 0; i < k; i++) kCheapest += sortedAsc[i].rating;
-            const stLow = reservedSum + kCheapest;
-            // Für die Quick-Obergrenze: höchste Ratings (reserviert + verfügbar)
+            // NEED ist bereits vor der rcList-Schleife berechnet (siehe dort) -
+            // eine einzige Deklaration statt zweier synchron zu haltender
+            // Kopien (SSOT). Für die Quick-Obergrenze: höchste Ratings
+            // (reserviert + verfügbar) - separat von searchTeam()s eigener,
+            // rein lokaler Kopie, weil die Suchfenster-Diagnose unten sie
+            // AUSSERHALB von searchTeam() braucht, nachdem diese schon null
+            // geliefert hat.
             const allDesc = reserved.map(p => p.rating)
                 .concat(avail.map(p => p.rating))
                 .sort((a, b) => b - a)
                 .slice(0, N);
-            function quickUB(st) {
-                let best = N * st; // b = 0
-                let hs = 0;
-                for (let b = 1; b <= allDesc.length; b++) {
-                    hs += allDesc[b - 1];
-                    const v = N * st + N * hs - b * st;
-                    if (v > best) best = v;
-                }
-                return best;
-            }
-            function runSearch(expDims) {
-                // Fenster in V-Einheiten: 1 Einheit = 1/121 Rating-Dezimal
-                // (bei N=11). Innerhalb des Fensters über dem V-Minimum
-                // entscheiden die KARTEN-Kosten.
-                const windowV = Math.max(0, Math.round(
-                    (cfg.maxOvershoot != null ? cfg.maxOvershoot : 0.10) * N * N));
-                // Band-Cache: DPs hängen nur von der Booster-Grenze ab
-                const bandCache = new Map();
-                function bandFor(st) {
-                    const rBoost = Math.floor(st / N) + 1;
-                    let band = bandCache.get(rBoost);
-                    if (!band) {
-                        const lowP = avail.filter(p => p.rating < rBoost);
-                        const highP = avail.filter(p => p.rating >= rBoost);
-                        // 1300 als Band-Summen-Deckel bindet für die aktuell einzige
-                        // Aufrufer-Konfiguration nie: Formationsgröße ist N<=11, k<=N,
-                        // also k*99<=1089<1300 selbst im Extremfall (alle Boosterkarten
-                        // Rating 99). Reine Sicherheitsobergrenze gegen eine künftig
-                        // größere Formation, kein aktuell wirksames Limit.
-                        const sMaxLow = Math.min(k * Math.max(0, rBoost - 1), 1300);
-                        const sMaxHigh = Math.min(k * 99, 1300);
-                        band = {
-                            rBoost: rBoost,
-                            dpLow: buildDp(lowP, k, sMaxLow, costOf, expDims, cmp),
-                            dpHigh: buildDp(highP, k, sMaxHigh, costOf, expDims, cmp)
-                        };
-                        bandCache.set(rBoost, band);
-                    }
-                    return band;
-                }
-                // Alle (Booster-Anzahl, Booster-Summe)-Kombos einer Gesamtsumme
-                // durchgehen; cb(V, kosten, ref) für jede machbare Kombination.
-                // V = N*(st + H) - b*st = N² * exaktes Rating.
-                function scanSt(st, vCap, cb) {
-                    const band = bandFor(st);
-                    const S_target = st - reservedSum;
-                    if (S_target < 0) return;
-                    let bRes = 0, HRes = 0;
-                    for (const p of reserved) {
-                        if (p.rating >= band.rBoost) { bRes++; HRes += p.rating; }
-                    }
-                    const budget = expDims ? expDims.budget : 0;
-                    for (let bA = 0; bA <= k; bA++) {
-                        const b = bRes + bA;
-                        const base = N * st + N * HRes - b * st;
-                        // NEED <= V = base + N*HA <= vCap
-                        const HAmin = Math.max(0, bA * band.rBoost,
-                            Math.ceil((NEED - base) / N - 1e-9));
-                        const HAcap = (vCap === Infinity)
-                            ? Infinity : Math.floor((vCap - base) / N + 1e-9);
-                        const HAmax = Math.min(band.dpHigh.S - 1, S_target, HAcap);
-                        for (let HA = HAmin; HA <= HAmax; HA++) {
-                            const sLow = S_target - HA;
-                            const V = base + N * HA;
-                            for (let eH = 0; eH <= budget; eH++) {
-                                const cH = band.dpHigh.cost(bA, eH, HA);
-                                if (cH === Infinity) continue;
-                                for (let eL = 0; eL + eH <= budget; eL++) {
-                                    const cL = band.dpLow.cost(k - bA, eL, sLow);
-                                    if (cL === Infinity) continue;
-                                    cb(V, cH + cL, { st: st, bA: bA, HA: HA, eH: eH, eL: eL, sLow: sLow });
-                                    if (!expDims) break;
-                                }
-                                if (!expDims) break;
-                            }
-                        }
-                    }
-                }
-                // Phase 1: erste machbare Lösung -> obere Schranke für V
-                // 900 als Suchfenster über stLow: die reale Summenspanne bei N<=11
-                // und dem üblichen Gold-Rating-Band 75-99 ist höchstens
-                // 11 * (99-75) = 264 - weit innerhalb von 900. Wird stHardCap
-                // trotzdem je erreicht, ohne dass Phase 1 eine Lösung fand,
-                // unterscheidet die Prüfung unten ("internes Suchfenster
-                // ausgeschöpft" vs. "Ziel rechnerisch unerreichbar"), statt beide
-                // Fälle in derselben Meldung zu verstecken.
-                const stHardCap = stLow + 900;
-                let vBound = -1;
-                for (let st = stLow; st <= stHardCap && vBound < 0; st++) {
-                    if (quickUB(st) < NEED) continue;
-                    let found = -1;
-                    scanSt(st, Infinity, function (V) {
-                        if (found < 0 || V < found) found = V;
-                    });
-                    if (found >= 0) vBound = found;
-                }
-                if (vBound < 0) return null;
-                // Phase 2: alle relevanten Summen scannen (V >= N*st begrenzt
-                // die Summe nach oben); beste Kosten je V sammeln.
-                let vMin = vBound;
-                const bestByV = new Map();
-                for (let st = stLow; st <= stHardCap; st++) {
-                    if (N * st > vMin + windowV) break;
-                    if (quickUB(st) < NEED) continue;
-                    scanSt(st, vMin + windowV, function (V, cost, ref) {
-                        if (V < NEED) return;
-                        const cur = bestByV.get(V);
-                        if (!cur || cost < cur.cost - 1e-12) {
-                            bestByV.set(V, { cost: cost, ref: ref });
-                        }
-                        if (V < vMin) vMin = V;
-                    });
-                }
-                // Auswahl: minimale Kosten im Fenster [vMin, vMin+windowV];
-                // bei (nahezu) gleichen Kosten das kleinere V (näher am Ziel).
-                let chosen = null;
-                bestByV.forEach(function (cand, V) {
-                    if (V > vMin + windowV) return;
-                    const obj = cand.cost + (V - vMin) * 1e-4;
-                    if (!chosen || obj < chosen.obj - 1e-12) {
-                        chosen = { obj: obj, V: V, ref: cand.ref };
-                    }
-                });
-                if (!chosen) return null;
-                const band = bandFor(chosen.ref.st);
-                const high = band.dpHigh.reconstruct(chosen.ref.bA, chosen.ref.eH, chosen.ref.HA);
-                const low = band.dpLow.reconstruct(k - chosen.ref.bA, chosen.ref.eL, chosen.ref.sLow);
-                return { team: reserved.concat(high, low), V: chosen.V, vMin: vMin };
-            }
-            let result = runSearch(exp);
+            let result = searchTeam(reserved, avail, exp, null, rarityVMinFloor);
             if (!result && exp) {
-                result = runSearch(null);
+                result = searchTeam(reserved, avail, null, null, rarityVMinFloor);
                 if (result) warnings.push('Max. teure Spieler (' + cfg.maxExpensiveCount + ' ab ' + exp.th + '+) ist mit diesem Pool nicht einhaltbar - Beschränkung gelockert.');
+            }
+            // Verteidigungslinie (sollte laut Beweis in reserveRarityWindowAware()
+            // nie greifen, siehe LEARNINGS 41): war rarityVMinFloor gesetzt und
+            // liefert die Suche DAMIT dennoch nichts, lieber ohne Floor erneut
+            // suchen (mit Warnung) als eine loesbare SBC faelschlich abzulehnen -
+            // dasselbe Fallback-Muster wie bei der Max-teure-Beschraenkung oben.
+            if (!result && rarityVMinFloor != null) {
+                result = searchTeam(reserved, avail, exp, null, null);
+                if (result) warnings.push('Internes Fenster der Vorgaben-Wahl passte nicht zur finalen Zusammenstellung - ohne Fenster-Vorgabe erneut gesucht. Bitte Diagnose schicken.');
             }
             if (!result) {
                 // Unterscheidung "SBC mit diesem Pool tatsächlich unlösbar" von

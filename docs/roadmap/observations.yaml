@@ -123,6 +123,16 @@ entries:
     — es gab nie echten Formel-Drift, nur das strukturelle Risiko.
   reasoning: 'Heikelstes Ticket sauber durch: Validator PASS, Rating-Formel/V-Mass/DP-Kern
     byte-identisch, 236/236. v4.41.0 geht live.'
+- at: '2026-08-15T00:57:11Z'
+  issue: 7
+  po_class: C
+  surprises:
+  - bandsToSpec-Kurzform aendert den Spec-String fuer Bestandsnutzer — Aequivalenz
+    jetzt DAUERHAFT getestet (Schleife 0..99, Parser + makeCostOf), nach Validator-Finding
+    per Re-Spawn nachgezogen (242/242).
+  reasoning: PARTIAL → Re-Spawn (1/1) fuer den fehlenden Format-Aequivalenz-Test genutzt
+    statt Finding zu verschieben — Bestandsnutzer-Bands sind No-Regression-Kern. Danach
+    Merge, v4.42.0 geht live (Panel-Reset liefert erstmals die dokumentierten Defaults).
 discoveries:
   pattern_candidates:
   - slug: symmetrie-test-lesen-schreiben-trennen

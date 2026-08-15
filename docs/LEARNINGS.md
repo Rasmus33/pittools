@@ -901,12 +901,12 @@ Felder gehoeren ausschliesslich ueber die Setter, direkte Feldmutation
 ## 25. STATE.diag ist vollstaendig deklariert, uiScan lebt neben launcher
 
 Die `STATE.diag`-Deklaration (nahe Kopf des Userscripts) listet ALLE
-tatsaechlich verwendeten Felder mit Kurzzweck-Kommentar (`fetchSeen`,
-`xhrSeen`, `utasSeen`, `lastUtasPaths`, `lastErrors`, `evoExcluded`,
-`lastSquadPutBody`, `staleRecover`, `locks`, `clubLoad`, `submitVia`,
-`lastEligible`, `refreshLog`, `uiScan`, `batchSteps`, `lastTeam`,
-`submitCandidates`, `submitChallengeVia`, `lastTap`) - jedes neue Feld gehoert
-zuerst hierher, danach erst an seine Zuweisungsstelle. `solver-test.js` prueft
+tatsaechlich verwendeten Felder mit Kurzzweck-Kommentar - jedes neue Feld
+gehoert zuerst hierher, danach erst an seine Zuweisungsstelle. Eine
+Feld-Aufzaehlung stand frueher auch HIER; sie ist bewusst entfernt, weil
+sie als Zweitkopie der Deklaration bei jedem neuen Feld driftete (bei der
+iter6-Pruefung fehlten 8 von 27) - die Deklaration im Code ist die einzige
+Liste, ihre Vollstaendigkeit erzwingt der Symmetrie-Test. `solver-test.js` prueft
 das symmetrisch: jedes in `buildDiagReport()` gelesene `STATE.diag.*`-Feld
 muss deklariert sein, und jedes deklarierte Feld muss irgendwo im File auch
 tatsaechlich befuellt werden (direkte Zuweisung, `++`, oder wie bei

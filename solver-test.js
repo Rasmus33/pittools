@@ -1832,7 +1832,11 @@ function mulberry32(a) {
         let mm;
         while ((mm = re.exec(diagDeclSrc))) declared.add(mm[1]);
     }
-    check('STATE.diag deklariert mindestens 18 Felder (voller Schema-Umfang statt 6)',
+    // Untergrenze ist ein Extraktions-Sanity-Floor (hat die Regex den Block
+    // wirklich erwischt?), KEINE Feldzaehlung - die exakte Vollstaendigkeit
+    // erzwingt der Symmetrie-Test darunter in beide Richtungen. Eine harte
+    // Zahl wuerde bei jedem neuen Feld driften (Stand iter6: 27 Felder).
+    check('STATE.diag-Deklaration extrahiert (Sanity-Floor 18 Felder)',
         declared.size >= 18, Array.from(declared).join(','));
 
     const fnKey = src.indexOf('function buildDiagReport');

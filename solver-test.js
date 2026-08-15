@@ -2087,6 +2087,153 @@ function mulberry32(a) {
     }
 }
 
+// ========== 24. Controller-Helfer-Konsolidierung: synthetischer Graph + Regression ==========
+// getControllerChain()/findSbcController()/findLiveChallenge() liefen bisher nur
+// als Text-Grep-Ziel (Abschnitt 8b-2e/21/22). Hier laufen die ECHTEN, per Marker
+// extrahierten Funktionen gegen einen konstruierten View-Controller-Baum (Technik
+// aus patterns/good/eingebetteten-code-exakt-testen.md), analog zum PC-/Handy-
+// Unterschied aus LEARNINGS §19.
+{
+    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
+    const ctrlM = src.match(/\/\/ \[CTRL-BEGIN\]([\s\S]*?)\/\/ \[CTRL-END\]/);
+    const sbcCtrlM = src.match(/\/\/ \[SBCCTRL-BEGIN\]([\s\S]*?)\/\/ \[SBCCTRL-END\]/);
+    check('CTRL-Marker-Block gefunden (24)', !!ctrlM);
+    check('SBCCTRL-Marker-Block gefunden (24)', !!sbcCtrlM);
+
+    function loadHelpers(fakeWindow, STATE) {
+        return new Function('window', 'STATE',
+            ctrlM[1] + '\n' + sbcCtrlM[1] +
+            '\nreturn { getControllerChain: getControllerChain, findSbcController: findSbcController, findLiveChallenge: findLiveChallenge };'
+        )(fakeWindow, STATE);
+    }
+    // Erzeugt ein Objekt, dessen constructor.name === className ist (fuer die
+    // /sbc/i-Klassennamen-Pruefung in den Helfern) - per computed-property-Trick,
+    // ohne fuer jeden Testfall eine eigene class-Deklaration zu brauchen.
+    function node(className, props) {
+        const Ctor = ({ [className]: function () {} })[className];
+        return Object.assign(new Ctor(), props || {});
+    }
+    // Verkettet nodes[i] -> nodes[i+1] ueber eine einzelne chainFn (reicht, da
+    // getControllerChain() beim ersten Treffer aus chainFns weitergeht).
+    function linkChain(nodes, fnName) {
+        for (let i = 0; i + 1 < nodes.length; i++) {
+            const nxt = nodes[i + 1];
+            nodes[i][fnName] = function () { return nxt; };
+        }
+    }
+
+    // (a) getControllerChain(): Reihenfolge root->Blatt, Tiefe 13 erreichbar.
+    // Die konsolidierte controllerScan() begrenzte VORHER auf depth<12 (max. 12
+    // Controller) - ein Baum mit 14 Controllern (Blatt bei Tiefe 13) haette den
+    // 13. und 14. Controller verloren. Nach der Harmonisierung (Aktion 1, core-
+    // Phase) liefert getControllerChain() alle 14.
+    {
+        const nodes = [];
+        for (let i = 0; i < 14; i++) nodes.push(node('Filler' + i));
+        linkChain(nodes, 'getCurrentViewController');
+        const helpers = loadHelpers({ getAppMain: () => nodes[0] }, { sbc: { entity: null } });
+        const chain = helpers.getControllerChain();
+        check('getControllerChain: liefert alle 14 Controller in Reihenfolge (Tiefe 13 erreichbar)',
+            chain.length === 14 && chain[0] === nodes[0] && chain[13] === nodes[13],
+            'chain.length=' + chain.length);
+    }
+
+    // (b) findSbcController(): bei >=2 /sbc/i-Kandidaten mit Squad gewinnt GENAU
+    // der LETZTE (Edge-Case aus patterns/bad/helfer-existiert-wird-umgangen.md /
+    // Gap-Report - PC-Split-View zeigt mehrere sbc-artige Controller gleichzeitig).
+    {
+        const nodes = [];
+        for (let i = 0; i < 6; i++) nodes.push(node('Filler' + i));
+        nodes[2] = node('UTSBCSquadSplitViewController', { _squad: { id: 'squadA' } });
+        nodes[5] = node('UTSBCSquadOverviewViewController', { _squad: { id: 'squadB' } });
+        linkChain(nodes, 'getCurrentViewController');
+        const helpers = loadHelpers({ getAppMain: () => nodes[0] }, { sbc: { entity: null } });
+        const found = helpers.findSbcController();
+        check('findSbcController: bei >=2 SBC-Kandidaten gewinnt der LETZTE, nicht der erste',
+            found === nodes[5], found && found.constructor.name);
+    }
+
+    // (c) findLiveChallenge(): findet die Challenge ueber alle drei Key-Varianten.
+    for (const key of ['_overviewController', 'leftController', '_leftController']) {
+        const challenge = { id: 'ch-' + key };
+        const root = node('SomeRoot');
+        const leaf = node('UTSBCSquadOverviewViewController');
+        leaf[key] = { _challenge: challenge };
+        root.getCurrentViewController = () => leaf;
+        const helpers = loadHelpers({ getAppMain: () => root }, { sbc: { entity: null } });
+        check('findLiveChallenge: findet Challenge ueber Key "' + key + '"',
+            helpers.findLiveChallenge() === challenge);
+    }
+
+    // (d) findLiveChallenge(): eigene _challenge direkt am SBC-Controller (kein
+    // Unter-Controller) wird ebenfalls gefunden.
+    {
+        const challenge = { id: 'ch-direct' };
+        const root = node('SomeRoot');
+        const leaf = node('UTSBCSquadOverviewViewController', { _challenge: challenge });
+        root.getCurrentViewController = () => leaf;
+        const helpers = loadHelpers({ getAppMain: () => root }, { sbc: { entity: null } });
+        check('findLiveChallenge: findet Challenge direkt am Controller (kein Unter-Controller)',
+            helpers.findLiveChallenge() === challenge);
+    }
+
+    // (e) findLiveChallenge(): eine truthy-aber-nicht-Objekt _challenge (typeof-
+    // Guard, uebernommen aus syncSbcWithOpenChallenge()s frueherer Inline-Fassung,
+    // core-Phase) wird uebersprungen - Fallback auf STATE.sbc.entity greift.
+    {
+        const entityFallback = { id: 'entity-fallback' };
+        const root = node('SomeRoot');
+        const leaf = node('UTSBCSquadOverviewViewController', { _challenge: 'not-an-object' });
+        root.getCurrentViewController = () => leaf;
+        const helpers = loadHelpers({ getAppMain: () => root }, { sbc: { entity: entityFallback } });
+        check('findLiveChallenge: truthy-aber-nicht-Objekt _challenge wird uebersprungen, STATE.sbc.entity-Fallback greift',
+            helpers.findLiveChallenge() === entityFallback);
+    }
+
+    // (f) findLiveChallenge(): kein SBC-Controller im Baum -> STATE.sbc.entity-Fallback.
+    {
+        const entityFallback = { id: 'entity-fallback-2' };
+        const root = node('SomeRoot');
+        const helpers = loadHelpers({ getAppMain: () => root }, { sbc: { entity: entityFallback } });
+        check('findLiveChallenge: ohne SBC-Controller im Baum liefert STATE.sbc.entity',
+            helpers.findLiveChallenge() === entityFallback);
+    }
+
+    // (g) Statische Regression: controllerScan()/refreshOpenSbcView() rufen
+    // getControllerChain() auf statt ihre eigene Traversal nachzubauen.
+    const csFn = src.slice(src.indexOf('function controllerScan()'), src.indexOf('function refreshOpenSbcView()'));
+    check('controllerScan ruft getControllerChain() auf', csFn.indexOf('getControllerChain()') > -1);
+    check('controllerScan hat keinen eigenen chainFns-Literal-Block mehr', csFn.indexOf('chainFns') === -1);
+    const rvFn = src.slice(src.indexOf('function refreshOpenSbcView()'), src.indexOf('async function refreshChallengeCache()'));
+    check('refreshOpenSbcView ruft getControllerChain() auf', rvFn.indexOf('getControllerChain()') > -1);
+    check('refreshOpenSbcView hat keinen eigenen chainFns-Literal-Block mehr', rvFn.indexOf('chainFns') === -1);
+
+    // (h) Statische Regression: syncSbcWithOpenChallenge() ruft findLiveChallenge()
+    // auf statt die Key-Liste erneut zu literalisieren, und meldet Fehlschlaege
+    // ueber reportError() (diagnose-Phase).
+    const syncFn = src.slice(src.indexOf('function syncSbcWithOpenChallenge()'), src.indexOf('function isEvolution('));
+    check('syncSbcWithOpenChallenge ruft findLiveChallenge() auf', syncFn.indexOf('findLiveChallenge()') > -1);
+    check('syncSbcWithOpenChallenge baut die Key-Liste nicht mehr selbst nach',
+        syncFn.indexOf("'_overviewController'") === -1);
+    check('syncSbcWithOpenChallenge meldet Fehlschlaege ueber reportError()', syncFn.indexOf('reportError(') > -1);
+
+    // (i) Statische Regression: submitViaApp() (Submit-Weg 0) hat WARUM-Kommentare
+    // an den bewusst NICHT konsolidierten Stellen und bleibt ohne Helfer-Aufruf.
+    const svaFn = src.slice(src.indexOf('async function submitViaApp('), src.indexOf('async function submitToSbc('));
+    check('submitViaApp: WARUM-Kommentar verweist auf LEARNINGS und "Nicht anfassen ohne Grund"',
+        /Nicht anfassen ohne Grund/.test(svaFn) && /LEARNINGS/.test(svaFn));
+    // Der WARUM-Kommentar selbst nennt die Helfer-Namen ("Bewusst NICHT
+    // findSbcController()") - deshalb wird hier auf den tatsaechlichen
+    // Aufruf-Pattern geprueft (Zuweisung/Zeichen direkt nach dem Namen), nicht
+    // auf blosse Text-Abwesenheit.
+    check('submitViaApp ruft findSbcController() nicht tatsaechlich auf (nur im WARUM-Kommentar erwaehnt)',
+        !/[^.\w]findSbcController\(\)/.test(svaFn.replace(/\/\/.*$/gm, '')));
+    check('submitViaApp ruft findLiveChallenge() nicht tatsaechlich auf (nur im WARUM-Kommentar erwaehnt)',
+        !/[^.\w]findLiveChallenge\(\)/.test(svaFn.replace(/\/\/.*$/gm, '')));
+    check('submitViaApp behaelt die eigene "letzter Treffer gewinnt"-Traversal (kein break, ctrl = c)',
+        /if \(\/sbc\/i\.test\(n\) && \(c\._squad \|\| \(c\.getSquad && c\.getSquad\(\)\)\)\) \{ ctrl = c; \}/.test(svaFn));
+}
+
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt
 // process.exit() die Loader-Tests, bevor sie laufen - sie zählten dann nicht mit
 // und ein Fehler dort wäre unbemerkt geblieben.

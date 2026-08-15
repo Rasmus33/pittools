@@ -4795,6 +4795,450 @@ function mulberry32(a) {
         src.indexOf('sbc-opt-availability') > -1);
 }
 
+// ========== 58. Ticket #69: Pack-Opener Stufe 1 - reine Entscheidungsfunktionen ==========
+{
+    // (a) groupMyPacks: eigene Packs (isMyPack) nach id gruppiert, fremde/
+    // gekaufte Packs (isMyPack !== true) fallen raus.
+    {
+        const fn = extractFunction(src, 'groupMyPacks');
+        check('Funktion groupMyPacks gefunden (58a)', !!fn);
+        const groupMyPacks = new Function(fn + '\nreturn groupMyPacks;')();
+        const packs = [
+            { id: 5, isMyPack: true, packName: 'Prime Gold Pack', tradable: false },
+            { id: 5, isMyPack: true, packName: 'Prime Gold Pack', tradable: false },
+            { id: 7, isMyPack: true, packName: 'Jumbo Premium Pack', tradable: true },
+            { id: 9, isMyPack: false, packName: 'Store-Angebot (nicht besessen)' }
+        ];
+        const groups = groupMyPacks(packs);
+        check('groupMyPacks: nur eigene Packs, zwei Gruppen', groups.length === 2,
+            JSON.stringify(groups));
+        const g5 = groups.find(g => g.id === 5);
+        check('groupMyPacks: JEDE Instanz zaehlt (count=2 fuer id 5)',
+            g5 && g5.count === 2 && g5.packName === 'Prime Gold Pack' && g5.tradable === false,
+            JSON.stringify(g5));
+        check('groupMyPacks: isMyPack!==true (Store-Angebot) fehlt komplett',
+            !groups.some(g => g.id === 9));
+        check('groupMyPacks: leere/kaputte Eingabe -> leeres Array statt Absturz',
+            groupMyPacks(null).length === 0 && groupMyPacks([null, undefined]).length === 0);
+    }
+
+    // (b) unassignedGuardOk: nur exakt 0 lässt den Testlauf zu.
+    {
+        const fn = extractFunction(src, 'unassignedGuardOk');
+        check('Funktion unassignedGuardOk gefunden (58b)', !!fn);
+        const unassignedGuardOk = new Function(fn + '\nreturn unassignedGuardOk;')();
+        check('unassignedGuardOk(0) === true', unassignedGuardOk(0) === true);
+        check('unassignedGuardOk(1) === false', unassignedGuardOk(1) === false);
+        check('unassignedGuardOk(3) === false', unassignedGuardOk(3) === false);
+    }
+
+    // (c) isMiscPackItem: GameCurrency-instanceof zuerst, itemType-Fallback,
+    // sonst false (Spielerkarte).
+    {
+        const fn = extractFunction(src, 'isMiscPackItem');
+        check('Funktion isMiscPackItem gefunden (58c)', !!fn);
+        const isMiscPackItem = new Function(fn + '\nreturn isMiscPackItem;')();
+        function GameCurrency() {}
+        const coinItem = new GameCurrency();
+        check('isMiscPackItem: GameCurrency-Instanz -> true (auch ohne itemType)',
+            isMiscPackItem(coinItem, GameCurrency) === true);
+        check('isMiscPackItem: itemType-Fallback greift ohne GameCurrency-Global',
+            isMiscPackItem({ itemType: 'training' }, undefined) === true);
+        check('isMiscPackItem: itemType "player" ist KEIN Misc-Item',
+            isMiscPackItem({ itemType: 'player' }, GameCurrency) === false);
+        check('isMiscPackItem: normale Spielerkarte (kein itemType, keine GameCurrency-Instanz) -> false',
+            isMiscPackItem({ id: 1, rating: 84 }, GameCurrency) === false);
+    }
+
+    // (d) decidePackDistribution: Nicht-Duplikate -> Verein, Duplikate ->
+    // Storage bis zur Kapazität, danach liegen geblieben, Misc gesondert.
+    {
+        const fn = extractFunction(src, 'decidePackDistribution');
+        check('Funktion decidePackDistribution gefunden (58d)', !!fn);
+        const miscFn = extractFunction(src, 'isMiscPackItem');
+        const decidePackDistribution = new Function(miscFn + '\n' + fn + '\nreturn decidePackDistribution;')();
+        function GameCurrency() {}
+        const nonDup = { id: 1, itemType: 'player', isDuplicate: () => false };
+        const dupWithRoom = { id: 2, itemType: 'player', isDuplicate: () => true };
+        const dupNoRoom = { id: 3, itemType: 'player', isDuplicate: () => true };
+        const coin = new GameCurrency();
+        const items = [nonDup, dupWithRoom, dupNoRoom, coin];
+        // Kapazitaet 2, Stand bereits bei 1 -> genau EIN weiteres Duplikat passt.
+        const d = decidePackDistribution(items, 1, 2, GameCurrency);
+        check('decidePackDistribution: Nicht-Duplikat -> Verein',
+            d.toClub.length === 1 && d.toClub[0] === nonDup, JSON.stringify(d));
+        check('decidePackDistribution: erstes Duplikat passt noch in den Storage',
+            d.toStorage.length === 1 && d.toStorage[0] === dupWithRoom, JSON.stringify(d));
+        check('decidePackDistribution: zweites Duplikat bleibt liegen (Storage voll)',
+            d.leftover.length === 1 && d.leftover[0] === dupNoRoom, JSON.stringify(d));
+        check('decidePackDistribution: Misc-Item (GameCurrency) gesondert markiert',
+            d.toMisc.length === 1 && d.toMisc[0] === coin, JSON.stringify(d));
+        check('decidePackDistribution: storageCountAfterPlanned zaehlt nur tatsaechlich verteilte Duplikate',
+            d.storageCountAfterPlanned === 2, d.storageCountAfterPlanned);
+        // Randfall: leere Eingabe.
+        const dEmpty = decidePackDistribution([], 0, 100, GameCurrency);
+        check('decidePackDistribution: leere Eingabe -> alle Listen leer',
+            !dEmpty.toClub.length && !dEmpty.toStorage.length && !dEmpty.toMisc.length && !dEmpty.leftover.length);
+    }
+
+    // (e) resolvePackGlobals: alle sechs Globalen-Checks praesent -> ok, jede fehlende
+    // einzeln erkannt (Fehlerform beantwortet direkt "welches Global fehlt").
+    {
+        const fn = extractFunction(src, 'resolvePackGlobals');
+        check('Funktion resolvePackGlobals gefunden (58e)', !!fn);
+        const resolvePackGlobals = new Function(fn + '\nreturn resolvePackGlobals;')();
+        function fullWindow() {
+            return {
+                services: {
+                    Store: { getPacks: () => {} },
+                    Item: { requestUnassignedItems: () => {}, move: () => {}, searchStorageItems: () => {}, redeem: () => {} }
+                },
+                repositories: { Item: { numItemsInCache: () => 0, setDirty: () => {} } },
+                ItemPile: { PURCHASED: 1, CLUB: 2, STORAGE: 3 },
+                UTSearchCriteriaDTO: function () {},
+                GameCurrency: function () {}
+            };
+        }
+        check('resolvePackGlobals: alle sechs Globalen-Checks da -> ok:true, missing leer',
+            (function () { const r = resolvePackGlobals(fullWindow()); return r.ok && r.missing.length === 0; })());
+        const cases = [
+            ['services.Store.getPacks', w => { delete w.services.Store; }],
+            ['services.Item', w => { delete w.services.Item; }],
+            ['repositories.Item', w => { delete w.repositories.Item; }],
+            ['ItemPile', w => { delete w.ItemPile; }],
+            ['UTSearchCriteriaDTO', w => { delete w.UTSearchCriteriaDTO; }],
+            ['GameCurrency', w => { delete w.GameCurrency; }]
+        ];
+        for (const [label, mutate] of cases) {
+            const w = fullWindow();
+            mutate(w);
+            const r = resolvePackGlobals(w);
+            check('resolvePackGlobals: fehlendes ' + label + ' -> ok:false, in missing[] genannt',
+                r.ok === false && r.missing.indexOf(label) > -1, JSON.stringify(r.missing));
+        }
+    }
+
+    // (f) inStoreView: Fail-Open bei leerer/werfender Kette (analog inSbcView,
+    // Ticket #50), Store-Controller in der Kette -> true.
+    {
+        const fn = extractFunction(src, 'inStoreView');
+        check('Funktion inStoreView gefunden (58f)', !!fn);
+        function loadInStoreView(fakeGetControllerChain) {
+            return new Function('getControllerChain', fn + '\nreturn inStoreView;')(fakeGetControllerChain);
+        }
+        check('inStoreView(): leere Kette -> true (kein Einstieg verstecken, bevor die App bereit ist)',
+            loadInStoreView(() => [])() === true);
+        check('inStoreView(): Kette mit .constructor.name passend zu /store/i -> true',
+            loadInStoreView(() => [{ constructor: { name: 'UTStoreViewController' } }])() === true);
+        check('inStoreView(): Kette ohne Treffer -> false',
+            loadInStoreView(() => [{ constructor: { name: 'UTHomeHubController' } }])() === false);
+        check('inStoreView(): werfende Kette -> true (Fail-Open, wie inSbcView)',
+            loadInStoreView(() => { throw new Error('boom'); })() === true);
+    }
+
+    // (g) syncLauncher: Einstiegspunkt bleibt auch in der Store-Ansicht
+    // sichtbar (sonst waere die Pack-Sektion nie erreichbar), die
+    // SBC-Aktionsleisten-Einhaengung bleibt SBC-spezifisch.
+    {
+        const syncLauncherSrc = extractFunction(src, 'syncLauncher');
+        check('Funktion syncLauncher gefunden (58g)', !!syncLauncherSrc);
+        check('syncLauncher(): Sichtbarkeits-Guard prueft jetzt inSbcView() ODER inStoreView()',
+            /!inSbcView\(\)\s*&&\s*!inStoreView\(\)/.test(syncLauncherSrc));
+        check('syncLauncher(): sbcButtonContainer() bleibt an inSbcView() gebunden (SBC-spezifisch)',
+            /inSbcView\(\)\s*\?\s*sbcButtonContainer\(\)/.test(syncLauncherSrc));
+    }
+}
+
+// ========== 59. Ticket #69: runPackTestOpen() - Abbruch-Disziplin + Verteil-Ablauf ==========
+{
+    const names = ['resolvePackGlobals', 'groupMyPacks', 'unassignedGuardOk', 'isMiscPackItem',
+        'decidePackDistribution', 'mergePackScan', 'packTakt', 'responsePacks', 'runPackTestOpen'];
+    const bodies = names.map(n => extractFunction(src, n));
+    for (let i = 0; i < names.length; i++) {
+        check('Funktion ' + names[i] + ' gefunden (59)', !!bodies[i]);
+    }
+    // PACK_STORAGE_CAPACITY_ASSUMED ist ein Const, keine Funktion -
+    // extractFunction() greift hier nicht. Aus der echten Quelle gezogen
+    // (kein hand-getippter zweiter Wert), damit der Test eine kuenftige
+    // Aenderung der Kapazitaets-Annahme automatisch mitbekommt.
+    const capMatch = src.match(/const PACK_STORAGE_CAPACITY_ASSUMED = \d+;/);
+    check('PACK_STORAGE_CAPACITY_ASSUMED-Konstante gefunden (59)', !!capMatch);
+    const bundleSrc = (capMatch ? capMatch[0] : '') + '\n' + bodies.join('\n');
+
+    function ItemPileStub() { return { PURCHASED: 'PURCHASED', CLUB: 'CLUB', STORAGE: 'STORAGE' }; }
+    function GameCurrency() {}
+    function SearchCriteria() {}
+
+    // Baut eine frische Sandbox. `overrides` darf einzelne Fake-Bausteine
+    // ersetzen (fehlendes Global, ablehnendes open(), etc.) - der Rest bleibt
+    // der Erfolgspfad-Normalfall.
+    function makeSandbox(overrides) {
+        overrides = overrides || {};
+        const calls = { open: 0, setDirty: 0, requestUnassigned: 0, searchStorage: 0,
+            move: [], redeem: [], reportErrors: [] };
+        let storageBacking = overrides.storageBacking || [];
+        const nonDup = { id: 1, itemType: 'player', isDuplicate: () => false };
+        const dup = { id: 2, itemType: 'player', isDuplicate: () => true };
+        const coin = Object.assign(new GameCurrency(), { id: 3 });
+        const drawnItems = overrides.drawnItems || [nonDup, dup, coin];
+        const entity = {
+            open: overrides.openImpl || (() => { calls.open++; return { success: true }; })
+        };
+        const STATE = { packEntitiesById: new Map([['5', overrides.entities || [entity, entity]]]),
+            diag: { packScan: null, lastErrors: [] } };
+        const repoItem = {
+            numItemsInCache: overrides.numItemsInCacheImpl || (() => 0),
+            setDirty: () => { calls.setDirty++; }
+        };
+        const item = {
+            requestUnassignedItems: overrides.requestUnassignedImpl || (() => {
+                calls.requestUnassigned++;
+                return { items: drawnItems };
+            }),
+            searchStorageItems: overrides.searchStorageImpl || (() => {
+                calls.searchStorage++;
+                return { items: storageBacking.slice() };
+            }),
+            move: overrides.moveImpl || ((arr, pile) => {
+                calls.move.push({ arr: arr, pile: pile });
+                if (pile === 'STORAGE') storageBacking = storageBacking.concat(arr);
+                return { success: true };
+            }),
+            redeem: overrides.redeemImpl || ((it) => { calls.redeem.push(it); return { success: true }; })
+        };
+        const store = { getPacks: () => ({ packs: [{ id: 5, isMyPack: true, packName: 'Prime', tradable: false }] }) };
+        const win = {
+            services: { Store: store, Item: item }, repositories: { Item: repoItem },
+            ItemPile: ItemPileStub(), UTSearchCriteriaDTO: SearchCriteria, GameCurrency: GameCurrency
+        };
+        const sandbox = {
+            window: overrides.window !== undefined ? overrides.window : win,
+            STATE: STATE,
+            obsPromise: async (r) => { if (r && r.__reject) throw r.__reject; return r; },
+            responseOk: (r) => !(r && (r.success === false || (typeof r.status === 'number' && r.status >= 400))),
+            responseItems: (r) => {
+                if (!r) return [];
+                const rr = r.response || r.data || r;
+                if (rr && Array.isArray(rr.items)) return rr.items;
+                if (Array.isArray(rr)) return rr;
+                return [];
+            },
+            normalizePlayer: (raw) => (raw && raw.rating != null) ? { name: raw.name || ('#' + raw.id), rating: raw.rating } : null,
+            sleep: () => Promise.resolve(), // Takt fuer den Test irrelevant, nur der Ablauf wird geprueft
+            reportError: (label, e) => { calls.reportErrors.push(label); }
+        };
+        const keys = Object.keys(sandbox);
+        const run = new Function(keys.join(','), bundleSrc + '\nreturn runPackTestOpen;')
+            .apply(null, keys.map(k => sandbox[k]));
+        return { run: run, calls: calls, STATE: STATE, entity: entity };
+    }
+
+    const results59 = [];
+
+    // Fehlende Globals -> Abbruch VOR jedem Aufruf, open() wird nie erreicht.
+    {
+        const sb = makeSandbox({ window: {} });
+        results59.push(sb.run('5').then(r => {
+            check('runPackTestOpen: fehlende Globals -> ok:false, open() nie aufgerufen',
+                r.ok === false && sb.calls.open === 0, JSON.stringify(r));
+            check('runPackTestOpen: fehlende Globals stehen in packScan.missingGlobals',
+                Array.isArray(sb.STATE.diag.packScan.missingGlobals) && sb.STATE.diag.packScan.missingGlobals.length > 0,
+                JSON.stringify(sb.STATE.diag.packScan));
+        }));
+    }
+
+    // Unassigned-Guard != 0 -> Abbruch VOR open(), kein Retry.
+    {
+        const sb = makeSandbox({ numItemsInCacheImpl: () => 3 });
+        results59.push(sb.run('5').then(r => {
+            check('runPackTestOpen: Unassigned-Bestand != 0 -> ok:false, "wegräumen" in der Begruendung',
+                r.ok === false && /wegräumen/.test(r.reason), JSON.stringify(r));
+            check('runPackTestOpen: Unassigned-Guard verhindert open()',
+                sb.calls.open === 0);
+            check('runPackTestOpen: unassignedCountBefore steht in packScan',
+                sb.STATE.diag.packScan.unassignedCountBefore === 3);
+        }));
+    }
+
+    // open() liefert success:false -> sofortiger Abbruch, KEIN Retry, kein
+    // Einsammeln/Verteilen.
+    {
+        let openCalls = 0;
+        const sb = makeSandbox({ openImpl: () => { openCalls++; return { success: false, status: 409 }; } });
+        results59.push(sb.run('5').then(r => {
+            check('runPackTestOpen: open() success:false -> ok:false',
+                r.ok === false, JSON.stringify(r));
+            check('runPackTestOpen: open() wird GENAU EINMAL versucht (kein Retry)',
+                openCalls === 1, 'calls=' + openCalls);
+            check('runPackTestOpen: nach abgelehntem open() wird nichts eingesammelt',
+                sb.calls.requestUnassigned === 0 && sb.calls.move.length === 0 && sb.calls.redeem.length === 0);
+            check('runPackTestOpen: Fehlerform (Status) landet in packScan.errorForm',
+                sb.STATE.diag.packScan.errorForm && sb.STATE.diag.packScan.errorForm.status === 409,
+                JSON.stringify(sb.STATE.diag.packScan.errorForm));
+        }));
+    }
+
+    // open() wirft -> derselbe Abbruch, reportError() wird aufgerufen.
+    {
+        const sb = makeSandbox({ openImpl: () => { throw new Error('Entitlement fehlt'); } });
+        results59.push(sb.run('5').then(r => {
+            check('runPackTestOpen: open() wirft -> ok:false, reportError() gerufen',
+                r.ok === false && sb.calls.reportErrors.length === 1, JSON.stringify(r));
+        }));
+    }
+
+    // Erfolgspfad: Nicht-Duplikat -> Verein, Duplikat -> Storage, Misc -> redeem,
+    // Nachzaehlung von Storage UND Pack-Bestand landet in packScan.testRun.
+    {
+        const sb = makeSandbox({});
+        results59.push(sb.run('5').then(r => {
+            check('runPackTestOpen: Erfolgspfad liefert ok:true mit 3 gezogenen Karten',
+                r.ok === true && r.drawn.length === 3, JSON.stringify(r));
+            check('runPackTestOpen: move() einmal Richtung CLUB (Nicht-Duplikat) und einmal Richtung STORAGE (Duplikat)',
+                sb.calls.move.length === 2 &&
+                sb.calls.move.some(m => m.pile === 'CLUB' && m.arr.length === 1) &&
+                sb.calls.move.some(m => m.pile === 'STORAGE' && m.arr.length === 1),
+                JSON.stringify(sb.calls.move));
+            check('runPackTestOpen: Misc-Item (GameCurrency) via redeem(), nicht move()',
+                sb.calls.redeem.length === 1);
+            check('runPackTestOpen: storageCountBefore/After stehen in packScan (0 -> 1)',
+                sb.STATE.diag.packScan.storageCountBefore === 0 && sb.STATE.diag.packScan.storageCountAfter === 1,
+                JSON.stringify(sb.STATE.diag.packScan));
+            check('runPackTestOpen: packScan.testRun.packCountBefore/packCountAfterSameGroup beantworten Mechanik-Frage (a)',
+                sb.STATE.diag.packScan.testRun.packCountBefore === 2 &&
+                sb.STATE.diag.packScan.testRun.packCountAfterSameGroup === 1,
+                JSON.stringify(sb.STATE.diag.packScan.testRun));
+        }));
+    }
+
+    // Storage voll: Duplikat bleibt liegen, KEIN move() Richtung STORAGE.
+    {
+        const sb = makeSandbox({ storageBacking: new Array(100).fill(0) });
+        results59.push(sb.run('5').then(r => {
+            const dupDraw = r.drawn.find(d => d.isDuplicateRaw === true);
+            check('runPackTestOpen: Storage bei Kapazitaet -> Duplikat bleibt liegen (nicht Storage)',
+                r.ok === true && dupDraw && /liegen geblieben/.test(dupDraw.target),
+                JSON.stringify(r.drawn));
+            check('runPackTestOpen: kein move() Richtung STORAGE, wenn nichts hineinpasst',
+                !sb.calls.move.some(m => m.pile === 'STORAGE'));
+        }));
+    }
+
+    // Validator-Fund: ein AUFGELOESTES {success:false} (kein Throw) muss an
+    // JEDEM Verteil-Schritt genauso abbrechen wie ein Exception - vorher
+    // wurde nur auf Throw geprueft, ein von EA abgelehnter Schritt waere also
+    // als Erfolg durchgegangen.
+
+    // requestUnassignedItems liefert {success:false} -> Abbruch VOR jeder
+    // Verteilung (kein move()/redeem()).
+    {
+        const sb = makeSandbox({ requestUnassignedImpl: () => { sb.calls.requestUnassigned++; return { success: false, status: 500 }; } });
+        results59.push(sb.run('5').then(r => {
+            check('runPackTestOpen: requestUnassignedItems success:false -> ok:false, "unassigned" in der Begruendung',
+                r.ok === false && /unassigned/.test(r.reason), JSON.stringify(r));
+            check('runPackTestOpen: requestUnassignedItems-Ablehnung verhindert jede Verteilung',
+                sb.calls.move.length === 0 && sb.calls.redeem.length === 0);
+            check('runPackTestOpen: Fehlerform (Status) landet in packScan.errorForm (collect)',
+                sb.STATE.diag.packScan.errorForm && sb.STATE.diag.packScan.errorForm.step === 'collect' &&
+                sb.STATE.diag.packScan.errorForm.status === 500, JSON.stringify(sb.STATE.diag.packScan.errorForm));
+        }));
+    }
+
+    // searchStorageItems (VOR der Verteilung, entscheidet die Kapazitaet)
+    // liefert {success:false} -> Abbruch VOR jeder Verteilung.
+    {
+        let storageCalls = 0;
+        const sb = makeSandbox({
+            searchStorageImpl: () => { storageCalls++; return storageCalls === 1 ? { success: false, status: 503 } : { items: [] }; }
+        });
+        results59.push(sb.run('5').then(r => {
+            check('runPackTestOpen: searchStorageItems (vorher) success:false -> ok:false',
+                r.ok === false, JSON.stringify(r));
+            check('runPackTestOpen: searchStorageItems-Ablehnung verhindert jede Verteilung',
+                sb.calls.move.length === 0 && sb.calls.redeem.length === 0);
+            check('runPackTestOpen: Fehlerform (Status) landet in packScan.errorForm (storageCount)',
+                sb.STATE.diag.packScan.errorForm && sb.STATE.diag.packScan.errorForm.step === 'storageCount' &&
+                sb.STATE.diag.packScan.errorForm.status === 503, JSON.stringify(sb.STATE.diag.packScan.errorForm));
+        }));
+    }
+
+    // redeem() liefert {success:false} -> Abbruch statt Weiterlaufen (vorher
+    // lief die toMisc-Schleife nach einer Ablehnung einfach weiter).
+    {
+        const sb = makeSandbox({ redeemImpl: () => ({ success: false, status: 422 }) });
+        results59.push(sb.run('5').then(r => {
+            check('runPackTestOpen: redeem() success:false -> ok:false, "unassigned" in der Begruendung',
+                r.ok === false && /unassigned/.test(r.reason), JSON.stringify(r));
+            check('runPackTestOpen: redeem()-Ablehnung bricht VOR jedem move() ab',
+                sb.calls.move.length === 0);
+            check('runPackTestOpen: Fehlerform (Status) landet in packScan.errorForm (redeem)',
+                sb.STATE.diag.packScan.errorForm && sb.STATE.diag.packScan.errorForm.step === 'redeem' &&
+                sb.STATE.diag.packScan.errorForm.status === 422, JSON.stringify(sb.STATE.diag.packScan.errorForm));
+        }));
+    }
+
+    // move() Richtung CLUB liefert {success:false} -> Abbruch, move() Richtung
+    // STORAGE wird dann gar nicht mehr versucht.
+    {
+        const sb = makeSandbox({
+            moveImpl: (arr, pile) => { sb.calls.move.push({ arr: arr, pile: pile }); return { success: false, status: 409 }; }
+        });
+        results59.push(sb.run('5').then(r => {
+            check('runPackTestOpen: move()->CLUB success:false -> ok:false, "unassigned" in der Begruendung',
+                r.ok === false && /unassigned/.test(r.reason), JSON.stringify(r));
+            check('runPackTestOpen: move()->CLUB-Ablehnung bricht VOR move()->STORAGE ab (genau ein move()-Versuch)',
+                sb.calls.move.length === 1 && sb.calls.move[0].pile === 'CLUB', JSON.stringify(sb.calls.move));
+            check('runPackTestOpen: Fehlerform (Status) landet in packScan.errorForm (moveClub)',
+                sb.STATE.diag.packScan.errorForm && sb.STATE.diag.packScan.errorForm.step === 'moveClub' &&
+                sb.STATE.diag.packScan.errorForm.status === 409, JSON.stringify(sb.STATE.diag.packScan.errorForm));
+        }));
+    }
+
+    // move() Richtung STORAGE liefert {success:false} -> Abbruch (CLUB-Move
+    // war zu dem Zeitpunkt bereits erfolgreich durch).
+    {
+        const sb = makeSandbox({
+            moveImpl: (arr, pile) => {
+                sb.calls.move.push({ arr: arr, pile: pile });
+                return pile === 'STORAGE' ? { success: false, status: 409 } : { success: true };
+            }
+        });
+        results59.push(sb.run('5').then(r => {
+            check('runPackTestOpen: move()->STORAGE success:false -> ok:false, "unassigned" in der Begruendung',
+                r.ok === false && /unassigned/.test(r.reason), JSON.stringify(r));
+            check('runPackTestOpen: move()->CLUB lief bereits erfolgreich, STORAGE wurde versucht und abgelehnt',
+                sb.calls.move.length === 2 && sb.calls.move[0].pile === 'CLUB' && sb.calls.move[1].pile === 'STORAGE',
+                JSON.stringify(sb.calls.move));
+            check('runPackTestOpen: Fehlerform (Status) landet in packScan.errorForm (moveStorage)',
+                sb.STATE.diag.packScan.errorForm && sb.STATE.diag.packScan.errorForm.step === 'moveStorage' &&
+                sb.STATE.diag.packScan.errorForm.status === 409, JSON.stringify(sb.STATE.diag.packScan.errorForm));
+        }));
+    }
+
+    // searchStorageItems (NACHZAEHLUNG, rein beobachtend) liefert
+    // {success:false} -> KEIN Abbruch (Verteilung ist bereits erledigt),
+    // aber storageCountAfter bleibt null statt einer aus dem abgelehnten
+    // Payload falsch abgeleiteten Zahl.
+    {
+        let storageCalls = 0;
+        const sb = makeSandbox({
+            searchStorageImpl: () => {
+                storageCalls++;
+                return storageCalls === 1 ? { items: [] } : { success: false, status: 503 };
+            }
+        });
+        results59.push(sb.run('5').then(r => {
+            check('runPackTestOpen: Storage-Nachzaehlung success:false -> Lauf bleibt trotzdem ok:true',
+                r.ok === true, JSON.stringify(r));
+            check('runPackTestOpen: storageCountAfter bleibt null statt einer falschen Zahl',
+                sb.STATE.diag.packScan.storageCountAfter === null,
+                JSON.stringify(sb.STATE.diag.packScan));
+        }));
+    }
+
+    pending.push(Promise.all(results59));
+}
+
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt
 // process.exit() die Loader-Tests, bevor sie laufen - sie zählten dann nicht mit
 // und ein Fehler dort wäre unbemerkt geblieben.

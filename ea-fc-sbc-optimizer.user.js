@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.64.0
+// @version      4.65.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.64.0';
+    const VERSION = '4.65.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -109,6 +109,12 @@
         // Knoten-Scan lief auf einem 5-Knoten-Stub und fand die
         // TOTW-Vorgabe nie - der Cache muss nach Set gekeyt sein.
         setChallengesBySet: {},
+        // Pack-Opener (Store, Stufe 1, Ticket #69): letzte Enumeration + die
+        // dazugehoerigen rohen Pack-Entities (fuer open()), gekeyt per
+        // String(id) - Select-Optionswerte sind immer Strings.
+        packGroups: [],
+        packEntitiesById: new Map(),
+        packOpenBusy: false,
         // Offene Ablage fuer Laufzeitzustand, den buildDiagReport() kopiert -
         // jedes tatsaechlich verwendete Feld MUSS hier deklariert sein
         // (solver-test.js prueft das symmetrisch: gelesen <-> deklariert <->
@@ -141,7 +147,8 @@
             scanStats: null,         // Traversal-Metriken (visitedCount/depthCapped/budgetExhausted) von deepScan/findNode/collectNodes - reine Beobachtung, kein Abbruchkriterium (LEARNINGS 37)
             utasUnclassified: 0,     // /ut/game/-URLs, die classifyUrl() nicht zuordnen konnte (LEARNINGS 38)
             lastUnclassifiedPaths: [], // 5er-Ring der zugehoerigen Pfade (IDs maskiert)
-            popupDismissCount: 0     // wie oft dismissRewardPopup() seit App-Start wirklich etwas geschlossen hat (analog batchStuckCount, LEARNINGS §27)
+            popupDismissCount: 0,    // wie oft dismissRewardPopup() seit App-Start wirklich etwas geschlossen hat (analog batchStuckCount, LEARNINGS §27)
+            packScan: null           // Pack-Opener Stufe 1 (Ticket #69): myPacks/testRun/storageCounts/missingGlobals/errorForm, siehe mergePackScan() (LEARNINGS §46)
         }
     };
     function log(...args) { try { console.log(LOG_PREFIX, ...args); } catch (e) {} }
@@ -3633,6 +3640,7 @@
             pointer-events: none; display: block;
         }
         #sbc-opt-fab.sbc-opt-hidden { display: none; }
+        #sbc-opt-packsection.sbc-opt-hidden { display: none; }
         /* Button in der SBC-Aktionsleiste (.sbc-button-container - dort stehen
            "Use Squad Builder" / "Clear Squad"). Die Klassen eines echten
            Nachbar-Buttons werden zur Laufzeit kopiert, hier nur das Nötige
@@ -3979,6 +3987,22 @@
                         Alle eintragen + abgeben
                     </button>
                 </div>
+                <!-- PACK-OPENER Stufe 1 (Ticket #69): nur in der Store-Ansicht
+                     sichtbar (syncPackSection()), hoechstens EIN Pack pro Klick -
+                     Pack-Oeffnen ist unumkehrbar. -->
+                <div class="sbc-opt-batch sbc-opt-hidden" id="sbc-opt-packsection">
+                    <div class="sbc-opt-inline" style="margin-bottom:8px;">
+                        <label style="margin:0;flex:1;">Pack-Opener (Store) - Testlauf</label>
+                    </div>
+                    <div class="sbc-opt-inline" style="margin-bottom:8px;">
+                        <select id="sbc-opt-pack-type" style="flex:1;">
+                            <option value="">– Aktualisieren drücken –</option>
+                        </select>
+                        <button class="sbc-opt-btn ghost" id="sbc-opt-pack-refresh" style="margin:0;padding:6px 10px;">↻</button>
+                    </div>
+                    <button class="sbc-opt-btn danger" id="sbc-opt-pack-test">Test: 1 Pack öffnen</button>
+                    <div id="sbc-opt-pack-result"></div>
+                </div>
                 <button class="sbc-opt-btn ghost" id="sbc-opt-diag" style="margin-top:10px;">Diagnose in Konsole schreiben</button>
             </div>
         `;
@@ -4030,7 +4054,12 @@
             batchCount: panel.querySelector('#sbc-opt-batch-count'),
             batchPlan: panel.querySelector('#sbc-opt-batch-plan'),
             batchPreview: panel.querySelector('#sbc-opt-batch-preview'),
-            batchRun: panel.querySelector('#sbc-opt-batch-run')
+            batchRun: panel.querySelector('#sbc-opt-batch-run'),
+            packSection: panel.querySelector('#sbc-opt-packsection'),
+            packType: panel.querySelector('#sbc-opt-pack-type'),
+            packRefresh: panel.querySelector('#sbc-opt-pack-refresh'),
+            packTest: panel.querySelector('#sbc-opt-pack-test'),
+            packResult: panel.querySelector('#sbc-opt-pack-result')
         };
         panel.querySelector('#sbc-opt-close').addEventListener('click', () => panel.classList.remove('open'));
         makeDraggable(panel, panel.querySelector('.sbc-opt-header'), 'sbcOptPanelPos', {
@@ -4049,6 +4078,8 @@
         ui.diagBtn.addEventListener('click', onDiagClick);
         ui.batchPlan.addEventListener('click', onBatchPlanClick);
         ui.batchRun.addEventListener('click', onBatchRunClick);
+        ui.packRefresh.addEventListener('click', onPackRefreshClick);
+        ui.packTest.addEventListener('click', onPackTestClick);
         ui.rarityPickFilter.addEventListener('input', renderRarityPickOptions);
         // Zustand der "Erweiterte Einstellungen" merken
         const adv = panel.querySelector('#sbc-opt-advanced');
@@ -4438,14 +4469,19 @@
     function syncLauncher() {
         if (!ui.fab || !ui.panel) return;
         let btn = document.getElementById(BTN_ID);
-        if (!inSbcView()) {
+        // Zusaetzlich zur SBC-Ansicht bleibt der Einstieg auch in der
+        // Store-Ansicht sichtbar (Pack-Opener, Ticket #69) - sonst waere die
+        // Pack-Sektion nie erreichbar, weil Panel/FAB sonst komplett
+        // verschwinden. Der eingehaengte Button in der SBC-Aktionsleiste
+        // bleibt SBC-spezifisch (dort gibt es keine .sbc-button-container).
+        if (!inSbcView() && !inStoreView()) {
             if (btn && btn.parentNode) btn.parentNode.removeChild(btn);
             ui.fab.classList.add('sbc-opt-hidden');
             if (ui.panel.classList.contains('open')) togglePanel();
             return;
         }
         ui.fab.classList.remove('sbc-opt-hidden');
-        const cont = sbcButtonContainer();
+        const cont = inSbcView() ? sbcButtonContainer() : null;
         if (cont) {
             if (!btn || btn.parentNode !== cont) {
                 if (btn && btn.parentNode) btn.parentNode.removeChild(btn);
@@ -4601,6 +4637,10 @@
             // den Einzelfall - ein wiederkehrender Popup-Typ, der Zeit im
             // 300ms-Fenster frisst, wird erst ueber die Haeufigkeit sichtbar.
             popupDismissCount: STATE.diag.popupDismissCount || 0,
+            // Pack-Opener Stufe 1 (Ticket #69): letzte Enumeration + letzter
+            // Testlauf - beantwortet die vier offenen Mechanik-Fragen aus
+            // docs/roadmap/vision/features/pack-opener.md (LEARNINGS §46).
+            packScan: STATE.diag.packScan || null,
             // Welches Team hat der Solver zuletzt geliefert (id/assetId/rating/
             // storage)? Bei HTTP 460 ist hier direkt zu sehen, ob eine Karte
             // oder ein Spieler doppelt drin war.
@@ -6087,6 +6127,430 @@
         }
     }
     // ========================================================================
+    //  PACK-OPENER (Store, Stufe 1, Ticket #69)
+    // ------------------------------------------------------------------------
+    //  Mechanik-Quelle: PaleTools-Analyse vom 16.08.2026 (dekodiertes
+    //  packsOpener-Plugin, LEARNINGS §46). Pack-Oeffnen ist UNUMKEHRBAR - Stufe
+    //  1 oeffnet hoechstens EIN Pack pro Klick und dient der Live-Verifikation
+    //  (STATE.diag.packScan beantwortet die vier offenen Mechanik-Fragen aus
+    //  docs/roadmap/vision/features/pack-opener.md). "Alle oeffnen" kommt erst
+    //  in Stufe 2, nach bestaetigter Stufe 1.
+    // ========================================================================
+    // PaleTools verwendet fuer die Storage-Kapazitaet hartkodiert 100, ohne
+    // dass ein EA-Endpunkt sie liefert - UNVERIFIZIERT. runPackTestOpen()
+    // misst storageCountBefore/storageCountAfter mit; die echte Grenze zeigt
+    // sich erst, sobald move() bei vollem Storage tatsaechlich ablehnt.
+    const PACK_STORAGE_CAPACITY_ASSUMED = 100;
+    /**
+     * Sind wir in der Store-Ansicht? Analog zu inSbcView(): faellt die Kette
+     * leer/werfend aus, lieber der Abschnitt einmal zu viel sichtbar als ein
+     * Einstieg, der nie erscheint.
+     */
+    function inStoreView() {
+        try {
+            const chain = getControllerChain();
+            if (!chain.length) return true;
+            for (const c of chain) {
+                const n = (c.constructor && c.constructor.name) || '';
+                if (/store/i.test(n)) return true;
+            }
+        } catch (e) { return true; }
+        return false;
+    }
+    function syncPackSection() {
+        if (!ui.packSection) return;
+        ui.packSection.classList.toggle('sbc-opt-hidden', !inStoreView());
+    }
+    /**
+     * Alle fuer den Pack-Opener benoetigten EA-Globalen VORAB defensiv
+     * aufloesen - open() ist irreversibel, ein erst mitten im Testlauf
+     * fehlendes Global (z.B. GameCurrency fuer die Misc-Item-Erkennung) waere
+     * dann nicht mehr sauber abbrechbar (Abbruch-Disziplin).
+     */
+    function resolvePackGlobals(win) {
+        win = win || window;
+        const missing = [];
+        let store = null, item = null, repoItem = null, ItemPile = null,
+            SearchCriteria = null, GameCurrency = null;
+        try {
+            store = win.services && win.services.Store;
+            if (!store || typeof store.getPacks !== 'function') missing.push('services.Store.getPacks');
+        } catch (e) { missing.push('services.Store'); }
+        try {
+            item = win.services && win.services.Item;
+            if (!item || typeof item.requestUnassignedItems !== 'function' ||
+                typeof item.move !== 'function' || typeof item.searchStorageItems !== 'function' ||
+                typeof item.redeem !== 'function') missing.push('services.Item');
+        } catch (e) { missing.push('services.Item'); }
+        try {
+            repoItem = win.repositories && win.repositories.Item;
+            if (!repoItem || typeof repoItem.numItemsInCache !== 'function' ||
+                typeof repoItem.setDirty !== 'function') missing.push('repositories.Item');
+        } catch (e) { missing.push('repositories.Item'); }
+        try {
+            ItemPile = win.ItemPile;
+            if (!ItemPile || ItemPile.PURCHASED == null || ItemPile.CLUB == null || ItemPile.STORAGE == null) missing.push('ItemPile');
+        } catch (e) { missing.push('ItemPile'); }
+        try {
+            SearchCriteria = win.UTSearchCriteriaDTO;
+            if (typeof SearchCriteria !== 'function') missing.push('UTSearchCriteriaDTO');
+        } catch (e) { missing.push('UTSearchCriteriaDTO'); }
+        try {
+            GameCurrency = win.GameCurrency;
+            if (typeof GameCurrency !== 'function') missing.push('GameCurrency');
+        } catch (e) { missing.push('GameCurrency'); }
+        return {
+            ok: missing.length === 0, missing: missing,
+            store: store, item: item, repoItem: repoItem, ItemPile: ItemPile,
+            SearchCriteria: SearchCriteria, GameCurrency: GameCurrency
+        };
+    }
+    // response.packs statt response.items - eigene Extraktion neben
+    // responseItems() statt eines Parameters daran, weil das Feld (nicht nur
+    // der Aufrufkontext) ein anderes ist.
+    function responsePacks(response) {
+        if (!response) return [];
+        const r = response.response || response.data || response;
+        if (r && Array.isArray(r.packs)) return r.packs;
+        return [];
+    }
+    /** Eigene Packs (isMyPack) nach id gruppiert - jede Instanz ein Eintrag. */
+    function groupMyPacks(packs) {
+        const order = [];
+        const byId = new Map();
+        for (const p of (packs || [])) {
+            if (!p || p.isMyPack !== true) continue;
+            if (!byId.has(p.id)) {
+                const g = { id: p.id, packName: p.packName, tradable: !!p.tradable, count: 0 };
+                byId.set(p.id, g);
+                order.push(g);
+            }
+            byId.get(p.id).count++;
+        }
+        return order;
+    }
+    function unassignedGuardOk(count) {
+        return count === 0;
+    }
+    /**
+     * Misc-Items (Coins etc.) muessen ueber services.Item.redeem() statt
+     * move() verteilt werden. GameCurrency ist EAs eigene Klasse dafuer
+     * (Fallback-Kette: fehlt sie, greift derselbe itemType-Weg, den
+     * normalizePlayer() bereits fuer die Spieler-Erkennung nutzt).
+     */
+    function isMiscPackItem(item, GameCurrency) {
+        try {
+            if (GameCurrency && typeof GameCurrency === 'function' && item instanceof GameCurrency) return true;
+        } catch (e) {}
+        try {
+            const t = item && (item.itemType || item.type);
+            if (t && String(t).toLowerCase() !== 'player') return true;
+        } catch (e) {}
+        return false;
+    }
+    /**
+     * Reine Verteil-Entscheidung: Nicht-Duplikate -> Verein, Duplikate ->
+     * Storage bis zur Kapazitaet, Rest bleibt liegen (Stufe 1: kein
+     * Quicksell/Transferliste), Misc-Items gesondert markiert.
+     */
+    function decidePackDistribution(items, storageCountBefore, storageCapacity, GameCurrency) {
+        const toClub = [], toStorage = [], toMisc = [], leftover = [];
+        let storageUsed = storageCountBefore;
+        for (const it of (items || [])) {
+            if (isMiscPackItem(it, GameCurrency)) { toMisc.push(it); continue; }
+            let dup = false;
+            try { dup = typeof it.isDuplicate === 'function' ? !!it.isDuplicate() : !!it.isDuplicate; }
+            catch (e) { dup = false; }
+            if (!dup) { toClub.push(it); continue; }
+            if (storageUsed < storageCapacity) { toStorage.push(it); storageUsed++; }
+            else { leftover.push(it); }
+        }
+        return { toClub: toClub, toStorage: toStorage, toMisc: toMisc, leftover: leftover, storageCountAfterPlanned: storageUsed };
+    }
+    // Wholesale-Reassign statt Feld-fuer-Feld: STATE.diag.packScan startet als
+    // null (solver-test.js §17 verlangt "null" statt eines Objekt-Literals in
+    // der STATE.diag-Deklaration selbst, siehe clubLoad/uiScan) - Object.assign
+    // ignoriert eine null-Quelle, der erste Aufruf befuellt das Feld also ohne
+    // Sonderfall.
+    function mergePackScan(patch) {
+        STATE.diag.packScan = Object.assign({}, STATE.diag.packScan, patch);
+    }
+    // Takt zwischen den Verteil-Schritten: 300-700ms, wie PaleTools' "Fast"
+    // (LEARNINGS §30-Logik) - kein festerer Wert, kein schnellerer.
+    function packTakt() { return 300 + Math.floor(Math.random() * 401); }
+    async function fetchMyPacks() {
+        const g = resolvePackGlobals();
+        if (!g.ok) {
+            reportError('Pack-Enumeration: fehlende Globals', new Error(g.missing.join(', ')));
+            mergePackScan({ missingGlobals: g.missing });
+            throw new Error('Store-Schnittstellen fehlen (' + g.missing.join(', ') + ') - Diagnose prüfen.');
+        }
+        const resp = await obsPromise(g.store.getPacks());
+        if (!responseOk(resp)) {
+            throw new Error('Pack-Liste konnte nicht geladen werden (Status ' + (resp && resp.status) + ').');
+        }
+        const packs = responsePacks(resp);
+        const groups = groupMyPacks(packs);
+        STATE.packGroups = groups;
+        const byId = new Map();
+        for (const p of packs) {
+            if (!p || p.isMyPack !== true) continue;
+            const key = String(p.id);
+            if (!byId.has(key)) byId.set(key, []);
+            byId.get(key).push(p);
+        }
+        STATE.packEntitiesById = byId;
+        mergePackScan({ myPacks: groups, missingGlobals: [] });
+        return groups;
+    }
+    function renderPackTypeOptions() {
+        if (!ui.packType) return;
+        const prev = ui.packType.value;
+        const groups = STATE.packGroups || [];
+        if (!groups.length) {
+            ui.packType.innerHTML = '<option value="">– keine eigenen Packs gefunden –</option>';
+            return;
+        }
+        ui.packType.innerHTML = groups.map(function (g) {
+            return '<option value="' + escapeHtml(String(g.id)) + '">' + escapeHtml(g.packName || ('Pack ' + g.id)) +
+                   ' (' + g.count + ' Stück)</option>';
+        }).join('');
+        if (prev && groups.some(function (g) { return String(g.id) === prev; })) ui.packType.value = prev;
+    }
+    function setPackStatus(text) {
+        if (!ui.packResult) return;
+        ui.packResult.innerHTML = '<div class="sbc-opt-batch-round">' + escapeHtml(text) + '</div>';
+    }
+    function renderPackDrawList(drawn) {
+        if (!ui.packResult) return;
+        const sorted = drawn.slice().sort(function (a, b) { return (b.rating || 0) - (a.rating || 0); });
+        let html = '';
+        for (const d of sorted) {
+            html += '<div class="sbc-opt-batch-round">' + escapeHtml(d.name) +
+                    (d.rating != null ? ' <b>' + d.rating + '</b>' : '') +
+                    (d.isDuplicateRaw ? ' <span class="sbc-opt-batch-warn">[Duplikat]</span>' : '') +
+                    ' → ' + escapeHtml(d.target) + '</div>';
+        }
+        ui.packResult.innerHTML = html || '<div class="sbc-opt-batch-round">Keine Karten gezogen.</div>';
+    }
+    async function onPackRefreshClick() {
+        ui.packRefresh.disabled = true;
+        setPackStatus('lade Packs...');
+        try {
+            const groups = await fetchMyPacks();
+            renderPackTypeOptions();
+            setPackStatus(groups.length + ' eigene Pack-Typen gefunden.');
+        } catch (e) {
+            reportError('Pack-Enumeration fehlgeschlagen', e);
+            setPackStatus('Fehler: ' + (e.message || e));
+            toast('Packs laden fehlgeschlagen: ' + (e.message || e), 'error');
+        } finally {
+            ui.packRefresh.disabled = false;
+        }
+    }
+    /**
+     * Testlauf: Unassigned-Guard -> open() auf EINER Instanz -> success-Check
+     * -> einsammeln -> verteilen (mit Takt). JEDER Fehler/success:false bricht
+     * sofort ab, KEIN Retry (Abbruch-Disziplin) - Pack-Oeffnen ist
+     * unumkehrbar, ein zweiter Versuch nach einem unklaren Fehler waere ein
+     * zweites unkontrolliertes Risiko.
+     */
+    async function runPackTestOpen(groupId) {
+        const g = resolvePackGlobals();
+        if (!g.ok) {
+            reportError('Pack-Testlauf: fehlende Globals', new Error(g.missing.join(', ')));
+            mergePackScan({ missingGlobals: g.missing });
+            return { ok: false, reason: 'Store-Schnittstellen fehlen (' + g.missing.join(', ') + ').' };
+        }
+        mergePackScan({ missingGlobals: [], errorForm: null, testRun: null });
+        let unassignedBefore;
+        try { unassignedBefore = g.repoItem.numItemsInCache(g.ItemPile.PURCHASED); }
+        catch (e) {
+            reportError('Pack-Testlauf: numItemsInCache fehlgeschlagen', e);
+            mergePackScan({ errorForm: { step: 'unassignedGuard', message: String(e && e.message || e) } });
+            return { ok: false, reason: 'Unassigned-Bestand konnte nicht geprüft werden.' };
+        }
+        mergePackScan({ unassignedCountBefore: unassignedBefore });
+        if (!unassignedGuardOk(unassignedBefore)) {
+            return { ok: false, reason: 'Erst die ungeöffneten Karten (Unassigned: ' + unassignedBefore + ') im Spiel wegräumen.' };
+        }
+        const entities = (STATE.packEntitiesById && STATE.packEntitiesById.get(String(groupId))) || [];
+        if (!entities.length) return { ok: false, reason: 'Pack-Typ nicht (mehr) gefunden - erst aktualisieren.' };
+        const entity = entities[0];
+        const packCountBefore = entities.length;
+        let openResp;
+        try { openResp = await obsPromise(entity.open()); }
+        catch (e) {
+            reportError('Pack-Testlauf: open() fehlgeschlagen', e);
+            mergePackScan({ errorForm: { step: 'open', message: String(e && e.message || e) } });
+            return { ok: false, reason: 'Öffnen fehlgeschlagen: ' + (e.message || e) };
+        }
+        if (!responseOk(openResp)) {
+            mergePackScan({ errorForm: { step: 'open', status: openResp && openResp.status,
+                keys: openResp ? Object.keys(openResp) : [] } });
+            return { ok: false, reason: 'Öffnen abgelehnt (Status ' + (openResp && openResp.status) + ').' };
+        }
+        try { g.repoItem.setDirty(g.ItemPile.PURCHASED); }
+        catch (e) { reportError('Pack-Testlauf: setDirty fehlgeschlagen', e); }
+        let itemsResp;
+        try { itemsResp = await obsPromise(g.item.requestUnassignedItems()); }
+        catch (e) {
+            reportError('Pack-Testlauf: requestUnassignedItems fehlgeschlagen', e);
+            mergePackScan({ errorForm: { step: 'collect', message: String(e && e.message || e) } });
+            return { ok: false, reason: 'Karten einsammeln fehlgeschlagen: ' + (e.message || e) + ' Karten bleiben unassigned.' };
+        }
+        // Ein AUFGELOESTES {success:false} ist kein Throw - ohne diesen Check
+        // wuerde responseItems() auf dem abgelehnten Payload einfach [] liefern
+        // und der Lauf faelschlich als "0 Karten gezogen" statt als Ablehnung
+        // durchgehen (Validator-Fund).
+        if (!responseOk(itemsResp)) {
+            reportError('Pack-Testlauf: requestUnassignedItems abgelehnt', new Error('Status ' + (itemsResp && itemsResp.status)));
+            mergePackScan({ errorForm: { step: 'collect', status: itemsResp && itemsResp.status,
+                keys: itemsResp ? Object.keys(itemsResp) : [] } });
+            return { ok: false, reason: 'Karten einsammeln abgelehnt (Status ' + (itemsResp && itemsResp.status) + '). Karten bleiben unassigned.' };
+        }
+        const items = responseItems(itemsResp);
+        let storageBefore;
+        try {
+            const storageResp = await obsPromise(g.item.searchStorageItems(new g.SearchCriteria()));
+            if (!responseOk(storageResp)) {
+                reportError('Pack-Testlauf: searchStorageItems abgelehnt', new Error('Status ' + (storageResp && storageResp.status)));
+                mergePackScan({ errorForm: { step: 'storageCount', status: storageResp && storageResp.status,
+                    keys: storageResp ? Object.keys(storageResp) : [] } });
+                return { ok: false, reason: 'Storage-Stand abgelehnt (Status ' + (storageResp && storageResp.status) + '). Karten bleiben unassigned.' };
+            }
+            storageBefore = responseItems(storageResp).length;
+        } catch (e) {
+            reportError('Pack-Testlauf: searchStorageItems fehlgeschlagen', e);
+            mergePackScan({ errorForm: { step: 'storageCount', message: String(e && e.message || e) } });
+            return { ok: false, reason: 'Storage-Stand konnte nicht geprüft werden: ' + (e.message || e) + ' Karten bleiben unassigned.' };
+        }
+        mergePackScan({ storageCountBefore: storageBefore });
+        const decision = decidePackDistribution(items, storageBefore, PACK_STORAGE_CAPACITY_ASSUMED, g.GameCurrency);
+        for (const it of decision.toMisc) {
+            await sleep(packTakt());
+            let redeemResp;
+            try { redeemResp = await obsPromise(g.item.redeem(it)); }
+            catch (e) {
+                reportError('Pack-Testlauf: redeem() fehlgeschlagen', e);
+                mergePackScan({ errorForm: { step: 'redeem', message: String(e && e.message || e) } });
+                return { ok: false, reason: 'Einlösen (Misc/Währung) fehlgeschlagen: ' + (e.message || e) + ' Rest bleibt unassigned.' };
+            }
+            // Konsistent mit dem eigenen Versprechen "JEDER Fehler bricht ab" -
+            // vorher lief die Schleife nach einer Ablehnung einfach weiter.
+            if (!responseOk(redeemResp)) {
+                reportError('Pack-Testlauf: redeem() abgelehnt', new Error('Status ' + (redeemResp && redeemResp.status)));
+                mergePackScan({ errorForm: { step: 'redeem', status: redeemResp && redeemResp.status,
+                    keys: redeemResp ? Object.keys(redeemResp) : [] } });
+                return { ok: false, reason: 'Einlösen (Misc/Währung) abgelehnt (Status ' + (redeemResp && redeemResp.status) + '). Rest bleibt unassigned.' };
+            }
+        }
+        if (decision.toClub.length) {
+            await sleep(packTakt());
+            let clubResp;
+            try { clubResp = await obsPromise(g.item.move(decision.toClub, g.ItemPile.CLUB)); }
+            catch (e) {
+                reportError('Pack-Testlauf: move->CLUB fehlgeschlagen', e);
+                mergePackScan({ errorForm: { step: 'moveClub', message: String(e && e.message || e) } });
+                return { ok: false, reason: 'Verteilen in den Verein fehlgeschlagen: ' + (e.message || e) + ' Karten bleiben unassigned.' };
+            }
+            if (!responseOk(clubResp)) {
+                reportError('Pack-Testlauf: move->CLUB abgelehnt', new Error('Status ' + (clubResp && clubResp.status)));
+                mergePackScan({ errorForm: { step: 'moveClub', status: clubResp && clubResp.status,
+                    keys: clubResp ? Object.keys(clubResp) : [] } });
+                return { ok: false, reason: 'Verteilen in den Verein abgelehnt (Status ' + (clubResp && clubResp.status) + '). Karten bleiben unassigned.' };
+            }
+        }
+        if (decision.toStorage.length) {
+            await sleep(packTakt());
+            let storageMoveResp;
+            try { storageMoveResp = await obsPromise(g.item.move(decision.toStorage, g.ItemPile.STORAGE)); }
+            catch (e) {
+                reportError('Pack-Testlauf: move->STORAGE fehlgeschlagen', e);
+                mergePackScan({ errorForm: { step: 'moveStorage', message: String(e && e.message || e) } });
+                return { ok: false, reason: 'Verteilen in den Storage fehlgeschlagen: ' + (e.message || e) + ' Karten bleiben unassigned.' };
+            }
+            if (!responseOk(storageMoveResp)) {
+                reportError('Pack-Testlauf: move->STORAGE abgelehnt', new Error('Status ' + (storageMoveResp && storageMoveResp.status)));
+                mergePackScan({ errorForm: { step: 'moveStorage', status: storageMoveResp && storageMoveResp.status,
+                    keys: storageMoveResp ? Object.keys(storageMoveResp) : [] } });
+                return { ok: false, reason: 'Verteilen in den Storage abgelehnt (Status ' + (storageMoveResp && storageMoveResp.status) + '). Karten bleiben unassigned.' };
+            }
+        }
+        let storageAfter = null;
+        try {
+            const afterResp = await obsPromise(g.item.searchStorageItems(new g.SearchCriteria()));
+            // Rein beobachtend: die Verteilung ist an dieser Stelle bereits
+            // abgeschlossen, ein Abbruch wuerde einen tatsaechlich erfolgreichen
+            // Lauf faelschlich als Fehlschlag melden. Trotzdem KEIN Blindflug bei
+            // Ablehnung: storageAfter bleibt null statt aus einem abgelehnten
+            // Payload eine falsche Zahl abzuleiten (dasselbe Validator-Argument,
+            // nur ohne Abbruch der bereits erledigten Verteilung).
+            if (responseOk(afterResp)) storageAfter = responseItems(afterResp).length;
+            else reportError('Pack-Testlauf: Storage-Nachzählung abgelehnt', new Error('Status ' + (afterResp && afterResp.status)));
+        } catch (e) { reportError('Pack-Testlauf: Storage-Nachzählung fehlgeschlagen', e); }
+        mergePackScan({ storageCountAfter: storageAfter });
+        // Beantwortet Mechanik-Frage (a): sinkt die Anzahl gleicher Instanzen
+        // um genau 1?
+        let packCountAfterSameGroup = null;
+        try {
+            const afterPacks = responsePacks(await obsPromise(g.store.getPacks()));
+            packCountAfterSameGroup = groupMyPacks(afterPacks)
+                .filter(function (x) { return String(x.id) === String(groupId); })
+                .reduce(function (n, x) { return n + x.count; }, 0);
+        } catch (e) { reportError('Pack-Testlauf: Pack-Nachzählung fehlgeschlagen', e); }
+        const drawn = items.map(function (it) {
+            const misc = isMiscPackItem(it, g.GameCurrency);
+            const norm = misc ? null : normalizePlayer(it, false);
+            let isDupRaw = null;
+            try { isDupRaw = typeof it.isDuplicate === 'function' ? it.isDuplicate() : it.isDuplicate; } catch (e) {}
+            return {
+                misc: misc,
+                name: norm ? norm.name : (misc ? 'Misc/Währung' : ('#' + (it && (it.assetId || it.id)))),
+                rating: norm ? norm.rating : null,
+                isDuplicateRaw: isDupRaw,
+                target: misc ? 'redeem' : (decision.toStorage.indexOf(it) > -1 ? 'Storage'
+                        : (decision.leftover.indexOf(it) > -1 ? 'liegen geblieben (Storage voll)' : 'Verein'))
+            };
+        });
+        mergePackScan({
+            testRun: {
+                itemCount: items.length,
+                items: drawn,
+                openResponseKeys: openResp ? Object.keys(openResp) : [],
+                packCountBefore: packCountBefore,
+                packCountAfterSameGroup: packCountAfterSameGroup
+            }
+        });
+        return { ok: true, drawn: drawn, storageBefore: storageBefore, storageAfter: storageAfter };
+    }
+    async function onPackTestClick() {
+        if (STATE.packOpenBusy) return;
+        const groupId = ui.packType && ui.packType.value;
+        if (!groupId) { toast('Erst einen Pack-Typ wählen (Aktualisieren drücken).', 'error'); return; }
+        STATE.packOpenBusy = true;
+        ui.packTest.disabled = true;
+        setPackStatus('öffne 1 Pack...');
+        try {
+            const res = await runPackTestOpen(groupId);
+            if (!res.ok) {
+                setPackStatus('Abgebrochen: ' + res.reason);
+                toast('Pack-Test abgebrochen: ' + res.reason, 'error');
+                return;
+            }
+            renderPackDrawList(res.drawn);
+            toast('1 Pack geöffnet, ' + res.drawn.length + ' Karten verteilt.', '');
+            try { await fetchMyPacks(); renderPackTypeOptions(); } catch (e) {}
+        } catch (e) {
+            reportError('Pack-Testlauf: unerwarteter Fehler', e);
+            setPackStatus('Fehler: ' + (e.message || e));
+            toast('Pack-Test fehlgeschlagen: ' + (e.message || e), 'error');
+        } finally {
+            STATE.packOpenBusy = false;
+            ui.packTest.disabled = false;
+        }
+    }
+    // ========================================================================
     //  8. BOOTSTRAP
     // ========================================================================
     function installServicesHooks() {
@@ -6136,7 +6600,7 @@
         // Menüpunkt in der EA-Leiste: häufiger als der 2s-Watchdog, damit er
         // beim View-Wechsel praktisch sofort steht. Kostet nur zwei
         // DOM-Lookups - deutlich billiger als ein Observer über die ganze App.
-        setInterval(function () { try { syncLauncher(); } catch (e) {} }, 500);
+        setInterval(function () { try { syncLauncher(); syncPackSection(); } catch (e) {} }, 500);
         // App-Services erscheinen erst nach dem App-Start.
         setInterval(installServicesHooks, 1000);
         // AUTO-LOAD: den Pool EINMAL im Hintergrund laden, sobald die Session

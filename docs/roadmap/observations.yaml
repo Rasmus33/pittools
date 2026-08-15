@@ -161,6 +161,15 @@ discoveries:
       Eintraege (Datei — Funktionsliste), die der Beleg-/Scorer-Resolver nicht als
       Datei aufloest (candidate_files=0) — pattern add-beleg fuer diese Features unmoeglich.
       Vision-Docs beim Audit auf reine Pfade/Globs umstellen.
+  - slug: makeconsumecmp-duplikat-tiebreak-tot
+    evidence:
+    - ea-fc-sbc-optimizer.user.js:1891-1947 (Dedup laeuft vor buildDp)
+    - ea-fc-sbc-optimizer.user.js (makeConsumeCmp Duplikat-Stapel-Tiebreak)
+    issues:
+    - 6
+    note: severity=P3; Der Duplikat-Stapelgroessen-Tiebreak in makeConsumeCmp ist
+      strukturell tot (Pool ist vor buildDp immer assetId-unique) — nur der priorityOf-Teil
+      wirkt. Kandidat naechste Gap-Analyse rating-solver.
 seeds_next:
   seeded_at: null
   patterns: []

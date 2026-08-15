@@ -250,7 +250,9 @@ function mulberry32(a) {
     // sie das höhere Rating hat. Die Bänder werden hier EXPLIZIT gesetzt statt
     // die Default-Tabelle zu nehmen - sonst hängt der Test daran, wie Rasmus
     // seine Ratings gerade bewertet (mit '85-88:2' waren 85er und 88er gleich
-    // teuer und der Test prüfte nichts mehr).
+    // teuer und der Test prüfte nichts mehr). KEINE SSOT-Drift: bewusst
+    // unabhängig von SolverCore.DEFAULT_RATING_COST_SPEC, nicht mit ihr
+    // synchron halten.
     const BANDS = '0-84:0, 85-86:5, 87-88:2, 89+:12';
     const totw85 = P(85, { special: true, rareflag: 3, groups: [83] });
     const totw88 = P(88, { special: true, rareflag: 3, groups: [83] });
@@ -414,6 +416,9 @@ function mulberry32(a) {
     // Schutz-Aufschlag (+8) - eine Storage-FUTTIES ist dann billiger als das
     // gleichwertige Vereins-Gold. Am Aufschlag zu drehen hätte die Grenze nur
     // verschoben; die Regel ist "über die geforderte Anzahl hinaus gar nicht".
+    // Historisch fixierte Tabelle des v4.8.0-Vorfalls - NICHT auf
+    // SolverCore.DEFAULT_RATING_COST_SPEC umstellen, sonst reproduziert dieser
+    // Test das damalige Kostenverhältnis nicht mehr.
     const REAL = {
         scarcityWeight: 18, storageBonus: 2,
         ratingCostSpec: '0-80:0,81-83:2,84:1,85-86:5,87-88:2,89-90:3,91-92:4,93+:12'
@@ -1846,6 +1851,40 @@ function mulberry32(a) {
         nextFn.indexOf('i === 2 || i === 20 || i === 45') > -1);
     check('clickBackButton-Zweig bei i===5/25 vorhanden',
         nextFn.indexOf('i === 5 || i === 25') > -1 && nextFn.indexOf('clickBackButton()') > -1);
+}
+
+// ========== 23. Band-Editor: SSOT-Ableitung + Edge-Cases ==========
+// Extrahiert defaultBands()/bandsToSpec() per Marker (analog zum SOLVER-Block,
+// Pattern eingebetteten-code-exakt-testen) statt sie hier nachzubilden.
+{
+    const bandsMatch = src.match(/\/\/ \[BANDS-BEGIN\]([\s\S]*?)\/\/ \[BANDS-END\]/);
+    if (!bandsMatch) {
+        tests++; failures++;
+        console.error('FAIL  BANDS-Block nicht gefunden!');
+    } else {
+        const Bands = new Function('SolverCore',
+            bandsMatch[1] + '\nreturn { defaultBands: defaultBands, bandsToSpec: bandsToSpec };')(SolverCore);
+
+        // Drift-Wächter: der Reset-Pfad muss wortgleich zur Solver-Konstante
+        // bleiben - der eigentliche Regressionsschutz fuer die SSOT-Ableitung.
+        const derivedSpec = Bands.bandsToSpec(Bands.defaultBands());
+        check('bandsToSpec(defaultBands()) === SolverCore.DEFAULT_RATING_COST_SPEC',
+            derivedSpec === SolverCore.DEFAULT_RATING_COST_SPEC, derivedSpec);
+
+        // lo>hi bleibt in parseRatingCosts() ein No-Op (dokumentiertes
+        // Verhalten - der Band-Editor markiert die Zeile seit dieser Version
+        // sichtbar, die Kernlogik selbst bleibt unveraendert).
+        const invalidFn = SolverCore.parseRatingCosts(Bands.bandsToSpec([{ lo: 90, hi: 85, cost: 7 }]));
+        check('lo>hi-Band bleibt No-Op (Kosten bleiben 0)',
+            invalidFn(85) === 0 && invalidFn(87) === 0 && invalidFn(90) === 0);
+
+        // Leere Bandliste -> Kosten durchgehend 0 (aktuelles Verhalten, als
+        // Testfall festgeschrieben statt ueberraschend).
+        check('bandsToSpec([]) liefert leeren String', Bands.bandsToSpec([]) === '');
+        const emptyFn = SolverCore.parseRatingCosts('');
+        check('parseRatingCosts(\'\') liefert fuer jedes Rating 0',
+            [0, 50, 84, 93, 99].every(r => emptyFn(r) === 0));
+    }
 }
 
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt

@@ -1324,3 +1324,58 @@ Optimizer-Download) hatte GAR keinen Leer-Body-Schutz. Ein 200er mit leerem
 Body galt an beiden Stellen als gueltiger Inhalt und haette ein leeres
 Script "erfolgreich" injiziert. Jetzt: `body.isEmpty()` -> als Fehler
 geloggt, `null` zurueck; die Aufrufer pruefen ohnehin nur `!= null`.
+
+## 37. Drei blinde Flecken im Deep-Scan-Parser jetzt sichtbar: scopesSeen, scanStats, countDefaulted
+
+Der Deep-Scan-Parser-Cluster (`// [SBCSCAN-BEGIN]`/`// [SBCSCAN-END]`, §26)
+verschluckte drei Klassen von EA-Wandel spurlos, ohne dass Report oder
+`STATE.diag` das anzeigten - alle drei sind jetzt additive Beobachtungsfelder,
+keine der bestehenden Erkennungspfade (Whitelist-Matching, Traversal-Limits,
+Count-Fallback) hat sich verhaltensmaessig geaendert.
+
+**`scopesSeen` gegen die reqDump-Whitelist-Luecke.** `deepScanChallenge()`
+sammelt JEDEN per `scopeString()` erkannten Scope-String in einem eigenen,
+auf 40 Eintraege gedeckelten Set - unabhaengig davon, ob er anschliessend
+eine der zehn festen Teilzeichenketten (`RATING`/`RARITY`/`PLAYER`/`OVR`/
+`LEVEL`/`QUALITY`/`CLUB`/`LEAGUE`/`NATION`/`CHEM`) trifft, die ueber die
+Aufnahme in `out.reqs` (und damit `reqDump`) entscheiden. Fuehrt EA eine
+komplett neue Scope-Familie ein, die keines dieser Woerter enthaelt (z.B.
+`ARCHETYPE_GROUP`), verschwindet sie nicht mehr spurlos: `out.scopesSeen`
+landet ungegated in `applyScan()` - bewusst AUSSERHALB des bestehenden
+`scan.reqs.length`-Gates, weil ein neuer Scope auftreten kann, ohne dass
+`scan.reqs` etwas enthaelt - und darueber in `STATE.sbc.scopesSeen` sowie
+`sbc.scopesSeenCount`/`sbc.scopesSeenSample` im Report.
+
+**`scanStats` gegen die stille Traversal-Kappung.** `deepScanChallenge()`
+sowie die additiven, optionalen `statsOut`-Parameter von `findChallengeNode()`/
+`collectChallengeNodes()` (bestehende Aufrufe ohne diesen Parameter bleiben
+unveraendert funktionsfaehig) geben `visitedCount`/`depthCapped`/
+`budgetExhausted` zurueck. Vorher sah eine durch das Limit abgeschnittene
+Suche im Report identisch aus wie "SBC hat wirklich keine weiteren
+Vorgaben". `STATE.diag.scanStats` sammelt die Zweige `deepScan`/`findNode`/
+`collectNodes`, `buildDiagReport()` liest das Feld ungefiltert (Muster
+identisch zu `staleRecover`/`batchStuckCount`, §25/§27). **Bewusst KEIN
+neues `warnings`-/Abbruchkriterium**: Erreichtes Budget oder Tiefenlimit
+bedeutet NICHT zwingend, dass eine relevante Vorgabe fehlt - die BFS kann sie
+laengst gefunden haben, bevor das Limit griff. Ein reflexhaftes
+"Warnung/Abbruch bei Kappung" waere die Wiederholung des in v4.34.0
+eingefuehrten und wieder zurueckgenommenen Fehlalarms (`onRunClick`,
+Kommentar bei der entfernten reqDump-Vorab-Warnung): eine Strukturindiz-
+Warnung, die auch bei tadellos laufenden SBCs feuerte. Anders als die
+Solver-Suchfenster-Erschoepfung in §34 (dort per unabhaengiger `vBound`-
+Gegenrechnung als ECHTE Ursache belegt, deshalb dort zu Recht ein
+`warnings`-Eintrag) gibt es hier keine unabhaengige Bestaetigung, dass eine
+Kappung tatsaechlich eine Vorgabe verschluckt hat - `scanStats` bleibt
+deshalb ein reines Report-Feld.
+
+**`reqCountDefaulted` gegen den unsichtbaren `return 1`-Fallback.**
+`reqCount(o, parents)` durchsucht Objekt + Eltern-Kette nach fuenf moeglichen
+Count-Feldnamen und fiel bisher nicht unterscheidbar von einem echten Wert 1
+auf `1` zurueck. Der interne Helfer `reqCountRaw(o, parents)` liefert jetzt
+`{ count, defaulted }`; `reqCount()` ist ein Einzeiler-Wrapper darauf (exakt
+derselbe Rueckgabewert wie vorher fuer alle vier bestehenden Aufrufer),
+`reqCountDefaulted(o, parents)` liest nur das Flag. Jeder `reqDump`-Eintrag
+sowie `playerLevelConstraints`/`qualityConstraints`/`rarityConstraints`
+tragen `countDefaulted` mit; `buildDiagReport()` zeigt `countDefaultedTotal`
+als Kurzsumme. Der Solver selbst liest weiterhin nur `pl.count`/`rc.count`
+(`|| 1`) - reine Zusatz-Property, kein Kontrollfluss-Eingriff.

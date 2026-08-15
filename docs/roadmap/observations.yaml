@@ -59,6 +59,21 @@ entries:
     Fuzzing auf Rarity-/Qualitaets-Quoten + planBatch ausgeweitet (535 Tests). Der
     gefundene Reservierungs-Defekt wird als eigenes Fix-Ticket umgesetzt — Regel-Hierarchie
     laut CLAUDE.md: Fenster > Kosten.'
+- at: '2026-08-15T18:01:52Z'
+  issue: 60
+  po_class: null
+  surprises:
+  - 'Der Fuzzing-Befund fuehrte zum tiefsten Solver-Eingriff seit iter0: runSearch
+    musste zu searchTeam parametrisiert werden (Closure->Parameter, Mathe wortgleich
+    — Validator hat jede Zeile verglichen). Zwei Folge-Teilfehler (globalVmin aus
+    rohem vMin; vMinFloor auch final) fand der Implementer selbst per ~6000-Fall-Fuzzing,
+    BEVOR er den Fix als korrekt meldete.'
+  - Mid-Ticket-Rebase auf zwei Live-Hotfixes funktionierte sauber via SendMessage
+    an denselben Implementer (Kontext intakt) — Konflikte nur an den erwarteten Stellen.
+  reasoning: 'Solver respektiert jetzt die dokumentierte Regel-Hierarchie Fenster
+    > Kosten auch bei Rarity-Vorgaben: fensterbewusste Reservierung (Trial-Cap 200,
+    DP-bewertet) mit dem alten Greedy als textuell identischem Fallback. v4.59.0,
+    548/548, Validator-PASS ohne Findings.'
 discoveries:
   pattern_candidates: []
   antipattern_candidates: []

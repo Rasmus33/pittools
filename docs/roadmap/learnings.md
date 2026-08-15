@@ -99,3 +99,32 @@ Kumulativ. Git-Log ist die History.
 - Cleanup-Deckung: #25 durch #40 (Aktion 1), #27 + #28 durch PO-Doku-Commit 6572fbe — alle drei via abandon-Pfad geschlossen. Offen bleibt nur #29 im Sammelticket #30.
 - LEARNINGS-Schulden getilgt: §35 (Batch-Sperre + submitConfirmations, Debt aus iter1-#32), §36 (App-1.8.0-Entscheidungen, direkt nach dem Re-Score nachgezogen — der Scorer hatte den fehlenden Eintrag als Restlücke benannt).
 - Eskalationen: 0.
+
+## Iteration 3 — 2026-08-15
+
+## Iteration 3 — 2026-08-15
+
+### Score-Bewegung
+- Thematische Fokus-Iteration (3 von 9 Features, Linse: EA-Wandel-Toleranz + Test-Infrastruktur): sbc-vorgaben-erkennung 78→79 (Ziel 79), ea-app-anbindung 74→75 (structural_max erreicht), android-app-wrapper 79→80 (structural_max erstmals erreicht). Fokus-Verdict: hit, 3/3.
+- Userscript v4.48.0 → v4.50.0 (zwei Tickets), Tests 409 → 464. App-Code unverändert bis auf 2 Kommentarzeilen (Marker) — kein APK nötig.
+- Damit ist die Roadmap konvergiert: alle 9 Features stehen an oder maximal 1-3 Punkte unter ihren strukturellen Deckeln.
+
+### Methodische Erkenntnisse
+- Eine thematische Linse (EA-Wandel-Toleranz) findet auch in „fertigen" Features echte Lücken: die reqDump-Whitelist verschluckte neue Scope-Familien spurlos, gekappte Scans sahen aus wie „keine Vorgaben", JSON-Parse-Fehler an der EA-Grenze verschwanden still. Alles nur mit der Frage „was passiert, wenn EA X ändert?" gefunden — nicht mit generischem „finde Mängel".
+- Früherkennung schlägt Reparatur: alle iter3-Aktionen machen EA-Änderungen SICHTBAR (Report-Felder), bevor etwas falsch gebaut wird — bewusst KEINE neuen Warn-/Abbruchkriterien (v4.34.0-Fehlalarm als Anti-Vorlage, in §37 dokumentiert).
+- Validatoren müssen gegen den JEWEILS EIGENEN Lift-Plan prüfen: die vermeintliche Phasen-Abweichung bei #43 (kein release-Commit) war plankonform — zwei parallele Tickets hatten schlicht unterschiedliche Phasen-Mappings definiert.
+- Implizites Gating ist verifizierbares Gating: das reportError-Gate für Fremd-URLs brauchte keinen neuen Code, der bestehende !kind-Early-Return erledigt es strukturell — am Kontrollfluss bewiesen statt behauptet.
+- Byte-Gleichheits-Beweis als Standard für Testwerkzeug-Refactorings bestätigt (extractGuard Marker-Weg vs. Literal-Weg an der echten MainActivity, nach CRLF-Normalisierung) — dritte erfolgreiche Anwendung nach extractFunction (iter1) und den iter2-Checks.
+- Gates wachsen mit: compile-check.sh (javac ohne Keystore) und log_test sind jetzt final_gates in config/system.yaml — Java-Syntaxfehler fallen künftig VOR dem PO-Build auf, nicht erst beim APK-Bau.
+
+### Patterns ergänzt / verändert
+- Keine neuen Patterns. fehler-unsichtbar-verschluckt weiter zurückgedrängt (handleResponseBody-Catches waren die letzten stillen an der EA-Grenze, die SBC-relevante Fehler betrafen); diagnose-feld-statt-raten um 6 neue Report-Felder vertieft (scopesSeen, scanStats, reqCountDefaulted, utasUnclassified, lastUnclassifiedPaths, allSpecialFlagValues).
+
+### Shared-Items
+- Keine (alle drei Sidecars leer, bestätigt richtig — nur sdk-env.sh als lokale DRY-Basis innerhalb eines Features).
+
+### PO-Entscheidungen
+- Validator: 3× glattes PASS ohne Findings (0 PARTIALs, 0 Re-Spawns).
+- Restfund aus dem Re-Score als Seed statt Hotfix: applyFromSetChallenges ruft deepScanChallenge ohne recordDeepScanStats (Beobachtbarkeitslücke im Fallback-Pfad der NEUEN Fähigkeit) — klein, additiv fixbar, kein Anlass für eine vierte Runde jetzt.
+- Bewusst verschoben: apiBaseDetectionStuck + sbcHookMisses (dünn, ea-app ist am Deckel).
+- Eskalationen: 0. Post-Squash-Regel (alle Commits vor review bündeln) hielt zum zweiten Mal — 0 verwaiste PRs.

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.54.0
+// @version      4.55.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.54.0';
+    const VERSION = '4.55.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -134,7 +134,8 @@
             lastTap: null,           // letzter simulierter Tap: Events/Position/Abdeckung/Popup
             scanStats: null,         // Traversal-Metriken (visitedCount/depthCapped/budgetExhausted) von deepScan/findNode/collectNodes - reine Beobachtung, kein Abbruchkriterium (LEARNINGS 37)
             utasUnclassified: 0,     // /ut/game/-URLs, die classifyUrl() nicht zuordnen konnte (LEARNINGS 38)
-            lastUnclassifiedPaths: [] // 5er-Ring der zugehoerigen Pfade (IDs maskiert)
+            lastUnclassifiedPaths: [], // 5er-Ring der zugehoerigen Pfade (IDs maskiert)
+            popupDismissCount: 0     // wie oft dismissRewardPopup() seit App-Start wirklich etwas geschlossen hat (analog batchStuckCount, LEARNINGS §27)
         }
     };
     function log(...args) { try { console.log(LOG_PREFIX, ...args); } catch (e) {} }
@@ -4065,6 +4066,11 @@
             // v4.36.0-Live-Vorfall ueber mehrere Laeufe hinweg messbar statt
             // nur aus einem einzelnen LEARNINGS-Eintrag ablesbar.
             batchStuckCount: STATE.diag.batchStuckCount || 0,
+            // Wie oft hat dismissRewardPopup() seit App-Start wirklich etwas
+            // geschlossen? Der letzte Snapshot (popupState in lastTap) zeigt nur
+            // den Einzelfall - ein wiederkehrender Popup-Typ, der Zeit im
+            // 300ms-Fenster frisst, wird erst ueber die Haeufigkeit sichtbar.
+            popupDismissCount: STATE.diag.popupDismissCount || 0,
             // Welches Team hat der Solver zuletzt geliefert (id/assetId/rating/
             // storage)? Bei HTTP 460 ist hier direkt zu sehen, ob eine Karte
             // oder ein Spieler doppelt drin war.
@@ -4683,6 +4689,7 @@
                 }
             }
         } catch (e) {}
+        if (closed) STATE.diag.popupDismissCount = (STATE.diag.popupDismissCount || 0) + 1;
         return closed;
     }
     /**
@@ -5077,27 +5084,41 @@
         const want = String(plan.setName || '').trim().toLowerCase();
         if (!want) return { ok: false, why: 'kein Set-Name gemerkt', tiles: tiles.length };
         if (!tiles.length) return { ok: false, why: 'keine Set-Kacheln sichtbar', tiles: 0 };
+        // WARUM titleSource: findet titleOf() keines der Titel-Elemente (EA baut
+        // nur die INNEREN Elemente um, .ut-sbc-set-tile-view selbst bleibt
+        // bestehen), faellt es auf den GESAMTEN Kachel-Text zurueck - genau der
+        // Zustand, der laut LEARNINGS §9 (v4.23.0) live zum Teilstring-Fehlgriff
+        // fuehrte ("Upgrade" steckt in jeder zweiten Kachel). Die Matching-Logik
+        // selbst bleibt unveraendert, titleSource macht nur sichtbar, OB dieser
+        // fragile Pfad gerade griff.
         function titleOf(t) {
             const h = t.querySelector('.tileTitle, .tileHeader, h1');
-            return ((h && h.textContent) || t.textContent || '')
+            const text = ((h && h.textContent) || t.textContent || '')
                 .replace(/\s+/g, ' ').trim().toLowerCase();
+            return { text: text, source: h ? 'element' : 'fulltext' };
         }
-        let hit = null, how = null;
-        for (const t of tiles) { if (titleOf(t) === want) { hit = t; how = 'exakt'; break; } }
+        let hit = null, how = null, hitSource = null;
+        for (const t of tiles) {
+            const ti = titleOf(t);
+            if (ti.text === want) { hit = t; how = 'exakt'; hitSource = ti.source; break; }
+        }
         if (!hit) {
             for (const t of tiles) {
                 const ti = titleOf(t);
-                if (ti.indexOf(want) === 0 || want.indexOf(ti) === 0) { hit = t; how = 'Anfang'; break; }
+                if (ti.text.indexOf(want) === 0 || want.indexOf(ti.text) === 0) {
+                    hit = t; how = 'Anfang'; hitSource = ti.source; break;
+                }
             }
         }
         if (!hit) {
             for (const t of tiles) {
-                if (titleOf(t).indexOf(want) > -1) { hit = t; how = 'enthalten'; break; }
+                const ti = titleOf(t);
+                if (ti.text.indexOf(want) > -1) { hit = t; how = 'enthalten'; hitSource = ti.source; break; }
             }
         }
         if (!hit) {
             return { ok: false, why: 'Set nicht gefunden', want: want, tiles: tiles.length,
-                     titles: tiles.slice(0, 8).map(titleOf) };
+                     titles: tiles.slice(0, 8).map(function (t) { return titleOf(t).text; }) };
         }
         // Erst die Kachel, dann ihr Titel-Element - manche Views haengen ihren
         // Tap-Handler am Kind, nicht am Container.
@@ -5106,7 +5127,7 @@
         const inner = hit.querySelector('.tileHeader, .tileTitle, h1');
         if (inner) clickLike(inner);
         return { ok: true, why: 'Set-Kachel geklickt (' + how + ')',
-                 want: want, hitTitle: titleOf(hit), tap: tap,
+                 want: want, hitTitle: titleOf(hit).text, titleSource: hitSource, tap: tap,
                  tapInner: inner ? (STATE.diag.lastTap || null) : null };
     }
     /** Challenge-Zeile in der geoeffneten Set-Ansicht anklicken. */

@@ -983,6 +983,20 @@ drei Abbruch-Zweige von `onBatchRunClick()`, das Plan-verbraucht-Prinzip im
 `finally` sowie den `stuck`-/`clickBackButton`-Diagnosezweig in
 `openNextInstance()` gegen stillschweigendes Entfernen ab.
 
+`clickSetTile()`s `titleOf()` meldet jetzt mit, ob ein Treffer ueber das echte
+Titel-Element (`.tileTitle`/`.tileHeader`/`h1`) oder ueber den Volltext-
+Fallback (`t.textContent`, die im v4.23.0-Vorfall aus §9 gefixte Teilstring-
+Fehlerklasse) zustande kam: `titleSource: 'element'|'fulltext'` im
+`clickSetTile`-Ergebnis, damit auch in `batchSteps`/`batchFailedSteps`. Reine
+Beobachtung, die Matching-Reihenfolge exakt->Anfang->enthalten bleibt
+unveraendert. `solver-test.js` fuehrt `clickSetTile()`/`titleOf()` dafuer
+erstmals per `extractFunction` und gestubbtem DOM aus (vorher nur ein Text-
+Grep-Treffer auf den Kommentar) - Element-Pfad, Volltext-Fallback-Treffer und
+die Kein-Treffer-Gegenprobe. `STATE.diag.popupDismissCount` zaehlt zusaetzlich
+(analog `batchStuckCount` oben), wie oft `dismissRewardPopup()` seit App-Start
+wirklich etwas geschlossen hat - macht einen neuen, wiederkehrenden Popup-Typ
+ueber die Laufzeit sichtbar statt nur im letzten `lastTap`-Snapshot.
+
 ## 28. reserve()-Funnel jetzt an JEDEM Reservierungspfad, Sortier-Komparator + Kostenformel als Factory
 
 Fortsetzung von §16: die dortige Absicherung ("Alle Reservierungen laufen

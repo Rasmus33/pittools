@@ -1099,8 +1099,7 @@ ausgeschlossen) und ein verschachtelter Zweig ueber `findLockBranches`.
 ## 30. Der Club-Lade-Takt: 300ms zwischen den STARTS, Selbstbremse bei Fehlversuchen
 
 Referenz-Abschnitt fuer die "Nicht anfassen ohne Grund"-Regel in CLAUDE.md
-(die historisch auf "Paragraph 23" zeigte, bevor dieser Platz durch den
-reportError-Eintrag belegt war - jetzt zeigt sie hierher).
+(sie verweist auf Paragraph 7 und diesen Paragraphen).
 
 Der Club laedt paginiert ueber `fetchClubViaHttp`. Der Takt lief urspruenglich
 mit 120ms ZWISCHEN den Antworten - das provozierte live Rate-Limit-401er und

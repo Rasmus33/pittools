@@ -4435,6 +4435,66 @@ function mulberry32(a) {
         'gleichzeitig (Ticket #64)', allMatch, detail);
 }
 
+// ========== 54. removeFromPool(): der letzte ungetestete Pool-Baustein ==========
+// Iter-6-Re-Score-Restpunkt: der reportError-Umbau von #56 hatte hier als
+// einziger keinen eigenen Verhaltenstest. Wie ueberall: echte extrahierte
+// Funktion gegen gestubbtes STATE/ui, kein Text-Grep.
+{
+    const removeSrc = extractFunction(src, 'removeFromPool');
+    check('Funktion removeFromPool gefunden (54)', !!removeSrc);
+
+    function makeSandbox(refreshImpl) {
+        const calls = { reportError: 0, log: [], refresh: 0 };
+        const cards = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+        const STATE = {
+            poolById: new Map(cards.map(c => [c.id, c])),
+            pool: cards.slice()
+        };
+        const ui = { poolcount: { textContent: '' } };
+        const sandbox = {
+            STATE: STATE, ui: ui,
+            refreshSbcInfoUI: () => { calls.refresh++; if (refreshImpl) refreshImpl(); },
+            log: (...a) => { calls.log.push(a.join(' ')); },
+            reportError: () => { calls.reportError++; }
+        };
+        const keys = Object.keys(sandbox);
+        const fn = new Function(keys.join(','), removeSrc + '\nreturn removeFromPool;')
+            .apply(null, keys.map(k => sandbox[k]));
+        return { fn: fn, calls: calls, STATE: STATE, ui: ui };
+    }
+
+    // (a) Normalfall: verbaute Karten fliegen raus, Pool-Array und Anzeige
+    // werden neu aufgebaut.
+    {
+        const t = makeSandbox();
+        t.fn([{ id: 'a' }, { id: 'c' }]);
+        check('removeFromPool: verbaute Karten fliegen aus poolById UND pool',
+            t.STATE.pool.length === 1 && t.STATE.pool[0].id === 'b' &&
+            !t.STATE.poolById.has('a') && !t.STATE.poolById.has('c'));
+        check('removeFromPool: Anzeige und UI-Refresh laufen genau einmal',
+            t.ui.poolcount.textContent === '1' && t.calls.refresh === 1 &&
+            t.calls.log.length === 1);
+    }
+    // (b) Unbekannte Ids: kein Umbau, kein Log, kein Refresh (removed === 0).
+    {
+        const t = makeSandbox();
+        t.fn([{ id: 'zzz' }, null]);
+        check('removeFromPool: unbekannte Ids veraendern nichts (kein Log/Refresh)',
+            t.STATE.pool.length === 3 && t.calls.refresh === 0 &&
+            t.calls.log.length === 0 && t.calls.reportError === 0);
+    }
+    // (c) Fehlerpfad (#56): wirft ein innerer Schritt, faengt der Catch das
+    // ueber reportError sichtbar ab, statt den Aufrufer (Batch-Runde!)
+    // abzuschiessen.
+    {
+        const t = makeSandbox(() => { throw new Error('kaputt'); });
+        let threw = false;
+        try { t.fn([{ id: 'a' }]); } catch (e) { threw = true; }
+        check('removeFromPool: Fehler landet in reportError (genau 1x), nichts wirft nach aussen',
+            !threw && t.calls.reportError === 1);
+    }
+}
+
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt
 // process.exit() die Loader-Tests, bevor sie laufen - sie zählten dann nicht mit
 // und ein Fehler dort wäre unbemerkt geblieben.

@@ -1,0 +1,58 @@
+# Iterations-Fokus-Ledger — committetes Wissens-File (ADR #79, v1.5.0).
+#
+# Optionaler, pro Iteration vom roadmap-gap-Skill VORGESCHLAGENER und mit dem
+# User ABGESTIMMTER Fokus. Konzentriert eine Iteration auf eine Teilmenge der
+# bestehenden Feature×Dimension-Matrix (+ optional phase_sequence-Phasen),
+# statt breit gegen die ganze Vision zu arbeiten. Selbst-enthalten:
+# Entscheidungs-Historie + Effektivität + Vorwärts-Vorschlag in EINEM File.
+# `observations.yaml` bleibt davon unberührt (reines Mid-Loop-Substrat, ADR #78).
+#
+# COMMITTED (NICHT gitignored) — der Fokus-Verlauf überlebt Klon/Multi-User/
+# Worktree-Wechsel und macht den Velocity-Trend über Iterationen erklärbar.
+#
+# Default opt-in: existiert KEIN history-Eintrag für die aktive Iteration, gilt
+# das heutige Verhalten (breit gegen alle Dimensionen/Features) — KEINE
+# Verhaltensänderung. „Current" = der history-Eintrag mit der aktiven
+# Iterationsnummer (kein redundanter Pointer).
+#
+# Zwei Bereiche:
+#
+#   history             Append-pro-Iteration. Je Eintrag die abgestimmte Fokus-
+#                       Entscheidung + (vom Audit am Iter-Ende gefüllte)
+#                       Effektivität. Schema je Eintrag:
+#                         - iteration: <N>
+#                           decided_at: <ISO-8601-UTC>
+#                           dimensions: [<dim-code>, ...]   # fokussierte Score-Dims (leer = keine Dim-Verengung)
+#                           features: [<feature-slug>, ...] # leer = alle Features
+#                           phases: [<phase>, ...]          # optional, leer = alle Phasen
+#                           mode: soft-regression-guard     # weich + Regressions-Schutz (einziger Modus in v1.5.0)
+#                           rationale: <str>
+#                           effectiveness:                  # vom Audit gefüllt (leer bis Iter-Ende)
+#                             <dim-code>: {before: <n>, after: <n>, target: <n>, verdict: hit|miss}
+#
+#   pending_suggestion  Vom Audit am Iter-Ende geschriebener Fokus-VORSCHLAG für
+#                       die NÄCHSTE Iteration; vom roadmap-gap-Skill beim Iter-
+#                       Start konsumiert (`focus consume-suggestion` liest +
+#                       leert) und als Startpunkt des Vorschlags genutzt.
+#                       null = kein Vorschlag offen. Schema:
+#                         {suggested_at, dimensions, features, phases,
+#                          rationale, from_iteration}
+schema_version: 1.5.0
+history:
+- iteration: 1
+  decided_at: '2026-08-15T08:17:31Z'
+  dimensions:
+  - RA
+  features:
+  - batch-modus
+  - diagnose-werkzeuge
+  - rating-solver
+  phases: []
+  mode: soft-regression-guard
+  rationale: 'Iteration-0-Seeds: batch-modus verfehlte sein Ziel um 2 (Abgabe-Plausibilisierung
+    halb geliefert), diagnose-werkzeuge um 1 (Symmetrie-Test 3. Richtung + lastEligible),
+    rating-solver um 1 (toter Tiebreak). Die uebrigen 6 Features sind an/nahe ihren
+    Deckeln — halten statt heben. Dazu SI test-extraktions-helfer (reif) und die cleanup-iter0-Substanz,
+    die in den drei Lifts mit erledigt wird.'
+  effectiveness: {}
+pending_suggestion: null

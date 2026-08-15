@@ -30,8 +30,19 @@
 #                 consume-seeds`) — NICHT bei iteration-done geleert. Ersetzt
 #                 das deprecatete gitignored `iteration-seeds.yaml` (ADR #78).
 schema_version: 1.4.0
-iteration: null
-entries: []
+iteration: 3
+entries:
+- at: '2026-08-15T13:08:06Z'
+  issue: 42
+  po_class: null
+  surprises:
+  - Symmetrie-Test deckte scanStats automatisch ohne neue Ausnahmen ab — das direkte
+    =-Schreibmuster zahlt sich aus (Design aus iter1 traegt).
+  - 441/441 nach +32 Tests; Baseline 409 im Diff nachweislich nur Insertions (Q2-Beleg
+    per git diff statt Behauptung).
+  reasoning: 'Glattes PASS. EA-Wandel-Linse Teil 1: unbekannte Requirement-Scopes,
+    gekappte Scans und reqCount-Defaults sind jetzt im Report sichtbar, BEVOR etwas
+    falsch gebaut wird. v4.49.0.'
 discoveries:
   pattern_candidates: []
   antipattern_candidates: []

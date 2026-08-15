@@ -239,4 +239,18 @@ history:
     notes: 'Finale Mikro-Runde: pool 84->85 (removeFromPool-Test + §30-Politur, PO-direkt),
       diagnose 84->85 (Doppelzaehlungs-Korrektur + Krisenabend als Live-Beleg). PORTFOLIO
       KOMPLETT: alle 9 Features exakt auf structural_max.'
+- iteration: 9
+  decided_at: '2026-08-15T21:25:58Z'
+  dimensions:
+  - RA
+  features:
+  - bedienpanel-ui
+  phases: []
+  mode: soft-regression-guard
+  rationale: 'Zwei neue User-Anforderungen (15.08. nachts): (1) Panel-Rework — Max-teure-Filter
+    raus, optionaler Max-Rating-Filter rein, Erweiterte Einstellungen thematisch gruppieren
+    (bedienpanel-ui + Solver-Beruehrung). (2) NEUES Feature Pack-Opener (Store: Pack
+    waehlen -> alle oeffnen -> Verein/Storage-Verteilung -> Zieh-Liste) — Mechanik-Aufklaerung
+    laeuft (PaleTools-Analyse), Vision-Eintrag folgt, Cap-Frage offen bis zur Live-Verifikation.'
+  effectiveness: {}
 pending_suggestion: null

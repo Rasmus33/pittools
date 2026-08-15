@@ -161,4 +161,20 @@ history:
       (#52 loading-Guard), batch 69->70 (#54 titleSource/Tap-Tests/popupDismissCount).
       Damit 6 von 9 Features exakt auf structural_max; die restlichen 3 (solver 92/95,
       diagnose 84/85, pool 83/85) haben ausschliesslich strukturell begruendete Restpunkte.'
+- iteration: 6
+  decided_at: '2026-08-15T15:43:32Z'
+  dimensions:
+  - RA
+  features:
+  - rating-solver
+  - diagnose-werkzeuge
+  - spieler-pool
+  phases: []
+  mode: soft-regression-guard
+  rationale: 'Fuenfter expliziter User-Neustart. Verifikations-Runde: die letzten
+    3 Features unter dem Deckel werden mit Ehrlichkeits-Mandat gap-analysiert — beim
+    Batch verbarg die Structural-Begruendung noch einen echten Kern (titleOf). Ergebnis
+    nichts/duenn ist explizit erwuenscht und beendet die Roadmap mit Beweis statt
+    Behauptung. Nur echte Funde werden umgesetzt.'
+  effectiveness: {}
 pending_suggestion: null

@@ -346,6 +346,7 @@ public class MainActivity extends Activity {
         // evaluateJavascript kann ihn nicht liefern - das Ergebnis kommt
         // asynchron, oft erst Sekunden spaeter).
         web.evaluateJavascript(
+            // [PALE-GUARD-BEGIN]
             "(function(){" +
             "if(window.__pt_waiting)return;window.__pt_waiting=1;" +
             "function exec(note){try{" +
@@ -422,6 +423,7 @@ public class MainActivity extends Activity {
             "    +m.join(',');return;}" +
             "  setTimeout(w,250);})();" +
             "})()", null);
+            // [PALE-GUARD-END]
     }
 
     /** Escaped einen Beliebig-Text als JS-String-Literal (inkl. Quotes). */

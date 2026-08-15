@@ -31,18 +31,17 @@ batch-modus:
 bedienpanel-ui:
   RA:
     evidence:
-    - ea-fc-sbc-optimizer.user.js:3457-3470
-    - ea-fc-sbc-optimizer.user.js:3549-3562
-    - solver-test.js:2027-2087
-    - ea-fc-sbc-optimizer.user.js:3878-3885
-    - docs/LEARNINGS.md:493-501
-    iteration_scored: 0
-    reasoning: Alle 5 Aktionen verifiziert umgesetzt, User-Bands-Invariante geschuetzt
-      (saved zuerst), Testbarkeit uebererfuellt (0..99-Aequivalenz-Sweep), Feedback
-      + Report-Feld wie geplant. Ueber Ziel 80, unter Max 85 weil EA-Fehlertoleranz-Achse
-      bewusst nicht angefasst.
-    score: 82.0
-    source: audit-evaluator
+    - ea-fc-sbc-optimizer.user.js:3836-3870
+    - ea-fc-sbc-optimizer.user.js:4498-4510
+    - solver-test.js:3108-3227
+    - docs/LEARNINGS.md:1476-1506
+    notes: 'Post-iter4: Launcher-Fallback-Kette (Primaerpfad strukturell vorrangig,
+      3 Testfaelle), readConfig im onRunClick-Catch (Stil wie onBatchPlanClick), 3
+      stille localStorage-Catches -> reportError. Restluecken: STATE.loading-Guard
+      (duenn, deferred), readConfig ohne eigenen Guard (Q4-Entscheidung, aufruferseitig
+      gedeckt).'
+    score: 84.0
+    source: user-manual
     updated_at: '2026-08-15'
 diagnose-werkzeuge:
   RA:
@@ -92,14 +91,13 @@ rating-solver:
 sbc-vorgaben-erkennung:
   RA:
     evidence:
-    - ea-fc-sbc-optimizer.user.js:436
-    - ea-fc-sbc-optimizer.user.js:838
-    - solver-test.js:2832-2936
-    - docs/LEARNINGS.md:1328-1381
-    notes: 'Post-iter3: scopesSeen/scanStats/reqCountDefaulted additiv+getestet. Restfund:
-      applyFromSetChallenges ruft deepScanChallenge ohne recordDeepScanStats — Beobachtbarkeitsluecke
-      im Fallback-Pfad (Seed iter4).'
-    score: 79.0
+    - ea-fc-sbc-optimizer.user.js:740-749
+    - solver-test.js:3031-3106
+    - docs/LEARNINGS.md:1369-1373
+    notes: 'Post-iter4: einziger iter3-Restfund geschlossen (#48, recordDeepScanStats
+      im Fallback-Pfad, Test-Block 36 mit Stale-Wert-Beweis + Gegenproben). Structural_max
+      80 erreicht.'
+    score: 80.0
     source: user-manual
     updated_at: '2026-08-15'
 spieler-pool:

@@ -1,6 +1,6 @@
-# Audit — `spieler-pool` — Iteration 3
+# Audit — `spieler-pool` — Iteration 4
 
-**Stand:** 2026-08-15T13:42:31Z
+**Stand:** 2026-08-15T14:36:41Z
 ## Score-Stand
 
 | Dim | Ist (raw) | Capped (struct_max) | Schwellwert | Status | Provenance |
@@ -18,7 +18,7 @@
 
 ## Regression / Effektivität
 
-🟢 Keine Regression — Σ Ist 83.0 (≥ 0.0 Iter 2).
+🟢 Keine Regression — Σ Ist 83.0 (≥ 0.0 Iter 3).
 
 **Effektivität:** all-held
 (0.0 von 0.0 = 0.0% Reach über 0 Fokus-Dim, 1 Dim held)

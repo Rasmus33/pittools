@@ -1,38 +1,36 @@
-# Audit — `bedienpanel-ui` — Iteration 3
+# Audit — `bedienpanel-ui` — Iteration 4
 
-**Stand:** 2026-08-15T13:42:31Z
+**Stand:** 2026-08-15T14:36:41Z
 ## Score-Stand
 
 | Dim | Ist (raw) | Capped (struct_max) | Schwellwert | Status | Provenance |
 |-----|-----------|----------------------|-------------|--------|------------|
-| **RA** | 82.0 | 82.0 / 85 | 59.49999999999999 | pass | audit-evaluator |
+| **RA** | 84.0 | 84.0 / 85 | 59.49999999999999 | pass | user-manual |
 
 ## Pre / Post / Gain
 
 | Dim | Pre | Post | Gain | Target | Reach % |
 |-----|-----|------|------|--------|---------|
-| **RA** | 68.0 | 82.0 | N/A (held iter0) | 80 | — |
+| **RA** | 82.0 | 84.0 | 2.0 | 84 | 100.0% |
 
 > Held-Dimensionen (in dieser Iteration nicht re-gescored, ADR #98) zeigen `N/A` —
 > ihr Gain wird nicht gegen eine veraltete Baseline gerechnet.
 
 ## Regression / Effektivität
 
-🟢 Keine Regression — Σ Ist 82.0 (≥ 0.0 Iter 2).
+🟢 Keine Regression — Σ Ist 84.0 (≥ 82.0 Iter 3).
 
-**Effektivität:** all-held
-(0.0 von 0.0 = 0.0% Reach über 0 Fokus-Dim, 1 Dim held)
+**Effektivität:** in-range
+(2.0 von 2.0 = 100.0% Reach über 1 Fokus-Dim)
 
 ## Evidence + Reasoning pro Dim
 
 ### RA — Robust Architecture
 
-**Begründung:** Alle 5 Aktionen verifiziert umgesetzt, User-Bands-Invariante geschuetzt (saved zuerst), Testbarkeit uebererfuellt (0..99-Aequivalenz-Sweep), Feedback + Report-Feld wie geplant. Ueber Ziel 80, unter Max 85 weil EA-Fehlertoleranz-Achse bewusst nicht angefasst.
 **Evidence:**
 
-- `ea-fc-sbc-optimizer.user.js:3457-3470`
-- `ea-fc-sbc-optimizer.user.js:3549-3562`
-- `solver-test.js:2027-2087`
-- `ea-fc-sbc-optimizer.user.js:3878-3885`
-- `docs/LEARNINGS.md:493-501`
+- `ea-fc-sbc-optimizer.user.js:3836-3870`
+- `ea-fc-sbc-optimizer.user.js:4498-4510`
+- `solver-test.js:3108-3227`
+- `docs/LEARNINGS.md:1476-1506`
 

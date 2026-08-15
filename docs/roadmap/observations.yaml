@@ -43,6 +43,18 @@ entries:
   reasoning: 'Glattes PASS. EA-Wandel-Linse Teil 1: unbekannte Requirement-Scopes,
     gekappte Scans und reqCount-Defaults sind jetzt im Report sichtbar, BEVOR etwas
     falsch gebaut wird. v4.49.0.'
+- at: '2026-08-15T13:25:18Z'
+  issue: 43
+  po_class: null
+  surprises:
+  - Vermeintliche Phasen-Abweichung (kein separater release-Commit) war plankonform
+    — die Lift-Plaene zweier paralleler Tickets definierten das Mapping unterschiedlich;
+    Validator hat gegen den JEWEILS EIGENEN Plan geprueft statt pauschal.
+  - 'Das reportError-Gating brauchte keinen neuen Code: der bestehende !kind-Early-Return
+    erledigt es strukturell — am Code verifiziert statt geglaubt.'
+  reasoning: 'Glattes PASS. EA-Wandel-Linse Teil 2: JSON-Parse-Fehler an SBC-URLs
+    landen in lastErrors, unbekannte /ut/game/-Endpunkte werden gezaehlt+gesampelt,
+    neue rareflag-Werte sind trotz Top-5-Cap sichtbar. v4.50.0.'
 discoveries:
   pattern_candidates: []
   antipattern_candidates: []

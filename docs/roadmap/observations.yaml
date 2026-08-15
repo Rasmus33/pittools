@@ -30,8 +30,21 @@
 #                 consume-seeds`) — NICHT bei iteration-done geleert. Ersetzt
 #                 das deprecatete gitignored `iteration-seeds.yaml` (ADR #78).
 schema_version: 1.4.0
-iteration: null
-entries: []
+iteration: 1
+entries:
+- at: '2026-08-15T09:11:05Z'
+  issue: 31
+  po_class: C
+  surprises:
+  - 'SI #31: 6 Marker-Blocktypen + ~30 Funktions-Extraktionen auf 2 Helfer konsolidiert,
+    21 redundante Datei-Reads entfernt, Byte-Gleichheit gegen unabhaengige Reimplementierungen
+    getestet (364/364). Validator-Finding (unbegruendete Ausnahmen) per Nachtrag geschlossen:
+    uiBlock migriert, IIFE-Ausnahme mit WARUM-Kommentar.'
+  - SI-Doc nannte einen POOL-Marker, der nicht existiert — Doku-Drift, beim naechsten
+    SI-Doc-Touch korrigieren.
+  reasoning: 'PARTIAL → gezielter Nachtrag statt Debt: die Test-Infrastruktur ist
+    DAS Sicherheitsnetz, unbegruendete Sonderfaelle dort sind teurer als 10 Minuten
+    Nacharbeit. Kein Version-Bump (Test-only).'
 discoveries:
   pattern_candidates: []
   antipattern_candidates: []

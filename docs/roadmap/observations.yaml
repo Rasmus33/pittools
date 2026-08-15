@@ -30,8 +30,16 @@
 #                 consume-seeds`) — NICHT bei iteration-done geleert. Ersetzt
 #                 das deprecatete gitignored `iteration-seeds.yaml` (ADR #78).
 schema_version: 1.4.0
-iteration: null
-entries: []
+iteration: 4
+entries:
+- at: '2026-08-15T14:13:12Z'
+  issue: 48
+  po_class: null
+  surprises:
+  - 'Mini-Task-Flow bewaehrt: kind=task ohne Score-Snapshot, Main-Verifikation statt
+    Validator-Spawn bei Ein-Zeilen-Diff — Proportionalitaet der Pruefung zur Diff-Groesse.'
+  reasoning: 'Restfund aus dem iter3-Re-Score geschlossen: recordDeepScanStats folgt
+    jetzt JEDEM deepScanChallenge-Aufruf inkl. Fallback-Pfad. v4.51.0, 474/474.'
 discoveries:
   pattern_candidates: []
   antipattern_candidates: []

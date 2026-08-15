@@ -3859,6 +3859,14 @@
             uiScan: STATE.diag.uiScan || null,
             // Gesperrte Karten: wurden PaleTools-Locks gefunden und wie viele?
             locks: STATE.diag.locks || null,
+            // Aktive Rating-Kosten-Tabelle: bei "SBC kostet mehr Rare als
+            // erwartet" zeigt das, welche Bänder der Solver tatsächlich
+            // benutzt hat, statt dass es geraten werden muss (LEARNINGS §10).
+            bands: {
+                spec: bandsToSpec(ratingBands),
+                count: ratingBands.length,
+                isDefault: JSON.stringify(ratingBands) === JSON.stringify(defaultBands())
+            },
             // Batch: was hat der Lauf pro Runde gesehen, als er die nächste
             // Instanz öffnen wollte? (Die Abbruchmeldung verweist darauf -
             // in v4.18.0 fehlte das Feld im Report, mein Fehler.)

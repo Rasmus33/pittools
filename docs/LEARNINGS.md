@@ -1323,6 +1323,22 @@ macht im Report nur sichtbar, ob eine antwortlose Abgabe tatsaechlich
 durchging. Testfaelle decken Sperr-Fall (gleiche Id nochmal -> nicht
 frisch) und Re-Plan-Normalfall (neuer Plan, leere Sperrliste) ab.
 
+**Die Erschoepfungs-Meldung nach 404/475 (Ticket #70).** `resolveFreshChallengeId()`
+haelt in `STATE.diag.staleRecover.candidateCount` die WAHRE Anzahl der zur
+Signatur (Ziel-OVR/Slots) passenden frischen Kandidaten fest (`candidates`
+selbst bleibt auf 5 Eintraege gedeckelt, jetzt als `{id, status, repeatable,
+timesCompleted, endTime}`-Objekte statt nackter Ids). `submitToSbc()` liest
+diesen Zaehler und unterscheidet in `staleInstanceMessage()`: 0 Kandidaten
+heisst EA bietet die SBC ueberhaupt nicht mehr an (Limit erreicht oder
+Mitternachts-Ablauf) - die Meldung nennt das offen ("Keine weitere
+Wiederholung verfuegbar") statt zum wirkungslosen Schliessen/Neuoeffnen zu
+raten, und haengt bei einem laufenden Batch `N von M geschafft` an. Ab einem
+Kandidaten (mehrdeutig) bleibt der bisherige Rat, weil dort tatsaechlich noch
+eine Instanz existiert, sie liess sich nur nicht eindeutig zuordnen.
+`staleRecover.nodeState` traegt zusaetzlich den Status des Knotens der ALTEN
+Id, falls EA ihn in der frischen Liste noch zeigt - erklaert einen 404/475
+ueber das reine "weg" hinaus (z.B. `status: "COMPLETE"`).
+
 ## 36. App 1.8.0: 304 ist keine Fehlermeldung, Script-Felder nur noch per Setter, WebView-Fehler sichtbar
 
 Vier Entscheidungen aus App v1.8.0 (versionCode 12), alle in

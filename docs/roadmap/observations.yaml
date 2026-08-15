@@ -133,6 +133,14 @@ discoveries:
     note: severity=P3; STATE.diag.lastEligible wird bei 403 echt zugewiesen, aber
       nie in buildDiagReport ausgegeben — Spiegelbild des uiScan-Falls (befuellt-aber-nie-sichtbar).
       Vorbestehend, Kandidat Audit-Sammelticket.
+  - slug: roadmap-md-q7-drift-batch-navigation
+    evidence:
+    - docs/ROADMAP.md:38-58
+    issues:
+    - 5
+    note: severity=P3; ROADMAP.md Punkt 1b beschreibt Batch-Navigation als ungeloest
+      (Stand v4.18.1), obwohl clickSetTile/clickChallengeRow laengst funktionieren
+      — Q7-Drift, Kandidat Audit-Sammelticket.
 seeds_next:
   seeded_at: null
   patterns: []

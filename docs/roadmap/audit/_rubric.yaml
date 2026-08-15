@@ -1,17 +1,15 @@
 android-app-wrapper:
   RA:
     evidence:
-    - app/java/com/sbctools/browser/MainActivity.java:454-466
-    - app/java/com/sbctools/browser/MainActivity.java:171-189
-    - app/java/com/sbctools/browser/MainActivity.java:844-857
-    - app/guard-test.js:294-358
-    - app/AndroidManifest.xml:4-5
-    notes: 'Post-iter2 audit-evaluator: alle 5 Lift-Aktionen live verifiziert (304-Notiz,
-      Setter-Kapselung mit Regex-Negativ-Check, WebView-Fehler-Overrides, Leer-Body-Fix
-      inkl. fetchUrl, gemeinsame IPC-Konstante). Restluecke zum Deckel 80: LEARNINGS-Eintrag
-      fehlte zum Score-Zeitpunkt (direkt danach als §36 nachgezogen) + guard-test-Literal-Extraktion
-      bewusst deferred.'
-    score: 79.0
+    - app/sdk-env.sh:1-26
+    - app/compile-check.sh:1-19
+    - app/guard-test.js:64-107
+    - app/guard-test.js:234-250
+    - docs/LEARNINGS.md:1439-1470
+    notes: 'Post-iter3: compile-check.sh (javac-Gate ohne Keystore) + marker-primaere
+      Waechter-Extraktion mit Literal-Fallback und Byte-Gleichheits-Test. Structural_max
+      80 erstmals erreicht.'
+    score: 80.0
     source: user-manual
     updated_at: '2026-08-15'
 batch-modus:
@@ -65,19 +63,15 @@ diagnose-werkzeuge:
 ea-app-anbindung:
   RA:
     evidence:
-    - ea-fc-sbc-optimizer.user.js:194-207
-    - solver-test.js:2237-2329
-    - ea-fc-sbc-optimizer.user.js:147-150
-    - ea-fc-sbc-optimizer.user.js:1248-1257
-    - docs/LEARNINGS.md:1130-1163
-    iteration_scored: 0
-    reasoning: Regex-SSOT-Migration vollstaendig (alle Call-Sites, static-regression-getestet,
-      ~35 neue Assertions fuer vorher ungetesteten Klassifizierer); Beobachtbarkeit
-      strukturell ueber reportError geschlossen; apiRequest-Extraktion Q2-konform
-      verschoben und dokumentiert — die bestehende 401-Retry-Duplikation deckelt zusammen
-      mit der EA-Undokumentiertheit (max 75).
-    score: 74.0
-    source: audit-evaluator
+    - ea-fc-sbc-optimizer.user.js:279-301
+    - ea-fc-sbc-optimizer.user.js:263-274
+    - solver-test.js:2976-3028
+    - docs/LEARNINGS.md:1383-1431
+    notes: 'Post-iter3: JSON-Parse-Fehler sichtbar (kind-gegated), noteUnclassifiedUtas,
+      computeRareflagHistogram+allSpecialFlagValues. Structural_max 75 erreicht. Duenne
+      Punkte (apiBaseDetectionStuck, sbcHookMisses) bewusst verschoben.'
+    score: 75.0
+    source: user-manual
     updated_at: '2026-08-15'
 rating-solver:
   RA:
@@ -98,18 +92,15 @@ rating-solver:
 sbc-vorgaben-erkennung:
   RA:
     evidence:
-    - ea-fc-sbc-optimizer.user.js:4953
-    - ea-fc-sbc-optimizer.user.js:360
-    - ea-fc-sbc-optimizer.user.js:434-493
-    - solver-test.js:1876-1925
-    - docs/LEARNINGS.md:924-978
-    iteration_scored: 0
-    reasoning: Batch-Anker-Vergleich war struktureller No-Op und ist jetzt scharf,
-      getestet und dokumentiert; Parser per Marker-Extraktion mit konstruierten EA-Objekten
-      testbar; matchedAs schliesst die Dual-Use-Beobachtbarkeitsluecke inkl. Edge-Case.
-      Verbleibender Deckel ist strukturell (EAs wechselnde Response-Form).
-    score: 78.0
-    source: audit-evaluator
+    - ea-fc-sbc-optimizer.user.js:436
+    - ea-fc-sbc-optimizer.user.js:838
+    - solver-test.js:2832-2936
+    - docs/LEARNINGS.md:1328-1381
+    notes: 'Post-iter3: scopesSeen/scanStats/reqCountDefaulted additiv+getestet. Restfund:
+      applyFromSetChallenges ruft deepScanChallenge ohne recordDeepScanStats — Beobachtbarkeitsluecke
+      im Fallback-Pfad (Seed iter4).'
+    score: 79.0
+    source: user-manual
     updated_at: '2026-08-15'
 spieler-pool:
   RA:

@@ -1,6 +1,6 @@
-# Audit — `diagnose-werkzeuge` — Iteration 2
+# Audit — `diagnose-werkzeuge` — Iteration 3
 
-**Stand:** 2026-08-15T12:14:18Z
+**Stand:** 2026-08-15T13:42:31Z
 ## Score-Stand
 
 | Dim | Ist (raw) | Capped (struct_max) | Schwellwert | Status | Provenance |
@@ -11,17 +11,17 @@
 
 | Dim | Pre | Post | Gain | Target | Reach % |
 |-----|-----|------|------|--------|---------|
-| **RA** | 76.0 | 84.0 | 8.0 | 82 | 133.3% |
+| **RA** | 76.0 | 84.0 | N/A (held iter1) | 82 | — |
 
 > Held-Dimensionen (in dieser Iteration nicht re-gescored, ADR #98) zeigen `N/A` —
 > ihr Gain wird nicht gegen eine veraltete Baseline gerechnet.
 
 ## Regression / Effektivität
 
-🟢 Keine Regression — Σ Ist 84.0 (≥ 76.0 Iter 1).
+🟢 Keine Regression — Σ Ist 84.0 (≥ 0.0 Iter 2).
 
-**Effektivität:** in-range
-(8.0 von 6.0 = 133.3% Reach über 1 Fokus-Dim)
+**Effektivität:** all-held
+(0.0 von 0.0 = 0.0% Reach über 0 Fokus-Dim, 1 Dim held)
 
 ## Evidence + Reasoning pro Dim
 

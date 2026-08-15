@@ -40,6 +40,20 @@ entries:
     Validator-Spawn bei Ein-Zeilen-Diff — Proportionalitaet der Pruefung zur Diff-Groesse.'
   reasoning: 'Restfund aus dem iter3-Re-Score geschlossen: recordDeepScanStats folgt
     jetzt JEDEM deepScanChallenge-Aufruf inkl. Fallback-Pfad. v4.51.0, 474/474.'
+- at: '2026-08-15T14:31:29Z'
+  issue: 50
+  po_class: null
+  surprises:
+  - 'Validator-PARTIAL wegen eines kosmetischen Doppel-Loggings: das alte warn(e)
+    blieb neben dem neuen reportError stehen (reportError warnt intern selbst) — PO-Klasse
+    C, Ein-Zeilen-Cleanup direkt nach dem Merge.'
+  - Der Reihenfolge-Beweis (Primaer-Selektor gewinnt bei Doppel-Treffer, Identitaets-Assertion
+    statt truthiness + containerFallbackUsed bleibt 0) hat sich als Muster fuer additive
+    Fallback-Ketten etabliert.
+  reasoning: 'Panel-Lift: Launcher uebersteht kuenftige EA-Container-Umbenennungen
+    per Text-Fallback (Primaerpfad strukturell vorrangig), readConfig-Fehler brechen
+    den Run sauber ab statt mit undefined weiterzulaufen, drei stille localStorage-Catches
+    melden jetzt. v4.52.0, 490/490.'
 discoveries:
   pattern_candidates: []
   antipattern_candidates: []

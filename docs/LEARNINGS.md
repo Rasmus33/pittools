@@ -1472,3 +1472,35 @@ Suchstrategien und welche wie gescheitert ist. Ein Byte-Gleichheits-Test
 (direkt nach der bestehenden Test-0-CRLF-Regression) ruft beide Wege
 unabhaengig auf und prueft String-Gleichheit des bereits normalisierten
 Extrakts - faengt Marker-Drift ab, solange der Literal-Pfad noch existiert.
+
+## 40. Text-Fallback am Einhaenge-Punkt, readConfig() im Fehler-Funnel, stille localStorage-Catches sichtbar
+
+`sbcButtonContainer()` (§10) versucht als zweite Stufe eine Text-basierte
+Suche, wenn `.sbc-button-container` selbst nichts liefert: `sbcButtonContainerByText()`
+durchsucht alle sichtbaren `button`-Elemente nach `/squad builder|clear squad|exchange/i`
+und liefert deren gemeinsamen Elternknoten - matchen Treffer auf
+unterschiedliche Elternknoten, ist der Container nicht sicher bestimmbar und
+die Funktion liefert `null` statt zu raten (Pattern `ea-grenz-fallback-ketten`).
+Der Primaerpfad bleibt strukturell vorrangig: der bestehende Selektor-Loop
+bricht bei einem sichtbaren Treffer per `return` ab, bevor der Fallback-Aufruf
+im Code danach ueberhaupt erreicht wird - kein Flag, das sich vertauschen
+liesse. `containerFallbackUsed` (modulweites `let`, analog `btnAttachCount`/
+`launcherClicks`, bewusst KEIN `STATE.diag`-Feld, LEARNINGS §25) zaehlt jeden
+tatsaechlichen Fallback-Treffer und steht im `launcher`-Block des
+Diagnose-Reports neben `containerVisible`.
+
+`onRunClick()` umschliesst `readConfig()` jetzt mit demselben Try/Catch, der
+zuvor nur `SolverCore.solve()` deckte - wirft `readConfig()` bei einer
+fehlenden `ui.*`-DOM-Referenz, laeuft der Catch-Zweig (Toast, `setStatus('Fehler')`,
+`reportError('readConfig fehlgeschlagen', e)`) statt dass der Fehler
+unabgefangen durch die `finally` nach aussen durchreicht. Identischer Stil wie
+der bestehende Catch in `onBatchPlanClick()` um denselben `readConfig()`-Aufruf
+- eine Fehlerkonvention fuer beide Aufrufer statt eines neuen `{ok,why}`-Vertrags.
+
+Drei bisher stille `catch (e) {}` an `localStorage`-Schreibpfaden (`saveBands()`,
+der "Erweiterte Einstellungen"-Toggle, die Drag-Positions-Persistenz in
+`makeDraggable`) rufen jetzt `reportError()` (§23) auf. Private-Mode/
+Quota-Fehler waren zuvor komplett unsichtbar - der In-Memory-Zustand wirkte
+weiter korrekt, aber nichts ueberlebte den naechsten Reload. Die
+Drag-Positions-Meldung traegt `posKey` im Label, weil `makeDraggable` sowohl
+fuer Panel als auch FAB verwendet wird und beide dieselbe Catch-Zeile teilen.

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.51.0
+// @version      4.52.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.51.0';
+    const VERSION = '4.52.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -3552,7 +3552,8 @@
         const adv = panel.querySelector('#sbc-opt-advanced');
         try { if (localStorage.getItem('sbcOptAdvancedOpen') === '1') adv.open = true; } catch (e) {}
         adv.addEventListener('toggle', function () {
-            try { localStorage.setItem('sbcOptAdvancedOpen', adv.open ? '1' : '0'); } catch (e) {}
+            try { localStorage.setItem('sbcOptAdvancedOpen', adv.open ? '1' : '0'); }
+            catch (e) { reportError('Erweiterte-Einstellungen-Zustand speichern fehlgeschlagen', e); }
         });
         initBandEditor();
         refreshSbcInfoUI();
@@ -3593,7 +3594,8 @@
     }
     // [BANDS-END]
     function saveBands() {
-        try { localStorage.setItem('sbcOptRatingBands', JSON.stringify(ratingBands)); } catch (e) {}
+        try { localStorage.setItem('sbcOptRatingBands', JSON.stringify(ratingBands)); }
+        catch (e) { reportError('Rating-Bänder speichern fehlgeschlagen', e); }
     }
     function initBandEditor() {
         try {
@@ -3767,7 +3769,7 @@
             try {
                 const rect = el.getBoundingClientRect();
                 localStorage.setItem(posKey, JSON.stringify({ left: rect.left, top: rect.top }));
-            } catch (e) {}
+            } catch (e) { reportError('Panel-Position speichern fehlgeschlagen (' + posKey + ')', e); }
         }
         handle.addEventListener('pointerup', endDrag);
         handle.addEventListener('pointercancel', endDrag);
@@ -3782,6 +3784,7 @@
     const BTN_ID = 'pittools-sbc-btn';
     let btnAttachCount = 0;
     let launcherClicks = 0;
+    let containerFallbackUsed = 0;
     /**
      * Sind wir im SBC-Bereich? Gemessen an der View-Controller-Kette der App
      * (dieselbe Quelle, aus der auch die Challenge gelesen wird).
@@ -3835,7 +3838,35 @@
         for (let i = 0; i < all.length; i++) {
             if (all[i].offsetParent !== null || all[i].getClientRects().length) return all[i];
         }
-        return null;
+        const fallback = sbcButtonContainerByText();
+        if (fallback) containerFallbackUsed++;
+        return fallback;
+    }
+    /**
+     * Fallback, falls EA `.sbc-button-container` umbenennt: sucht sichtbare
+     * Buttons ueber ihren Text (dasselbe Muster wie `buttonDump` in
+     * buildDiagReport(), dort nur Diagnose, kein Fallback-Versuch). Nur die
+     * drei Begriffe der SBC-Aktionsleiste - ein Fehltreffer ist nicht
+     * schlimmer als der heutige Status quo (Container bleibt null, FAB bleibt
+     * Rueckfallweg). Matchen mehrere Buttons auf UNTERSCHIEDLICHE
+     * Elternknoten, ist der Container nicht sicher bestimmbar - null statt
+     * zu raten.
+     */
+    function sbcButtonContainerByText() {
+        try {
+            const btns = document.querySelectorAll('button');
+            let hit = null;
+            for (let i = 0; i < btns.length; i++) {
+                const b = btns[i];
+                if (!(b.offsetParent !== null || b.getClientRects().length)) continue;
+                if (!/squad builder|clear squad|exchange/i.test((b.textContent || '').trim())) continue;
+                const parent = b.parentNode;
+                if (!parent) continue;
+                if (hit && hit !== parent) return null;
+                hit = parent;
+            }
+            return hit;
+        } catch (e) { return null; }
     }
     function buildSbcButton(container) {
         const btn = document.createElement('button');
@@ -4152,6 +4183,9 @@
                     containerSelector: '.sbc-button-container',
                     containerCount: document.querySelectorAll('.sbc-button-container').length,
                     containerVisible: !!cont,
+                    // >0 = der Text-Fallback musste einspringen, weil
+                    // .sbc-button-container selbst nichts lieferte.
+                    containerFallbackUsed: containerFallbackUsed,
                     containerRect: cont ? rect(cont) : null,
                     containerChildren: cont ? (function () {
                         const out = [];
@@ -4462,10 +4496,17 @@
         setStatus('optimiere...');
         ui.run.disabled = true;
         try {
-            const cfg = readConfig();
-            let res;
-            try { res = SolverCore.solve(STATE.pool, cfg); }
-            catch (e) { toast('Optimierungsfehler: ' + e.message, 'error'); setStatus('Fehler'); warn(e); return; }
+            let cfg, res;
+            try {
+                cfg = readConfig();
+                res = SolverCore.solve(STATE.pool, cfg);
+            } catch (e) {
+                toast('Optimierungsfehler: ' + e.message, 'error');
+                setStatus('Fehler');
+                warn(e);
+                reportError('readConfig fehlgeschlagen', e);
+                return;
+            }
             renderResult(res);
             if (res.ok) {
                 setStatus('Lösung gefunden (OVR ' + res.ovr + ') - trage ein...');

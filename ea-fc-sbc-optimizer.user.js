@@ -1161,7 +1161,7 @@
                     if (p) out.push(p);
                 }
             }
-        } catch (e) { warn('Unassigned via App-Service fehlgeschlagen:', e); }
+        } catch (e) { reportError('Unassigned via Service fehlgeschlagen', e); }
         return out;
     }
     async function fetchStorageViaServices() {
@@ -1179,7 +1179,7 @@
                     if (out.length) break;
                 }
             }
-        } catch (e) { warn('Storage via App-Service fehlgeschlagen:', e); }
+        } catch (e) { reportError('Storage via Service fehlgeschlagen', e); }
         return out;
     }
     // ---- Ebene B: direkte HTTP-Calls ----------------------------------------

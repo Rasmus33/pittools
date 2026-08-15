@@ -1286,3 +1286,41 @@ anhalten") haengt weiter an den bestehenden Checks; submitConfirmations
 macht im Report nur sichtbar, ob eine antwortlose Abgabe tatsaechlich
 durchging. Testfaelle decken Sperr-Fall (gleiche Id nochmal -> nicht
 frisch) und Re-Plan-Normalfall (neuer Plan, leere Sperrliste) ab.
+
+## 36. App 1.8.0: 304 ist keine Fehlermeldung, Script-Felder nur noch per Setter, WebView-Fehler sichtbar
+
+Vier Entscheidungen aus App v1.8.0 (versionCode 12), alle in
+`MainActivity.java`, alle per guard-test-Check festgeschrieben:
+
+**304 laeuft als `[net-ok]`-Notiz, nicht mehr als `[net]`-Fehler.**
+`reportNetError` war als "einziger Log-Choke-Point fuer Netz-/Cache-FEHLER"
+benannt, bekam aber auch den gesunden Fall "304 (Cache aktuell)" - wer das
+Log nach echten Fehlern durchsucht, musste jede 304-Zeile von Hand
+aussortieren. Jetzt gibt es `reportNetNote` mit eigenem Praefix. WICHTIG:
+die 304-Zeile selbst bleibt sichtbar (nur das Praefix wechselte) - sie ist
+die Bestaetigung, dass der PaleTools-Hintergrund-Refresh lief. Ein
+guard-test-Check erzwingt, dass der 304-Zweig `reportNetNote` ruft.
+
+**`scriptSbc`/`scriptPale`/`paleSource` werden NUR noch ueber
+`setLoadedScripts()` geschrieben.** Der Setter loggt jede echte Aenderung
+(Zeichenlaengen + Quelle) und reicht die paleSource-Semantik
+(Cache/Download/keine bzw. null beim Reset) unveraendert durch. Ein
+Regex-Negativ-Check im guard-test verbietet externe Zuweisungen - ein
+kuenftiger Schreibzugriff an der Setter-Kapselung vorbei faellt im Gate auf.
+Nebeneffekt (gewollt): der Einstellungs-Reset setzt jetzt auch `paleSource`
+zurueck; vorher blieb der alte Wert bis zum naechsten ScriptLoader-Lauf
+stehen.
+
+**`onReceivedError`/`onReceivedHttpError` in `SbcWebViewClient`.** Vorher
+war ein fehlgeschlagener Seiten-Load (DNS, TLS, EA-Serverfehler) die einzige
+Fremd-Grenze der App ganz ohne Log-Spur. Beide Overrides liegen in der
+BESTEHENDEN benannten Klasse - d8 ohne Gradle stolpert ueber anonyme
+Klassen/Lambdas (README Technik-Notizen), deshalb kein Listener-Objekt.
+
+**Leer-Body-Guard war toter Code.** `readStream` liefert strukturell nie
+`null` (schlimmstenfalls `""`), der Check `body == null` in
+`fetchUrlIfChanged` konnte also nie greifen; `fetchUrl` (der Weg fuer den
+Optimizer-Download) hatte GAR keinen Leer-Body-Schutz. Ein 200er mit leerem
+Body galt an beiden Stellen als gueltiger Inhalt und haette ein leeres
+Script "erfolgreich" injiziert. Jetzt: `body.isEmpty()` -> als Fehler
+geloggt, `null` zurueck; die Aufrufer pruefen ohnehin nur `!= null`.

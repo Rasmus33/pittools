@@ -64,6 +64,16 @@ entries:
     alias-mutiert), Diagnose-Tool selbst gehaertet (Minimal-Report-Fallback ueber
     denselben Copy-Pfad). Deckt Cleanup-Kind #24.'
   reasoning: Validator PASS. v4.47.0 geht live.
+- at: '2026-08-15T10:23:07Z'
+  issue: 34
+  po_class: null
+  surprises:
+  - '#34: toter Tiebreak strukturell bewiesen entfernt (Teilmengen-Filter koennen
+    keine Duplikate wieder einfuehren; 405/405 vor=nach dem Schnitt), Suchgrenzen
+    erstmals hergeleitet kommentiert (1300: k*99<=1089; 900: 11*24=264), neue Unterscheidung
+    Suchfenster-vs-unloesbar im warnings-Array. Deckt Cleanup-Kind #26.'
+  reasoning: Validator PASS mit eigenem Neutralitaetsnachweis. v4.48.0 geht live.
+    Damit sind alle 4 Iter-1-Tickets durch.
 discoveries:
   pattern_candidates: []
   antipattern_candidates: []

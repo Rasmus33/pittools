@@ -43,18 +43,60 @@ function literalsFromJavaBlock(block) {
     return lits.map(unescapeJava).join('');
 }
 
-function extractGuard() {
-    const src = fs.readFileSync(JAVA, 'utf8');
+// Vier Anker, die in JEDEM vollständigen Wächter-Extrakt vorkommen müssen -
+// eine verschobene/entfernte Marker- oder Literal-Grenze verkürzt den Block
+// sonst STILL, ohne dass ein Test das bemerkt (Gap-Report Mangel 3).
+const GUARD_ANCHORS = ['HARD=', 'exec(', 'miss()', '__pt_status'];
+
+function missingAnchors(guardCode) {
+    return GUARD_ANCHORS.filter((a) => guardCode.indexOf(a) < 0);
+}
+
+// Primärer Weg: dedizierte Marker-Kommentare, immun gegen Reformats der
+// Fragment-Literale darunter.
+function extractGuardViaMarkers(src) {
+    const startMark = '// [PALE-GUARD-BEGIN]';
+    const endMark = '// [PALE-GUARD-END]';
+    const start = src.indexOf(startMark);
+    const end = src.indexOf(endMark, start < 0 ? 0 : start);
+    if (start < 0 || end < 0) {
+        return { ok: false, reason: 'Marker nicht gefunden (' + (start < 0 ? 'BEGIN' : 'END') + ' fehlt)' };
+    }
+    const guard = literalsFromJavaBlock(src.slice(start, end + endMark.length));
+    const missing = missingAnchors(guard);
+    if (missing.length) {
+        return { ok: false, reason: 'Marker gefunden, Extrakt unvollständig (fehlende Anker: ' + missing.join(', ') + ')' };
+    }
+    return { ok: true, guard: guard };
+}
+
+// Fallback: die ursprünglichen Fragment-Literale, solange dieser Weg noch
+// existiert (Aktion 5 hält beide Wege per Byte-Gleichheits-Test synchron).
+function extractGuardViaLiterals(src) {
     const startMark = '"(function(){" +';
     const endMark = '"})()", null);';
     const start = src.indexOf(startMark);
-    const end = src.indexOf(endMark, start);
+    const end = src.indexOf(endMark, start < 0 ? 0 : start);
     if (start < 0 || end < 0) {
-        throw new Error('Wächter-Block in MainActivity.java nicht gefunden - '
-            + 'Markierungen geändert? Gesucht: ' + startMark);
+        return { ok: false, reason: 'Literal-Fragmente nicht gefunden (gesucht: ' + startMark + ')' };
     }
-    const block = src.slice(start, end + '"})()"'.length);
-    return literalsFromJavaBlock(block);
+    const guard = literalsFromJavaBlock(src.slice(start, end + '"})()"'.length));
+    const missing = missingAnchors(guard);
+    if (missing.length) {
+        return { ok: false, reason: 'Literal-Fallback gefunden, Extrakt unvollständig (fehlende Anker: ' + missing.join(', ') + ')' };
+    }
+    return { ok: true, guard: guard };
+}
+
+function extractGuard() {
+    const src = fs.readFileSync(JAVA, 'utf8');
+    const viaMarker = extractGuardViaMarkers(src);
+    if (viaMarker.ok) return viaMarker.guard;
+    const viaLiteral = extractGuardViaLiterals(src);
+    if (viaLiteral.ok) return viaLiteral.guard;
+    throw new Error('Wächter-Block in MainActivity.java nicht extrahierbar - '
+        + 'Marker-Weg: ' + viaMarker.reason + ' | '
+        + 'Literal-Fallback: ' + viaLiteral.reason);
 }
 
 function unescapeJava(s) {

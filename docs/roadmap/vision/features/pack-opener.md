@@ -47,10 +47,15 @@ langsam ist und eine lange Klickstrecke hat.
 ## Phasen
 
 core → diagnose → tests → docs → release — eiserner Arbeitsablauf. Wegen der
-Unumkehrbarkeit gilt zusätzlich ein zweistufiger Rollout: Stufe 1 =
-Enumeration + Einzel-Pack-Testlauf + Diagnose-Felder (Live-Verifikation der
-vier offenen Mechanik-Fragen), Stufe 2 = „Alle öffnen" erst nach bestätigter
-Stufe 1.
+Unumkehrbarkeit lief ein zweistufiger Rollout: Stufe 1 (#69) = Enumeration +
+Einzel-Pack-Testlauf + packScan-Diagnose; Stufe 2 (#76) = „Alle öffnen".
+Das ursprüngliche Gate „Stufe 2 erst nach live bestätigter Stufe 1" wurde
+per PO-Entscheid (Nacht 16.08., Rasmus' „mach alles fertig"-Auftrag) durch
+ein technisches Sicherheitsnetz ersetzt: die Schleife nutzt pro Pack exakt
+den Stufe-1-Ablauf und stoppt beim ERSTEN Fehler jeder Art (inkl. Throw,
+beobachtbar) — ein „Alle öffnen" degradiert damit im schlimmsten Fall zum
+Einzel-Testlauf. Die Live-Verifikation der Mechanik-Fragen steht weiterhin
+aus und passiert beim ersten echten Lauf.
 
 ## Notizen
 

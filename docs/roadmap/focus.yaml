@@ -283,5 +283,14 @@ history:
     Gate-Abdeckungs-Check: jede CLAUDE.md-Produktregel -> ihre Durchsetzungs-Gates
     im Code -> Test je Gate; fehlende Gates/Tests werden geschlossen. Test-/Verifikations-Iteration,
     pack-opener bleibt blockiert bis Rasmus Live-Lauf.'
-  effectiveness: {}
+  effectiveness:
+    verdict: hit
+    focused_gains:
+      rating-solver:
+        RA: 1
+    held_features_regressions: {}
+    notes: 'Gate-Abdeckungs-Audit als Antwort auf den iter9-Abzug: 14/14 Produktregeln
+      systematisch geprueft, 0 echte Gate-Luecken (TOTW-Fall war Einzelfall, kein
+      Muster), 4 Test-Luecken geschlossen (#78, test-only, 784/784). solver 93->94;
+      der letzte Punkt benennt ehrlich die unerzwungene Matrix-Pflege.'
 pending_suggestion: null

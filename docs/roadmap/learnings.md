@@ -262,3 +262,32 @@ Kumulativ. Git-Log ist die History.
 - Beide Restpunkte PO-direkt (test-/docs-only, kein Version-Bump, alle 5 Gates je Commit) statt Ticket-Maschinerie — Proportionalität.
 - Damit endet die Lift-Phase des Projekts: weitere Punkte gäbe es nur über Cap-Revisionen (neue Erkenntnisse, EA-Wandel, Live-Befunde), nicht über weitere Lifts. Offen außerhalb der Scores: Joint-Optimierungs-Debt (anlassgebunden), APK-1.8.0-Installation, Live-Bewährung v4.60/v4.61.
 - Eskalationen: 0.
+
+## Iteration 9 — 2026-08-16
+
+## Iteration 9 — 16.08.2026 (Feature-Nacht auf User-Zuruf)
+
+### Score-Bewegung
+- Erste USER-getriebene Iteration (5 Wünsche in einer Nacht statt Gap-Analyse): bedienpanel-ui 85 bestätigt, batch-modus 70 bestätigt, rating-solver 95→93 (ehrliche Korrektur: der Live-Bug widerlegte die alte Bewertung), pack-opener NEU mit 46/70 (ehrlicher Erst-Score: Architektur/Tests solide, EA-Mechanik nie live verifiziert — bewusst unter der Schwelle bis zum ersten echten Lauf).
+- Userscript v4.61.0 → v4.69.0 (8 Versionen), Tests 563 → 775. Geliefert: Panel-Rework (#66), Erschöpfungs-Meldung (#70), Kandidaten-Anzeige (#68), Pack-Opener Stufe 1+2 (#69/#76, NEUES Feature), Plan-Check (#73) + Hotfixes v4.66 (GameCurrency optional) und v4.67 (Verein-TOTW-Gate, TOTW-Flachkosten, Filter-Ursachen, cfgSnapshot).
+
+### Methodische Erkenntnisse
+- **Ein Live-Nutzer schlägt jede Gap-Analyse**: Rasmus fand den Verein-TOTW-Bug per eigenem Haken-Experiment und lieferte damit die Diagnose frei Haus. Die Betriebsform „User spielt, PO fixt in <1h, Diagnose-Felder leiten" hat sich als produktivste des Projekts erwiesen.
+- **Eine Ausnahme-Regel muss an JEDEM Gate stehen**: die dokumentierte TOTW-Ausnahme („Verein-Specials nie — außer TOTW") stand im Reservierungs-Filter, fehlte aber im allgemeinen Storage-Filter davor — das korrekte Gate sah die Karten nie. Konsequenz für die 93 beim Solver: dokumentierte Produktregel-Gates brauchen je einen eigenen Test (systematischer Gate-Abdeckungs-Check als Seed notiert).
+- **Fremdcode-Dekodierung als Mechanik-Quelle**: die PaleTools-Analyse (String-Tabellen-Dekodierung, 6 Kernfragen mit Belegen) lieferte den kompletten Pack-Opener-Bauplan in einem Agenten-Lauf — schneller und fundierter als Trial-and-Error gegen die EA-API.
+- **Sicherheits-Gate durch Sicherheits-NETZ ersetzt**: das „Stufe 2 erst nach Live-Bestätigung"-Gate wurde per PO-Entscheid überstimmt (User schläft, will alles fertig), aber nur weil der Erster-Fehler-Stopp „Alle öffnen" im schlimmsten Fall zum Einzel-Test degradiert. Dokumentierte Ausnahme im Vision-Doc.
+- **Rebase-Disziplin**: nach Mid-Ticket-Rebases muss der PO den Branch force-pushen BEVOR publish/review läuft — bei #73 vergessen (PR blieb stale/draft, manueller Merge nötig), bei #60/#64 korrekt. Als Prozess-Merker geseedet.
+- **Scorer-Konsistenz prüfen**: ein Re-Score lieferte Zahl (69) und Begründung („bleibt am Deckel") im Widerspruch — eine Konsistenz-Rückfrage vor dem Rubric-Schreiben löste es sauber auf (70).
+- **Neue Produktregel von Rasmus**: TOTW sind wertgleich — Rating-Bänder gelten für sie nicht (rating/1000-Tiebreak). Ein Alt-Test wurde mit Begründung gedreht (User-Regel schlägt alte Erwartung).
+
+### Patterns ergänzt / verändert
+- Drei Adoptionen im neuen Feature (Abbruch-Disziplin, diagnose-feld-statt-raten, ea-grenz-fallback-ketten) — vom Implementer als pattern_discovered gemeldet, Belege im Code.
+
+### Shared-Items
+- Keine.
+
+### PO-Entscheidungen
+- 2 Validator-PARTIALs vor Publish geschlossen (#69 responseOk-Verteilkette, #76 Throw-Beobachtbarkeit), 1 PARTIAL bei #66 (tote DP-Dimension + Filter-Interaktions-Test) ebenso; 3 Mini-Verifikationen durch Main (#70, #68, #73).
+- 4 direkte Hotfixes auf main (eiserner Arbeitsablauf, alle 5 Gates je Push) — Live-Betrieb hatte Vorrang vor Ticket-Zeremonie.
+- Stufenplan-Gate-Überstimmung (s.o.) als dokumentierte Ausnahme; Vision-Doc angepasst.
+- Eskalationen: 0. Iteration lief komplett während Rasmus spielte bzw. schlief.

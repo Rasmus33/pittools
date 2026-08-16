@@ -30,82 +30,8 @@
 #                 consume-seeds`) — NICHT bei iteration-done geleert. Ersetzt
 #                 das deprecatete gitignored `iteration-seeds.yaml` (ADR #78).
 schema_version: 1.4.0
-iteration: 9
-entries:
-- at: '2026-08-15T21:58:01Z'
-  issue: 66
-  po_class: null
-  surprises:
-  - 'Die Max-teure-Entfernung legte eine tote generische DP-Dimension frei (exp/expDims
-    an allen Call-Sites null) — dokumentiert statt entfernt (DP-Kern-Verbot); Muster:
-    Feature-Entfernungen hinterlassen tote Generik, die erklaert werden muss.'
-  - Validator verifizierte die ungetestete Filter-Interaktion selbst per Probe-Skript,
-    bevor er sie als Finding meldete — Findings mit eigenem Beweis sind sofort umsetzbar.
-  reasoning: 'Panel-Rework auf User-Wunsch: Max-teure (Soft-Limit, fuehlte sich kaputt
-    an) ersatzlos raus als dokumentierte Ausnahme; harter Max-Rating-Filter am solve()-Eingang
-    (SSOT fuer Einzel+Batch); Erweiterte Einstellungen in 4 Gruppen. v4.62.0, 582/582.'
-- at: '2026-08-15T22:15:04Z'
-  issue: 70
-  po_class: null
-  surprises:
-  - Der Implementer fand selbststaendig eine Stale-Diagnose-Falle (staleRecover einer
-    FRUEHEREN Aufloesung koennte als 0-Kandidaten fehlgelesen werden) und baute einen
-    setId-Frische-Guard ein — Diagnose-Felder brauchen Frische-Semantik, wenn Entscheidungen
-    daran haengen.
-  reasoning: Erschoepfung/Ablauf nach Submit-404 heisst jetzt beim Namen (Keine weitere
-    Wiederholung verfuegbar — N von M geschafft), der Neu-oeffnen-Rat bleibt nur fuer
-    den uneindeutigen Fall; staleRecover traegt Server-Zustand (status/timesCompleted/endTime).
-    v4.63.0, 598/598, Main-verifiziert.
-- at: '2026-08-15T22:36:59Z'
-  issue: 68
-  po_class: null
-  surprises:
-  - 'Implementer wich korrekt von veralteten Roadmap-Docs ab (lift-plan/gap zeigten
-    noch #50) und folgte den Ticket-Kriterien — die iter9-Schnell-Tickets ohne frische
-    Gap/Lift-Docs funktionieren, hinterlassen aber Doc-Drift (als Debt gesammelt).'
-  - 'Bewusste Scope-Entscheidung: Verfuegbarkeits-Zeile nur fuer Rarity-/Gruppe-83-Vorgaben,
-    nicht fuer Bronze/Silber/Gold-Qualitaet (dort ist die TOTW/Storage-Aufschluesselung
-    fachlich sinnlos) — deckt Rasmus O-Ton exakt.'
-  reasoning: Vorgabe-Kandidaten-Verfuegbarkeit im Info-Block, SSOT mit der Reservierung
-    (reservationCandidates() von beiden genutzt, 598er-Baseline unveraendert = Verhaltensbeweis).
-    v4.64.0, 615/615, Main-verifiziert.
-- at: '2026-08-15T23:19:38Z'
-  issue: 69
-  po_class: null
-  surprises:
-  - Validator fand die einzige Luecke im Sicherheitsnetz des neuen Features (Verteil-Schritte
-    ohne responseOk-Check — stilles success:false waere als Erfolg gemeldet worden)
-    BEVOR je ein echtes Pack geoeffnet wurde — genau dafuer ist die Stufe-1/Validator-Kombination
-    da.
-  - Drei Pattern-Adoptionen im neuen Feature (Abbruch-Disziplin, diagnose-feld-statt-raten,
-    ea-grenz-fallback-ketten) — die Patterns tragen auch in neuem Terrain.
-  reasoning: 'Pack-Opener Stufe 1: My-Packs-Liste, Einzel-Pack-Testlauf mit Verein/Storage-Verteilung
-    und packScan-Diagnose (beantwortet die 4 offenen Mechanik-Fragen live). Max 1
-    Pack strukturell, alle Verteil-Schritte responseOk-geprueft, kein Quicksell/Transfer.
-    v4.65.0, 696/696.'
-- at: '2026-08-15T23:50:34Z'
-  issue: 73
-  po_class: null
-  surprises:
-  - Zwei Mid-Ticket-Rebases (v4.66 + v4.67 Hotfixes) am selben Ticket via SendMessage
-    sauber verkraftet — Block-/Paragraph-Umnummerierung als Standard-Konfliktloesung
-    etabliert.
-  reasoning: 'Plan-Check: Confidence-Score + Klartext-Abweichungen oben, Freigabe-Button
-    direkt darunter, Teams eingeklappt (User-Nachtrag), Max-Rating-Zeile in die Erweiterten
-    Einstellungen umgezogen (User-Nachtrag 2). v4.68.0, 735/735, Main-verifiziert.'
-- at: '2026-08-16T00:35:54Z'
-  issue: 76
-  po_class: null
-  surprises:
-  - 'Stufenplan-Gate (Stufe 2 erst nach Live-Bestaetigung) per PO-Entscheid ueberstimmt:
-    Rasmus schlaeft und will alles fertig; der Erster-Fehler-Stopp degradiert Alle-oeffnen
-    im schlimmsten Fall zum Einzel-Test — dokumentierte Ausnahme, Vision-Doc wird
-    angepasst.'
-  - Zwischen-Pack-Re-Fetch der Pack-Liste umgeht elegant die unverifizierte open()-Instanz-Semantik
-    (eine der 4 offenen Mechanik-Fragen ist damit designseitig entschaerft).
-  reasoning: 'Pack-Opener Stufe 2: Alle oeffnen mit Erster-Fehler-Stopp (auch Throw-Pfad
-    beobachtbar nach Validator-Fund), proaktivem Storage-voll-Stopp, Fortschritts-Overlay
-    und aggregierter Zieh-Liste. v4.69.0, 775/775.'
+iteration: null
+entries: []
 discoveries:
   pattern_candidates: []
   antipattern_candidates: []

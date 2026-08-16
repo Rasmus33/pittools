@@ -1,6 +1,6 @@
-# Audit — `batch-modus` — Iteration 8
+# Audit — `batch-modus` — Iteration 9
 
-**Stand:** 2026-08-15T20:36:34Z
+**Stand:** 2026-08-16T00:42:16Z
 ## Score-Stand
 
 | Dim | Ist (raw) | Capped (struct_max) | Schwellwert | Status | Provenance |
@@ -18,7 +18,7 @@
 
 ## Regression / Effektivität
 
-🟢 Keine Regression — Σ Ist 70.0 (≥ 69.0 Iter 7).
+🟢 Keine Regression — Σ Ist 70.0 (≥ 69.0 Iter 8).
 
 **Effektivität:** in-range
 (1.0 von 0.0 = 100.0% Reach über 1 Fokus-Dim)
@@ -27,10 +27,4 @@
 
 ### RA — Robust Architecture
 
-**Evidence:**
-
-- `ea-fc-sbc-optimizer.user.js:5087-5131`
-- `ea-fc-sbc-optimizer.user.js:4692`
-- `solver-test.js:3282-3350`
-- `docs/LEARNINGS.md:986-998`
 

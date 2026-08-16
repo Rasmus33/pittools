@@ -1,6 +1,6 @@
-# Audit — `sbc-vorgaben-erkennung` — Iteration 8
+# Audit — `sbc-vorgaben-erkennung` — Iteration 9
 
-**Stand:** 2026-08-15T20:36:34Z
+**Stand:** 2026-08-16T00:42:16Z
 ## Score-Stand
 
 | Dim | Ist (raw) | Capped (struct_max) | Schwellwert | Status | Provenance |
@@ -18,7 +18,7 @@
 
 ## Regression / Effektivität
 
-🟢 Keine Regression — Σ Ist 80.0 (≥ 78.0 Iter 7).
+🟢 Keine Regression — Σ Ist 80.0 (≥ 78.0 Iter 8).
 
 **Effektivität:** in-range
 (2.0 von 1.0 = 200.0% Reach über 1 Fokus-Dim)

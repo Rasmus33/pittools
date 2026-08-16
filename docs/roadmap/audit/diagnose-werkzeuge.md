@@ -1,6 +1,6 @@
-# Audit — `diagnose-werkzeuge` — Iteration 8
+# Audit — `diagnose-werkzeuge` — Iteration 9
 
-**Stand:** 2026-08-15T20:36:34Z
+**Stand:** 2026-08-16T00:42:16Z
 ## Score-Stand
 
 | Dim | Ist (raw) | Capped (struct_max) | Schwellwert | Status | Provenance |
@@ -18,7 +18,7 @@
 
 ## Regression / Effektivität
 
-🟢 Keine Regression — Σ Ist 85.0 (≥ 84.0 Iter 7).
+🟢 Keine Regression — Σ Ist 85.0 (≥ 84.0 Iter 8).
 
 **Effektivität:** in-range
 (1.0 von -2.0 = -50.0% Reach über 1 Fokus-Dim)

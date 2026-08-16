@@ -1878,6 +1878,28 @@ in der SBC-Ansicht sichtbar - `syncLauncher()` zeigt ihn jetzt zusaetzlich in
 der Store-Ansicht, sonst waere der neue Pack-Opener-Abschnitt nie erreichbar;
 die Einhaengung in die SBC-Aktionsleiste bleibt dabei SBC-spezifisch.
 
+**Stufe 2 (Ticket #76): `runPackOpenAll()` oeffnet eine ganze Serie desselben
+Pack-Typs, indem sie `runPackTestOpen()` (Stufe 1) wiederholt aufruft - EIN
+Ablauf pro Pack, keine zweite Kopie der Abbruch-Disziplin. Die Stufe-1-Mechanik
+ist stub-getestet, aber noch NICHT live verifiziert - genau dafuer ist der
+Erster-Fehler-Stopp da: JEDER Fehlschlag (Guard, `open()`, Einsammeln,
+Verteilen, Netzwerk) bricht die Serie sofort ab, im schlimmsten Fall
+degradiert "Alle oeffnen" so zu einem Einzel-Pack-Test mit klarer Meldung
+("N von M geoeffnet"), bereits geoeffnete Packs sind zu diesem Zeitpunkt schon
+sicher verteilt. Ein liegen gebliebenes Duplikat (Storage voll) stoppt
+proaktiv mit einer eigenen Meldung, statt den naechsten Unassigned-Guard das
+generisch melden zu lassen. Zwischen zwei erfolgreichen Packs laedt die
+Schleife die Pack-Liste per `fetchMyPacks()` neu, statt eine client-seitige
+Entity-Referenz weiterzuzaehlen: die `open()`-Instanz-Semantik bei mehreren
+Eintraegen derselben `id` ist eine der vier offenen Mechanik-Fragen, ein
+frischer EA-Stand umgeht die Unsicherheit statt sie zu erraten. Takt zwischen
+zwei Packs: 500-1400ms, spuerbar laenger als der 300-700ms-Takt zwischen den
+Verteil-Schritten innerhalb eines Pack-Zyklus. `packScan.testRun` heisst jetzt
+`lastRun` (Rename ohne zweiten Leser, `testRun` stand nirgends sonst - kein
+Symmetrie-Risiko); `packScan.runsCount` zaehlt jeden tatsaechlich erfolgreichen
+`open()`-Aufruf ueber Einzel-Test UND Serie hinweg, `packScan.lastAllRun`
+haelt Anforderung/Kappung/Ergebnis der letzten Serie fest.
+
 ## 47. Verein-TOTW und die Storage-Regel, TOTW-Flachkosten, Filter-Ursachen in Meldungen
 
 Drei Aenderungen aus einem Live-Abend (16.08., v4.67.0):

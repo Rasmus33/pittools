@@ -5552,6 +5552,230 @@ function mulberry32(a) {
     }
 }
 
+// ========== 62. Ticket #76: runPackOpenAll() - "Alle öffnen" mit Stopp-Bedingungen ==========
+{
+    const names = ['resolvePackGlobals', 'groupMyPacks', 'unassignedGuardOk', 'isMiscPackItem',
+        'decidePackDistribution', 'mergePackScan', 'packTakt', 'packBetweenTakt', 'responsePacks',
+        'runPackTestOpen', 'fetchMyPacks', 'runPackOpenAll'];
+    const bodies = names.map(n => extractFunction(src, n));
+    for (let i = 0; i < names.length; i++) {
+        check('Funktion ' + names[i] + ' gefunden (62)', !!bodies[i]);
+    }
+    const capMatch = src.match(/const PACK_STORAGE_CAPACITY_ASSUMED = \d+;/);
+    check('PACK_STORAGE_CAPACITY_ASSUMED-Konstante gefunden (62)', !!capMatch);
+    const bundleSrc = (capMatch ? capMatch[0] : '') + '\n' + bodies.join('\n');
+
+    function ItemPileStub() { return { PURCHASED: 'PURCHASED', CLUB: 'CLUB', STORAGE: 'STORAGE' }; }
+    function GameCurrency() {}
+    function SearchCriteria() {}
+
+    // Baut eine frische Sandbox mit EINEM Pack-Typ ('5'), dessen Bestand ueber
+    // getPacks() nach jedem ERFOLGREICHEN open() um 1 sinkt (initialCount -
+    // successfulOpens) - genau die Fresh-Enumeration, auf die sich
+    // runPackOpenAll() zwischen den Packs verlaesst, statt eine
+    // client-seitige Entity-Referenz weiterzuzaehlen.
+    function makeLoopSandbox(overrides) {
+        overrides = overrides || {};
+        const calls = { open: 0, setDirty: 0, requestUnassigned: 0, searchStorage: 0,
+            move: [], redeem: [], reportErrors: [], getPacks: 0, sleeps: 0 };
+        let storageBacking = (overrides.storageBacking || []).slice();
+        let successfulOpens = 0;
+        const initialCount = overrides.initialCount != null ? overrides.initialCount : 5;
+        const unassignedSeq = overrides.numItemsInCacheSeq || null;
+        let unassignedIdx = 0;
+        const drawnItemsForOpen = overrides.drawnItemsForOpen || function () {
+            return [{ id: 1, itemType: 'player', isDuplicate: () => false, rating: 75 }];
+        };
+        // Real EA-Packs sind SELBST die Entities (open() sitzt direkt auf dem
+        // Element aus response.packs) - der Mock muss das nachbilden, sonst
+        // haette das per fetchMyPacks() aus getPacks() neu befuellte
+        // packEntitiesById (siehe fetchMyPacks()) keine .open()-Methode mehr.
+        function makeEntity() {
+            return {
+                id: 5, isMyPack: true, packName: 'Prime', tradable: false,
+                open: function () {
+                    calls.open++;
+                    if (overrides.failOpenAtAttempt === calls.open) return { success: false, status: 409 };
+                    successfulOpens++;
+                    return { success: true };
+                }
+            };
+        }
+        const STATE = {
+            packGroups: [], packEntitiesById: new Map([['5', [makeEntity(), makeEntity()]]]),
+            diag: { packScan: null, lastErrors: [] }
+        };
+        const repoItem = {
+            numItemsInCache: function () {
+                if (!unassignedSeq) return 0;
+                const v = unassignedSeq[Math.min(unassignedIdx, unassignedSeq.length - 1)];
+                unassignedIdx++;
+                return v;
+            },
+            setDirty: function () { calls.setDirty++; }
+        };
+        const item = {
+            requestUnassignedItems: function () {
+                calls.requestUnassigned++;
+                return { items: drawnItemsForOpen(calls.open) };
+            },
+            searchStorageItems: function () { calls.searchStorage++; return { items: storageBacking.slice() }; },
+            move: function (arr, pile) {
+                calls.move.push({ arr: arr, pile: pile });
+                if (pile === 'STORAGE') storageBacking = storageBacking.concat(arr);
+                return { success: true };
+            },
+            redeem: function (it) { calls.redeem.push(it); return { success: true }; }
+        };
+        const store = {
+            getPacks: function () {
+                calls.getPacks++;
+                const remaining = Math.max(0, initialCount - successfulOpens);
+                const packs = [];
+                for (let i = 0; i < remaining; i++) packs.push(makeEntity());
+                return { packs: packs };
+            }
+        };
+        const win = {
+            services: { Store: store, Item: item }, repositories: { Item: repoItem },
+            ItemPile: ItemPileStub(), UTSearchCriteriaDTO: SearchCriteria, GameCurrency: GameCurrency
+        };
+        const sandbox = {
+            window: win, STATE: STATE,
+            obsPromise: async (r) => { if (r && r.__reject) throw r.__reject; return r; },
+            responseOk: (r) => !(r && (r.success === false || (typeof r.status === 'number' && r.status >= 400))),
+            responseItems: (r) => {
+                if (!r) return [];
+                const rr = r.response || r.data || r;
+                if (rr && Array.isArray(rr.items)) return rr.items;
+                if (Array.isArray(rr)) return rr;
+                return [];
+            },
+            normalizePlayer: (raw) => (raw && raw.rating != null) ? { name: raw.name || ('#' + raw.id), rating: raw.rating } : null,
+            sleep: () => { calls.sleeps++; return Promise.resolve(); },
+            reportError: (label, e) => { calls.reportErrors.push(label); }
+        };
+        const keys = Object.keys(sandbox);
+        const built = new Function(keys.join(','),
+            bundleSrc + '\nreturn { runPackOpenAll: runPackOpenAll, fetchMyPacks: fetchMyPacks };')
+            .apply(null, keys.map(k => sandbox[k]));
+        return { runPackOpenAll: built.runPackOpenAll, fetchMyPacks: built.fetchMyPacks, calls: calls, STATE: STATE };
+    }
+
+    const results62 = [];
+
+    // (a) 3 Packs, alle ok -> 3 verteilt, Aggregation korrekt (alle 3 Karten
+    // im drawn-Array, Duplikat-Markierung bleibt je Karte erhalten).
+    {
+        const sb = makeLoopSandbox({
+            initialCount: 3,
+            drawnItemsForOpen: function (n) {
+                if (n === 2) return [{ id: 100, itemType: 'player', isDuplicate: () => true, rating: 80 }];
+                return [{ id: n, itemType: 'player', isDuplicate: () => false, rating: 70 + n }];
+            }
+        });
+        results62.push(sb.fetchMyPacks().then(function () {
+            return sb.runPackOpenAll('5', 3, function () {}).then(function (r) {
+                check('runPackOpenAll (a): 3 von 3 Packs geöffnet, ok:true',
+                    r.ok === true && r.opened === 3 && r.total === 3, JSON.stringify(r));
+                check('runPackOpenAll (a): Aggregation - alle 3 gezogenen Karten im drawn-Array',
+                    r.drawn.length === 3, JSON.stringify(r.drawn));
+                check('runPackOpenAll (a): Duplikat-Markierung bleibt je Karte erhalten (genau 1 Duplikat)',
+                    r.drawn.filter(function (d) { return d.isDuplicateRaw === true; }).length === 1,
+                    JSON.stringify(r.drawn));
+                check('runPackOpenAll (a): Meldung nennt "3 von 3"', /3 von 3/.test(r.message), r.message);
+                check('runPackOpenAll (a): packScan.runsCount zaehlt alle 3 Einzel-Laeufe',
+                    sb.STATE.diag.packScan.runsCount === 3, JSON.stringify(sb.STATE.diag.packScan));
+                check('runPackOpenAll (a): packScan.lastAllRun spiegelt den Erfolg',
+                    sb.STATE.diag.packScan.lastAllRun.ok === true && sb.STATE.diag.packScan.lastAllRun.opened === 3,
+                    JSON.stringify(sb.STATE.diag.packScan.lastAllRun));
+            });
+        }));
+    }
+
+    // (b) Fehler bei Pack 2 (open() abgelehnt) -> Stopp, Pack 1 bereits
+    // verteilt, Meldung "1 von 3".
+    {
+        const sb = makeLoopSandbox({ initialCount: 5, failOpenAtAttempt: 2 });
+        results62.push(sb.fetchMyPacks().then(function () {
+            return sb.runPackOpenAll('5', 3, function () {}).then(function (r) {
+                check('runPackOpenAll (b): Stopp nach Pack 1, ok:false',
+                    r.ok === false && r.opened === 1 && r.total === 3, JSON.stringify(r));
+                check('runPackOpenAll (b): Meldung nennt "1 von 3"', /1 von 3/.test(r.message), r.message);
+                check('runPackOpenAll (b): Pack 1 wurde tatsaechlich verteilt (genau ein move())',
+                    sb.calls.move.length === 1, JSON.stringify(sb.calls.move));
+                check('runPackOpenAll (b): open() wurde fuer Pack 3 NICHT mehr versucht (genau 2 Versuche)',
+                    sb.calls.open === 2, 'open calls=' + sb.calls.open);
+            });
+        }));
+    }
+
+    // (c) Storage von Anfang an voll -> das erste gezogene Duplikat bleibt
+    // liegen -> proaktiver Stopp ("Storage voll"), statt den naechsten
+    // Unassigned-Guard das melden zu lassen.
+    {
+        const sb = makeLoopSandbox({
+            initialCount: 3,
+            storageBacking: new Array(100).fill(0),
+            drawnItemsForOpen: function () { return [{ id: 1, itemType: 'player', isDuplicate: () => true, rating: 80 }]; }
+        });
+        results62.push(sb.fetchMyPacks().then(function () {
+            return sb.runPackOpenAll('5', 3, function () {}).then(function (r) {
+                check('runPackOpenAll (c): Storage-voll-Stopp nach Pack 1, ok:false',
+                    r.ok === false && r.opened === 1 && r.total === 3, JSON.stringify(r));
+                check('runPackOpenAll (c): Meldung nennt "Storage voll"', /Storage voll/.test(r.reason), r.reason);
+                check('runPackOpenAll (c): kein move() Richtung STORAGE (das Duplikat blieb liegen)',
+                    !sb.calls.move.some(function (m) { return m.pile === 'STORAGE'; }), JSON.stringify(sb.calls.move));
+            });
+        }));
+    }
+
+    // (d) Anzahl-Kappung auf Bestand: angefordert 10, verfuegbar nur 3 -> total
+    // wird auf 3 gekappt, alle 3 werden geoeffnet.
+    {
+        const sb = makeLoopSandbox({ initialCount: 3 });
+        results62.push(sb.fetchMyPacks().then(function () {
+            return sb.runPackOpenAll('5', 10, function () {}).then(function (r) {
+                check('runPackOpenAll (d): Anzahl-Kappung auf Bestand (3 statt 10)',
+                    r.total === 3 && r.opened === 3 && r.ok === true, JSON.stringify(r));
+            });
+        }));
+    }
+
+    // (e) Unassigned-Pile zwischen Packs nicht leer -> Stopp (derselbe
+    // Unassigned-Guard wie in Stufe 1, jetzt VOR dem zweiten Pack ausgeloest).
+    {
+        const sb = makeLoopSandbox({ initialCount: 5, numItemsInCacheSeq: [0, 3] });
+        results62.push(sb.fetchMyPacks().then(function () {
+            return sb.runPackOpenAll('5', 3, function () {}).then(function (r) {
+                check('runPackOpenAll (e): Stopp nach Pack 1 wegen nicht-leerer Unassigned-Pile',
+                    r.ok === false && r.opened === 1 && r.total === 3, JSON.stringify(r));
+                check('runPackOpenAll (e): Meldung nennt "1 von 3" und "wegräumen"',
+                    /1 von 3/.test(r.message) && /wegräumen/.test(r.reason), JSON.stringify(r));
+            });
+        }));
+    }
+
+    // Fortschritts-Callback wird pro Pack aufgerufen (Overlay-Wiederverwendung, AC4).
+    {
+        const sb = makeLoopSandbox({ initialCount: 2 });
+        const progressCalls = [];
+        results62.push(sb.fetchMyPacks().then(function () {
+            return sb.runPackOpenAll('5', 2, function (cur, total, step) {
+                progressCalls.push({ cur: cur, total: total, step: step });
+            }).then(function () {
+                check('runPackOpenAll: onProgress wird genau einmal pro Pack aufgerufen',
+                    progressCalls.length === 2 &&
+                    progressCalls[0].cur === 1 && progressCalls[0].total === 2 &&
+                    progressCalls[1].cur === 2 && progressCalls[1].total === 2,
+                    JSON.stringify(progressCalls));
+            });
+        }));
+    }
+
+    pending.push(Promise.all(results62));
+}
+
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt
 // process.exit() die Loader-Tests, bevor sie laufen - sie zählten dann nicht mit
 // und ein Fehler dort wäre unbemerkt geblieben.

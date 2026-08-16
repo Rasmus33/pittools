@@ -4841,9 +4841,15 @@ function mulberry32(a) {
     const refreshFn = extractFunction(src, 'refreshSbcInfoUI');
     check('Ticket 68: refreshSbcInfoUI() ruft refreshAvailabilityUI()',
         /refreshAvailabilityUI\(\)/.test(refreshFn));
+    // Seit dem Nacht-Review 16.08. debounced refreshAvailabilityUI() nur noch
+    // (Club-Laden rief die Berechnung pro Seite ~92x) und delegiert an
+    // renderAvailabilityNow() - der Kein-Zweitlogik-Beleg folgt der Delegation.
     const availFn = extractFunction(src, 'refreshAvailabilityUI');
-    check('Ticket 68: refreshAvailabilityUI() nutzt SolverCore.computeRarityAvailability (keine Zweitlogik)',
-        /SolverCore\.computeRarityAvailability\(/.test(availFn));
+    check('Ticket 68: refreshAvailabilityUI() delegiert an renderAvailabilityNow (Debounce)',
+        /renderAvailabilityNow\(\)/.test(availFn));
+    const availNowFn = extractFunction(src, 'renderAvailabilityNow');
+    check('Ticket 68: renderAvailabilityNow() nutzt SolverCore.computeRarityAvailability (keine Zweitlogik)',
+        /SolverCore\.computeRarityAvailability\(/.test(availNowFn));
     check('Ticket 68: Panel-DOM enthält den Verfügbarkeits-Block',
         src.indexOf('sbc-opt-availability') > -1);
 }
@@ -5953,6 +5959,158 @@ function mulberry32(a) {
             Math.abs(diffUntrOhneStorage - untrBonus) < 1e-9 &&
             Math.abs(diffUntrMitStorage - untrBonus) < 1e-9,
             'ohneStorage=' + diffUntrOhneStorage + ' mitStorage=' + diffUntrMitStorage + ' erwartet=' + untrBonus);
+    }
+}
+
+// ========== 64. Nacht-Review 16.08.: bestaetigte Befunde aus der adversarialen
+// Diff-Review v4.61->v4.69 (zwei unabhaengige Pruefer). Jeder Teiltest pinnt
+// einen per Repro BEWIESENEN Fehler in seiner gefixten Form. ==========
+{
+    const mk = (id, r, rf, groups, opts) => Object.assign({
+        id: id, name: id, rating: r, rareflag: rf,
+        isSpecial: rf >= 2, isRare: rf === 1, isStorage: false,
+        untradeable: false, groups: groups
+    }, opts || {});
+    const baseCfg = (over) => Object.assign({
+        targetOVR: 84, slots: 3, minRating: 1, maxOvershoot: 2,
+        applyRarity: true, specialOnlyFromStorage: false,
+        scarcityWeight: 0.0002, storageBonus: 0, untradeableBonus: 0,
+        rarityGuardCost: 8, lockedIds: [], maxRareRating: 99, maxCommonRating: 99,
+        rarityConstraints: [], qualityConstraints: [], rareConstraints: [],
+        playerLevelConstraints: []
+    }, over || {});
+    // (a) BEFUND: Identitaets-Split rareflag/groups. Ein TOTW-Payload OHNE
+    // groups-Feld bekam die Flachkosten (rareflag-Identitaet), aber KEINEN
+    // Rarity-Schutz (groups-Identitaet) - unter DEFAULT-Einstellungen war er
+    // damit die billigste Karte >=81 und wurde ohne Vorgabe aktiv verbaut.
+    // Kosten-Arithmetik: n=2 (beide 87er), TOTW = alpha/2 + 87/1000 + guard.
+    {
+        const alpha = 0.0002, guard = 8;
+        const totw = mk('T87', 87, 3, []);
+        const gold = mk('G87', 87, 1, [19]);
+        const costOf = SolverCore.makeCostOf([totw, gold], {
+            scarcityWeight: alpha, storageBonus: 0, untradeableBonus: 0,
+            rarityGuardCost: guard, ratingCostSpec: '0-99:2'
+        });
+        const want = alpha / 2 + 87 / 1000 + guard;
+        check('Review 64a: TOTW OHNE groups-Feld traegt den Rarity-Schutz-Aufschlag (rareflag-Identitaet)',
+            Math.abs(costOf(totw) - want) < 1e-9,
+            'cost=' + costOf(totw) + ' erwartet=' + want);
+        const pool = [mk('T87b', 87, 3, []), mk('G84a', 84, 1, []),
+                      mk('G84b', 84, 1, []), mk('G84c', 84, 1, [])];
+        const res = SolverCore.solve(pool, baseCfg({ ratingCostSpec: '0-99:2' }));
+        check('Review 64a: ohne Vorgabe bleibt der groups-lose Verein-TOTW draussen (vorher: aktiv bevorzugt)',
+            res.ok && res.players.every(p => Number(p.rareflag) !== 3),
+            res.ok ? res.players.map(p => p.id).join(',') : res.reason);
+    }
+    // (b) Kehrseite derselben Identitaets-Regel: ein TOTW ohne groups-Feld
+    // MUSS eine Gruppe-83-Vorgabe erfuellen koennen (matchesRarity-Fallback
+    // ueber rareflag 3, analog zum bestehenden Gruppe-4/rareflag-1-Fallback) -
+    // sonst waere die Karte geschuetzt, aber nie waehlbar.
+    {
+        const pool = [mk('T87', 87, 3, []), mk('G84a', 84, 1, []),
+                      mk('G84b', 84, 1, []), mk('G84c', 84, 1, [])];
+        const res = SolverCore.solve(pool, baseCfg({
+            ratingCostSpec: '0-99:2',
+            rarityConstraints: [{ label: 'PLAYER_RARITY_GROUP', ids: [], count: 1, groupId: 83 }]
+        }));
+        const n3 = res.ok ? res.players.filter(p => Number(p.rareflag) === 3).length : -1;
+        check('Review 64b: groups-loser TOTW erfuellt die Gruppe-83-Vorgabe (genau 1 im Team)',
+            res.ok && n3 === 1 && res.players.some(p => p.id === 'T87'),
+            res.ok ? res.players.map(p => p.id).join(',') : res.reason);
+    }
+    // (c) BEFUND: der Max-Rating-Vorfilter frass die MANUELL gewaehlte
+    // Rarity-Karte still - die Automatik reservierte eine ANDERE Karte und
+    // die Warnung behauptete falsch "nicht im Pool gefunden". Jetzt schlaegt
+    // die explizite Wahl den Filter (Semantik des bestehenden
+    // "trotzdem verwendet"-Pfads).
+    {
+        const pool = [mk('T90', 90, 3, [83]), mk('T84', 84, 3, [83]),
+                      mk('G84a', 84, 1, []), mk('G84b', 84, 1, []), mk('G84c', 84, 1, [])];
+        const res = SolverCore.solve(pool, baseCfg({
+            ratingCostSpec: '0-99:0',
+            maxRatingEnabled: true, maxRating: 85, rarityPickId: 'T90',
+            rarityConstraints: [{ label: 'PLAYER_RARITY_GROUP', ids: [], count: 1, groupId: 83 }]
+        }));
+        check('Review 64c: manueller Pick ueberlebt den Max-Rating-Filter (T90 im Team, nicht der Ersatz T84)',
+            res.ok && res.players.some(p => p.id === 'T90') && !res.players.some(p => p.id === 'T84'),
+            res.ok ? res.players.map(p => p.id).join(',') : res.reason);
+        check('Review 64c: die falsche "nicht im Pool gefunden"-Meldung entfaellt',
+            res.ok && !(res.warnings || []).some(w => /nicht im Pool gefunden/.test(w)),
+            JSON.stringify(res.warnings || []));
+    }
+    // (d-f) computeBatchPlanCheck: drei bestaetigte Befunde am Plan-Check.
+    {
+        const fnSrc = extractFunction(src, 'computeBatchPlanCheck');
+        const computeBatchPlanCheck = new Function(fnSrc + '\nreturn computeBatchPlanCheck;')();
+        const round = (players, over) => Object.assign(
+            { waste: 0, ovrExact: 84.0, players: players }, over || {});
+        // (d) BEFUND: required83 zaehlte nur groupId===83 - eine ids-basierte
+        // TOTW-Vorgabe (matchesRarity bedient sie ueber rareflag 3, der Solver
+        // reserviert korrekt) erzeugte den falschen roten Fehler
+        // "1x statt geforderter 0" auf einem korrekten Plan. Zudem zaehlt die
+        // Karten-Identitaet jetzt auch rareflag 3 ohne groups-Feld.
+        const cfgD = {
+            minRating: 0, maxOvershoot: 0.10,
+            rarityConstraints: [{ label: 'PLAYER_RARITY', ids: [3], count: 1, groupId: null }]
+        };
+        const pcD = computeBatchPlanCheck({ planned: 1, rounds: [round([
+            mk('T86', 86, 3, [83], { isStorage: true }),
+            mk('G84a', 84, 1, []), mk('G84b', 84, 1, [])
+        ])] }, cfgD);
+        check('Review 64d: ids-basierte TOTW-Vorgabe erzeugt KEINEN falschen Gruppe-83-Fehler',
+            pcD.errors === 0, JSON.stringify(pcD.lines));
+        // Karten-Identitaet auch hier doppelt: ein TOTW OHNE groups-Feld
+        // zaehlt fuer die ids-Vorgabe ebenso (rareflag-Identitaet, SSOT).
+        const pcD2 = computeBatchPlanCheck({ planned: 1, rounds: [round([
+            mk('T86', 86, 3, null, { isStorage: true }),
+            mk('G84a', 84, 1, []), mk('G84b', 84, 1, [])
+        ])] }, cfgD);
+        check('Review 64d: groups-loser TOTW zaehlt fuer die ids-Vorgabe (kein "0 statt 1"-Fehler)',
+            pcD2.errors === 0, JSON.stringify(pcD2.lines));
+        // (e) Eine manuell gewaehlte Gruppe-83-Karte ohne Vorgabe ist Rasmus'
+        // explizite Entscheidung - kein roter "Fehler" in der Vorschau.
+        const roundsE = [round([mk('T86', 86, 3, [83], { isStorage: true }),
+            mk('G84a', 84, 1, []), mk('G84b', 84, 1, [])])];
+        const pcE1 = computeBatchPlanCheck({ planned: 1, rounds: roundsE },
+            { minRating: 0, maxOvershoot: 0.10, rarityPickId: 'T86' });
+        const pcE2 = computeBatchPlanCheck({ planned: 1, rounds: roundsE },
+            { minRating: 0, maxOvershoot: 0.10 });
+        check('Review 64e: manueller Gruppe-83-Pick ohne Vorgabe ist kein Fehler; ohne Pick bleibt er einer',
+            pcE1.errors === 0 && pcE2.errors === 1,
+            'mitPick=' + pcE1.errors + ' ohnePick=' + pcE2.errors);
+        // (f) BEFUND (latent): der Meldungstext wertete r.ovrExact.toFixed()
+        // IMMER aus - eine Runde ohne ovrExact haette renderBatchPreview und
+        // damit die komplette Batch-Vorschau getoetet.
+        let pcF = null, threw = null;
+        try {
+            pcF = computeBatchPlanCheck({ planned: 1, rounds: [round(
+                [mk('G84a', 84, 1, [])], { waste: 5, ovrExact: undefined })] },
+                { minRating: 0, maxOvershoot: 0 });
+        } catch (e) { threw = e; }
+        check('Review 64f: Runde ohne ovrExact crasht den Plan-Check nicht (Fallback "?")',
+            !threw && pcF && pcF.errors >= 1 &&
+            pcF.lines.some(l => l.text.indexOf('(exakt ?)') > -1),
+            threw ? String(threw) : JSON.stringify(pcF && pcF.lines));
+    }
+    // (g) BEFUND: der Pro-Set-Cache verdraengte per Object.keys()[0] das
+    // KLEINSTE setId statt des aeltesten (integer-artige Keys kommen numerisch
+    // sortiert) - das konnte das gerade frisch gecachte Set sofort loeschen.
+    // Jetzt: echte Einfuege-Reihenfolge. Einfuege-Folge 900,150,700,120,500,300
+    // -> verdraengt wird 900 (das aelteste), 120 und 300 bleiben.
+    {
+        const fnSrc = extractFunction(src, 'cacheSetChallenges');
+        check('Review 64g: Funktion cacheSetChallenges gefunden', !!fnSrc);
+        const STATE = { setChallengesBySet: {} };
+        const cacheSetChallenges = new Function('STATE', fnSrc + '\nreturn cacheSetChallenges;')(STATE);
+        for (const sid of [900, 150, 700, 120, 500, 300]) {
+            cacheSetChallenges(sid, { marker: sid });
+        }
+        const left = Object.keys(STATE.setChallengesBySet).sort().join(',');
+        check('Review 64g: Kappung 5 verdraengt das AELTESTE Set (900), nicht das kleinste (120)',
+            !STATE.setChallengesBySet[900] && !!STATE.setChallengesBySet[120] &&
+            !!STATE.setChallengesBySet[300] && Object.keys(STATE.setChallengesBySet).length === 5,
+            'uebrig=' + left);
     }
 }
 

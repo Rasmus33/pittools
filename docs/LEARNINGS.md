@@ -1968,3 +1968,64 @@ statt eines zweiten CSS-Blocks. Getestet ueber das etablierte Pattern
 (Testblock 43)" - die Layout-Reihenfolge Zusammenfassung -> Button -> Details
 ist eine reine String-Assertion auf das von `buildPanel()` erzeugte Markup
 (Testblock 43b).
+
+## 49. Nacht-Review 16.08.: adversariale Diff-Review nach einer Schnell-Liefer-Nacht (v4.70.0)
+
+Nach acht Versionen in einer Nacht (v4.62-v4.69, teils nur Main-verifiziert
+statt validator-geprueft) lief eine adversariale Review ueber das GESAMTE
+Nacht-Diff durch zwei unabhaengige Pruefer (Solver-Logik / UI-Async-PackOpener),
+Auftrag: Behauptungen nur mit Repro-Beweis am echten Code. Ergebnis: 7+7
+Befunde, davon 6 in v4.70.0 gefixt, je mit Vorher-rot/Nachher-gruen-Test
+(Block 64; Gegenprobe gegen v4.69.0: 11 FAILs):
+
+1. **Identitaets-Split rareflag/groups** (MITTEL): `isTotw()` (Kosten,
+   Storage-Filter-Ausnahme) prueft rareflag 3, der Rarity-Schutz und der
+   Plan-Check prueften NUR `p.groups` mit 83. Ein TOTW-Payload ohne
+   groups-Feld bekam damit Flachkosten OHNE Schutz - unter
+   DEFAULT-Einstellungen die billigste Karte >=81, aktiv als Fueller verbaut.
+   Fix: Schutz (`isProtectedRarity`), Vorgaben-Matching (`matchesRarity`
+   Gruppe 83) und Plan-Check-Zaehlung kennen jetzt beide Identitaeten.
+   Merksatz (verallgemeinert LEARNINGS 47): nicht nur jede AUSNAHME muss an
+   jedem Gate stehen - auch jede IDENTITAETS-Definition ("was ist ein TOTW?")
+   muss an allen Gates dieselbe sein.
+2. **Max-Rating-Vorfilter frass den manuellen Pick** (MITTEL): der harte
+   Vorfilter lief VOR solveCore, der "trotzdem verwendet"-Override in
+   solveCore konnte ihn nie sehen - die Automatik reservierte eine ANDERE
+   Karte mit der faktisch falschen Meldung "nicht im Pool gefunden".
+   Fix: der Pick wird nach dem Vorfilter re-added (explizite Wahl schlaegt
+   Filter); gesperrte Karten bleiben tabu (filterLockedCards laeuft danach).
+3. **Plan-Check zaehlte required83 nur ueber groupId===83** - eine
+   ids-basierte TOTW-Vorgabe (matchesRarity bedient sie, der Solver
+   reserviert korrekt) erzeugte rote Fehler auf korrekten Plaenen. Dazu:
+   manueller Gruppe-83-Pick ohne Vorgabe ist Rasmus' Entscheidung, kein
+   Fehler; `r.ovrExact.toFixed()` wurde eager ausgewertet (latenter
+   Vorschau-Crash).
+4. **Zieh-Liste wurde sofort ueberschrieben**: `renderPackDrawList()` und
+   `setPackStatus()` schreiben dasselbe innerHTML - nach "Alle oeffnen" war
+   die Liste (der einzige Beleg des unumkehrbaren Laufs!) fuer einen Frame
+   sichtbar. Fix: Meldung als Kopfzeile UEBER der Liste, ein Schreiber.
+5. **Pro-Set-Cache verdraengte numerisch statt zeitlich**: `Object.keys()`
+   liefert integer-artige Keys aufsteigend - "sids[0]" traf das KLEINSTE
+   setId, ggf. das gerade frisch gecachte. Fix: `cacheSetChallenges()` mit
+   echter Einfuege-Reihenfolge; auch `resolveFreshChallengeId()` schreibt
+   jetzt in den Pro-Set-Cache (vorher gewann nach einer Recovery der
+   VERALTETE Cache-Stand ueber den frischen Scan).
+6. Kleinigkeiten: Refresh-Button ohne Busy-Guard waehrend Pack-Laeufen;
+   "undefined -> undefined" in der Zieh-Liste bei unlesbaren Items;
+   Verfuegbarkeits-Anzeige lief beim Club-Laden PRO SEITE (~92x volle
+   Pool-Paesse + localStorage-Scan) - jetzt 400ms-Debounce.
+
+Bewusst NICHT gefixt (Design-Fragen fuer Rasmus, siehe ROADMAP): guard=0
+schaltet auch die harte Gruppe-83-Sperre ab (per Test 8 gepinnter Vertrag -
+in Kombination mit den TOTW-Flachkosten werden TOTW dann aber BEVORZUGT
+verbaut); der Plan-Check faerbt "Pool kann Ziel nur mit Ueberschuss" als
+Fehler, obwohl der Solver bewusst das Minimum liefert; die
+Verfuegbarkeits-Anzeige zaehlt ohne Min-Rating-Fenster (Anzeige "1 verfuegbar"
+vs. Solver "nicht erfuellbar" bei zu niedrigen TOTW); die Erschoepfungs-Meldung
+kann bei komplett fehlschlagendem Scan faelschlich "Limit erreicht" behaupten.
+
+Methodik-Merksatz: eine Schnell-Liefer-Nacht braucht eine Review-Schicht
+DANACH - beide Pruefer fanden nur in den Teilen, die ohne Validator-Pass
+gemergt oder als Hotfix direkt gepusht worden waren. Kosten: ~330k
+Subagenten-Tokens, Ertrag: 2 mittlere Regel-Verletzungen vor dem ersten
+Live-Kontakt des Users mit den neuen Features.

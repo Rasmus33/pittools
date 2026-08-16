@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.69.0
+// @version      4.70.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.69.0';
+    const VERSION = '4.70.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -286,6 +286,20 @@
             }
         } catch (e) {}
     }
+    // Pro-Set-Challenge-Cache mit ECHTER Einfuege-Reihenfolge (Kappung 5).
+    // Object.keys() liefert integer-artige Keys NUMERISCH aufsteigend, nicht
+    // in Einfuege-Reihenfolge - die alte "sids[0]"-Verdraengung traf damit
+    // das KLEINSTE setId statt des aeltesten und konnte das gerade frisch
+    // gecachte Set sofort wieder loeschen (Nacht-Review 16.08.).
+    function cacheSetChallenges(sid, json) {
+        const cache = STATE.setChallengesBySet;
+        if (!cache) return;
+        const order = STATE.setChallengesOrder = STATE.setChallengesOrder || [];
+        const key = String(sid);
+        if (!(key in cache) && order.indexOf(key) === -1) order.push(key);
+        cache[key] = json;
+        while (order.length > 5) delete cache[order.shift()];
+    }
     function handleResponseBody(url, bodyText) {
         const kind = classifyUrl(url);
         if (!kind || !bodyText) return;
@@ -302,11 +316,10 @@
                 if (sm) {
                     const sid = parseInt(sm[1], 10);
                     STATE.sbc.setId = sid;
-                    // Pro-Set-Cache (Kappung 5, FIFO): lastSetChallenges allein
-                    // wurde live vom zuletzt geoeffneten Set ueberschrieben.
-                    STATE.setChallengesBySet[sid] = json;
-                    const sids = Object.keys(STATE.setChallengesBySet);
-                    if (sids.length > 5) delete STATE.setChallengesBySet[sids[0]];
+                    // Pro-Set-Cache (Kappung 5, Einfuege-Reihenfolge):
+                    // lastSetChallenges allein wurde live vom zuletzt
+                    // geoeffneten Set ueberschrieben.
+                    cacheSetChallenges(sid, json);
                 }
                 applyFromSetChallenges();
             } else if (kind === 'sbc-challenge' || kind === 'sbc-sets') {
@@ -800,6 +813,14 @@
             return null;
         }
         STATE.lastSetChallenges = json;
+        // Auch den Pro-Set-Cache aktualisieren: applyFromSetChallenges()
+        // bevorzugt ihn - ohne dieses Update wuerde nach der Recovery der
+        // VERALTETE Cache-Stand gewinnen, die neue challengeId darin nie
+        // gefunden und der frische Vorgaben-Scan still nie angewendet
+        // (Nacht-Review 16.08.). typeof-Guard: solver-test.js extrahiert
+        // diese Funktion standalone, ohne den URLCLS-Block.
+        if (typeof cacheSetChallenges === 'function') cacheSetChallenges(setId, json);
+        else if (STATE.setChallengesBySet) STATE.setChallengesBySet[setId] = json;
         return cands[0];
     }
     // Anforderungen der aktuellen Challenge aus der gecachten Set-Liste ziehen.
@@ -856,7 +877,8 @@
         try {
             const json = await apiGet((STATE.sbc.apiPrefix || 'sbs') + '/setId/' + sid + '/challenges');
             if (json) {
-                STATE.setChallengesBySet[sid] = json;
+                if (typeof cacheSetChallenges === 'function') cacheSetChallenges(sid, json);
+                else STATE.setChallengesBySet[sid] = json;
                 STATE.lastSetChallenges = json;
                 applyFromSetChallenges();
                 log('Set-Challenges nachgeladen (' + reason + '), setId', sid);
@@ -1847,7 +1869,15 @@
                 ? cfg.protectedGroups.map(Number) : [83];
             const guardCost = Math.max(0, cfg.rarityGuardCost != null ? Number(cfg.rarityGuardCost) : 8);
             function isProtectedRarity(p) {
-                if (!guardCost || !Array.isArray(p.groups) || !p.groups.length) return false;
+                if (!guardCost) return false;
+                // rareflag 3 = TOTW = Rarity-Gruppe 83. Der Schutz darf NICHT
+                // allein am groups-Feld haengen: ein TOTW-Payload OHNE groups
+                // waere sonst ungeschuetzt und (Flachkosten unten) sogar die
+                // billigste Karte seiner Stufe - Kosten-Identitaet (rareflag)
+                // und Schutz-Identitaet (groups) muessen dieselbe Karte meinen
+                // (Nacht-Review 16.08., LEARNINGS 49).
+                if (guardGroups.indexOf(83) > -1 && isTotw(p)) return true;
+                if (!Array.isArray(p.groups) || !p.groups.length) return false;
                 for (const g of guardGroups) if (p.groups.indexOf(g) > -1) return true;
                 return false;
             }
@@ -1887,6 +1917,11 @@
             if (Number(c.groupId) === 4) {
                 return p.isRare || (Array.isArray(p.groups) && p.groups.indexOf(4) > -1);
             }
+            // Gruppe 83 analog ueber rareflag absichern: TOTW ist rareflag 3 -
+            // auch ohne groups-Feld erfuellt ein TOTW eine Gruppe-83-Vorgabe
+            // (dieselbe Identitaets-Regel wie isProtectedRarity, Nacht-Review
+            // 16.08. - sonst waere die Karte geschuetzt, aber nie waehlbar).
+            if (Number(c.groupId) === 83 && isTotw(p)) return true;
             if (c.groupId != null && Array.isArray(p.groups)) {
                 return p.groups.indexOf(Number(c.groupId)) > -1;
             }
@@ -2068,6 +2103,19 @@
             // unten explizit gemeldet (LEARNINGS §44).
             const rawPool = poolAll;
             poolAll = applyMaxRatingFilter(poolAll, cfg);
+            // Die MANUELL gewaehlte Rarity-Karte ueberlebt den Max-Rating-
+            // Vorfilter (Nacht-Review 16.08.): die explizite Wahl schlaegt
+            // Filter - dieselbe Semantik wie der "trotzdem verwendet"-Pfad in
+            // solveCore. Vorher fraß der Vorfilter den Pick still, die
+            // Automatik reservierte eine ANDERE Karte und die Meldung
+            // behauptete falsch "nicht im Pool gefunden". Gesperrte Karten
+            // bleiben tabu: filterLockedCards() laeuft in solveCore NACH
+            // diesem Re-Add.
+            if (cfg.rarityPickId != null && cfg.rarityPickId !== '' &&
+                !poolAll.some(p => String(p.id) === String(cfg.rarityPickId))) {
+                const pickRaw = rawPool.find(p => String(p.id) === String(cfg.rarityPickId));
+                if (pickRaw) poolAll = poolAll.concat([pickRaw]);
+            }
             const strict = solveCore(poolAll, cfg, true);
             if (strict && strict.ok) return strict;
             const loose = solveCore(poolAll, cfg, false);
@@ -4577,7 +4625,21 @@
     // SSOT mit solveCore). Eigener Try/Catch, additiv zu den bereits
     // etablierten Feldern in refreshSbcInfoUI(): ein Fehler hier darf
     // Ziel-OVR/Vorgaben/Pool-Anzeige nicht mitreissen.
+    // Debounce (400ms, Nacht-Review 16.08.): refreshSbcInfoUI() laeuft beim
+    // Club-Laden PRO SEITE (~92x) - jede Verfuegbarkeits-Berechnung macht
+    // readConfig() inkl. komplettem localStorage-Scan plus 6-8 volle
+    // Pool-Filterdurchlaeufe. Im Lade-Takt (LEARNINGS 7/30, CPU-Seite) ist
+    // das unnoetige Mehrarbeit: waehrend eines Bursts rechnet erst der
+    // letzte Aufruf, Einzel-Aufrufe verzoegern sich um unmerkliche 400ms.
     function refreshAvailabilityUI() {
+        if (!ui.availability) return;
+        if (STATE.availTimer) clearTimeout(STATE.availTimer);
+        STATE.availTimer = setTimeout(function () {
+            STATE.availTimer = null;
+            renderAvailabilityNow();
+        }, 400);
+    }
+    function renderAvailabilityNow() {
         if (!ui.availability) return;
         try {
             const cfg = readConfig();
@@ -6015,9 +6077,18 @@
             lines.push({ level: level, text: text });
         }
         const rarityConstraints = (cfg.applyRarity === false) ? [] : (cfg.rarityConstraints || []);
+        // Vorgaben zaehlen wie der Solver sie erfuellt (Nacht-Review 16.08.):
+        // matchesRarity() bedient Gruppe 83 auch ueber den ids-Zweig
+        // (rareflag 3 = TOTW) - eine ids-basierte TOTW-Vorgabe erzeugte hier
+        // sonst den falschen roten Fehler "1x statt geforderter 0" auf einem
+        // korrekten Plan. Karten-Identitaet ebenso doppelt (groups ODER
+        // rareflag 3), SSOT mit isProtectedRarity/isTotw im Solver.
         const required83 = rarityConstraints
-            .filter(rc => Number(rc.groupId) === 83)
+            .filter(rc => Number(rc.groupId) === 83 ||
+                (Array.isArray(rc.ids) && rc.ids.map(Number).indexOf(3) > -1))
             .reduce((s, rc) => s + (rc.count || 1), 0);
+        const is83 = p => Number(p.rareflag) === 3 ||
+            !!(p.groups && p.groups.indexOf(83) > -1);
         const qualityConstraints = (cfg.applyRarity === false) ? [] : (cfg.qualityConstraints || []);
         // Deckt sich mit dem qualityLow-Zweig im Solver (Bronze/Silber
         // ignorieren Min-Rating komplett, Gold nicht) - hier nur, um
@@ -6032,9 +6103,15 @@
             const waste = r.waste || 0;
             runCheck('error', waste <= maxOvershoot + 1e-9,
                 'Team ' + teamNo + ': Rating-Überschuss ' + waste.toFixed(2) + ' über dem erlaubten Fenster ' +
-                maxOvershoot.toFixed(2) + ' (exakt ' + r.ovrExact.toFixed(2) + ').');
-            const n83 = r.players.filter(p => p.groups && p.groups.indexOf(83) > -1).length;
-            runCheck('error', n83 === required83,
+                maxOvershoot.toFixed(2) + ' (exakt ' +
+                (r.ovrExact != null ? r.ovrExact.toFixed(2) : '?') + ').');
+            const n83 = r.players.filter(is83).length;
+            // Eine MANUELL gewaehlte Gruppe-83-Karte ohne passende Vorgabe ist
+            // Rasmus' explizite Entscheidung, kein Planungsfehler.
+            const pickedExtra = (required83 === 0 && cfg.rarityPickId != null &&
+                cfg.rarityPickId !== '' &&
+                r.players.some(p => String(p.id) === String(cfg.rarityPickId) && is83(p))) ? 1 : 0;
+            runCheck('error', n83 === required83 + pickedExtra,
                 'Team ' + teamNo + ': ' + n83 + 'x Gruppe-83-Karte(n) (TOTW/TOTS/FOF/FUTTIES) statt geforderter ' +
                 required83 + '.');
             const belowMin = r.players.filter(p => p.rating < effectiveMinRating);
@@ -6510,19 +6587,32 @@
         if (!ui.packResult) return;
         ui.packResult.innerHTML = '<div class="sbc-opt-batch-round">' + escapeHtml(text) + '</div>';
     }
-    function renderPackDrawList(drawn) {
+    function renderPackDrawList(drawn, headerText) {
         if (!ui.packResult) return;
         const sorted = drawn.slice().sort(function (a, b) { return (b.rating || 0) - (a.rating || 0); });
         let html = '';
         for (const d of sorted) {
-            html += '<div class="sbc-opt-batch-round">' + escapeHtml(d.name) +
+            // name/target koennen bei unlesbaren Items fehlen ({id, error}-
+            // Fallback des Einsammlers) - "undefined → undefined" waere die
+            // Anzeige (Nacht-Review 16.08.).
+            html += '<div class="sbc-opt-batch-round">' +
+                    escapeHtml(d.name || ('Item ' + (d.id != null ? d.id : '?'))) +
                     (d.rating != null ? ' <b>' + d.rating + '</b>' : '') +
                     (d.isDuplicateRaw ? ' <span class="sbc-opt-batch-warn">[Duplikat]</span>' : '') +
-                    ' → ' + escapeHtml(d.target) + '</div>';
+                    ' → ' + escapeHtml(d.target || (d.error ? 'Fehler: ' + d.error : 'unbekannt')) + '</div>';
         }
-        ui.packResult.innerHTML = html || '<div class="sbc-opt-batch-round">Keine Karten gezogen.</div>';
+        if (!html) html = '<div class="sbc-opt-batch-round">Keine Karten gezogen.</div>';
+        // Statuszeile als KOPF ueber der Liste statt per setPackStatus()
+        // hinterher: beide schreiben dasselbe innerHTML, die Liste war sonst
+        // fuer genau einen Frame sichtbar (Nacht-Review 16.08.) - und sie ist
+        // der einzige Beleg dafuer, was ein unumkehrbarer Lauf gezogen hat.
+        if (headerText) {
+            html = '<div class="sbc-opt-batch-round"><b>' + escapeHtml(headerText) + '</b></div>' + html;
+        }
+        ui.packResult.innerHTML = html;
     }
     async function onPackRefreshClick() {
+        if (STATE.packOpenBusy) return;
         ui.packRefresh.disabled = true;
         setPackStatus('lade Packs...');
         try {
@@ -6734,6 +6824,7 @@
         STATE.packOpenBusy = true;
         ui.packTest.disabled = true;
         ui.packAll.disabled = true;
+        ui.packRefresh.disabled = true;
         setPackStatus('öffne 1 Pack...');
         try {
             const res = await runPackTestOpen(groupId);
@@ -6753,6 +6844,7 @@
             STATE.packOpenBusy = false;
             ui.packTest.disabled = false;
             ui.packAll.disabled = false;
+            ui.packRefresh.disabled = false;
         }
     }
     /**
@@ -6853,8 +6945,7 @@
             const res = await runPackOpenAll(groupId, requestedCount, function (cur, cnt, step) {
                 showProgress(cur, cnt, step, '', 'Pack');
             });
-            renderPackDrawList(res.drawn);
-            setPackStatus(res.message);
+            renderPackDrawList(res.drawn, res.message);
             if (!res.ok) {
                 finishProgress(res.message, false);
                 toast('Alle öffnen gestoppt: ' + res.message, 'error');

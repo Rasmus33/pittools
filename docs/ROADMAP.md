@@ -85,6 +85,24 @@
    Ansicht evtl. erst nach Reopen aktuell — akzeptiert, aber beobachten
    (`submitVia` im Diagnose-Report zeigt den benutzten Weg).
 
+## Design-Fragen an Rasmus (Nacht-Review 16.08., LEARNINGS §49)
+
+- **Rarity-Schutz-Aufschlag 0**: schaltet heute AUCH die harte
+  "ohne Vorgabe keine Gruppe-83"-Sperre ab (gepinnter Vertrag, Test 8).
+  Seit den TOTW-Flachkosten werden TOTW dann aber aktiv BEVORZUGT verbaut
+  (flach < jedes Band ab 81). Gewollt ("0 = alles freigeben") oder soll die
+  harte Sperre immer gelten und 0 nur den Aufschlag abschalten?
+- **Plan-Check faerbt Pool-Grenzen als Fehler**: kann der Pool ein 84er-Ziel
+  nur mit z.B. 84.50 erreichen, liefert der Solver bewusst dieses Minimum -
+  die Vorschau zeigt es aber rot als "Fehler". Eigene Kategorie
+  ("Pool-Grenze", gelb) statt rot?
+- **Verfuegbarkeits-Anzeige ohne Min-Rating-Fenster**: "1 verfuegbar" kann
+  neben "Rarity-Vorgabe nicht erfuellbar" stehen, wenn der einzige Kandidat
+  unter dem Min-Rating liegt. Fenster mitberechnen oder beide Zahlen zeigen?
+- **Erschoepfungs-Meldung bei Scan-Totalausfall**: candidateCount 0 kann auch
+  "alle Scans fehlgeschlagen" bedeuten - die Meldung behauptet dann
+  faelschlich "Limit erreicht". Scan-Fehler separat ausweisen?
+
 ## Ideen (nicht committed)
 
 - **Desktop-Modus-Schalter in der App** (⚙-Menü): Desktop-UA + Querformat

@@ -366,3 +366,36 @@ korrekt implementierten Gates geschlossen (`solver-test.js:5851-5956`, Ticket
 eigentliche Befund dieser Iteration bleibt negativ im guten Sinn: **keine
 neue TOTW-artige Gate-Drift gefunden** — der Anlass-Fall ist an allen vier
 Berührungspunkten sauber gefixt und regressionsgetestet.
+
+## Pflege-Nachtrag 16.08. (v4.70.0/v4.71.0, Nacht-Review — LEARNINGS §49)
+
+Die adversariale Diff-Review der Liefer-Nacht hat das Audit-Ergebnis oben in
+einem Punkt KORRIGIERT: "0 echte Gate-Lücken" stimmte nur für das geprüfte
+Kriterium ("steht die AUSNAHME an jedem Gate?"). Ungeprüft blieb das
+Kriterium darunter: **ist die IDENTITÄTS-Definition an allen Gates dieselbe?**
+Genau dort saß eine echte Lücke: `isTotw()` (Kosten, Storage-Filter) prüft
+`rareflag 3`, der Rarity-Schutz und der Plan-Check prüften nur `groups ∋ 83`
+— ein TOTW-Payload ohne `groups`-Feld bekam Flachkosten OHNE Schutz und wäre
+unter Default-Einstellungen aktiv als Füller verbaut worden.
+
+Matrix-Änderungen durch v4.70.0/v4.71.0 (Zeilennummern der Gates haben sich
+um ~+30 im Solver-Block verschoben; maßgeblich sind die Funktionsnamen):
+
+| Regel | Gate-Änderung | Test |
+|---|---|---|
+| R6/R12 | `isProtectedRarity()` kennt jetzt BEIDE Identitäten (rareflag 3 ODER groups ∋ 83, Shortcut nur wenn guardGroups 83 enthält) | Test 64a (`Review 64a`) |
+| R6 | `matchesRarity()` neuer Zweig: `groupId 83 && isTotw(p)` (analog zum bestehenden Gruppe-4/rareflag-1-Fallback) | Test 64b |
+| R12 | Plan-Check `is83`/`required83` mit beiden Identitäten + matchesRarity-Präzedenz (ids nur ohne groupId) | Tests 64d/64e |
+| R14 | Max-Rating-Vorfilter: manueller `rarityPickId` wird re-added (explizite Wahl schlägt Filter; Locks bleiben tabu) | Test 64c |
+
+Neue Audit-Regel für künftige Durchgänge: pro Produktregel nicht nur
+"Ausnahme an jedem Gate?" prüfen, sondern auch "Identitäts-Definition
+(isTotw/groups/rareflag) an jedem Gate identisch?" — jede Definition, die an
+zwei Stellen unterschiedlich beantwortet werden kann, ist eine latente
+Gate-Lücke.
+
+Offen als Design-Fragen an Rasmus (docs/ROADMAP.md): guard=0-Semantik
+(harte Sperre fällt mit — gepinnter Vertrag Test 8, aber seit den
+TOTW-Flachkosten werden TOTW dann BEVORZUGT verbaut), Plan-Check-Färbung
+von Pool-Grenzen, Verfügbarkeits-Fenster, Erschöpfungs-Meldung bei
+Scan-Totalausfall.

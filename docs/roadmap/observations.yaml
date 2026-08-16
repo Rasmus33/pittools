@@ -93,6 +93,19 @@ entries:
   reasoning: 'Plan-Check: Confidence-Score + Klartext-Abweichungen oben, Freigabe-Button
     direkt darunter, Teams eingeklappt (User-Nachtrag), Max-Rating-Zeile in die Erweiterten
     Einstellungen umgezogen (User-Nachtrag 2). v4.68.0, 735/735, Main-verifiziert.'
+- at: '2026-08-16T00:35:54Z'
+  issue: 76
+  po_class: null
+  surprises:
+  - 'Stufenplan-Gate (Stufe 2 erst nach Live-Bestaetigung) per PO-Entscheid ueberstimmt:
+    Rasmus schlaeft und will alles fertig; der Erster-Fehler-Stopp degradiert Alle-oeffnen
+    im schlimmsten Fall zum Einzel-Test — dokumentierte Ausnahme, Vision-Doc wird
+    angepasst.'
+  - Zwischen-Pack-Re-Fetch der Pack-Liste umgeht elegant die unverifizierte open()-Instanz-Semantik
+    (eine der 4 offenen Mechanik-Fragen ist damit designseitig entschaerft).
+  reasoning: 'Pack-Opener Stufe 2: Alle oeffnen mit Erster-Fehler-Stopp (auch Throw-Pfad
+    beobachtbar nach Validator-Fund), proaktivem Storage-voll-Stopp, Fortschritts-Overlay
+    und aggregierter Zieh-Liste. v4.69.0, 775/775.'
 discoveries:
   pattern_candidates: []
   antipattern_candidates: []

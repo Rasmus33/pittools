@@ -5154,7 +5154,7 @@ function mulberry32(a) {
     }
 
     // Erfolgspfad: Nicht-Duplikat -> Verein, Duplikat -> Storage, Misc -> redeem,
-    // Nachzaehlung von Storage UND Pack-Bestand landet in packScan.testRun.
+    // Nachzaehlung von Storage UND Pack-Bestand landet in packScan.lastRun.
     {
         const sb = makeSandbox({});
         results59.push(sb.run('5').then(r => {
@@ -5170,10 +5170,12 @@ function mulberry32(a) {
             check('runPackTestOpen: storageCountBefore/After stehen in packScan (0 -> 1)',
                 sb.STATE.diag.packScan.storageCountBefore === 0 && sb.STATE.diag.packScan.storageCountAfter === 1,
                 JSON.stringify(sb.STATE.diag.packScan));
-            check('runPackTestOpen: packScan.testRun.packCountBefore/packCountAfterSameGroup beantworten Mechanik-Frage (a)',
-                sb.STATE.diag.packScan.testRun.packCountBefore === 2 &&
-                sb.STATE.diag.packScan.testRun.packCountAfterSameGroup === 1,
-                JSON.stringify(sb.STATE.diag.packScan.testRun));
+            check('runPackTestOpen: packScan.lastRun.packCountBefore/packCountAfterSameGroup beantworten Mechanik-Frage (a)',
+                sb.STATE.diag.packScan.lastRun.packCountBefore === 2 &&
+                sb.STATE.diag.packScan.lastRun.packCountAfterSameGroup === 1,
+                JSON.stringify(sb.STATE.diag.packScan.lastRun));
+            check('runPackTestOpen: packScan.runsCount zaehlt jeden erfolgreichen open()-Aufruf (Ticket #76)',
+                sb.STATE.diag.packScan.runsCount === 1, JSON.stringify(sb.STATE.diag.packScan));
         }));
     }
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.68.0
+// @version      4.69.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.68.0';
+    const VERSION = '4.69.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -148,7 +148,7 @@
             utasUnclassified: 0,     // /ut/game/-URLs, die classifyUrl() nicht zuordnen konnte (LEARNINGS 38)
             lastUnclassifiedPaths: [], // 5er-Ring der zugehoerigen Pfade (IDs maskiert)
             popupDismissCount: 0,    // wie oft dismissRewardPopup() seit App-Start wirklich etwas geschlossen hat (analog batchStuckCount, LEARNINGS §27)
-            packScan: null           // Pack-Opener Stufe 1 (Ticket #69): myPacks/testRun/storageCounts/missingGlobals/errorForm, siehe mergePackScan() (LEARNINGS §46)
+            packScan: null           // Pack-Opener (Ticket #69/#76): myPacks/lastRun/lastAllRun/runsCount/storageCounts/missingGlobals/errorForm, siehe mergePackScan() (LEARNINGS §46)
         }
     };
     function log(...args) { try { console.log(LOG_PREFIX, ...args); } catch (e) {} }
@@ -4035,12 +4035,12 @@
                         <div id="sbc-opt-batch-detail-body"></div>
                     </details>
                 </div>
-                <!-- PACK-OPENER Stufe 1 (Ticket #69): nur in der Store-Ansicht
-                     sichtbar (syncPackSection()), hoechstens EIN Pack pro Klick -
-                     Pack-Oeffnen ist unumkehrbar. -->
+                <!-- PACK-OPENER (Store, Ticket #69/#76): nur in der Store-Ansicht
+                     sichtbar (syncPackSection()) - Pack-Oeffnen ist unumkehrbar,
+                     "Alle oeffnen" stoppt deshalb beim ERSTEN Fehler jeder Art. -->
                 <div class="sbc-opt-batch sbc-opt-hidden" id="sbc-opt-packsection">
                     <div class="sbc-opt-inline" style="margin-bottom:8px;">
-                        <label style="margin:0;flex:1;">Pack-Opener (Store) - Testlauf</label>
+                        <label style="margin:0;flex:1;">Pack-Opener (Store)</label>
                     </div>
                     <div class="sbc-opt-inline" style="margin-bottom:8px;">
                         <select id="sbc-opt-pack-type" style="flex:1;">
@@ -4049,6 +4049,11 @@
                         <button class="sbc-opt-btn ghost" id="sbc-opt-pack-refresh" style="margin:0;padding:6px 10px;">↻</button>
                     </div>
                     <button class="sbc-opt-btn danger" id="sbc-opt-pack-test">Test: 1 Pack öffnen</button>
+                    <div class="sbc-opt-inline" style="margin-top:8px;margin-bottom:8px;">
+                        <label style="margin:0;flex:1;">Alle öffnen – Anzahl (leer = alle)</label>
+                        <input type="number" id="sbc-opt-pack-count" min="1" style="width:64px;" placeholder="alle">
+                    </div>
+                    <button class="sbc-opt-btn danger" id="sbc-opt-pack-all">Alle öffnen</button>
                     <div id="sbc-opt-pack-result"></div>
                 </div>
                 <button class="sbc-opt-btn ghost" id="sbc-opt-diag" style="margin-top:10px;">Diagnose in Konsole schreiben</button>
@@ -4110,6 +4115,8 @@
             packType: panel.querySelector('#sbc-opt-pack-type'),
             packRefresh: panel.querySelector('#sbc-opt-pack-refresh'),
             packTest: panel.querySelector('#sbc-opt-pack-test'),
+            packCount: panel.querySelector('#sbc-opt-pack-count'),
+            packAll: panel.querySelector('#sbc-opt-pack-all'),
             packResult: panel.querySelector('#sbc-opt-pack-result')
         };
         panel.querySelector('#sbc-opt-close').addEventListener('click', () => panel.classList.remove('open'));
@@ -4131,6 +4138,7 @@
         ui.batchRun.addEventListener('click', onBatchRunClick);
         ui.packRefresh.addEventListener('click', onPackRefreshClick);
         ui.packTest.addEventListener('click', onPackTestClick);
+        ui.packAll.addEventListener('click', onPackAllClick);
         ui.rarityPickFilter.addEventListener('input', renderRarityPickOptions);
         // Zustand der "Erweiterte Einstellungen" merken
         const adv = panel.querySelector('#sbc-opt-advanced');
@@ -4709,8 +4717,9 @@
             // den Einzelfall - ein wiederkehrender Popup-Typ, der Zeit im
             // 300ms-Fenster frisst, wird erst ueber die Haeufigkeit sichtbar.
             popupDismissCount: STATE.diag.popupDismissCount || 0,
-            // Pack-Opener Stufe 1 (Ticket #69): letzte Enumeration + letzter
-            // Testlauf - beantwortet die vier offenen Mechanik-Fragen aus
+            // Pack-Opener (Ticket #69/#76): letzte Enumeration, letzter
+            // Einzel-Pack-Lauf (lastRun) und letzter "Alle öffnen"-Lauf
+            // (lastAllRun) - beantwortet die vier offenen Mechanik-Fragen aus
             // docs/roadmap/vision/features/pack-opener.md (LEARNINGS §46).
             packScan: STATE.diag.packScan || null,
             // Welches Team hat der Solver zuletzt geliefert (id/assetId/rating/
@@ -5260,10 +5269,12 @@
     // ---- Fortschrittsanzeige fuer den Batch --------------------------------
     // Rasmus' Wunsch: "einfach ein Ladebalken und da steht SBC 1/5" - statt im
     // Panel nach dem Status zu suchen.
-    function showProgress(cur, total, step, doneText) {
+    // titlePrefix generalisiert den Balken fuer den Pack-Opener-Loop (Ticket
+    // #76) mit - Default 'SBC' haelt jeden bestehenden Aufrufer unveraendert.
+    function showProgress(cur, total, step, doneText, titlePrefix) {
         if (!ui.progress) return;
         ui.progress.classList.add('open');
-        ui.progTitle.textContent = 'SBC ' + cur + ' von ' + total;
+        ui.progTitle.textContent = (titlePrefix || 'SBC') + ' ' + cur + ' von ' + total;
         ui.progStep.textContent = step || '';
         const pct = Math.max(0, Math.min(100, Math.round(((cur - 1) / total) * 100)));
         ui.progFill.style.width = pct + '%';
@@ -6290,14 +6301,18 @@
         }
     }
     // ========================================================================
-    //  PACK-OPENER (Store, Stufe 1, Ticket #69)
+    //  PACK-OPENER (Store, Ticket #69 Stufe 1 + Ticket #76 Stufe 2)
     // ------------------------------------------------------------------------
     //  Mechanik-Quelle: PaleTools-Analyse vom 16.08.2026 (dekodiertes
-    //  packsOpener-Plugin, LEARNINGS §46). Pack-Oeffnen ist UNUMKEHRBAR - Stufe
-    //  1 oeffnet hoechstens EIN Pack pro Klick und dient der Live-Verifikation
-    //  (STATE.diag.packScan beantwortet die vier offenen Mechanik-Fragen aus
-    //  docs/roadmap/vision/features/pack-opener.md). "Alle oeffnen" kommt erst
-    //  in Stufe 2, nach bestaetigter Stufe 1.
+    //  packsOpener-Plugin, LEARNINGS §46). Pack-Oeffnen ist UNUMKEHRBAR -
+    //  runPackTestOpen() oeffnet GENAU EIN Pack (Stufe 1, Einzel-Testlauf UND
+    //  Baustein der Stufe-2-Schleife runPackOpenAll(), SSOT) und dient der
+    //  Live-Verifikation (STATE.diag.packScan beantwortet die vier offenen
+    //  Mechanik-Fragen aus docs/roadmap/vision/features/pack-opener.md). Die
+    //  Stufe-1-Mechanik ist stub-getestet, aber noch NICHT live verifiziert -
+    //  runPackOpenAll() stoppt deshalb bei JEDEM Fehler sofort: im schlimmsten
+    //  Fall degradiert "Alle oeffnen" zu einem Einzel-Pack mit klarer
+    //  Fehlermeldung, bereits geoeffnete Packs sind sicher verteilt.
     // ========================================================================
     // PaleTools verwendet fuer die Storage-Kapazitaet hartkodiert 100, ohne
     // dass ein EA-Endpunkt sie liefert - UNVERIFIZIERT. runPackTestOpen()
@@ -6447,6 +6462,11 @@
     // Takt zwischen den Verteil-Schritten: 300-700ms, wie PaleTools' "Fast"
     // (LEARNINGS §30-Logik) - kein festerer Wert, kein schnellerer.
     function packTakt() { return 300 + Math.floor(Math.random() * 401); }
+    // Takt ZWISCHEN Packs (Stufe 2, Ticket #76): spuerbar laenger als
+    // packTakt() (500-1400ms statt 300-700ms) - zwischen zwei ganzen
+    // Pack-Zyklen ist mehr Abstand die konservativere Wahl, solange die
+    // open()-Instanz-Semantik noch nicht live verifiziert ist.
+    function packBetweenTakt() { return 500 + Math.floor(Math.random() * 901); }
     async function fetchMyPacks() {
         const g = resolvePackGlobals();
         if (!g.ok) {
@@ -6531,7 +6551,7 @@
             mergePackScan({ missingGlobals: g.missing });
             return { ok: false, reason: 'Store-Schnittstellen fehlen (' + g.missing.join(', ') + ').' };
         }
-        mergePackScan({ missingGlobals: g.optionalMissing || [], errorForm: null, testRun: null });
+        mergePackScan({ missingGlobals: g.optionalMissing || [], errorForm: null, lastRun: null });
         let unassignedBefore;
         try { unassignedBefore = g.repoItem.numItemsInCache(g.ItemPile.PURCHASED); }
         catch (e) {
@@ -6559,6 +6579,10 @@
                 keys: openResp ? Object.keys(openResp) : [] } });
             return { ok: false, reason: 'Öffnen abgelehnt (Status ' + (openResp && openResp.status) + ').' };
         }
+        // Zaehlt ab hier - open() ist die unumkehrbare Aktion, unabhaengig
+        // davon, ob das Einsammeln/Verteilen danach noch scheitert (der Pack-
+        // Verbrauch ist so oder so bereits passiert).
+        mergePackScan({ runsCount: ((STATE.diag.packScan && STATE.diag.packScan.runsCount) || 0) + 1 });
         try { g.repoItem.setDirty(g.ItemPile.PURCHASED); }
         catch (e) { reportError('Pack-Testlauf: setDirty fehlgeschlagen', e); }
         let itemsResp;
@@ -6683,7 +6707,7 @@
             };
         });
         mergePackScan({
-            testRun: {
+            lastRun: {
                 itemCount: items.length,
                 items: drawn,
                 openResponseKeys: openResp ? Object.keys(openResp) : [],
@@ -6699,6 +6723,7 @@
         if (!groupId) { toast('Erst einen Pack-Typ wählen (Aktualisieren drücken).', 'error'); return; }
         STATE.packOpenBusy = true;
         ui.packTest.disabled = true;
+        ui.packAll.disabled = true;
         setPackStatus('öffne 1 Pack...');
         try {
             const res = await runPackTestOpen(groupId);
@@ -6717,6 +6742,109 @@
         } finally {
             STATE.packOpenBusy = false;
             ui.packTest.disabled = false;
+            ui.packAll.disabled = false;
+        }
+    }
+    /**
+     * "Alle öffnen" (Stufe 2, Ticket #76): ruft runPackTestOpen() wiederholt
+     * für denselben Pack-Typ - EIN Stufe-1-Ablauf pro Iteration, keine zweite
+     * Kopie der Abbruch-Disziplin (SSOT). Stoppt beim ERSTEN Fehlschlag jeder
+     * Art - die Stufe-1-Mechanik ist stub-getestet, aber noch NICHT live
+     * verifiziert; im schlimmsten Fall degradiert der Lauf so zu einem
+     * Einzel-Pack-Test mit klarer Fehlermeldung, bereits geöffnete Packs sind
+     * sicher verteilt. Ein liegen gebliebenes Duplikat (Storage voll) stoppt
+     * proaktiv mit einer konkreten Meldung, statt den generischen
+     * Unassigned-Guard des nächsten Packs die Sache melden zu lassen.
+     * Zwischen erfolgreichen Packs wird die Pack-Liste per fetchMyPacks() neu
+     * geladen statt eine client-seitige Entity-Referenz weiterzuzählen - die
+     * open()-Instanz-Semantik bei mehreren Einträgen derselben id ist eine
+     * der vier noch offenen Mechanik-Fragen (LEARNINGS §46), ein frischer
+     * EA-Stand umgeht die Unsicherheit statt sie zu erraten.
+     */
+    async function runPackOpenAll(groupId, requestedCount, onProgress) {
+        const initialGroup = (STATE.packGroups || []).find(function (g) { return String(g.id) === String(groupId); });
+        const available = initialGroup ? initialGroup.count : 0;
+        const total = Math.max(0, Math.min(requestedCount == null ? available : requestedCount, available));
+        const drawn = [];
+        let opened = 0;
+        function stopWith(reason) {
+            const message = opened + ' von ' + total + ' geöffnet - gestoppt: ' + reason;
+            mergePackScan({ lastAllRun: { requested: requestedCount, total: total, opened: opened, ok: false, reason: reason } });
+            return { ok: false, opened: opened, total: total, reason: reason, message: message, drawn: drawn };
+        }
+        for (let i = 0; i < total; i++) {
+            if (onProgress) onProgress(i + 1, total, 'öffne Pack ' + (i + 1) + ' von ' + total + '...');
+            const res = await runPackTestOpen(groupId);
+            if (!res.ok) return stopWith(res.reason);
+            opened++;
+            Array.prototype.push.apply(drawn, res.drawn);
+            const stuck = res.drawn.some(function (d) { return /liegen geblieben/.test(d.target); });
+            if (stuck) {
+                return stopWith('Storage voll — Rest-Karten liegen unassigned.');
+            }
+            if (i + 1 < total) {
+                await sleep(packBetweenTakt());
+                try { await fetchMyPacks(); }
+                catch (e) {
+                    return stopWith('Pack-Liste nach Runde ' + opened + ' konnte nicht aktualisiert werden: ' + (e.message || e) + '.');
+                }
+                const freshGroup = (STATE.packGroups || []).find(function (g) { return String(g.id) === String(groupId); });
+                if (!freshGroup || freshGroup.count < 1) {
+                    return stopWith('Keine weiteren Packs dieses Typs mehr verfügbar.');
+                }
+            }
+        }
+        const message = opened + ' von ' + total + ' Pack(s) geöffnet und verteilt.';
+        mergePackScan({ lastAllRun: { requested: requestedCount, total: total, opened: opened, ok: true, reason: null } });
+        return { ok: true, opened: opened, total: total, message: message, drawn: drawn };
+    }
+    async function onPackAllClick() {
+        if (STATE.packOpenBusy) return;
+        const groupId = ui.packType && ui.packType.value;
+        if (!groupId) { toast('Erst einen Pack-Typ wählen (Aktualisieren drücken).', 'error'); return; }
+        const group = (STATE.packGroups || []).find(function (g) { return String(g.id) === String(groupId); });
+        const available = group ? group.count : 0;
+        const raw = ui.packCount && ui.packCount.value;
+        const requestedCount = (raw === '' || raw == null) ? null : parseInt(raw, 10);
+        if (requestedCount != null && (!Number.isFinite(requestedCount) || requestedCount < 1)) {
+            toast('Ungültige Anzahl.', 'error');
+            return;
+        }
+        const plannedTotal = Math.max(0, Math.min(requestedCount == null ? available : requestedCount, available));
+        if (plannedTotal < 1) { toast('Keine Packs dieses Typs zum Öffnen verfügbar.', 'error'); return; }
+        const packLabel = group ? (group.packName || ('Pack ' + group.id)) : ('Pack ' + groupId);
+        if (!window.confirm(
+            packLabel + ': ' + plannedTotal + ' Pack(s) werden nacheinander geöffnet.\n\n' +
+            'Stoppt beim ersten Fehler; bereits geöffnete Packs sind dann schon verteilt. Fortfahren?'
+        )) return;
+        STATE.packOpenBusy = true;
+        ui.packTest.disabled = true;
+        ui.packAll.disabled = true;
+        ui.packRefresh.disabled = true;
+        setPackStatus('öffne ' + plannedTotal + ' Pack(s)...');
+        try {
+            const res = await runPackOpenAll(groupId, requestedCount, function (cur, cnt, step) {
+                showProgress(cur, cnt, step, '', 'Pack');
+            });
+            renderPackDrawList(res.drawn);
+            setPackStatus(res.message);
+            if (!res.ok) {
+                finishProgress(res.message, false);
+                toast('Alle öffnen gestoppt: ' + res.message, 'error');
+            } else {
+                finishProgress(res.message, true);
+                toast(res.message, 'ok');
+            }
+            try { await fetchMyPacks(); renderPackTypeOptions(); } catch (e) {}
+        } catch (e) {
+            reportError('Pack-Alle-Öffnen: unerwarteter Fehler', e);
+            setPackStatus('Fehler: ' + (e.message || e));
+            toast('Alle öffnen fehlgeschlagen: ' + (e.message || e), 'error');
+        } finally {
+            STATE.packOpenBusy = false;
+            ui.packTest.disabled = false;
+            ui.packAll.disabled = false;
+            ui.packRefresh.disabled = false;
         }
     }
     // ========================================================================

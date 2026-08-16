@@ -30,8 +30,20 @@
 #                 consume-seeds`) — NICHT bei iteration-done geleert. Ersetzt
 #                 das deprecatete gitignored `iteration-seeds.yaml` (ADR #78).
 schema_version: 1.4.0
-iteration: null
-entries: []
+iteration: 10
+entries:
+- at: '2026-08-16T01:27:36Z'
+  issue: 78
+  po_class: null
+  surprises:
+  - 'Das Gate-Audit fand 0 echte Luecken — nach dem TOTW-Vorfall die bestmoegliche
+    Nachricht: der Drift war ein Einzelfall, kein Muster. Die Regel-Gate-Matrix im
+    Gap-Report ist jetzt ein pflegbares Artefakt (jede neue Produktregel bekommt dort
+    Zeile + Gates + Tests).'
+  reasoning: Alle 4 Test-Luecken der Produktregel-Gate-Matrix geschlossen (R2 ungerade
+    Quoten-Rundung, R6 priorityOf Stufe 2, R12 Guard-nach-Storage-Rabatt, R13 TOTW-Wertgleichheit
+    kombiniert), Erwartungswerte arithmetisch hergeleitet. 14/14 Regeln voll gedeckt.
+    Test-only, 784/784.
 discoveries:
   pattern_candidates: []
   antipattern_candidates: []

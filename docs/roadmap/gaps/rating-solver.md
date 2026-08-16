@@ -69,22 +69,16 @@ Mehrliefern bei "Min. N" unschädlich.
 
 | Gate | Datei:Zeile | Test |
 |---|---|---|
-| `qTiers`-Konstruktion + Rest-Verteilung | `ea-fc-sbc-optimizer.user.js:2137-2183` | `solver-test.js:1144-1214` (teilweise) |
+| `qTiers`-Konstruktion + Rest-Verteilung | `ea-fc-sbc-optimizer.user.js:2137-2183` | `solver-test.js:1144-1214` (2 Stufen, gerader Rest), `5854-5886` (3 Stufen, ungerader Rest) |
 | `qTiers`-Reservierungsschleife | `ea-fc-sbc-optimizer.user.js:2699-2727` | `solver-test.js:1165-1182` |
 | `inQBand`-Prädikat (nicht-durchgehendes Fenster) | `ea-fc-sbc-optimizer.user.js:2212-2214` | `solver-test.js:1171` (indirekt) |
 
-**Status: TEST-LÜCKE.** Das einzige Testszenario (`MIXED`, Zeile 1152-1157)
-hat `count:1`/`count:1` auf `N=10` — ein **geradzahliger** Rest (8 Slots ohne
-Angabe → 4/4 Basisanteil + 0 Rest). Die Rundungslogik selbst
-(`ea-fc-sbc-optimizer.user.js:2163-2168`: `base = floor((N-stated)/tiers.length)`,
-Restverteilung beginnt bei der NIEDRIGSTEN Stufe) ist für einen **ungeraden**
-Rest oder **mehr als zwei** Stufen nirgends geprüft — der Code ist generisch
-für beliebig viele Stufen geschrieben (`tiers.length`-Schleife), aber nur der
-2-Stufen/geraden-Rest-Fall ist belegt. Kein bekannter Live-Fall mit 3 Stufen
-oder ungeradem Rest, aber die Regel selbst ("Rest an die niedrigste Stufe")
-ist eine der präzisesten in CLAUDE.md — ein Regressions-Bug hier (z.B.
-Restverteilung an die HÖCHSTE statt niedrigste Stufe) würde von keinem Test
-bemerkt.
+**Status: GEDECKT.** Neben dem 2-Stufen/geraden-Rest-Fall (`MIXED`, Zeile
+1152-1157) belegt `solver-test.js:5854-5886` (Iteration 10, Ticket #78) jetzt
+auch den generischen Fall: 3 Stufen ("Bronze Min. 3 + Silber Min. 3 + Gold
+Min. 3" auf 10 Slots, exakt der Edge-Case aus diesem Report) mit ungeradem
+Rest (1 von 10 Slots ungenannt) — der Rest-Slot geht an die niedrigste Stufe
+(4 statt 3 Bronze), Silber und Gold bleiben bei der genannten Anzahl.
 
 ### R3 — Bronze-/Silber-Vorgaben: niedrigste normale Karten
 
@@ -139,7 +133,7 @@ Verein-Gold. Verein-Specials NIE in SBCs — einzige Ausnahme: TOTW
 
 | Gate | Datei:Zeile | Test |
 |---|---|---|
-| `priorityOf()` (Konsum-Reihenfolge 1/2/3/4) | `ea-fc-sbc-optimizer.user.js:1713-1718` | `solver-test.js:310-316` (1v3), `1133-1141` (3v4) |
+| `priorityOf()` (Konsum-Reihenfolge 1/2/3/4) | `ea-fc-sbc-optimizer.user.js:1713-1718` | `solver-test.js:310-316` (1v3), `5888-5905` (2v3), `1133-1141` (3v4) |
 | `specialOnlyFromStorage`-Filter in `solveCore` + TOTW-Ausnahme | `ea-fc-sbc-optimizer.user.js:2216-2224` | `solver-test.js:432-442` (Test 8), `5412-5439` (Test 60d, Live-Bug-Regression) |
 | `reservationCandidates()` + TOTW-Ausnahme | `ea-fc-sbc-optimizer.user.js:1907-1918` | `solver-test.js:4751-4849` (Ticket 68), `432-442` |
 | `computeRarityAvailability()` (Panel-Anzeige) | `ea-fc-sbc-optimizer.user.js:3125-3155` | `solver-test.js:4788-4791` (Vereins-FUTTIES ausgeschlossen, Vereins-TOTW bleibt Kandidat) |
@@ -149,17 +143,13 @@ Verein-Gold. Verein-Specials NIE in SBCs — einzige Ausnahme: TOTW
 Berührungspunkte der TOTW-Ausnahme sind konsistent implementiert UND mit
 eigenem Regressionstest abgesichert; `solver-test.js:5412-5439` ist exakt der
 Live-Fall aus LEARNINGS §47 nachgebaut (Verein-TOTW bleibt nutzbar,
-Verein-FUTTIES bleibt tabu, bei aktivem `specialOnlyFromStorage`). **Eine
-kleine Test-Lücke bleibt:** `priorityOf()`s Stufe 2 (Storage-Special) wird nie
-isoliert bewiesen — Test 5 (Zeile 310-316) beweist nur Stufe 1 vs. 3
-(Storage-Gold vor Verein-Gold), Test 8b-2f (1133-1141) nur Stufe 3 vs. 4
-(Verein-Gold vor Verein-Special). Dass Storage-Special (Stufe 2) tatsächlich
-vor Verein-Gold (Stufe 3) konsumiert wird, folgt nur aus der Codelogik
-(`priorityOf` gibt 2 vor 3 zurück), nicht aus einem Verhaltenstest — bei
-einer versehentlichen Vertauschung der Stufen 2/3 (z.B. Copy-Paste-Fehler in
-`priorityOf`) würde kein bestehender Test anschlagen, weil kein Testfall
-einen Pool mit gleich-ratigem Storage-Special UND Verein-Gold gleichzeitig
-zur Konsum-Entscheidung stellt.
+Verein-FUTTIES bleibt tabu, bei aktivem `specialOnlyFromStorage`). Die
+4-stufige Prioritäts-Kette ist jetzt an jedem Stufenpaar einzeln bewiesen:
+Test 5 (Zeile 310-316) Stufe 1 vs. 3 (Storage-Gold vor Verein-Gold),
+`solver-test.js:5888-5905` (Iteration 10, Ticket #78) Stufe 2 vs. 3
+(Storage-Special vor Verein-Gold, gleiches Rating, kein
+`specialOnlyFromStorage`), Test 8b-2f (1133-1141) Stufe 3 vs. 4 (Verein-Gold
+vor Verein-Special).
 
 ### R7 — Ohne Ziel-Rating: Storage vor Verein, dann niedrigstes Rating, dann Kosten
 
@@ -233,20 +223,17 @@ Solver-Konstante.
 | `isProtectedRarity()` in `makeCostOf()` | `ea-fc-sbc-optimizer.user.js:1846-1853, 1873` | `solver-test.js:468-491` |
 | `solve()` strict/loose Doppel-Versuch | `ea-fc-sbc-optimizer.user.js:2063-2109` | `solver-test.js:620-660` |
 | `limitProtected`-Filter auf `avail` | `ea-fc-sbc-optimizer.user.js:2892` | `solver-test.js:475-490` (ohne Vorgabe keine Karte), `627-650` (mit Vorgabe genau N, Brute-Force-verifiziert) |
+| `isProtectedRarity()`-Aufschlag isoliert (nicht halbiert) | `ea-fc-sbc-optimizer.user.js:1839-1874` | `solver-test.js:5907-5923` |
 
-**Status: TEST-LÜCKE (klein).** Kern-Mechanik (hart ohne Vorgabe, genau N mit
-Vorgabe, Lockerung bei Unlösbarkeit mit Warnung) ist umfassend und sogar
-Brute-Force-verifiziert getestet (`bestWithProtected()`, Zeile 620-660). Was
-fehlt: ein isolierter `makeCostOf()`-Test, der beweist, dass der
-`rarityGuardCost`-Aufschlag (+8) TATSÄCHLICH einen messbaren Kostenunterschied
-zwischen einer geschützten und einer sonst identischen ungeschützten Karte
-erzeugt — der einzige Test mit `rarityGuardCost` UND einer TOTW/Gruppe-83-Karte
-gleichzeitig (`solver-test.js:5339-5357`, Test 60a) vergleicht zwei TOTW
-untereinander, wo sich der Aufschlag in der Differenz weghebt (beide
-geschützt). CLAUDE.md sagt explizit "Kosten-Aufschlag wirkt zusätzlich
-innerhalb des Erlaubten" — dieser Zusatz-Effekt ist nur indirekt über die
-"HARTE Grenze" bewiesen (die überstimmt den Aufschlag ohnehin), nicht direkt
-über den Kostenwert selbst.
+**Status: GEDECKT.** Kern-Mechanik (hart ohne Vorgabe, genau N mit Vorgabe,
+Lockerung bei Unlösbarkeit mit Warnung) ist umfassend und sogar
+Brute-Force-verifiziert getestet (`bestWithProtected()`, Zeile 620-660).
+`solver-test.js:5907-5923` (Iteration 10, Ticket #78) beweist zusätzlich den
+`rarityGuardCost`-Aufschlag isoliert an zwei sonst identischen Storage-Karten
+(kein TOTW, damit sich der Aufschlag nicht wie in Test 60a in der Differenz
+zweier TOTW weghebt): die Kostendifferenz entspricht exakt dem Aufschlag, wie
+CLAUDE.md verlangt ("wirkt zusätzlich innerhalb des Erlaubten") — nicht der
+Hälfte, die eine fälschliche Anwendung VOR dem Storage-Rabatt ergäbe.
 
 ### R13 — TOTW sind wertgleich (neue Produktregel v4.67.0, LEARNINGS §47)
 
@@ -259,18 +246,17 @@ wirken unverändert.
 | `isTotw(p) ? (p.rating/1000) : bandFn(p.rating)` in `costOf()` | `ea-fc-sbc-optimizer.user.js:1862-1874` | `solver-test.js:5339-5357` (Test 60a) |
 | Greedy-Reservierung ohne Ziel nimmt niedrigeren TOTW | (nutzt denselben `costOf`) | `solver-test.js:5358-5381` (Test 60b) |
 | Fensterbewusste Reservierung mit Ziel (`reserveWindowAware`) | (nutzt denselben `costOf`) | `solver-test.js:411-431` (Test 8, "85er TOTW gewinnt trotz teurem Band") |
+| Storage-Rabatt + Untradeable-Bonus + Rarity-Schutz gemeinsam auf einer TOTW-Karte | `ea-fc-sbc-optimizer.user.js:1860-1874` | `solver-test.js:5925-5956` |
 
-**Status: TEST-LÜCKE (klein).** Die Bänder-Ignoranz selbst ist von allen
-Seiten bewiesen (Kostenformel direkt, Greedy-Pfad, Fenster-Pfad). Was laut
-CLAUDE.md/Kommentar (`ea-fc-sbc-optimizer.user.js:1869`) "unverändert" bleiben
-soll — Storage-Rabatt UND Untradeable-Bonus UND Scarcity gemeinsam auf EINE
-TOTW-Karte angewendet — hat keinen eigenen Test: alle TOTW-Testkarten in
-Abschnitt 60 sind `isStorage: false, untradeable: false` (Zeile 5342-5345,
-5363-5365, 5418-5420). Ein Regressionsbug, der versehentlich den
-Storage-Rabatt oder Untradeable-Bonus NUR für TOTW deaktiviert (z.B. ein zu
-früh gesetztes `return` im `isTotw`-Zweig, der die nachfolgenden
-`isStorage`/`untradeable`-Terme in `costOf()` überspringt), würde von keinem
-bestehenden Test bemerkt.
+**Status: GEDECKT.** Die Bänder-Ignoranz selbst ist von allen Seiten bewiesen
+(Kostenformel direkt, Greedy-Pfad, Fenster-Pfad). `solver-test.js:5925-5956`
+(Iteration 10, Ticket #78) belegt zusätzlich, dass Storage-Rabatt UND
+Untradeable-Bonus UND Rarity-Schutz-Aufschlag gemeinsam auf EINE TOTW-Karte
+angewendet korrekt und unabhängig voneinander wirken (arithmetisch aus
+`makeCostOf()`s eigener Formel hergeleitete Erwartungswerte, Herleitung im
+Testkommentar) — anders als in Abschnitt 60, wo alle TOTW-Testkarten
+`isStorage: false, untradeable: false` sind (Zeile 5342-5345, 5363-5365,
+5418-5420) und diese Kombination deshalb ungeprüft blieb.
 
 ### R14 — Batch-Planung: jede Runde ohne Vorrunden-Karten, ehrlicher Abbruch
 
@@ -295,63 +281,61 @@ ist damit außerhalb dieses Audits (separates Feature `batch-modus`).
 | # | Regel | Gates gefunden | Gate-Lücke (Regel fehlt an einem Gate) | Test-Lücke |
 |---|---|---|---|---|
 | R1 | Gold-Rare-Quote ohne Ziel | 2 | keine | keine |
-| R2 | Gemischte Qualitäts-Vorgaben | 3 | keine | ungerader Rest/>2 Stufen ungetestet |
+| R2 | Gemischte Qualitäts-Vorgaben | 3 | keine | keine |
 | R3 | Bronze/Silber niedrigste Karte | 2 | keine | keine |
 | R4 | Nur Rating zählt | — (Architektur) | n/a | n/a |
 | R5 | Minimales Dezimal-Rating im Fenster | 3 | keine | keine |
-| R6 | Karten-Prioritäten + TOTW-Ausnahme | 5 | keine (Anlass-Fall gefixt & abgesichert) | `priorityOf` Stufe 2 isoliert ungetestet |
+| R6 | Karten-Prioritäten + TOTW-Ausnahme | 5 | keine (Anlass-Fall gefixt & abgesichert) | keine |
 | R7 | Ohne-Ziel-Rangfolge | 4 | keine | keine |
 | R8 | Unverkäuflich zuerst | 1 | keine | keine |
 | R9 | Evolutions nie | 2 (1 SSOT-Gate) | keine | keine |
 | R10 | Locks nie | 3 | keine | keine |
 | R11 | Rating-Kosten-Tabelle | 3 | keine | keine |
-| R12 | Rarity-Schutz hart | 3 | keine | Aufschlag-Effekt isoliert ungetestet |
-| R13 | TOTW wertgleich | 3 | keine | Storage/Untradeable-Kombi mit TOTW ungetestet |
+| R12 | Rarity-Schutz hart | 3 | keine | keine |
+| R13 | TOTW wertgleich | 3 | keine | keine |
 | R14 | Batch ehrlicher Abbruch | 1 | keine | keine |
 
-**Fazit der Matrix:** 10 von 14 Regeln vollständig gedeckt (R1, R3, R4, R5,
-R7, R8, R9, R10, R11, R14 — davon R4 architektonisch ohne Gate). 4 Regeln
-(R2, R6, R12, R13) sind an ihren Gates korrekt implementiert, haben aber
-jeweils eine kleine, konkret benannte Test-Lücke. 0 echte Gate-Lücken (keine
-Regel fehlt komplett an einem Berührungspunkt).
+**Fazit der Matrix:** Alle 14 Regeln vollständig gedeckt (R1, R3, R4, R5, R7,
+R8, R9, R10, R11, R14 — davon R4 architektonisch ohne Gate; R2, R6, R12, R13
+über die Ergänzungen aus Iteration 10, `solver-test.js:5851-5956`, Ticket
+#78). 0 echte Gate-Lücken (keine Regel fehlt komplett an einem
+Berührungspunkt), 0 offene Test-Lücken.
 
 ## Konkrete Mängel + Lift-Aktionen
 
-1. **R2 — Rundungslogik bei gemischten Vorgaben nur im geraden 2-Stufen-Fall
-   getestet (`ea-fc-sbc-optimizer.user.js:2163-2168`, `solver-test.js:1152-1157`):**
-   Lift-Aktion (test-only): neuen Testfall mit `count:0`/`count:0` (oder
-   `count:1`) auf ungerader Slot-Zahl (z.B. `slots: 11`) ergänzen und
-   erwarten, dass der Überhang (1 Slot) an die NIEDRIGSTE Stufe geht — Zeile
-   2165-2168 sortiert `tiers` bereits aufsteigend nach `q`, der Test müsste
-   das nur noch als Erwartungswert festschreiben. Kein Live-Risiko aktuell
-   (EA schickt laut LEARNINGS §18 bisher nur 2-Stufen-Fälle), aber der Code
-   ist generisch für N Stufen geschrieben — ein Test verhindert, dass ein
-   künftiger 3-Stufen-Live-Fall die ungetestete Rest-Verteilung zuerst live
-   entdeckt.
+Die vier in dieser Iteration gefundenen Test-Lücken sind über
+`solver-test.js:5851-5956` (Ticket #78) geschlossen — je ein isolierter
+Verhaltenstest pro Regel, ohne Änderung an den bereits korrekt
+implementierten Gates:
 
-2. **R6 — `priorityOf()`-Stufe 2 (Storage-Special) nie isoliert gegen Stufe 3
-   (Verein-Gold) bewiesen (`ea-fc-sbc-optimizer.user.js:1713-1718`):**
-   Lift-Aktion (test-only): Pool aus gleich-ratigen Storage-Specials und
-   Verein-Gold-Karten (ohne `specialOnlyFromStorage`, damit beide im Pool
-   bleiben) bauen, `solve()` ohne Ziel-Rating aufrufen und erwarten, dass die
-   Storage-Specials VOR den Verein-Gold-Karten verbraucht werden — analog zu
-   Test 5 (Storage-Gold vs. Verein-Gold, Zeile 310-316) und Test 8b-2f
-   (Verein-Gold vs. Verein-Special, Zeile 1133-1141), aber für das bisher
-   ausgelassene Stufenpaar 2/3. Schließt die letzte Lücke in der
-   4-stufigen Prioritäts-Kette.
+1. **R2 — Rundungslogik bei gemischten Vorgaben** (`ea-fc-sbc-optimizer.user.js:2163-2168`):
+   `solver-test.js:5854-5886` prüft den generischen 3-Stufen/ungeraden-Rest-Fall
+   ("Bronze Min. 3 + Silber Min. 3 + Gold Min. 3" auf 10 Slots) und stellt
+   fest, dass der Rest-Slot an die niedrigste Stufe geht.
+
+2. **R6 — `priorityOf()`-Stufe 2 (Storage-Special) gegen Stufe 3
+   (Verein-Gold)** (`ea-fc-sbc-optimizer.user.js:1713-1718`):
+   `solver-test.js:5888-5905` baut einen Pool aus gleich-ratigen
+   Storage-Specials und Verein-Gold-Karten (ohne `specialOnlyFromStorage`,
+   damit beide im Pool bleiben) und stellt fest, dass die Storage-Specials
+   vor den Verein-Gold-Karten verbraucht werden — analog zu Test 5
+   (Storage-Gold vs. Verein-Gold, Zeile 310-316) und Test 8b-2f (Verein-Gold
+   vs. Verein-Special, Zeile 1133-1141), für das zuvor ausgelassene
+   Stufenpaar 2/3. Schließt die letzte Lücke in der 4-stufigen
+   Prioritäts-Kette.
 
 3. **R12/R13 — Rarity-Schutz-Aufschlag und Storage-/Untradeable-Kombination
-   nie isoliert an einer TOTW-Karte bewiesen (`ea-fc-sbc-optimizer.user.js:1846-1874`,
-   `solver-test.js:5339-5357`):** Lift-Aktion (test-only, zwei kleine
-   Ergänzungen zu Test 60a): (a) `costOf()` auf einer TOTW-Karte mit
-   `rarityGuardCost: 8` vs. `rarityGuardCost: 0` aufrufen und die Differenz
-   exakt auf 8 prüfen (statt nur zwei TOTW gegeneinander, wo sich der
-   Aufschlag weghebt); (b) eine TOTW-Karte mit `isStorage: true` UND eine mit
-   `untradeable: true` gegen ihr jeweiliges Gegenstück ohne diese Flags
-   vergleichen und erwarten, dass Storage-Rabatt bzw. Untradeable-Bonus
-   weiterhin greifen (Kostendifferenz entspricht `storageBonus`/
-   `untradeableBonus`, nicht 0). Beide Ergänzungen sind reine
-   `makeCostOf()`-Unit-Tests ohne `solve()`-Aufruf, also billig und schnell.
+   an einer TOTW-Karte** (`ea-fc-sbc-optimizer.user.js:1846-1874`):
+   `solver-test.js:5907-5923` (R12) ruft `costOf()` auf zwei sonst
+   identischen Storage-Karten auf, nur eine davon aus Gruppe 83, und stellt
+   fest, dass die Kostendifferenz exakt dem `rarityGuardCost`-Aufschlag
+   entspricht (nicht der Hälfte, die eine fälschliche Anwendung vor dem
+   Storage-Rabatt ergäbe). `solver-test.js:5925-5956` (R13) vergleicht vier
+   TOTW-Karten mit allen Kombinationen aus Storage-Flag und
+   Untradeable-Flag und stellt über eine arithmetische Herleitung aus
+   `makeCostOf()`s eigener Formel fest, dass Storage-Rabatt und
+   Untradeable-Bonus auch bei einer TOTW-Karte unter aktivem Rarity-Schutz
+   unverändert und unabhängig voneinander wirken.
 
 4. **R6 (Randnotiz, kein Fund, aber bewusst dokumentiert) —
    `computeRarityAvailability()` ignoriert eine gleichzeitig aktive
@@ -366,22 +350,19 @@ Regel fehlt komplett an einem Berührungspunkt).
 ## Edge-Case (Pflichtpunkt)
 
 - **Ein 3-Stufen-Live-Fall bei gemischten Qualitäts-Vorgaben** (z.B. "Bronze
-  Min. 3 + Silber Min. 3 + Gold Min. 3" auf 10 Slots) würde vom bestehenden
+  Min. 3 + Silber Min. 3 + Gold Min. 3" auf 10 Slots) wird vom bestehenden
   Code technisch korrekt behandelt (die Schleifen in
   `ea-fc-sbc-optimizer.user.js:2137-2183`/`2699-2727` sind nicht auf 2 Stufen
-  hartkodiert), aber OHNE jeden Testbeleg — genau die Art Lücke, die beim
+  hartkodiert) und ist jetzt auch mit Testbeleg abgesichert
+  (`solver-test.js:5854-5886`, Ticket #78) — genau die Art Lücke, die beim
   Übergang von 1-Stufen- auf 2-Stufen-Vorgaben (LEARNINGS §18) bereits einmal
-  live überrascht hat ("Math.max gewann vorher"). Sollte EA das live
-  schicken, ist R2s Lift-Aktion 1 der richtige Ort, das VORHER abzusichern.
+  live überrascht hat ("Math.max gewann vorher").
 
 ## Lift-Empfehlung
 
-Alle vier gefundenen Lücken sind reine Test-Ergänzungen an bereits korrekt
-implementierten Gates (additiv, kein Code-Eingriff, kein Konflikt mit
-"kleine Diffs") — kein Grund für einen aggressiven Lift-Plan. Priorität:
-Aktion 1 (R2, 3-Stufen/ungerader-Rest) zuerst, weil sie die einzige mit einem
-denkbaren (wenn auch unbewiesenen) Live-Pfad ist; Aktionen 2 und 3 sind reine
-Vollständigkeits-Härtung ohne bekannten Auslöser. Der eigentliche Befund
-dieser Iteration ist negativ im guten Sinn: **keine neue TOTW-artige
-Gate-Drift gefunden** — der Anlass-Fall ist an allen vier Berührungspunkten
-sauber gefixt und regressionsgetestet.
+Alle vier gefundenen Lücken sind über reine Test-Ergänzungen an den bereits
+korrekt implementierten Gates geschlossen (`solver-test.js:5851-5956`, Ticket
+#78 — additiv, kein Code-Eingriff, kein Konflikt mit "kleine Diffs"). Der
+eigentliche Befund dieser Iteration bleibt negativ im guten Sinn: **keine
+neue TOTW-artige Gate-Drift gefunden** — der Anlass-Fall ist an allen vier
+Berührungspunkten sauber gefixt und regressionsgetestet.

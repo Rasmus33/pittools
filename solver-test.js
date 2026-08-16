@@ -5848,6 +5848,114 @@ function mulberry32(a) {
     pending.push(Promise.all(results62));
 }
 
+// ========== 63. Ticket #78: vier Test-Lücken aus der Produktregel-Gate-Matrix
+// (Iteration 10, docs/roadmap/gaps/rating-solver.md) ==========
+{
+    // (a) R2 - gemischte Qualitäts-Vorgabe mit DREI Stufen und ungeradem Rest:
+    // bisher war nur der 2-Stufen/geraden-Rest-Fall belegt (Zeile 1152-1157).
+    // Edge-Case aus dem Gap-Report: "Bronze Min. 3 + Silber Min. 3 + Gold
+    // Min. 3" auf 10 Slots. stated=9, N=10 -> Rest=1, base=floor(1/3)=0,
+    // tiers sind nach q aufsteigend sortiert (ea-fc-sbc-optimizer.user.js:2145)
+    // - der EINE Rest-Slot muss also an die niedrigste Stufe (Bronze) gehen:
+    // 4x Bronze + 3x Silber + 3x Gold.
+    {
+        const MIXED3 = [
+            { label: 'PLAYER_LEVEL', quality: 1, count: 3 },
+            { label: 'PLAYER_LEVEL', quality: 2, count: 3 },
+            { label: 'PLAYER_LEVEL', quality: 3, count: 3 }
+        ];
+        const pool = [].concat(
+            many(6, 50, { rareflag: 0 }),
+            many(5, 68, { rareflag: 0 }),
+            many(5, 80, { rareflag: 0 }));
+        const res = SolverCore.solve(pool, cfg(null, {
+            targetOVR: null, slots: 10, minRating: 0, qualityConstraints: MIXED3,
+            ratingCostSpec: SolverCore.DEFAULT_RATING_COST_SPEC
+        }));
+        const rs = res.ok ? res.players.map(p => p.rating) : [];
+        check('R2: 3-Stufen-Vorgabe mit ungeradem Rest ist lösbar', res.ok, res.ok ? '' : res.reason);
+        check('R2: der Rest-Slot geht an die NIEDRIGSTE Stufe (4 statt 3 Bronze)',
+            res.ok && rs.filter(r => r <= 64).length === 4, rs.sort((a, b) => a - b).join(','));
+        check('R2: Silber bleibt bei der genannten Anzahl (3)',
+            res.ok && rs.filter(r => r >= 65 && r <= 74).length === 3, rs.join(','));
+        check('R2: Gold bleibt bei der genannten Anzahl (3), bekommt NICHT den Rest',
+            res.ok && rs.filter(r => r >= 75).length === 3, rs.join(','));
+        check('R2: die Verteilung wird korrekt gemeldet (4x Bronze + 3x Silber + 3x Gold)',
+            res.ok && res.warnings.some(w => /4x Bronze \+ 3x Silber \+ 3x Gold/.test(w)),
+            res.ok ? JSON.stringify(res.warnings) : '');
+    }
+
+    // (b) R6 - priorityOf()-Stufe 2 (Storage-Special) isoliert gegen Stufe 3
+    // (Verein-Gold) bewiesen: Test 5 (Zeile 310-316) belegt nur Stufe 1 vs. 3,
+    // Test 8b-2f (Zeile 1133-1141) nur Stufe 3 vs. 4 - das Paar 2/3 fehlte.
+    // Gleiches Rating, kein specialOnlyFromStorage (beide bleiben im Pool),
+    // Auffüllen ohne Ziel-OVR: die Storage-Specials müssen VOR den
+    // gleich-ratigen Verein-Gold-Karten verbraucht werden.
+    {
+        const anchor = P(95, {});
+        const storageSpecials = many(5, 80, { storage: true, special: true });
+        const clubGolds = many(5, 80, {});
+        const pool = [].concat([anchor], storageSpecials, clubGolds);
+        const res = SolverCore.solve(pool, cfg(null, { slots: 6, anchorId: anchor.id }));
+        check('R6: Storage-Special (Stufe 2) wird vor gleich-ratigem Verein-Gold (Stufe 3) verbraucht',
+            res.ok &&
+            storageSpecials.every(p => res.players.some(x => x.id === p.id)) &&
+            !clubGolds.some(p => res.players.some(x => x.id === p.id)),
+            res.ok ? res.players.map(p => p.name).join(',') : res.reason);
+    }
+
+    // (c) R12 - Rarity-Schutz-Aufschlag isoliert an makeCostOf(): der Aufschlag
+    // wirkt NACH dem Storage-Rabatt (ea-fc-sbc-optimizer.user.js:1845, 1872f.),
+    // wird also nicht halbiert. Zwei sonst identische Storage-Karten
+    // (gleiches Rating, kein TOTW), nur eine davon aus Gruppe 83 - die
+    // Kostendifferenz muss EXAKT dem Aufschlag entsprechen, nicht der Hälfte.
+    {
+        const alpha = 18, beta = 2, guardCost = 8;
+        const protectedCard = P(84, { storage: true, groups: [83] });
+        const plainCard = P(84, { storage: true });
+        const costOf = SolverCore.makeCostOf([protectedCard, plainCard], {
+            scarcityWeight: alpha, storageBonus: beta, untradeableBonus: 0,
+            rarityGuardCost: guardCost, ratingCostSpec: '0-99:0'
+        });
+        const diff = costOf(protectedCard) - costOf(plainCard);
+        check('R12: Rarity-Schutz-Aufschlag wirkt VOLL bei Storage-Karten (nicht halbiert)',
+            Math.abs(diff - guardCost) < 1e-9, 'diff=' + diff + ' erwartet=' + guardCost);
+    }
+
+    // (d) R13 - TOTW-Wertgleichheit kombiniert mit Storage-Rabatt UND
+    // Untradeable-Bonus auf EINER Karte: Test 60a (Zeile 5339-5357) vergleicht
+    // nur zwei TOTW ohne Storage/Untradeable-Flags gegeneinander. Arithmetische
+    // Herleitung (siehe makeCostOf()-Kommentar): base = alpha/n + rating/1000
+    // (TOTW-Tiebreak statt Band). Storage halbiert NUR base und zieht beta ab
+    // (base/2 - beta), Untradeable zieht untrBonus NACH allem anderen ab -
+    // beide Terme wirken also unabhängig voneinander und unabhängig vom
+    // Rarity-Schutz-Aufschlag (der bei allen vier Karten gleich ist und sich
+    // in jeder Differenz heraushebt).
+    {
+        const alpha = 18, beta = 2, untrBonus = 3, guardCost = 8, rating = 87;
+        const totwPlain = P(rating, { special: true, rareflag: 3, groups: [83] });
+        const totwStorage = P(rating, { special: true, rareflag: 3, groups: [83], storage: true });
+        const totwUntr = P(rating, { special: true, rareflag: 3, groups: [83], untradeable: true });
+        const totwBoth = P(rating, { special: true, rareflag: 3, groups: [83], storage: true, untradeable: true });
+        const pool = [totwPlain, totwStorage, totwUntr, totwBoth]; // gleiches Rating -> gleicher Scarcity-Anteil
+        const costOf = SolverCore.makeCostOf(pool, {
+            scarcityWeight: alpha, storageBonus: beta, untradeableBonus: untrBonus,
+            rarityGuardCost: guardCost, ratingCostSpec: SolverCore.DEFAULT_RATING_COST_SPEC
+        });
+        const X = alpha / pool.length + rating / 1000;
+        const diffStorage = costOf(totwPlain) - costOf(totwStorage);
+        check('R13: Storage-Rabatt wirkt auf einer TOTW-Karte trotz Rarity-Schutz + Untradeable-Bonus',
+            Math.abs(diffStorage - (X / 2 + beta)) < 1e-9,
+            'diff=' + diffStorage + ' erwartet=' + (X / 2 + beta));
+        const diffUntrOhneStorage = costOf(totwPlain) - costOf(totwUntr);
+        const diffUntrMitStorage = costOf(totwStorage) - costOf(totwBoth);
+        check('R13: Untradeable-Bonus wirkt auf einer TOTW-Karte trotz Rarity-Schutz, unabhängig vom Storage-Rabatt',
+            Math.abs(diffUntrOhneStorage - untrBonus) < 1e-9 &&
+            Math.abs(diffUntrMitStorage - untrBonus) < 1e-9,
+            'ohneStorage=' + diffUntrOhneStorage + ' mitStorage=' + diffUntrMitStorage + ' erwartet=' + untrBonus);
+    }
+}
+
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt
 // process.exit() die Loader-Tests, bevor sie laufen - sie zählten dann nicht mit
 // und ein Fehler dort wäre unbemerkt geblieben.

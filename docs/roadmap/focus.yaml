@@ -270,4 +270,18 @@ history:
       GameCurrency). solver -2 ist eine EHRLICHE Korrektur (Live-Bug widerlegte die
       95), pack-opener 46 ist ein ehrlicher Erst-Score vor Live-Verifikation. Panel/Batch
       am Deckel bestaetigt.'
+- iteration: 10
+  decided_at: '2026-08-16T01:02:28Z'
+  dimensions:
+  - RA
+  features:
+  - rating-solver
+  phases: []
+  mode: soft-regression-guard
+  rationale: 'Lehre aus dem TOTW-Live-Bug (iter9, solver 95->93): dokumentierte Produktregeln
+    koennen an einzelnen Code-Gates fehlen, ohne dass es auffaellt. Iter10 = systematischer
+    Gate-Abdeckungs-Check: jede CLAUDE.md-Produktregel -> ihre Durchsetzungs-Gates
+    im Code -> Test je Gate; fehlende Gates/Tests werden geschlossen. Test-/Verifikations-Iteration,
+    pack-opener bleibt blockiert bis Rasmus Live-Lauf.'
+  effectiveness: {}
 pending_suggestion: null

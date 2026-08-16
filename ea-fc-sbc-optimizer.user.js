@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.71.0
+// @version      4.72.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.71.0';
+    const VERSION = '4.72.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -3783,6 +3783,9 @@
            Farbschema fuer "verfuegbar < gefordert". */
         #sbc-opt-availability .low { color:#ffcf4d; font-weight:700; }
         .sbc-opt-debug { color:#7d93ab; font-size:11px; margin-top:4px; }
+        /* Seltenheit in der Zieh-Liste: dieselbe gedaempfte Farbe wie die
+           uebrigen Nebeninfos, damit Name + Rating fuehrend bleiben. */
+        .sbc-opt-dim { color:#7d93ab; }
         .sbc-opt-row { margin-bottom:12px; }
         .sbc-opt-row label { display:block; margin-bottom:4px; color:#9db2c8; font-size:12px; }
         .sbc-opt-row input[type=number], .sbc-opt-row input[type=text], .sbc-opt-row select {
@@ -6508,6 +6511,157 @@
     function unassignedGuardOk(count) {
         return count === 0;
     }
+    // ---- Klartext-Namen (Live-Befund 16.08., LEARNINGS §50) ----------------
+    // EA liefert am Pack-Objekt NUR den Lokalisierungs-Key
+    // ("FUT_STORE_PACK_1082_NAME_MOBILE"); im Store-UI steht "Provisions Pack".
+    // Aufloesung ueber services.Localization.localize(key, args) - belegt in
+    // der PaleTools-Analyse (dort exakt auf pack.packName angewandt, sowohl
+    // fuer das My-Packs-Dropdown als auch fuer data-title). Ein fuehrendes
+    // '*' ist EAs Marker fuer "nicht/teilweise lokalisiert" und wird
+    // abgeschnitten (macht PaleTools genauso).
+    function localizeEaKey(key, win) {
+        win = win || (typeof window !== 'undefined' ? window : null);
+        if (!key || typeof key !== 'string' || !win) return null;
+        let fn = null;
+        try {
+            const L = win.services && win.services.Localization;
+            if (L && typeof L.localize === 'function') fn = L.localize.bind(L);
+        } catch (e) {}
+        if (!fn) { try { if (typeof win.localize === 'function') fn = win.localize; } catch (e) {} }
+        if (!fn) return null;
+        let s = null;
+        try { s = fn(key, []); } catch (e) { return null; }
+        if (typeof s !== 'string' || !s.length) return null;
+        if (s.length > 1 && s.charAt(0) === '*') s = s.substring(1);
+        return (s && s !== key) ? s : null;
+    }
+    // Fallback ohne Localization-Service: aus dem Key wenigstens die Pack-Id
+    // lesbar machen, statt "FUT_STORE_PACK_1082_NAME_MOBILE" anzuzeigen.
+    function prettifyPackKey(key, id) {
+        const m = /FUT_STORE_PACK_(\d+)/i.exec(String(key || ''));
+        if (m) return 'Pack ' + m[1];
+        if (key && !/^[A-Z0-9_]+$/.test(String(key))) return String(key);
+        return 'Pack ' + (id != null ? id : '?');
+    }
+    function packLabelOf(group, win) {
+        if (!group) return 'Pack ?';
+        return localizeEaKey(group.packName, win) || prettifyPackKey(group.packName, group.id);
+    }
+    // rareflag -> Klartext. Nur belegte Werte benennen (FUT-Standard 0/1,
+    // TOTW 3 - dieselbe Identitaet wie isTotw()); alles andere ehrlich als
+    // "Special" mit der Flag-Nummer, statt einen Namen zu erfinden.
+    function rarityLabelOf(rareflag, groups) {
+        if (rareflag == null || rareflag === '') return null;
+        const rf = Number(rareflag);
+        if (rf === 0) return 'Common';
+        if (rf === 1) return 'Rare';
+        if (rf === 3) return 'TOTW';
+        if (Array.isArray(groups) && groups.indexOf(83) > -1) return 'Special (TOTW/TOTS/FOF/FUTTIES)';
+        if (isFinite(rf)) return 'Special (' + rf + ')';
+        return null;
+    }
+    /**
+     * Name/Rating/Seltenheit einer frisch gezogenen Karte (Live-Befund 16.08.:
+     * die Zieh-Liste zeigte "#920367683733" ohne Rating). Die Items aus
+     * requestUnassignedItems() sind ENTITIES, keine JSON-DTOs: der Name steht
+     * nicht am Item selbst, sondern in den Stammdaten
+     * (getStaticData() -> _staticData -> repositories.Item.getStaticDataByDefId),
+     * und der Schluessel heisst definitionId, NICHT assetId (in EAs Entity-
+     * Klasse existiert assetId nicht). Alles belegt aus der PaleTools-Analyse.
+     *
+     * normalizePlayer() bleibt der erste Versuch (unveraendert - daran haengt
+     * das Club-Laden): liefert es einen Treffer, gewinnt der. Die Entity-Kette
+     * ist rein additiv fuer den Fall, dass es aussteigt (bei Pack-Items:
+     * rating war NaN -> null).
+     */
+    function describePackItem(it, opts) {
+        opts = opts || {};
+        // Fehler werden GESAMMELT statt still geschluckt: eine Karte, die nur
+        // ueber den Fallback lesbar ist, bleibt anzeigbar (der Lauf ist da
+        // laengst durch), aber der Grund landet ueber den Aufrufer im Report.
+        const errs = [];
+        function trap(fn) {
+            try { return fn(); } catch (e) { errs.push(String(e && e.message || e)); return null; }
+        }
+        const norm = opts.normalize ? trap(function () { return opts.normalize(it, false); }) : null;
+        const defId = safeGet(it, 'definitionId');
+        let name = norm && norm.name && !/^#/.test(norm.name) ? norm.name : null;
+        let rating = norm && norm.rating != null ? norm.rating : null;
+        let rareflag = norm && norm.rareflag != null ? norm.rareflag : null;
+        let groups = norm && norm.groups ? norm.groups : null;
+        if (rating == null) {
+            const r = safeGet(it, 'rating');
+            if (r != null && !isNaN(parseInt(r, 10))) rating = parseInt(r, 10);
+        }
+        if (rareflag == null) {
+            const rf = safeGet(it, 'rareflag');
+            if (rf != null && !isNaN(parseInt(rf, 10))) rareflag = parseInt(rf, 10);
+        }
+        if (!groups) { const g = safeGet(it, 'groups'); if (Array.isArray(g)) groups = g.map(Number); }
+        // Stammdaten-Kette (nur wenn noch etwas fehlt)
+        if (name == null || rating == null) {
+            let sd = trap(function () {
+                return (it && typeof it.getStaticData === 'function') ? it.getStaticData() : null;
+            });
+            if (!sd) sd = safeGet(it, '_staticData');
+            if (!sd && defId != null && opts.repoItem) {
+                sd = trap(function () {
+                    return (typeof opts.repoItem.getStaticDataByDefId === 'function')
+                        ? opts.repoItem.getStaticDataByDefId(defId) : null;
+                });
+            }
+            if (sd) {
+                if (name == null) {
+                    name = safeGet(sd, 'name') ||
+                        safeCall(function () { return typeof sd.getFullName === 'function' ? sd.getFullName() : null; }) ||
+                        safeGet(sd, 'commonName') ||
+                        ([safeGet(sd, 'firstName'), safeGet(sd, 'lastName')].filter(Boolean).join(' ') || null);
+                }
+                if (rating == null) {
+                    const sr = safeGet(sd, 'rating');
+                    if (sr != null && !isNaN(parseInt(sr, 10))) rating = parseInt(sr, 10);
+                }
+            }
+        }
+        return {
+            name: name || ('#' + (defId != null ? defId : safeGet(it, 'id'))),
+            rating: rating,
+            rareflag: rareflag,
+            rarity: rarityLabelOf(rareflag, groups),
+            nameResolved: !!name,
+            readError: errs.length ? errs[0] : null
+        };
+    }
+    function safeGet(o, k) {
+        try { const v = o ? o[k] : null; return v === undefined ? null : v; }
+        catch (e) { return null; }
+    }
+    function safeCall(fn) { try { return fn(); } catch (e) { return null; } }
+    /**
+     * Einmalige Feld-Aufnahme fuer die Diagnose (diagnose-feld-statt-raten):
+     * WIE sehen die Objekte wirklich aus? Beantwortet beim naechsten Report,
+     * ob Entity oder DTO, wie die Felder heissen und ob getStaticData da ist -
+     * statt weiter zu vermuten, warum ein Name fehlt.
+     */
+    function sampleObjectShape(o) {
+        if (!o || typeof o !== 'object') return null;
+        const own = safeCall(function () { return Object.keys(o).slice(0, 40); }) || [];
+        let proto = [];
+        try {
+            const p = Object.getPrototypeOf(o);
+            if (p && p !== Object.prototype) proto = Object.getOwnPropertyNames(p).slice(0, 40);
+        } catch (e) {}
+        return {
+            ownKeys: own, protoMethods: proto,
+            hasGetStaticData: typeof safeGet(o, 'getStaticData') === 'function',
+            hasStaticDataField: !!safeGet(o, '_staticData'),
+            definitionId: safeGet(o, 'definitionId'),
+            assetId: safeGet(o, 'assetId'),
+            ratingRaw: safeGet(o, 'rating'),
+            rareflagRaw: safeGet(o, 'rareflag'),
+            itemTypeRaw: safeGet(o, 'itemType')
+        };
+    }
     /**
      * Misc-Items (Coins etc.) muessen ueber services.Item.redeem() statt
      * move() verteilt werden. GameCurrency ist EAs eigene Klasse dafuer
@@ -6581,7 +6735,14 @@
             byId.get(key).push(p);
         }
         STATE.packEntitiesById = byId;
-        mergePackScan({ myPacks: groups, missingGlobals: g.optionalMissing || [] });
+        mergePackScan({
+            myPacks: groups.map(function (x) {
+                return { id: x.id, packName: x.packName, label: packLabelOf(x),
+                         tradable: x.tradable, count: x.count };
+            }),
+            packShape: sampleObjectShape(packs[0]),
+            missingGlobals: g.optionalMissing || []
+        });
         return groups;
     }
     function renderPackTypeOptions() {
@@ -6593,7 +6754,7 @@
             return;
         }
         ui.packType.innerHTML = groups.map(function (g) {
-            return '<option value="' + escapeHtml(String(g.id)) + '">' + escapeHtml(g.packName || ('Pack ' + g.id)) +
+            return '<option value="' + escapeHtml(String(g.id)) + '">' + escapeHtml(packLabelOf(g)) +
                    ' (' + g.count + ' Stück)</option>';
         }).join('');
         if (prev && groups.some(function (g) { return String(g.id) === prev; })) ui.packType.value = prev;
@@ -6611,8 +6772,9 @@
             // Fallback des Einsammlers) - "undefined → undefined" waere die
             // Anzeige (Nacht-Review 16.08.).
             html += '<div class="sbc-opt-batch-round">' +
+                    (d.rating != null ? '<b>' + d.rating + '</b> ' : '') +
                     escapeHtml(d.name || ('Item ' + (d.id != null ? d.id : '?'))) +
-                    (d.rating != null ? ' <b>' + d.rating + '</b>' : '') +
+                    (d.rarity ? ' <span class="sbc-opt-dim">' + escapeHtml(d.rarity) + '</span>' : '') +
                     (d.isDuplicateRaw ? ' <span class="sbc-opt-batch-warn">[Duplikat]</span>' : '') +
                     ' → ' + escapeHtml(d.target || (d.error ? 'Fehler: ' + d.error : 'unbekannt')) + '</div>';
         }
@@ -6805,13 +6967,24 @@
             // Pack-Zyklus als Fehler werten und die Serie unnoetig stoppen.
             try {
                 const misc = isMiscPackItem(it, g.GameCurrency);
-                const norm = misc ? null : normalizePlayer(it, false);
+                // Entity-Kette statt nur normalizePlayer(): bei Pack-Items
+                // stand vorher "#920367683733" ohne Rating in der Liste
+                // (Live-Befund 16.08.) - der Name liegt in den Stammdaten.
+                const d = misc ? null : describePackItem(it,
+                    { normalize: normalizePlayer, repoItem: g.repoItem });
+                // Nur teilweise lesbar: die Zeile bleibt (mit ID-Fallback),
+                // der Grund geht trotzdem in den Report - sonst waere ein
+                // stiller Namens-Ausfall nicht mehr diagnostizierbar.
+                if (d && d.readError) {
+                    reportError('Pack-Testlauf: Karte nur teilweise lesbar', new Error(d.readError));
+                }
                 let isDupRaw = null;
                 try { isDupRaw = typeof it.isDuplicate === 'function' ? it.isDuplicate() : it.isDuplicate; } catch (e) {}
                 return {
                     misc: misc,
-                    name: norm ? norm.name : (misc ? 'Misc/Währung' : ('#' + (it && (it.assetId || it.id)))),
-                    rating: norm ? norm.rating : null,
+                    name: d ? d.name : 'Misc/Währung',
+                    rating: d ? d.rating : null,
+                    rarity: d ? d.rarity : null,
                     isDuplicateRaw: isDupRaw,
                     target: misc ? 'redeem' : (decision.toStorage.indexOf(it) > -1 ? 'Storage'
                             : (decision.leftover.indexOf(it) > -1 ? 'liegen geblieben (Storage voll)' : 'Verein'))
@@ -6825,6 +6998,11 @@
             lastRun: {
                 itemCount: items.length,
                 items: drawn,
+                // Feld-Aufnahme des ERSTEN Items: zeigt im naechsten Report,
+                // ob Entity oder DTO und wie die Felder wirklich heissen -
+                // die Grundlage, falls ein Name weiterhin fehlt.
+                itemShape: sampleObjectShape(items[0]),
+                namesResolved: drawn.filter(function (d) { return d.name && !/^#/.test(d.name); }).length,
                 openResponseKeys: openResp ? Object.keys(openResp) : [],
                 packCountBefore: packCountBefore,
                 packCountAfterSameGroup: packCountAfterSameGroup
@@ -6946,7 +7124,7 @@
         }
         const plannedTotal = Math.max(0, Math.min(requestedCount == null ? available : requestedCount, available));
         if (plannedTotal < 1) { toast('Keine Packs dieses Typs zum Öffnen verfügbar.', 'error'); return; }
-        const packLabel = group ? (group.packName || ('Pack ' + group.id)) : ('Pack ' + groupId);
+        const packLabel = group ? packLabelOf(group) : ('Pack ' + groupId);
         if (!window.confirm(
             packLabel + ': ' + plannedTotal + ' Pack(s) werden nacheinander geöffnet.\n\n' +
             'Stoppt beim ersten Fehler; bereits geöffnete Packs sind dann schon verteilt. Fortfahren?'

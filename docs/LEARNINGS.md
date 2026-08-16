@@ -2040,3 +2040,64 @@ brauchte die matchesRarity-Praezedenz (ids nur ohne groupId), sonst wuerde
 eine Gruppen-Vorgabe mit gleichlautender ids-Liste faelschlich als
 TOTW-Vorgabe gezaehlt. Merksatz: auch die Review-Fixes selbst brauchen die
 Review-Schicht - beide Runde-2-Befunde steckten in Runde-1-Fixes.
+
+## 50. Erster ECHTER Pack-Opener-Lauf (16.08., v4.72.0) — Mechanik bestaetigt, Namen nachgeruestet
+
+Rasmus hat "Test: 1 Pack oeffnen" live ausgefuehrt. **Die Mechanik stimmt:**
+10 Karten gezogen, 8 Duplikate → Storage (storageCount 67 → 75, exakt +8),
+2 Nicht-Duplikate → Verein, kein Fehler, kein liegen gebliebenes Item.
+Damit sind drei der vier offenen Fragen aus §46 beantwortet:
+
+- **(b) isDuplicate() auf fc26-Unassigned-Entities: FUNKTIONIERT.** 8 von 10
+  korrekt als Duplikat markiert — die Verteil-Regel greift wie geplant.
+- **(d) Fehlerform von open(): success-Flag vorhanden.** Die Antwort hat die
+  Keys `error, maxAge, response, retryAfter, status, success` — genau das
+  Schema, das `responseOk()` bereits prueft. (`retryAfter` ist neu gesehen:
+  bei Rate-Limits vermutlich gefuellt — noch nie live beobachtet.)
+- **(a) open()-Instanz-Semantik: TEILWEISE — mit einem Vorbehalt.** Das
+  Oeffnen selbst klappt, ABER `getPacks()` meldete den Bestand danach
+  UNVERAENDERT (packCountBefore 1 → packCountAfterSameGroup 1). Die
+  Fresh-Enumeration zwischen zwei Packs taugt damit NICHT als
+  Abbruchkriterium — sie kann ein verbrauchtes Pack weiter anzeigen. Fuer
+  "Alle oeffnen" ist das ungefaehrlich (die Rundenzahl ist hart auf den
+  ANFANGSbestand gedeckelt, und ein open() auf ein verbrauchtes Pack faellt
+  in den Erster-Fehler-Stopp), aber es erklaert im Voraus eine moegliche
+  Fehlermeldung: wer ein einzelnes Pack per Testlauf oeffnet und danach
+  "Alle oeffnen" auf DENSELBEN Typ drueckt, kann auf einen open()-Fehler
+  laufen, weil EA das Pack noch listet.
+- **(c) Storage-Kapazitaet: weiter UNVERIFIZIERT** (67 → 75, die Grenze war
+  nie in Sicht). Die 100 aus PaleTools bleibt eine Annahme.
+
+**Die zwei Anzeige-Fehler des Laufs (beide in v4.72.0 behoben):**
+
+1. Das Pack-Dropdown zeigte `FUT_STORE_PACK_1082_NAME_MOBILE` statt
+   "Provisions Pack". EA liefert am Pack-Objekt NUR den Lokalisierungs-Key;
+   aufgeloest wird er ueber `services.Localization.localize(key, args)` —
+   belegt in der PaleTools-Analyse, die den Aufruf an genau derselben Stelle
+   macht (My-Packs-Dropdown und `data-title`). Ein fuehrendes `*` ist EAs
+   Marker fuer "nicht/teilweise lokalisiert" und wird abgeschnitten. Ohne
+   Service greift jetzt "Pack 1082" statt des rohen Keys — nie wieder ein
+   Loc-Key im Panel.
+2. Die Zieh-Liste zeigte `#920367683733` ohne Rating. Grund: die Items aus
+   `requestUnassignedItems()` sind **Entities, keine JSON-DTOs**, und
+   `normalizePlayer()` steigt bei ihnen aus (rating NaN → null), weil der
+   Name NICHT am Item haengt, sondern in den Stammdaten. Belegte Kette:
+   `getStaticData().name` → `_staticData.firstName/lastName` →
+   `repositories.Item.getStaticDataByDefId(definitionId)`. **Der Schluessel
+   heisst `definitionId`, nicht `assetId`** — `assetId` kommt im gesamten
+   PaleTools-Quelltext kein einziges Mal vor und war live `undefined`.
+   `rating`/`rareflag` stehen dagegen direkt an der Entity.
+
+`describePackItem()` probiert weiter ZUERST `normalizePlayer()` (unveraendert
+— daran haengt das Club-Laden) und faellt nur additiv auf die Entity-Kette
+zurueck. Fehler jeder Stufe werden gesammelt statt geschluckt: die Karte
+bleibt anzeigbar (ID-Fallback + Ziel), der Grund geht ueber `readError` in
+den Report — ein Alt-Test, der frueher eine reine Fehlerzeile erwartete,
+wurde mit Begruendung auf das bessere Verhalten gedreht.
+
+Neue Diagnose-Felder (diagnose-feld-statt-raten, fuer den naechsten
+unklaren Fall): `packScan.packShape` und `packScan.lastRun.itemShape` nehmen
+einmalig `Object.keys`, die Prototyp-Methoden und die Rohwerte von
+rating/rareflag/definitionId/assetId auf — damit ist im naechsten Report
+sofort sichtbar, ob ein Objekt Entity oder DTO ist, statt es zu vermuten.
+`lastRun.namesResolved` zaehlt, wie viele Namen wirklich aufgeloest wurden.

@@ -5023,8 +5023,12 @@ function mulberry32(a) {
 
 // ========== 59. Ticket #69: runPackTestOpen() - Abbruch-Disziplin + Verteil-Ablauf ==========
 {
+    // safeGet/safeCall/describePackItem/sampleObjectShape ab v4.72.0: die
+    // Zieh-Listen-Aufbereitung in runPackTestOpen() braucht sie (Klartext-Namen).
     const names = ['resolvePackGlobals', 'groupMyPacks', 'unassignedGuardOk', 'isMiscPackItem',
-        'decidePackDistribution', 'mergePackScan', 'packTakt', 'responsePacks', 'runPackTestOpen'];
+        'decidePackDistribution', 'mergePackScan', 'packTakt', 'responsePacks',
+        'safeGet', 'safeCall', 'rarityLabelOf', 'describePackItem', 'sampleObjectShape',
+        'runPackTestOpen'];
     const bodies = names.map(n => extractFunction(src, n));
     for (let i = 0; i < names.length; i++) {
         check('Funktion ' + names[i] + ' gefunden (59)', !!bodies[i]);
@@ -5324,11 +5328,19 @@ function mulberry32(a) {
         results59.push(sb.run('5').then(r => {
             check('runPackTestOpen: unlesbares Item wirft nicht durch, Lauf bleibt ok:true',
                 r.ok === true && r.drawn.length === 1, JSON.stringify(r));
-            check('runPackTestOpen: unlesbares Item bekommt eine {id,error}-Zeile',
-                r.drawn[0].id === 'boom' && typeof r.drawn[0].error === 'string' && r.drawn[0].name === undefined,
+            // GEAENDERT in v4.72.0 (Klartext-Namen): describePackItem() faengt
+            // den normalizePlayer()-Throw jetzt selbst ab und liefert eine
+            // ANZEIGBARE Zeile mit ID-Fallback statt einer reinen Fehlerzeile -
+            // fuer Rasmus besser (er sieht, wohin die Karte ging), und der
+            // Grund geht ueber readError trotzdem in den Report. Der
+            // urspruengliche Validator-Fund (kein Throw nach oben, Lauf bleibt
+            // ok:true) bleibt oben unveraendert geprueft.
+            check('runPackTestOpen: unlesbares Item bekommt eine anzeigbare Zeile (ID-Fallback + Ziel)',
+                r.drawn[0].name === '#boom' && r.drawn[0].target === 'Verein' &&
+                r.drawn[0].rating === null,
                 JSON.stringify(r.drawn));
             check('runPackTestOpen: reportError() wurde für das unlesbare Item aufgerufen',
-                sb.calls.reportErrors.some(l => /Zieh-Listen-Eintrag/.test(l)), JSON.stringify(sb.calls.reportErrors));
+                sb.calls.reportErrors.some(l => /teilweise lesbar/.test(l)), JSON.stringify(sb.calls.reportErrors));
         }));
     }
 
@@ -5582,8 +5594,13 @@ function mulberry32(a) {
 
 // ========== 62. Ticket #76: runPackOpenAll() - "Alle öffnen" mit Stopp-Bedingungen ==========
 {
+    // Ab v4.72.0 gehoeren die Klartext-Namen-Helfer mit ins Bundle: fetchMyPacks()
+    // beschriftet ueber packLabelOf(), runPackTestOpen() beschreibt die Items
+    // ueber describePackItem() und nimmt die Objekt-Form auf.
     const names = ['resolvePackGlobals', 'groupMyPacks', 'unassignedGuardOk', 'isMiscPackItem',
         'decidePackDistribution', 'mergePackScan', 'packTakt', 'packBetweenTakt', 'responsePacks',
+        'safeGet', 'safeCall', 'localizeEaKey', 'prettifyPackKey', 'packLabelOf', 'rarityLabelOf',
+        'describePackItem', 'sampleObjectShape',
         'runPackTestOpen', 'fetchMyPacks', 'runPackOpenAll'];
     const bodies = names.map(n => extractFunction(src, n));
     for (let i = 0; i < names.length; i++) {
@@ -6129,6 +6146,158 @@ function mulberry32(a) {
             !STATE.setChallengesBySet[900] && !!STATE.setChallengesBySet[120] &&
             !!STATE.setChallengesBySet[300] && Object.keys(STATE.setChallengesBySet).length === 5,
             'uebrig=' + left);
+    }
+}
+
+// ========== 65. Live-Befund 16.08. (v4.72.0): Klartext-Namen im Pack-Opener.
+// Der erste echte Lauf zeigte "FUT_STORE_PACK_1082_NAME_MOBILE" als Pack-Name
+// und "#920367683733" ohne Rating in der Zieh-Liste. Mechanik-Belege aus der
+// PaleTools-Analyse: services.Localization.localize(key, args) mit
+// '*'-Praefix-Strippen; Items sind ENTITIES, Name in den Stammdaten
+// (getStaticData -> _staticData -> getStaticDataByDefId), Schluessel ist
+// definitionId (assetId existiert an der Entity NICHT). ==========
+{
+    // (a) localizeEaKey: Service-Aufloesung, '*'-Strippen, ehrliches null
+    {
+        const fn = extractFunction(src, 'localizeEaKey');
+        check('Funktion localizeEaKey gefunden (65a)', !!fn);
+        const localizeEaKey = new Function(fn + '\nreturn localizeEaKey;')();
+        const win = (map) => ({ services: { Localization: { localize: (k) => map[k] } } });
+        check('localizeEaKey: loest den Key ueber services.Localization.localize auf',
+            localizeEaKey('FUT_STORE_PACK_1082_NAME_MOBILE',
+                win({ 'FUT_STORE_PACK_1082_NAME_MOBILE': 'Provisions Pack' })) === 'Provisions Pack');
+        check('localizeEaKey: fuehrendes "*" (EAs Nicht-lokalisiert-Marker) wird abgeschnitten',
+            localizeEaKey('K', win({ K: '*Rare Players Pack' })) === 'Rare Players Pack');
+        check('localizeEaKey: Service gibt den Key zurueck -> null (kein Schein-Treffer)',
+            localizeEaKey('K', win({ K: 'K' })) === null);
+        check('localizeEaKey: leere Antwort -> null',
+            localizeEaKey('K', win({ K: '' })) === null);
+        check('localizeEaKey: werfender Service -> null statt Absturz',
+            localizeEaKey('K', { services: { Localization: { localize: () => { throw new Error('x'); } } } }) === null);
+        check('localizeEaKey: kein Service -> null (Fallback greift beim Aufrufer)',
+            localizeEaKey('K', {}) === null);
+        check('localizeEaKey: window.localize als zweiter Weg',
+            localizeEaKey('K', { localize: (k) => 'Gold Pack' }) === 'Gold Pack');
+    }
+    // (b) prettifyPackKey/packLabelOf: nie wieder ein roher Loc-Key im Panel
+    {
+        const pretty = new Function(extractFunction(src, 'prettifyPackKey') + '\nreturn prettifyPackKey;')();
+        check('prettifyPackKey: Loc-Key -> "Pack <id>" statt FUT_STORE_PACK_...',
+            pretty('FUT_STORE_PACK_1082_NAME_MOBILE', 1082) === 'Pack 1082');
+        check('prettifyPackKey: bereits lesbarer Name bleibt unveraendert',
+            pretty('Provisions Pack', 5) === 'Provisions Pack');
+        check('prettifyPackKey: unbekannter Key -> "Pack <id>"',
+            pretty('SOME_OTHER_KEY', 7) === 'Pack 7');
+        const labelFn = new Function(
+            extractFunction(src, 'localizeEaKey') + '\n' +
+            extractFunction(src, 'prettifyPackKey') + '\n' +
+            extractFunction(src, 'packLabelOf') + '\nreturn packLabelOf;')();
+        const g = { id: 1082, packName: 'FUT_STORE_PACK_1082_NAME_MOBILE' };
+        check('packLabelOf: mit Service der echte Name',
+            labelFn(g, { services: { Localization: { localize: () => 'Provisions Pack' } } }) === 'Provisions Pack');
+        check('packLabelOf: ohne Service der lesbare Fallback (nie der rohe Key)',
+            labelFn(g, {}) === 'Pack 1082');
+    }
+    // (c) rarityLabelOf: nur belegte Werte benennen, sonst ehrlich "Special (N)"
+    {
+        const rl = new Function(extractFunction(src, 'rarityLabelOf') + '\nreturn rarityLabelOf;')();
+        check('rarityLabelOf: 0/1/3 = Common/Rare/TOTW (Identitaet wie isTotw)',
+            rl(0) === 'Common' && rl(1) === 'Rare' && rl(3) === 'TOTW');
+        check('rarityLabelOf: Gruppe-83-Karte ohne bekannten Flag wird als solche benannt',
+            rl(137, [83]) === 'Special (TOTW/TOTS/FOF/FUTTIES)');
+        check('rarityLabelOf: unbekannter Flag wird nicht erfunden, sondern beziffert',
+            rl(98) === 'Special (98)');
+        check('rarityLabelOf: kein Flag -> null (Zeile zeigt dann nichts)',
+            rl(null) === null && rl(undefined) === null);
+    }
+    // (d) describePackItem: die Kette, die den Live-Befund behebt
+    {
+        const build = () => new Function(
+            extractFunction(src, 'safeGet') + '\n' +
+            extractFunction(src, 'safeCall') + '\n' +
+            extractFunction(src, 'rarityLabelOf') + '\n' +
+            extractFunction(src, 'describePackItem') + '\nreturn describePackItem;')();
+        const describePackItem = build();
+        check('Funktion describePackItem gefunden (65d)', !!extractFunction(src, 'describePackItem'));
+        // Der LIVE-FALL: Entity ohne assetId, normalizePlayer steigt aus
+        // (rating NaN), Name nur ueber getStaticData() erreichbar.
+        const entity = {
+            id: 920367683733, definitionId: 231747, rareflag: 1,
+            getStaticData: function () { return { name: 'Florian Wirtz', rating: 87 }; },
+            isDuplicate: function () { return true; }
+        };
+        const d1 = describePackItem(entity, { normalize: () => null });
+        check('describePackItem (LIVE-FALL): Name aus getStaticData statt "#<id>"',
+            d1.name === 'Florian Wirtz', JSON.stringify(d1));
+        check('describePackItem (LIVE-FALL): Rating aus den Stammdaten',
+            d1.rating === 87, JSON.stringify(d1));
+        check('describePackItem (LIVE-FALL): Seltenheit als Klartext',
+            d1.rarity === 'Rare' && d1.nameResolved === true, JSON.stringify(d1));
+        // Rating steht am Entity, Name in _staticData (zweiter belegter Weg)
+        const d2 = describePackItem({
+            definitionId: 5, rating: 91, rareflag: 3,
+            _staticData: { firstName: 'Kylian', lastName: 'Mbappé' }
+        }, { normalize: () => null });
+        check('describePackItem: _staticData-Weg (firstName+lastName) und Entity-Rating',
+            d2.name === 'Kylian Mbappé' && d2.rating === 91 && d2.rarity === 'TOTW',
+            JSON.stringify(d2));
+        // Dritter Weg: globaler Stammdaten-Katalog per definitionId
+        const d3 = describePackItem({ definitionId: 77, rareflag: 0 }, {
+            normalize: () => null,
+            repoItem: { getStaticDataByDefId: (id) => id === 77 ? { commonName: 'Vini Jr', rating: 90 } : null }
+        });
+        check('describePackItem: Katalog-Weg ueber definitionId (getStaticDataByDefId)',
+            d3.name === 'Vini Jr' && d3.rating === 90 && d3.rarity === 'Common',
+            JSON.stringify(d3));
+        // normalizePlayer hat Vorrang, wenn es einen echten Namen liefert
+        const d4 = describePackItem({ definitionId: 9, rating: 70 }, {
+            normalize: () => ({ name: 'Aus normalizePlayer', rating: 84, rareflag: 1, groups: null })
+        });
+        check('describePackItem: normalizePlayer bleibt der erste Weg (kein Verhaltenswechsel)',
+            d4.name === 'Aus normalizePlayer' && d4.rating === 84, JSON.stringify(d4));
+        // Alles unlesbar: ehrlicher Fallback, KEIN Absturz
+        const d5 = describePackItem({ id: 42 }, {
+            normalize: () => { throw new Error('kaputt'); },
+            repoItem: { getStaticDataByDefId: () => { throw new Error('auch kaputt'); } }
+        });
+        check('describePackItem: alles unlesbar -> "#<id>", rating null, kein Throw',
+            d5.name === '#42' && d5.rating === null && d5.nameResolved === false,
+            JSON.stringify(d5));
+        const d6 = describePackItem(null, {});
+        check('describePackItem: null-Item stuerzt nicht ab', !!d6 && d6.rating === null);
+    }
+    // (e) sampleObjectShape: die Diagnose-Aufnahme (diagnose-feld-statt-raten)
+    {
+        const shape = new Function(
+            extractFunction(src, 'safeGet') + '\n' +
+            extractFunction(src, 'safeCall') + '\n' +
+            extractFunction(src, 'sampleObjectShape') + '\nreturn sampleObjectShape;')();
+        function Ent() { this.definitionId = 5; this.rating = 88; }
+        Ent.prototype.getStaticData = function () { return {}; };
+        Ent.prototype.isDuplicate = function () { return false; };
+        const s = shape(new Ent());
+        check('sampleObjectShape: eigene Felder und Prototyp-Methoden getrennt erfasst',
+            s.ownKeys.indexOf('definitionId') > -1 && s.protoMethods.indexOf('getStaticData') > -1,
+            JSON.stringify(s));
+        check('sampleObjectShape: meldet, ob getStaticData vorhanden ist',
+            s.hasGetStaticData === true && s.assetId === null && s.definitionId === 5);
+        check('sampleObjectShape: null/primitive -> null statt Absturz',
+            shape(null) === null && shape(5) === null);
+    }
+    // (f) Verdrahtung: kein roher Loc-Key mehr im Panel, Zieh-Liste nutzt die
+    // Beschreibung (statischer Beleg gegen einen Rueckfall).
+    {
+        const renderOpts = extractFunction(src, 'renderPackTypeOptions');
+        check('65f: Pack-Dropdown rendert ueber packLabelOf (nicht mehr g.packName)',
+            /packLabelOf\(/.test(renderOpts) && !/g\.packName/.test(renderOpts), renderOpts);
+        const drawList = extractFunction(src, 'renderPackDrawList');
+        check('65f: Zieh-Liste zeigt Rating, Name und Seltenheit',
+            /d\.rating/.test(drawList) && /d\.name/.test(drawList) && /d\.rarity/.test(drawList));
+        const runOpen = extractFunction(src, 'runPackTestOpen');
+        check('65f: Testlauf beschreibt die Items ueber describePackItem',
+            /describePackItem\(/.test(runOpen));
+        check('65f: Testlauf nimmt die Objekt-Form fuer die Diagnose auf',
+            /itemShape/.test(runOpen) && /sampleObjectShape\(/.test(runOpen));
     }
 }
 

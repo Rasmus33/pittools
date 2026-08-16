@@ -60,10 +60,23 @@ aus und passiert beim ersten echten Lauf.
 ## Notizen
 
 Mechanik-Quelle: PaleTools-Analyse vom 16.08. (dekodierter packsOpener-Plugin,
-Konfidenz hoch auf allen sechs Kernfragen). Offen bis zur Live-Diagnose:
-(a) pack.open()-Semantik bei N Instanzen derselben id, (b) isDuplicate()/
-duplicateId auf fc26-Unassigned-Entities, (c) echte Storage-Kapazität
-(PaleTools hartkodiert 100), (d) Fehlerform von open() bei Entitlement-Fehlern.
+Konfidenz hoch auf allen sechs Kernfragen).
+
+**LIVE VERIFIZIERT am 16.08. (erster echter Testlauf, LEARNINGS §50):** Der
+Ablauf funktioniert Ende-zu-Ende — 10 Karten, 8 Duplikate → Storage (+8
+gemessen), 2 → Verein, kein Fehler. Damit beantwortet: (b) `isDuplicate()`
+funktioniert; (d) die open()-Antwort trägt das erwartete `success`-Flag;
+(a) das Öffnen klappt, ABER `getPacks()` meldet den Bestand danach
+unverändert — die Fresh-Enumeration taugt nicht als Abbruchkriterium (für
+"Alle öffnen" ungefährlich: die Rundenzahl ist auf den Anfangsbestand
+gedeckelt). Weiter offen: (c) die echte Storage-Kapazität (PaleTools
+hartkodiert 100, die Grenze war nie in Sicht).
+
+Zwei Anzeige-Fehler des Laufs sind in v4.72.0 behoben: Pack-Namen kommen als
+Lokalisierungs-Key (`services.Localization.localize` löst auf) und die
+gezogenen Karten sind Entities, deren Name in den Stammdaten liegt
+(`getStaticData()`/`_staticData`/`getStaticDataByDefId`, Schlüssel
+`definitionId` statt `assetId`).
 Produktregeln: Karten → Verein, Duplikate → SBC-Storage, Storage voll → Stopp,
 Zieh-Liste sortiert; Takt nicht schneller als PaleTools' „Fast"
 (~300-700ms zwischen Moves, ~500-1400ms zwischen Packs — LEARNINGS-§30-Logik).

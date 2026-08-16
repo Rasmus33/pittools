@@ -291,3 +291,27 @@ Kumulativ. Git-Log ist die History.
 - 4 direkte Hotfixes auf main (eiserner Arbeitsablauf, alle 5 Gates je Push) — Live-Betrieb hatte Vorrang vor Ticket-Zeremonie.
 - Stufenplan-Gate-Überstimmung (s.o.) als dokumentierte Ausnahme; Vision-Doc angepasst.
 - Eskalationen: 0. Iteration lief komplett während Rasmus spielte bzw. schlief.
+
+## Iteration 10 — 2026-08-16
+
+## Iteration 10 — 16.08.2026 (Nacht-Nachspiel: Gate-Abdeckungs-Audit)
+
+### Score-Bewegung
+- rating-solver 93→94: der iter9-Abzug wurde mit genau der geforderten Gegenmaßnahme beantwortet — ein systematisches Audit aller 14 Solver-relevanten Produktregeln (Regel-Gate-Matrix mit file:line-Gates und Test-Referenzen). Ergebnis: **0 echte Gate-Lücken** (der TOTW-Drift war ein Einzelfall, kein Muster; die Ausnahme ist an allen 4 Berührungspunkten konsistent), 4 Test-Lücken in #78 geschlossen (arithmetisch hergeleitete Erwartungswerte, keine Defekte gefunden). Tests 775 → 784.
+- Der letzte Punkt zum Deckel bleibt ehrlich offen: die Matrix ist ein manuell gepflegtes Doc-Artefakt — nichts erzwingt ihre Pflege beim nächsten Regel-Zusatz (als Seed notiert: Zähl-Kopplungs-Meta-Test, nur bei Bedarf).
+
+### Methodische Erkenntnisse
+- Ein benannter Score-Abzug mit benanntem Rückweg („Gate-Abdeckungs-Check wäre der Weg zurück") ist die produktivste Form von Kritik: die Iteration konnte den Weg exakt gehen und der Re-Scorer konnte exakt prüfen, ob er gegangen wurde.
+- Ein Audit mit Ergebnis „0 Lücken" ist KEIN verschwendeter Aufwand: nach einem Live-Vorfall ist „der Drift war ein Einzelfall" nur durch systematische Prüfung belegbar — vorher war es Hoffnung.
+- Die Regel-Gate-Matrix ist als pflegbares Artefakt im Gap-Report verankert: jede künftige Produktregel bekommt dort Zeile + Gates + Tests. Ihre Pflege hängt an Disziplin — bewusst nicht sofort mit einem Meta-Test erzwungen (erst bei realem Bedarf).
+
+### Patterns ergänzt / verändert
+- Keine.
+
+### Shared-Items
+- Keine.
+
+### PO-Entscheidungen
+- Test-only-Ticket Main-verifiziert (Diff nur solver-test.js + Matrix-Doc).
+- Offen und extern blockiert: pack-opener-Live-Verifikation (Rasmus' erster echter Lauf), APK-1.8.0-Installation.
+- Eskalationen: 0.

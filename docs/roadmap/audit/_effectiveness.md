@@ -1,6 +1,6 @@
-# Iteration-Effektivität — Iteration 9 (M6)
+# Iteration-Effektivität — Iteration 10 (M6)
 
-**Stand:** 2026-08-16T00:42:16Z
+**Stand:** 2026-08-16T01:30:12Z
 
 ## Kennzahlen
 
@@ -32,7 +32,7 @@ Post − Pre == Tatsächlicher Gain. Absolute Σ-Scores stehen in `_summary.md`.
 | `diagnose-werkzeuge` | 84.0 | 85.0 | 82 | 1.0 | -2.0 | -50.0% |
 | `ea-app-anbindung` | 74.0 | 75.0 | 75 | 1.0 | 1.0 | 100.0% |
 | `pack-opener` | 0.0 | 46.0 | 70 | 46.0 | 70.0 | 65.7% |
-| `rating-solver` | 92.0 | 93.0 | 93 | 1.0 | 1.0 | 100.0% |
+| `rating-solver` | 93.0 | 94.0 | 93 | 1.0 | 0.0 | 100.0% |
 | `sbc-vorgaben-erkennung` | 78.0 | 80.0 | 79 | 2.0 | 1.0 | 200.0% |
 | `spieler-pool` | 83.0 | 85.0 | 80 | 2.0 | -3.0 | -66.7% |
 

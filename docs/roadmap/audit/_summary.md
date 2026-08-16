@@ -1,6 +1,6 @@
-# Audit-Summary — Iteration 9
+# Audit-Summary — Iteration 10
 
-**Stand:** 2026-08-16T00:42:15Z
+**Stand:** 2026-08-16T01:30:12Z
 **Features:** 10 · **Dimensionen:** 1
 **Coverage:** 10 / 10 Rubric-Zellen
 
@@ -20,8 +20,8 @@
 75.0 | 75 | 0.0 |
 | `pack-opener` | 46.0 / 70 / -24.0 |
 46.0 | 70 | -24.0 |
-| `rating-solver` | 93.0 / 93 / 0.0 |
-93.0 | 93 | 0.0 |
+| `rating-solver` | 94.0 / 93 / 1.0 |
+94.0 | 93 | 1.0 |
 | `sbc-vorgaben-erkennung` | 80.0 / 79 / 1.0 |
 80.0 | 79 | 1.0 |
 | `spieler-pool` | 85.0 / 80 / 5.0 |
@@ -31,9 +31,9 @@
 
 ## Aggregat
 
-- **Σ Ist** über alle Features: 775.0
+- **Σ Ist** über alle Features: 776.0
 - **Σ Soll**: 782
-- **Σ Gain**: 58.0 (81.7%)
+- **Σ Gain**: 58.0 (82.9%)
 - **Features mit Regression** (Ist < vorherige Iter): 0
 - **Features unter Target**: 1 / 10
 

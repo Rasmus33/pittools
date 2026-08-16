@@ -1,6 +1,6 @@
-# Audit — `pack-opener` — Iteration 9
+# Audit — `pack-opener` — Iteration 10
 
-**Stand:** 2026-08-16T00:42:16Z
+**Stand:** 2026-08-16T01:30:12Z
 ## Score-Stand
 
 | Dim | Ist (raw) | Capped (struct_max) | Schwellwert | Status | Provenance |
@@ -18,7 +18,7 @@
 
 ## Regression / Effektivität
 
-🟢 Keine Regression — Σ Ist 46.0 (≥ 0.0 Iter 8).
+🟢 Keine Regression — Σ Ist 46.0 (≥ 0.0 Iter 9).
 
 **Effektivität:** under_expectation
 (46.0 von 70.0 = 65.7% Reach über 1 Fokus-Dim)

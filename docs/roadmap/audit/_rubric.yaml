@@ -60,10 +60,10 @@ pack-opener:
     updated_at: '2026-08-16'
 rating-solver:
   RA:
-    notes: 'Post-iter9: TOTW-Flachkosten + Gate-Fix; ehrliche -2-Korrektur, weil der
-      Live-Bug zeigte, dass ein dokumentiertes Produktregel-Gate bis zum Vorfall ungetestet
-      war (jetzt beide Gates einzeln+End-to-End getestet, 60d).'
-    score: 93.0
+    notes: 'Post-iter10: Produktregel-Gate-Matrix (14/14 gedeckt, 0 Gate-Luecken,
+      4 Test-Luecken in #78 geschlossen). Restpunkt: die Matrix ist manuell gepflegt,
+      nicht durch Test/Lint erzwungen — der naechste Regel-Zusatz haengt an Disziplin.'
+    score: 94.0
     source: user-manual
     updated_at: '2026-08-16'
 sbc-vorgaben-erkennung:

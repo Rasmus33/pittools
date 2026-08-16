@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.70.0
+// @version      4.71.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.70.0';
+    const VERSION = '4.71.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -6083,9 +6083,13 @@
         // sonst den falschen roten Fehler "1x statt geforderter 0" auf einem
         // korrekten Plan. Karten-Identitaet ebenso doppelt (groups ODER
         // rareflag 3), SSOT mit isProtectedRarity/isTotw im Solver.
+        // ids zaehlen NUR ohne groupId - dieselbe Praezedenz wie matchesRarity
+        // (der ids-Zweig ist dort unerreichbar, wenn groupId greift). Sonst
+        // wuerde z.B. eine PLAYER_RARITY_GROUP-3-Vorgabe (groupId 3 UND
+        // ids [3]) faelschlich als TOTW-Vorgabe gezaehlt (Review-Runde 2).
         const required83 = rarityConstraints
             .filter(rc => Number(rc.groupId) === 83 ||
-                (Array.isArray(rc.ids) && rc.ids.map(Number).indexOf(3) > -1))
+                (rc.groupId == null && Array.isArray(rc.ids) && rc.ids.map(Number).indexOf(3) > -1))
             .reduce((s, rc) => s + (rc.count || 1), 0);
         const is83 = p => Number(p.rareflag) === 3 ||
             !!(p.groups && p.groups.indexOf(83) > -1);
@@ -6107,13 +6111,24 @@
                 (r.ovrExact != null ? r.ovrExact.toFixed(2) : '?') + ').');
             const n83 = r.players.filter(is83).length;
             // Eine MANUELL gewaehlte Gruppe-83-Karte ohne passende Vorgabe ist
-            // Rasmus' explizite Entscheidung, kein Planungsfehler.
+            // Rasmus' explizite Entscheidung - kein roter Fehler. Aber NICHT
+            // still gruen (Review-Runde 2): die Pick-Auswahl im Panel
+            // ueberlebt SBC-Wechsel, ein VERALTETER Pick saehe sonst wie ein
+            // perfekter Plan aus. Deshalb ein sichtbarer Hinweis - direkt in
+            // lines statt ueber runCheck(), damit der feste Pruefungs-Nenner
+            // (LEARNINGS 48) unveraendert bleibt.
             const pickedExtra = (required83 === 0 && cfg.rarityPickId != null &&
                 cfg.rarityPickId !== '' &&
                 r.players.some(p => String(p.id) === String(cfg.rarityPickId) && is83(p))) ? 1 : 0;
-            runCheck('error', n83 === required83 + pickedExtra,
+            const explainedByPick = pickedExtra > 0 && n83 === required83 + pickedExtra;
+            runCheck('error', n83 === required83 || explainedByPick,
                 'Team ' + teamNo + ': ' + n83 + 'x Gruppe-83-Karte(n) (TOTW/TOTS/FOF/FUTTIES) statt geforderter ' +
                 required83 + '.');
+            if (explainedByPick) {
+                lines.push({ level: 'hint', text: 'Team ' + teamNo +
+                    ': 1x Gruppe-83-Karte stammt aus der manuellen Karten-Wahl (keine SBC-Vorgabe)' +
+                    ' - Auswahl zuruecksetzen, falls unbeabsichtigt.' });
+            }
             const belowMin = r.players.filter(p => p.rating < effectiveMinRating);
             runCheck('error', belowMin.length === 0,
                 'Team ' + teamNo + ': ' + belowMin.length + ' Karte(n) unter Min-Rating ' + effectiveMinRating +

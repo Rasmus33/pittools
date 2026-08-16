@@ -6069,7 +6069,10 @@ function mulberry32(a) {
         check('Review 64d: groups-loser TOTW zaehlt fuer die ids-Vorgabe (kein "0 statt 1"-Fehler)',
             pcD2.errors === 0, JSON.stringify(pcD2.lines));
         // (e) Eine manuell gewaehlte Gruppe-83-Karte ohne Vorgabe ist Rasmus'
-        // explizite Entscheidung - kein roter "Fehler" in der Vorschau.
+        // explizite Entscheidung - kein roter "Fehler" in der Vorschau. Aber
+        // auch nicht STILL gruen (Review-Runde 2): die Pick-Auswahl im Panel
+        // ueberlebt SBC-Wechsel, ein veralteter Pick muss als Hinweis
+        // sichtbar bleiben.
         const roundsE = [round([mk('T86', 86, 3, [83], { isStorage: true }),
             mk('G84a', 84, 1, []), mk('G84b', 84, 1, [])])];
         const pcE1 = computeBatchPlanCheck({ planned: 1, rounds: roundsE },
@@ -6079,6 +6082,21 @@ function mulberry32(a) {
         check('Review 64e: manueller Gruppe-83-Pick ohne Vorgabe ist kein Fehler; ohne Pick bleibt er einer',
             pcE1.errors === 0 && pcE2.errors === 1,
             'mitPick=' + pcE1.errors + ' ohnePick=' + pcE2.errors);
+        check('Review 64e: der Pick-Sonderfall ist als HINWEIS sichtbar, nie still gruen',
+            pcE1.lines.some(l => l.level === 'hint' && /manuellen Karten-Wahl/.test(l.text)),
+            JSON.stringify(pcE1.lines));
+        // ids zaehlen nur OHNE groupId (Praezedenz wie matchesRarity): eine
+        // Gruppen-Vorgabe mit groupId 3 und ids [3] ist KEINE TOTW-Vorgabe -
+        // sie darf required83 nicht erhoehen (Review-Runde 2: falsches Rot
+        // auf einem korrekten Plan, der sie ueber Gruppe 3 erfuellt).
+        const pcE3 = computeBatchPlanCheck({ planned: 1, rounds: [round([
+            mk('R1', 84, 1, [3]), mk('R2', 84, 1, [3]), mk('G84', 84, 1, [])
+        ])] }, {
+            minRating: 0, maxOvershoot: 0.10,
+            rarityConstraints: [{ label: 'PLAYER_RARITY_GROUP', ids: [3], count: 2, groupId: 3 }]
+        });
+        check('Review 64e: groupId-3-Vorgabe mit ids [3] erzeugt KEINEN falschen Gruppe-83-Fehler',
+            pcE3.errors === 0, JSON.stringify(pcE3.lines));
         // (f) BEFUND (latent): der Meldungstext wertete r.ovrExact.toFixed()
         // IMMER aus - eine Runde ohne ovrExact haette renderBatchPreview und
         // damit die komplette Batch-Vorschau getoetet.

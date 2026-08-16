@@ -2029,3 +2029,14 @@ DANACH - beide Pruefer fanden nur in den Teilen, die ohne Validator-Pass
 gemergt oder als Hotfix direkt gepusht worden waren. Kosten: ~330k
 Subagenten-Tokens, Ertrag: 2 mittlere Regel-Verletzungen vor dem ersten
 Live-Kontakt des Users mit den neuen Features.
+
+Nachtrag (v4.71.0, Review-Runde 2 ueber die eigenen Fixes): (a) die
+pickedExtra-Ausnahme war FALSCHES GRUEN - die Pick-Auswahl im Panel
+ueberlebt SBC-Wechsel (kein Reset-Pfad), ein veralteter Pick haette den
+Gruppe-83-Fehler still unterdrueckt, direkt vor der unumkehrbaren
+Batch-Freigabe. Jetzt: kein roter Fehler, aber ein sichtbarer Hinweis
+("stammt aus der manuellen Karten-Wahl"). (b) der neue required83-ids-Zweig
+brauchte die matchesRarity-Praezedenz (ids nur ohne groupId), sonst wuerde
+eine Gruppen-Vorgabe mit gleichlautender ids-Liste faelschlich als
+TOTW-Vorgabe gezaehlt. Merksatz: auch die Review-Fixes selbst brauchen die
+Review-Schicht - beide Runde-2-Befunde steckten in Runde-1-Fixes.

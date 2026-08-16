@@ -38,19 +38,8 @@ discoveries:
   shared_item_candidates: []
   cross_feature_smells: []
 seeds_next:
-  seeded_at: '2026-08-16T00:42:42Z'
+  seeded_at: null
   patterns: []
   shared_items: []
-  features:
-  - pack-opener 46/70 UNTER Schwelle (49) — steigt erst mit Rasmus erstem Live-Lauf
-    (packScan-Report beantwortet die 4 offenen Mechanik-Fragen); danach Re-Score
-  - 'rating-solver 93/95: die -2 stehen fuer die Lehre, dass dokumentierte Produktregel-Gates
-    ALLE einzeln getestet sein muessen — ein systematischer Gate-Abdeckungs-Check
-    (jede Produktregel -> Liste ihrer Code-Gates -> Test je Gate) waere der Weg zurueck'
-  discoveries:
-  - 'Prozess-Merker: nach Mid-Ticket-Rebases MUSS der PO den Ticket-Branch force-pushen
-    BEVOR publish/review laeuft (bei #73 vergessen -> PR blieb draft/stale, manueller
-    gh-merge noetig; bei #60/#64 korrekt)'
-  - Scorer-Zahl vs. -Begruendung koennen auseinanderlaufen (batch 69 vs. bleibt-am-Deckel)
-    — Konsistenz-Rueckfrage lohnt vor dem Rubric-Schreiben
-  - APK-1.8.0-Installation weiterhin ausstehend
+  features: []
+  discoveries: []

@@ -252,5 +252,22 @@ history:
     (bedienpanel-ui + Solver-Beruehrung). (2) NEUES Feature Pack-Opener (Store: Pack
     waehlen -> alle oeffnen -> Verein/Storage-Verteilung -> Zieh-Liste) — Mechanik-Aufklaerung
     laeuft (PaleTools-Analyse), Vision-Eintrag folgt, Cap-Frage offen bis zur Live-Verifikation.'
-  effectiveness: {}
+  effectiveness:
+    verdict: hit
+    focused_gains:
+      bedienpanel-ui:
+        RA: 0
+      batch-modus:
+        RA: 0
+      rating-solver:
+        RA: -2
+      pack-opener:
+        RA: 46
+    held_features_regressions: {}
+    notes: 'User-getriebene Feature-Nacht statt Score-Runde: 7 Tickets + 3 Hotfixes
+      in ~8h, alle 5 User-Wuensche geliefert (Panel-Rework, Erschoepfungs-Meldung,
+      Kandidaten-Anzeige, Pack-Opener S1+S2, Plan-Check) + 2 Live-Bugs gefixt (Verein-TOTW-Gate,
+      GameCurrency). solver -2 ist eine EHRLICHE Korrektur (Live-Bug widerlegte die
+      95), pack-opener 46 ist ein ehrlicher Erst-Score vor Live-Verifikation. Panel/Batch
+      am Deckel bestaetigt.'
 pending_suggestion: null

@@ -6693,18 +6693,28 @@
                 .reduce(function (n, x) { return n + x.count; }, 0);
         } catch (e) { reportError('Pack-Testlauf: Pack-Nachzählung fehlgeschlagen', e); }
         const drawn = items.map(function (it) {
-            const misc = isMiscPackItem(it, g.GameCurrency);
-            const norm = misc ? null : normalizePlayer(it, false);
-            let isDupRaw = null;
-            try { isDupRaw = typeof it.isDuplicate === 'function' ? it.isDuplicate() : it.isDuplicate; } catch (e) {}
-            return {
-                misc: misc,
-                name: norm ? norm.name : (misc ? 'Misc/Währung' : ('#' + (it && (it.assetId || it.id)))),
-                rating: norm ? norm.rating : null,
-                isDuplicateRaw: isDupRaw,
-                target: misc ? 'redeem' : (decision.toStorage.indexOf(it) > -1 ? 'Storage'
-                        : (decision.leftover.indexOf(it) > -1 ? 'liegen geblieben (Storage voll)' : 'Verein'))
-            };
+            // Die Verteilung (move()/redeem()) ist an dieser Stelle bereits
+            // abgeschlossen - ein unlesbares Item darf die Zieh-Listen-
+            // Aufbereitung nicht mehr als Throw beenden (Validator-Fund):
+            // sonst wuerde runPackOpenAll() einen tatsaechlich erfolgreichen
+            // Pack-Zyklus als Fehler werten und die Serie unnoetig stoppen.
+            try {
+                const misc = isMiscPackItem(it, g.GameCurrency);
+                const norm = misc ? null : normalizePlayer(it, false);
+                let isDupRaw = null;
+                try { isDupRaw = typeof it.isDuplicate === 'function' ? it.isDuplicate() : it.isDuplicate; } catch (e) {}
+                return {
+                    misc: misc,
+                    name: norm ? norm.name : (misc ? 'Misc/Währung' : ('#' + (it && (it.assetId || it.id)))),
+                    rating: norm ? norm.rating : null,
+                    isDuplicateRaw: isDupRaw,
+                    target: misc ? 'redeem' : (decision.toStorage.indexOf(it) > -1 ? 'Storage'
+                            : (decision.leftover.indexOf(it) > -1 ? 'liegen geblieben (Storage voll)' : 'Verein'))
+                };
+            } catch (e) {
+                reportError('Pack-Testlauf: Zieh-Listen-Eintrag nicht lesbar', e);
+                return { id: it && (it.assetId || it.id), error: String(e && e.message || e) };
+            }
         });
         mergePackScan({
             lastRun: {
@@ -6759,7 +6769,11 @@
      * geladen statt eine client-seitige Entity-Referenz weiterzuzählen - die
      * open()-Instanz-Semantik bei mehreren Einträgen derselben id ist eine
      * der vier noch offenen Mechanik-Fragen (LEARNINGS §46), ein frischer
-     * EA-Stand umgeht die Unsicherheit statt sie zu erraten.
+     * EA-Stand umgeht die Unsicherheit statt sie zu erraten. Ein Throw AUS
+     * der Schleife (z.B. aus runPackTestOpen()) landet im selben stopWith()-
+     * Pfad wie ein reguläres ok:false - opened/total/lastAllRun bleiben
+     * beobachtbar, und die bereits verteilten Packs bleiben in der
+     * Zieh-Liste sichtbar statt in einem unbehandelten Reject zu verschwinden.
      */
     async function runPackOpenAll(groupId, requestedCount, onProgress) {
         const initialGroup = (STATE.packGroups || []).find(function (g) { return String(g.id) === String(groupId); });
@@ -6772,27 +6786,40 @@
             mergePackScan({ lastAllRun: { requested: requestedCount, total: total, opened: opened, ok: false, reason: reason } });
             return { ok: false, opened: opened, total: total, reason: reason, message: message, drawn: drawn };
         }
-        for (let i = 0; i < total; i++) {
-            if (onProgress) onProgress(i + 1, total, 'öffne Pack ' + (i + 1) + ' von ' + total + '...');
-            const res = await runPackTestOpen(groupId);
-            if (!res.ok) return stopWith(res.reason);
-            opened++;
-            Array.prototype.push.apply(drawn, res.drawn);
-            const stuck = res.drawn.some(function (d) { return /liegen geblieben/.test(d.target); });
-            if (stuck) {
-                return stopWith('Storage voll — Rest-Karten liegen unassigned.');
-            }
-            if (i + 1 < total) {
-                await sleep(packBetweenTakt());
-                try { await fetchMyPacks(); }
-                catch (e) {
-                    return stopWith('Pack-Liste nach Runde ' + opened + ' konnte nicht aktualisiert werden: ' + (e.message || e) + '.');
+        // currentPack lebt AUSSERHALB der Schleife, damit der Catch-Block
+        // (der die Schleife selbst verlassen hat) noch weiss, an welchem
+        // Pack der Throw passierte (Validator-Fund: ein Throw aus
+        // runPackTestOpen() - z.B. eine kuenftig doch ungeschuetzte Stelle -
+        // durfte die Serie sonst unbeobachtet verlassen: kein lastAllRun-
+        // Stand, keine Zieh-Liste der bereits verteilten Packs).
+        let currentPack = 0;
+        try {
+            for (let i = 0; i < total; i++) {
+                currentPack = i + 1;
+                if (onProgress) onProgress(i + 1, total, 'öffne Pack ' + (i + 1) + ' von ' + total + '...');
+                const res = await runPackTestOpen(groupId);
+                if (!res.ok) return stopWith(res.reason);
+                opened++;
+                Array.prototype.push.apply(drawn, res.drawn);
+                const stuck = res.drawn.some(function (d) { return /liegen geblieben/.test(d.target); });
+                if (stuck) {
+                    return stopWith('Storage voll — Rest-Karten liegen unassigned.');
                 }
-                const freshGroup = (STATE.packGroups || []).find(function (g) { return String(g.id) === String(groupId); });
-                if (!freshGroup || freshGroup.count < 1) {
-                    return stopWith('Keine weiteren Packs dieses Typs mehr verfügbar.');
+                if (i + 1 < total) {
+                    await sleep(packBetweenTakt());
+                    try { await fetchMyPacks(); }
+                    catch (e) {
+                        return stopWith('Pack-Liste nach Runde ' + opened + ' konnte nicht aktualisiert werden: ' + (e.message || e) + '.');
+                    }
+                    const freshGroup = (STATE.packGroups || []).find(function (g) { return String(g.id) === String(groupId); });
+                    if (!freshGroup || freshGroup.count < 1) {
+                        return stopWith('Keine weiteren Packs dieses Typs mehr verfügbar.');
+                    }
                 }
             }
+        } catch (e) {
+            reportError('Pack-Alle-Öffnen: Abbruch bei Pack ' + currentPack, e);
+            return stopWith('Unerwarteter Fehler bei Pack ' + currentPack + ': ' + (e && e.message || e) + '.');
         }
         const message = opened + ' von ' + total + ' Pack(s) geöffnet und verteilt.';
         mergePackScan({ lastAllRun: { requested: requestedCount, total: total, opened: opened, ok: true, reason: null } });

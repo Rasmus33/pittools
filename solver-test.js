@@ -5089,7 +5089,8 @@ function mulberry32(a) {
                 if (Array.isArray(rr)) return rr;
                 return [];
             },
-            normalizePlayer: (raw) => (raw && raw.rating != null) ? { name: raw.name || ('#' + raw.id), rating: raw.rating } : null,
+            normalizePlayer: overrides.normalizePlayerImpl ||
+                ((raw) => (raw && raw.rating != null) ? { name: raw.name || ('#' + raw.id), rating: raw.rating } : null),
             sleep: () => Promise.resolve(), // Takt fuer den Test irrelevant, nur der Ablauf wird geprueft
             reportError: (label, e) => { calls.reportErrors.push(label); }
         };
@@ -5301,6 +5302,27 @@ function mulberry32(a) {
             check('runPackTestOpen: storageCountAfter bleibt null statt einer falschen Zahl',
                 sb.STATE.diag.packScan.storageCountAfter === null,
                 JSON.stringify(sb.STATE.diag.packScan));
+        }));
+    }
+
+    // Validator-Fund: ein unlesbares Item (normalizePlayer() wirft) darf die
+    // Zieh-Listen-Aufbereitung nicht als Throw beenden - die Verteilung
+    // (move()/redeem()) ist an der Stelle schon durch, ein Anzeige-Fehler
+    // bekommt eine {id,error}-Zeile statt den ganzen Lauf zu zerstören.
+    {
+        const explosive = { id: 'boom', itemType: 'player', isDuplicate: () => false };
+        const sb = makeSandbox({
+            drawnItems: [explosive],
+            normalizePlayerImpl: (raw) => { if (raw && raw.id === 'boom') throw new Error('kaputtes Item'); return null; }
+        });
+        results59.push(sb.run('5').then(r => {
+            check('runPackTestOpen: unlesbares Item wirft nicht durch, Lauf bleibt ok:true',
+                r.ok === true && r.drawn.length === 1, JSON.stringify(r));
+            check('runPackTestOpen: unlesbares Item bekommt eine {id,error}-Zeile',
+                r.drawn[0].id === 'boom' && typeof r.drawn[0].error === 'string' && r.drawn[0].name === undefined,
+                JSON.stringify(r.drawn));
+            check('runPackTestOpen: reportError() wurde für das unlesbare Item aufgerufen',
+                sb.calls.reportErrors.some(l => /Zieh-Listen-Eintrag/.test(l)), JSON.stringify(sb.calls.reportErrors));
         }));
     }
 
@@ -5770,6 +5792,56 @@ function mulberry32(a) {
                     progressCalls[1].cur === 2 && progressCalls[1].total === 2,
                     JSON.stringify(progressCalls));
             });
+        }));
+    }
+
+    // Validator-Fund: ein Throw AUS runPackTestOpen() (statt eines regulaeren
+    // ok:false) muss denselben stopWith()-Pfad nehmen - lastAllRun bleibt
+    // beobachtbar, die bereits verteilten Packs bleiben in der Aggregation,
+    // KEIN drittes runPackTestOpen(). Eigene, schlanke Sandbox: runPackOpenAll
+    // wird hier isoliert getestet, runPackTestOpen/fetchMyPacks sind direkt
+    // injizierte Stubs statt aus der echten Implementierung gebaut.
+    function makeThrowSandbox(overrides) {
+        overrides = overrides || {};
+        const calls = { runPackTestOpen: 0, fetchMyPacks: 0, reportErrors: [] };
+        const STATE = {
+            packGroups: [{ id: 5, packName: 'Prime', count: overrides.available != null ? overrides.available : 5 }],
+            diag: { packScan: null }
+        };
+        const bodies = ['mergePackScan', 'packBetweenTakt', 'runPackOpenAll'].map(n => extractFunction(src, n));
+        const sandbox = {
+            STATE: STATE,
+            runPackTestOpen: overrides.runPackTestOpenImpl || function () {
+                calls.runPackTestOpen++;
+                if (calls.runPackTestOpen === 2) throw new Error('Kaputte Karte in items.map');
+                return Promise.resolve({ ok: true, drawn: [{ id: calls.runPackTestOpen,
+                    name: 'Card' + calls.runPackTestOpen, rating: 70, isDuplicateRaw: false, target: 'Verein' }] });
+            },
+            fetchMyPacks: overrides.fetchMyPacksImpl || function () { calls.fetchMyPacks++; return Promise.resolve(); },
+            sleep: () => Promise.resolve(),
+            reportError: (label, e) => { calls.reportErrors.push(label); }
+        };
+        const keys = Object.keys(sandbox);
+        const run = new Function(keys.join(','), bodies.join('\n') + '\nreturn runPackOpenAll;')
+            .apply(null, keys.map(k => sandbox[k]));
+        return { run: run, calls: calls, STATE: STATE };
+    }
+    {
+        const sb = makeThrowSandbox({ available: 3 });
+        results62.push(sb.run('5', 3, function () {}).then(function (r) {
+            check('runPackOpenAll: Throw bei Pack 2 wird gefangen, ok:false statt eines unbehandelten Reject',
+                r.ok === false && r.opened === 1 && r.total === 3, JSON.stringify(r));
+            check('runPackOpenAll: reportError() wurde beim Throw aufgerufen',
+                sb.calls.reportErrors.length === 1, JSON.stringify(sb.calls));
+            check('runPackOpenAll: Aggregation enthält NUR die Karte(n) aus Pack 1',
+                r.drawn.length === 1 && r.drawn[0].name === 'Card1', JSON.stringify(r.drawn));
+            check('runPackOpenAll: kein drittes runPackTestOpen() (Schleife stoppt sofort, kein Retry)',
+                sb.calls.runPackTestOpen === 2, 'calls=' + sb.calls.runPackTestOpen);
+            check('runPackOpenAll: packScan.lastAllRun zeigt opened:1 + den Throw-Grund',
+                sb.STATE.diag.packScan.lastAllRun.opened === 1 && sb.STATE.diag.packScan.lastAllRun.ok === false &&
+                /Kaputte Karte/.test(sb.STATE.diag.packScan.lastAllRun.reason),
+                JSON.stringify(sb.STATE.diag.packScan.lastAllRun));
+            check('runPackOpenAll: Meldung nennt "1 von 3"', /1 von 3/.test(r.message), r.message);
         }));
     }
 

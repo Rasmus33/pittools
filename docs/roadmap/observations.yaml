@@ -50,8 +50,15 @@ discoveries:
   shared_item_candidates: []
   cross_feature_smells: []
 seeds_next:
-  seeded_at: null
+  seeded_at: '2026-08-16T01:30:17Z'
   patterns: []
   shared_items: []
-  features: []
-  discoveries: []
+  features:
+  - 'rating-solver 94/95: letzter Punkt = Matrix-Pflege nicht erzwungen. Moeglicher
+    Weg: ein Meta-Test, der die Produktregel-Anzahl in CLAUDE.md gegen die Matrix-Zeilenzahl
+    prueft (Zaehl-Kopplung, kein Inhalt) — nur bauen, wenn Rasmus weitere Regeln ergaenzt'
+  - pack-opener 46/70 wartet auf Rasmus ersten Live-Lauf (packScan)
+  discoveries:
+  - APK-1.8.0-Installation weiterhin ausstehend
+  - 'Naechste natuerliche Anlaesse: Live-Feedback zu v4.62-4.69 (Panel-Rework, Plan-Check,
+    Pack-Opener) nach dem Aufwachen'

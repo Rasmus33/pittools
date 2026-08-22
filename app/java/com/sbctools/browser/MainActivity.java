@@ -28,6 +28,10 @@ import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.os.Build;
+import android.security.keystore.KeyGenParameterSpec;
+import android.security.keystore.KeyProperties;
+import android.text.InputType;
+import android.util.Base64;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -58,6 +62,11 @@ import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyStore;
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
 
 public class MainActivity extends Activity {
 
@@ -623,6 +632,14 @@ public class MainActivity extends Activity {
         bCopy.setOnClickListener(new LogCopy(this));
         box.addView(bCopy);
 
+        TextView l3 = new TextView(this);
+        l3.setText("\nLogin");
+        box.addView(l3);
+        Button bLogin = new Button(this);
+        bLogin.setText("Login-Daten (nur dieses Geraet)");
+        bLogin.setOnClickListener(new LoginOpen(this));
+        box.addView(bLogin);
+
         new AlertDialog.Builder(this)
             .setTitle("Script-Einstellungen")
             .setView(box)
@@ -631,15 +648,244 @@ public class MainActivity extends Activity {
             .show();
     }
 
+    // ---- Login-Daten (bleiben auf dem Geraet) -------------------------------
+    // Rasmus: "das passwort sollte nirgendwo klar gespeichert werden bzw
+    // freigegeben werden im internet, das darf das handy nicht verlassen."
+    // Umsetzung: der Schluessel liegt im Android-Keystore (nicht exportierbar,
+    // wo vorhanden hardwaregestuetzt), gespeichert wird nur der Geheimtext.
+    // Das Passwort geht NIE in den Log-Ringpuffer und in keinen Request - es
+    // wird ausschliesslich in die Felder der EA-Loginseite geschrieben.
+    void showLoginDialog() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = 40;
+        box.setPadding(pad, pad, pad, pad);
+
+        TextView hint = new TextView(this);
+        hint.setText("E-Mail und Passwort fuer den EA-Login.\n\n"
+                + "Das Passwort wird mit einem Schluessel aus dem Android-Keystore "
+                + "verschluesselt gespeichert. Der Schluessel kann das Geraet nicht "
+                + "verlassen, der gespeicherte Text ist auf einem anderen Geraet "
+                + "wertlos. Nichts davon wird hochgeladen oder in den Log geschrieben.");
+        hint.setTextSize(11f);
+        box.addView(hint);
+
+        EditText mail = new EditText(this);
+        mail.setHint("E-Mail");
+        mail.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
+        mail.setText(prefs.getString("loginMail", ""));
+        box.addView(mail);
+
+        EditText pw = new EditText(this);
+        pw.setHint(hasStoredPassword() ? "Passwort (gespeichert - zum Aendern neu eingeben)" : "Passwort");
+        pw.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        box.addView(pw);
+
+        CheckBox auto = new CheckBox(this);
+        auto.setText("Auf der Login-Seite automatisch ausfuellen");
+        auto.setChecked(prefs.getBoolean("loginAutofill", true));
+        box.addView(auto);
+
+        TextView st = new TextView(this);
+        st.setText(hasStoredPassword() ? "Status: Passwort ist gespeichert."
+                                       : "Status: kein Passwort gespeichert.");
+        st.setTextSize(11f);
+        box.addView(st);
+
+        Button del = new Button(this);
+        del.setText("Gespeicherte Daten loeschen");
+        del.setOnClickListener(new LoginClear(this));
+        box.addView(del);
+
+        new AlertDialog.Builder(this)
+            .setTitle("Login-Daten (nur dieses Geraet)")
+            .setView(box)
+            .setPositiveButton("Speichern", new LoginSave(this, mail, pw, auto))
+            .setNegativeButton("Abbrechen", (DialogInterface.OnClickListener) null)
+            .show();
+    }
+
+    boolean hasStoredPassword() {
+        String b = prefs.getString("loginPwBlob", null);
+        return b != null && b.length() > 0;
+    }
+
+    /** E-Mail klar (kein Geheimnis), Passwort verschluesselt. */
+    void saveLogin(String mailTxt, String pwTxt, boolean autofill) {
+        SharedPreferences.Editor e = prefs.edit();
+        e.putString("loginMail", mailTxt == null ? "" : mailTxt.trim());
+        e.putBoolean("loginAutofill", autofill);
+        // Leeres Feld heisst "nicht aendern" - sonst wuerde ein versehentliches
+        // Speichern das gemerkte Passwort loeschen.
+        if (pwTxt != null && pwTxt.length() > 0) {
+            String blob = CredStore.encrypt(pwTxt);
+            if (blob == null) {
+                Toast.makeText(this, "Passwort konnte nicht verschluesselt werden - nicht gespeichert.",
+                        Toast.LENGTH_LONG).show();
+            } else {
+                e.putString("loginPwBlob", blob);
+            }
+        }
+        e.apply();
+        Toast.makeText(this, "Login-Daten gespeichert (nur auf diesem Geraet).",
+                Toast.LENGTH_SHORT).show();
+    }
+
+    void clearLogin() {
+        prefs.edit().remove("loginMail").remove("loginPwBlob").apply();
+        CredStore.deleteKey();
+        Toast.makeText(this, "Login-Daten geloescht.", Toast.LENGTH_SHORT).show();
+    }
+
+    /** Sieht die URL wie EAs Anmeldeseite aus? */
+    static boolean isLoginUrl(String url) {
+        if (url == null) return false;
+        String u = url.toLowerCase();
+        return u.indexOf("signin.ea.com") > -1 || u.indexOf("accounts.ea.com") > -1
+            || u.indexOf("/login") > -1 || u.indexOf("/connect/auth") > -1;
+    }
+
+    /**
+     * Auf der Loginseite die Felder fuellen. ABSICHTLICH ohne Absenden: bei
+     * 2FA/Captcha waere ein automatischer Klick eher schaedlich, und das Tippen
+     * der Zugangsdaten ist der Teil, der stoert.
+     */
+    void maybeAutofillLogin(String url) {
+        if (!isLoginUrl(url)) return;
+        if (!prefs.getBoolean("loginAutofill", true)) return;
+        String mailTxt = prefs.getString("loginMail", "");
+        String blob = prefs.getString("loginPwBlob", null);
+        if (mailTxt.length() == 0 || blob == null) return;
+        String pwTxt = CredStore.decrypt(blob);
+        if (pwTxt == null) {
+            addLog("Autofill: Passwort nicht entschluesselbar (Keystore-Schluessel weg?).");
+            return;
+        }
+        // KEIN addLog mit den Werten - der Ringpuffer wird geteilt.
+        addLog("Autofill: Login-Felder werden gefuellt (Passwort bleibt im Geraet).");
+        String js = JS_FILL_LOGIN
+            .replace("__MAIL__", jsQuote(mailTxt))
+            .replace("__PW__", jsQuote(pwTxt));
+        web.evaluateJavascript(js, null);
+    }
+
+    // Auch das als Konstante, damit app/guard-test.js es in einem Fake-DOM
+    // pruefen kann. Platzhalter __MAIL__/__PW__ werden per jsQuote() ersetzt
+    // (also inklusive Anfuehrungszeichen und Escaping).
+    static final String JS_FILL_LOGIN =
+        "(function(){try{" +
+        "  var mail=__MAIL__,pw=__PW__;" +
+        "  function pick(sels){for(var i=0;i<sels.length;i++){" +
+        "    var e=document.querySelector(sels[i]);" +
+        "    if(e&&(e.offsetParent!==null||e.getClientRects().length))return e;}" +
+        "    return null;}" +
+        "  var m=pick(['#email','input[type=\"email\"]','input[name=\"email\"]'," +
+        "              'input[autocomplete=\"username\"]']);" +
+        "  var p=pick(['#password','input[type=\"password\"]','input[name=\"password\"]']);" +
+        "  if(!m&&!p)return 'no-fields';" +
+        // React & Co. hoeren auf die Events, nicht auf value allein.
+        "  function set(el,val){if(!el)return;" +
+        "    try{var d=Object.getOwnPropertyDescriptor(el.constructor.prototype,'value');" +
+        "        if(d&&d.set)d.set.call(el,val);else el.value=val;}catch(e){el.value=val;}" +
+        "    try{el.dispatchEvent(new Event('input',{bubbles:true}));" +
+        "        el.dispatchEvent(new Event('change',{bubbles:true}));}catch(e2){}}" +
+        "  set(m,mail);set(p,pw);" +
+        "  return (m?'mail':'')+(p?'+pw':'');" +
+        "}catch(e){return 'error';}})()";
+
     void saveGearPos(float x, float y) {
         prefs.edit().putFloat("gearX", x).putFloat("gearY", y).apply();
     }
 
+    // ---- Zurueck-Geste ------------------------------------------------------
+    // Vorher: canGoBack() -> goBack(), sonst App zu. In der EA-Web-App ist die
+    // History aber LEER (alles laeuft in einer Seite), also war jedes Zurueck
+    // ein App-Ende. Rasmus will stattdessen eine Ebene INNERHALB der App
+    // zurueck, solange es dort etwas zurueckzugehen gibt.
+    //
+    // Reihenfolge: offener Dialog -> EAs eigene Navigation -> Zurueck-Knopf im
+    // DOM -> WebView-History -> und erst dann beenden, das aber mit
+    // Doppel-Tipp, damit ein versehentliches Wischen nicht die Sitzung kostet.
+    long lastBackMs = 0;
+
     @Override
     public void onBackPressed() {
-        if (web.canGoBack()) web.goBack();
-        else super.onBackPressed();
+        web.evaluateJavascript(JS_BACK, new BackProbe(this));
     }
+
+    /** Ergebnis der JS-Abfrage auswerten (vom BackProbe-Callback gerufen). */
+    void handleBackResult(String res) {
+        String r = (res == null) ? "" : res.replace("\"", "").trim();
+        if (r.length() > 0 && !"none".equals(r) && !"null".equals(r)) {
+            addLog("Zurueck: " + r);
+            return;                     // in der App zurueck - fertig
+        }
+        if (web.canGoBack()) { web.goBack(); return; }
+        long now = System.currentTimeMillis();
+        if (now - lastBackMs < 2500) { finish(); return; }
+        lastBackMs = now;
+        Toast.makeText(this, "Nochmal zurueck zum Beenden", Toast.LENGTH_SHORT).show();
+    }
+
+    // JS als KONSTANTE (nicht inline zusammengestueckelt): so kann
+    // app/guard-test.js sie extrahieren und in einem Fake-DOM ausfuehren -
+    // sonst faellt eine kaputte Selektor-Liste hier STILL aus.
+    static final String JS_BACK =
+        "(function(){" +
+        // 1. Liegt ein Dialog oben? Dann heisst "zurueck": Dialog schliessen.
+        "  try{var sh=window.gPopupClickShield;" +
+        "    if(sh&&typeof sh.closeActivePopup==='function'){" +
+        "      var ov=document.querySelectorAll('[class*=\"click-shield\"],[class*=\"dialog\"],[class*=\"popup\"]');" +
+        "      for(var i=0;i<ov.length;i++){var e=ov[i];" +
+        "        if(String(e.className||'').indexOf('sbc-opt')>-1)continue;" +
+        "        var r=e.getBoundingClientRect();" +
+        "        if(r.width>window.innerWidth*0.5&&r.height>window.innerHeight*0.3" +
+        "           &&(e.offsetParent!==null||e.getClientRects().length)){" +
+        "          sh.closeActivePopup();return 'popup';}}}" +
+        "  }catch(e){}" +
+        // 2. EAs eigene Navigation: obersten Controller mit pop*/back nehmen.
+        "  try{var chain=[],c=null;" +
+        "    if(typeof getAppMain==='function'){var am=getAppMain();" +
+        "      c=am&&am.getRootViewController?am.getRootViewController():null;}" +
+        "    var g=0;" +
+        "    while(c&&g++<12){chain.push(c);var n=null;try{" +
+        "      if(c.getPresentedViewController&&c.getPresentedViewController())n=c.getPresentedViewController();" +
+        "      else if(c.getCurrentViewController&&c.getCurrentViewController())n=c.getCurrentViewController();" +
+        "      else if(c.getCurrentController&&c.getCurrentController())n=c.getCurrentController();" +
+        "    }catch(e2){}c=n;}" +
+        "    var names=['popViewController','popController','back','goBack'];" +
+        "    for(var j=chain.length-1;j>=0;j--){var k=chain[j];" +
+        "      for(var m=0;m<names.length;m++){" +
+        "        if(typeof k[names[m]]==='function'){" +
+        "          try{k[names[m]](true);}catch(e3){try{k[names[m]]();}catch(e4){continue;}}" +
+        "          return 'pop:'+names[m];}}}" +
+        "  }catch(e){}" +
+        // 3. Zurueck-Knopf im DOM. Getippt wird wie ueberall am Handy: Touch
+        //    zuerst, Maus nur wenn kein Touch-Handler zugegriffen hat.
+        "  try{var sel=['.ut-navigation-bar-view button.back','.ut-navigation-bar-view .back'," +
+        "    'button.ut-navigation-button-control.back','.ut-navigation-button-control--back'," +
+        "    '[class*=\"navigation\"] [class*=\"back\"]'];" +
+        "    for(var q=0;q<sel.length;q++){var els=document.querySelectorAll(sel[q]);" +
+        "      for(var w=0;w<els.length;w++){var el=els[w];" +
+        "        if(!(el.offsetParent!==null||el.getClientRects().length))continue;" +
+        "        var rr=el.getBoundingClientRect();" +
+        "        var x=Math.round(rr.left+rr.width/2),y=Math.round(rr.top+rr.height/2);" +
+        "        var handled=false;" +
+        "        try{if(typeof window.Touch==='function'&&typeof window.TouchEvent==='function'){" +
+        "          var t=new window.Touch({identifier:1,target:el,clientX:x,clientY:y});" +
+        "          var b={bubbles:true,cancelable:true,view:window};" +
+        "          el.dispatchEvent(new window.TouchEvent('touchstart'," +
+        "            Object.assign({},b,{touches:[t],targetTouches:[t],changedTouches:[t]})));" +
+        "          handled=!el.dispatchEvent(new window.TouchEvent('touchend'," +
+        "            Object.assign({},b,{touches:[],targetTouches:[],changedTouches:[t]})));" +
+        "        }}catch(e5){}" +
+        "        if(!handled){var o={bubbles:true,cancelable:true,view:window,clientX:x,clientY:y};" +
+        "          try{el.dispatchEvent(new MouseEvent('mousedown',o));" +
+        "              el.dispatchEvent(new MouseEvent('mouseup',o));" +
+        "              el.dispatchEvent(new MouseEvent('click',o));}catch(e6){}}" +
+        "        return 'dom:'+sel[q];}}" +
+        "  }catch(e){}" +
+        "  return 'none';})()";
 }
 
 // ---- Benannte Hilfsklassen (kein Gradle-Build: d8 mag keine anonymen Klassen) ----
@@ -836,6 +1082,9 @@ class SbcWebViewClient extends android.webkit.WebViewClient {
         // PaleTools erst JETZT - es fasst EA-Symbole beim Laden an und stirbt
         // in onPageStarted mit "UIItemActionEvent is not defined".
         a.injectPaleLate();
+        // Loginseite? Dann die gemerkten Zugangsdaten eintragen (nur Felder
+        // fuellen, nicht absenden).
+        a.maybeAutofillLogin(url);
     }
     // Ohne diese zwei Overrides zeigt die WebView bei DNS-/TLS-/Serverfehlern
     // nur ihre eigene Standard-Fehlerseite - weder Log-Ringpuffer noch
@@ -957,4 +1206,123 @@ class SettingsSave implements DialogInterface.OnClickListener {
         a.setLoadedScripts(null, null, null);
         a.loadScriptsThenStart();
     }
+}
+
+/**
+ * Passwort-Speicher. Der Schluessel wird EINMAL im Android-Keystore erzeugt
+ * (Alias unten) und ist nicht exportierbar - auf Geraeten mit StrongBox/TEE
+ * liegt er sogar ausserhalb des Betriebssystems. Gespeichert wird nur
+ * Base64(IV) + ":" + Base64(Geheimtext); ohne den geraetegebundenen Schluessel
+ * ist das nutzlos, ein Backup auf ein anderes Geraet also wertlos (dann ist das
+ * Passwort einfach neu einzugeben).
+ *
+ * Bewusst OHNE setUserAuthenticationRequired: sonst muesste Rasmus vor jedem
+ * Autofill entsperren, und der Bildschirm ist beim Login ohnehin entsperrt.
+ * AES/GCM mit 128-Bit-Tag, IV pro Verschluesselung neu (nie wiederverwendet).
+ */
+class CredStore {
+    static final String ALIAS = "pittools_login_v1";
+    static final String STORE = "AndroidKeyStore";
+    static final String TRANS = "AES/GCM/NoPadding";
+
+    private static SecretKey key(boolean create) {
+        try {
+            KeyStore ks = KeyStore.getInstance(STORE);
+            ks.load(null);
+            if (ks.containsAlias(ALIAS)) {
+                KeyStore.Entry e = ks.getEntry(ALIAS, null);
+                if (e instanceof KeyStore.SecretKeyEntry) {
+                    return ((KeyStore.SecretKeyEntry) e).getSecretKey();
+                }
+            }
+            if (!create) return null;
+            KeyGenerator kg = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, STORE);
+            KeyGenParameterSpec spec = new KeyGenParameterSpec.Builder(
+                    ALIAS, KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setKeySize(256)
+                .build();
+            kg.init(spec);
+            return kg.generateKey();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Liefert "base64(iv):base64(ct)" oder null, wenn es nicht geht. */
+    static String encrypt(String plain) {
+        try {
+            SecretKey k = key(true);
+            if (k == null || plain == null) return null;
+            Cipher c = Cipher.getInstance(TRANS);
+            c.init(Cipher.ENCRYPT_MODE, k);
+            byte[] iv = c.getIV();
+            byte[] ct = c.doFinal(plain.getBytes(StandardCharsets.UTF_8));
+            return Base64.encodeToString(iv, Base64.NO_WRAP) + ":"
+                 + Base64.encodeToString(ct, Base64.NO_WRAP);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Gegenstueck; null bei fehlendem Schluessel oder kaputtem Text. */
+    static String decrypt(String blob) {
+        try {
+            if (blob == null) return null;
+            int i = blob.indexOf(':');
+            if (i <= 0) return null;
+            byte[] iv = Base64.decode(blob.substring(0, i), Base64.NO_WRAP);
+            byte[] ct = Base64.decode(blob.substring(i + 1), Base64.NO_WRAP);
+            SecretKey k = key(false);
+            if (k == null) return null;
+            Cipher c = Cipher.getInstance(TRANS);
+            c.init(Cipher.DECRYPT_MODE, k, new GCMParameterSpec(128, iv));
+            return new String(c.doFinal(ct), StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Beim Loeschen der Daten auch den Schluessel entfernen. */
+    static void deleteKey() {
+        try {
+            KeyStore ks = KeyStore.getInstance(STORE);
+            ks.load(null);
+            if (ks.containsAlias(ALIAS)) ks.deleteEntry(ALIAS);
+        } catch (Exception e) {}
+    }
+}
+
+/** Oeffnet den Login-Dialog aus den Einstellungen. */
+class LoginOpen implements View.OnClickListener {
+    private final MainActivity a;
+    LoginOpen(MainActivity a) { this.a = a; }
+    @Override public void onClick(View v) { a.showLoginDialog(); }
+}
+
+class LoginSave implements DialogInterface.OnClickListener {
+    private final MainActivity a;
+    private final EditText mail;
+    private final EditText pw;
+    private final CheckBox auto;
+    LoginSave(MainActivity a, EditText mail, EditText pw, CheckBox auto) {
+        this.a = a; this.mail = mail; this.pw = pw; this.auto = auto;
+    }
+    @Override public void onClick(DialogInterface d, int which) {
+        a.saveLogin(mail.getText().toString(), pw.getText().toString(), auto.isChecked());
+    }
+}
+
+class LoginClear implements View.OnClickListener {
+    private final MainActivity a;
+    LoginClear(MainActivity a) { this.a = a; }
+    @Override public void onClick(View v) { a.clearLogin(); }
+}
+
+/** Ergebnis der Zurueck-Abfrage im DOM zurueck an die Activity. */
+class BackProbe implements ValueCallback<String> {
+    private final MainActivity a;
+    BackProbe(MainActivity a) { this.a = a; }
+    @Override public void onReceiveValue(String value) { a.handleBackResult(value); }
 }

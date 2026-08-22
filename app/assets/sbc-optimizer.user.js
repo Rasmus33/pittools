@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.48.0
+// @version      4.74.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.48.0';
+    const VERSION = '4.74.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -91,6 +91,7 @@
             rarityConstraints: [],       // [{ label, ids, count }]
             playerLevelConstraints: [],  // [{ label, minRating, count }]
             reqDump: [],                 // alle erkannten Requirement-Knoten
+            scopesSeen: [],              // ALLE erkannten Scope-Strings, ungefiltert (Whitelist-Gegenprobe)
             apiPrefix: 'sbs',            // beobachtetes Pfad-Präfix (sbs oder sbc)
             entity: null                 // via services.SBC.loadChallenge erfasst
         },
@@ -100,8 +101,20 @@
         loading: false,
         servicesHooked: false,
         cancelLoad: false,
+        locksSkipReported: false,    // schon einmal reportError() fuer einen uebersprungenen Lock-Key gemeldet? (verhindert Spam bei vielen korrupten Keys)
         lastChallengeRaw: null,      // letzte SBC-Response (fürs Debugging)
         lastSetChallenges: null,     // gecachte Challenge-Liste des geöffneten Sets
+        // Set-Challenges PRO setId. Live-Fall (84+ TOTW, Report v4.58.0):
+        // lastSetChallenges hielt die Antwort eines ANDEREN Sets, der
+        // Knoten-Scan lief auf einem 5-Knoten-Stub und fand die
+        // TOTW-Vorgabe nie - der Cache muss nach Set gekeyt sein.
+        setChallengesBySet: {},
+        // Pack-Opener (Store, Stufe 1, Ticket #69): letzte Enumeration + die
+        // dazugehoerigen rohen Pack-Entities (fuer open()), gekeyt per
+        // String(id) - Select-Optionswerte sind immer Strings.
+        packGroups: [],
+        packEntitiesById: new Map(),
+        packOpenBusy: false,
         // Offene Ablage fuer Laufzeitzustand, den buildDiagReport() kopiert -
         // jedes tatsaechlich verwendete Feld MUSS hier deklariert sein
         // (solver-test.js prueft das symmetrisch: gelesen <-> deklariert <->
@@ -116,6 +129,8 @@
             evoExcluded: 0,          // ausgeschlossene Evolution-Karten
             lastSquadPutBody: null,  // letzter PUT-Body an den Squad (fuers 460-Debugging)
             staleRecover: null,      // Erholungsversuch bei veralteter challengeId
+            staleSessionRetry: 0,    // Session-Erneuerungen nach 404/475
+            quota: null,             // SBC-Kontingent (Stunde/Tag)
             locks: null,             // PaleTools-Sperrliste: Anzahl + Beispiel-IDs
             clubLoad: null,          // Club-Ladelauf: Seitengroesse/Takt/Seiten/Retries/Dauer
             submitVia: null,         // welcher Submit-Weg zuletzt gegriffen hat (app/http/services)
@@ -130,7 +145,12 @@
             submitChallengeVia: null, // welcher Controller-/Service-Weg beim Abgeben gegriffen hat
             submitWithoutResponseCount: 0, // wie oft submitChallengeToEa ohne auswertbare Response als Erfolg durchging (LEARNINGS §9, v4.36.0: offen, ob Abgabe wirklich bestätigt war)
             submitConfirmations: null, // Post-Submit-Plausibilisierung im "ohne Response"-Zweig: via/hadResponse/squadEmptyAfter/ms je Versuch (reine Beobachtung, kein Abbruchkriterium)
-            lastTap: null            // letzter simulierter Tap: Events/Position/Abdeckung/Popup
+            lastTap: null,           // letzter simulierter Tap: Events/Position/Abdeckung/Popup
+            scanStats: null,         // Traversal-Metriken (visitedCount/depthCapped/budgetExhausted) von deepScan/findNode/collectNodes - reine Beobachtung, kein Abbruchkriterium (LEARNINGS 37)
+            utasUnclassified: 0,     // /ut/game/-URLs, die classifyUrl() nicht zuordnen konnte (LEARNINGS 38)
+            lastUnclassifiedPaths: [], // 5er-Ring der zugehoerigen Pfade (IDs maskiert)
+            popupDismissCount: 0,    // wie oft dismissRewardPopup() seit App-Start wirklich etwas geschlossen hat (analog batchStuckCount, LEARNINGS §27)
+            packScan: null           // Pack-Opener (Ticket #69/#76): myPacks/lastRun/lastAllRun/runsCount/storageCounts/missingGlobals/errorForm, siehe mergePackScan() (LEARNINGS §46)
         }
     };
     function log(...args) { try { console.log(LOG_PREFIX, ...args); } catch (e) {} }
@@ -249,13 +269,45 @@
         if (RE_SBC_STORAGE_FALLBACK.test(u)) return 'storage';
         return null;
     }
-    // [URLCLS-END]
+    // Eigener Zaehler + 5er-Ring fuer /ut/game/-URLs, die classifyUrl() NICHT
+    // zuordnen kann - der generische lastUtasPaths-Ring (15 Slots, ALLER
+    // utas-Traffic) kann einen seltenen neuen Endpunkt durch haeufigen
+    // bekannten Traffic (Club-Pagination, Storage) verdraengen, bevor je ein
+    // Diagnose-Report gezogen wird. Bewusst KEIN warn/diagError: das ist keine
+    // Fehlermeldung, sondern eine reine Beobachtung unbekannten, aber
+    // regulaeren Traffics.
+    function noteUnclassifiedUtas(url) {
+        try {
+            const u = String(url);
+            if (/\/ut\/game\//i.test(u) && classifyUrl(u) === null) {
+                STATE.diag.utasUnclassified = (STATE.diag.utasUnclassified || 0) + 1;
+                const path = u.replace(/^https?:\/\/[^/]+/, '').split('?')[0]
+                    .replace(/\d{4,}/g, '{id}');
+                STATE.diag.lastUnclassifiedPaths.push(path);
+                if (STATE.diag.lastUnclassifiedPaths.length > 5) STATE.diag.lastUnclassifiedPaths.shift();
+            }
+        } catch (e) {}
+    }
+    // Pro-Set-Challenge-Cache mit ECHTER Einfuege-Reihenfolge (Kappung 5).
+    // Object.keys() liefert integer-artige Keys NUMERISCH aufsteigend, nicht
+    // in Einfuege-Reihenfolge - die alte "sids[0]"-Verdraengung traf damit
+    // das KLEINSTE setId statt des aeltesten und konnte das gerade frisch
+    // gecachte Set sofort wieder loeschen (Nacht-Review 16.08.).
+    function cacheSetChallenges(sid, json) {
+        const cache = STATE.setChallengesBySet;
+        if (!cache) return;
+        const order = STATE.setChallengesOrder = STATE.setChallengesOrder || [];
+        const key = String(sid);
+        if (!(key in cache) && order.indexOf(key) === -1) order.push(key);
+        cache[key] = json;
+        while (order.length > 5) delete cache[order.shift()];
+    }
     function handleResponseBody(url, bodyText) {
         const kind = classifyUrl(url);
         if (!kind || !bodyText) return;
         let json;
         try { json = (typeof bodyText === 'string') ? JSON.parse(bodyText) : bodyText; }
-        catch (e) { return; }
+        catch (e) { reportError('handleResponseBody(' + kind + '): parse', e); return; }
         try {
             if (kind === 'sbc-set-challenges') {
                 // Challenge-Liste eines Sets: enthält die Anforderungen pro
@@ -263,7 +315,14 @@
                 STATE.lastSetChallenges = json;
                 STATE.lastChallengeRaw = json;
                 const sm = String(url).match(/setId\/(\d+)/i);
-                if (sm) STATE.sbc.setId = parseInt(sm[1], 10);
+                if (sm) {
+                    const sid = parseInt(sm[1], 10);
+                    STATE.sbc.setId = sid;
+                    // Pro-Set-Cache (Kappung 5, Einfuege-Reihenfolge):
+                    // lastSetChallenges allein wurde live vom zuletzt
+                    // geoeffneten Set ueberschrieben.
+                    cacheSetChallenges(sid, json);
+                }
                 applyFromSetChallenges();
             } else if (kind === 'sbc-challenge' || kind === 'sbc-sets') {
                 STATE.lastChallengeRaw = json;
@@ -275,9 +334,10 @@
                 harvestItems(json, true);
             }
         } catch (e) {
-            warn('Fehler beim Verarbeiten einer Response:', e);
+            reportError('handleResponseBody(' + kind + ')', e);
         }
     }
+    // [URLCLS-END]
     // ---- fetch() Wrapper ---------------------------------------------------
     const _origFetch = window.fetch ? window.fetch.bind(window) : null;
     if (_origFetch) {
@@ -294,6 +354,7 @@
             return _origFetch(input, init).then(function (resp) {
                 try {
                     const url = (typeof input === 'string') ? input : (input && input.url);
+                    if (url) noteUnclassifiedUtas(url);
                     if (url && classifyUrl(url)) {
                         resp.clone().text().then(function (txt) {
                             handleResponseBody(url, txt);
@@ -336,6 +397,7 @@
                     RE_SBC_SQUAD_PUT.test(String(url))) {
                     try { STATE.diag.lastSquadPutBody = String(body).slice(0, 3000); } catch (e) {}
                 }
+                if (url) noteUnclassifiedUtas(url);
                 if (url && classifyUrl(url)) {
                     this.addEventListener('load', function () {
                         try {
@@ -380,7 +442,7 @@
         const ids = o.eligibilityValues || o.values || o.rarityIds || [];
         return Array.isArray(ids) ? ids.map(Number).filter(n => !isNaN(n)) : [];
     }
-    function reqCount(o, parents) {
+    function reqCountRaw(o, parents) {
         // EA hängt den Count ("Min. 4") oft an das ELTERN-Objekt der
         // Requirement-KV-Paare (UTSBCEligibilityRequirement.count), nicht an
         // das Wert-Objekt selbst - deshalb die Eltern-Kette mitprüfen.
@@ -390,11 +452,13 @@
             if (!node || typeof node !== 'object') continue;
             for (const k of keys) {
                 const c = parseInt(node[k], 10);
-                if (!isNaN(c) && c >= 1 && c <= 11) return c;
+                if (!isNaN(c) && c >= 1 && c <= 11) return { count: c, defaulted: false };
             }
         }
-        return 1;
+        return { count: 1, defaulted: true };
     }
+    function reqCount(o, parents) { return reqCountRaw(o, parents).count; }
+    function reqCountDefaulted(o, parents) { return reqCountRaw(o, parents).defaulted; }
     function isDomOrWindow(o) {
         try {
             return (typeof Node !== 'undefined' && o instanceof Node) ||
@@ -405,16 +469,36 @@
      * Durchsucht ein Objekt (Response-JSON oder Challenge-Entity) nach
      * Team-Rating- und Rarity-Anforderungen sowie squadId.
      */
-    function deepScanChallenge(root) {
-        const out = { target: null, rarity: [], squadId: null, slots: null, playerLevel: [], quality: [], rare: [], reqs: [] };
+    // budget: Traversal-Deckel (Default 20000). JSON-Baeume (Netzwerk/Set-Liste)
+    // duerfen mehr (60000): live belegt (Gold-Challenge, Set 1337) enthielt der
+    // Challenge-Knoten so viel Belohnungs-Metadaten (Kit-Namen, Player-Picks),
+    // dass 20000 Knoten erschoepft waren, BEVOR die Gold-Anforderung erreicht
+    // wurde - Ergebnis: keinerlei Vorgaben erkannt, Solver baute regellos.
+    // Der Live-Entity-Scan bleibt bei 20000 (Objektgraph der App, unbegrenzt).
+    function deepScanChallenge(root, budget) {
+        const out = { target: null, rarity: [], squadId: null, slots: null, playerLevel: [], quality: [], rare: [], reqs: [], scopesSeen: [] };
         if (!root || typeof root !== 'object') return out;
+        const BUDGET = (budget > 0) ? budget : 20000;
         const seen = new Set();
         const queue = [{ o: root, d: 0, par: [] }];
         let visited = 0;
-        while (queue.length && visited < 20000) {
+        // JEDER erkannte Scope-String landet hier, unabhaengig von der
+        // reqDump-Whitelist unten (:490-497) - macht eine komplett neue
+        // EA-Scope-Familie sichtbar, statt spurlos zu verschwinden (siehe
+        // docs/roadmap/gaps/sbc-vorgaben-erkennung.md, Mangel 1). Deckel bei
+        // 40 Eintraegen, analog zum bestehenden out.reqs.length < 25-Deckel.
+        const scopesSeenSet = new Set();
+        // Wird true, sobald die Tiefengrenze (d > 7) selbst einen Knoten
+        // aussortiert - anders als seen.has(o)/isDomOrWindow(o), die
+        // strukturell unverdaechtige Knoten ueberspringen, zeigt das
+        // tatsaechliches Abschneiden des Traversals an (siehe
+        // docs/roadmap/gaps/sbc-vorgaben-erkennung.md, Mangel 2).
+        let depthSkipped = false;
+        while (queue.length && visited < BUDGET) {
             const cur = queue.shift();
             const o = cur.o, d = cur.d, par = cur.par;
-            if (!o || typeof o !== 'object' || seen.has(o) || d > 7 || isDomOrWindow(o)) continue;
+            if (!o || typeof o !== 'object' || seen.has(o) || isDomOrWindow(o)) continue;
+            if (d > 7) { depthSkipped = true; continue; }
             seen.add(o);
             visited++;
             // squadId nur aus explizit benannten Feldern
@@ -423,6 +507,7 @@
             }
             const scope = scopeString(o);
             if (scope) {
+                if (scopesSeenSet.size < 40) scopesSeenSet.add(scope);
                 const v = reqValue(o);
                 // matchedAs zeigt, welcher der unten folgenden, sich
                 // gegenseitig ausschliessenden Zweige tatsaechlich griff -
@@ -451,7 +536,7 @@
                      scope.indexOf('LEVEL') > -1) &&
                     scope.indexOf('CHEM') === -1;
                 if (isPlayerLevel && v != null && v >= 40 && v <= 99) {
-                    out.playerLevel.push({ label: scope, minRating: v, count: reqCount(o, par) });
+                    out.playerLevel.push({ label: scope, minRating: v, count: reqCount(o, par), countDefaulted: reqCountDefaulted(o, par) });
                     matchedAs = 'PLAYER_LEVEL';
                 }
                 // Qualitäts-Vorgabe (Tausch-/Upgrade-SBCs ohne Team-Rating):
@@ -466,7 +551,7 @@
                 const isQualityScope = scope.indexOf('QUALITY') > -1 ||
                     (scope.indexOf('LEVEL') > -1 && scope.indexOf('CHEM') === -1);
                 if (isQualityScope && v != null && v >= 1 && v <= 3) {
-                    out.quality.push({ label: scope, quality: Number(v), count: reqCount(o, par) });
+                    out.quality.push({ label: scope, quality: Number(v), count: reqCount(o, par), countDefaulted: reqCountDefaulted(o, par) });
                     matchedAs = 'PLAYER_QUALITY';
                 }
                 // KEIN Substring-Match auf "RARE" hier! Das hat live
@@ -479,6 +564,7 @@
                         label: scope,
                         ids: reqIds(o),
                         count: reqCount(o, par),
+                        countDefaulted: reqCountDefaulted(o, par),
                         // Bei RARITY_GROUP ist der Wert die Gruppen-ID -
                         // Karten matchen über ihr "groups"-Feld.
                         groupId: (scope.indexOf('GROUP') > -1 && v != null) ? v : null
@@ -492,7 +578,7 @@
                      scope.indexOf('LEVEL') > -1 || scope.indexOf('QUALITY') > -1 ||
                      scope.indexOf('CLUB') > -1 || scope.indexOf('LEAGUE') > -1 ||
                      scope.indexOf('NATION') > -1 || scope.indexOf('CHEM') > -1)) {
-                    out.reqs.push({ scope: scope, value: v, ids: reqIds(o), count: reqCount(o, par), matchedAs: matchedAs });
+                    out.reqs.push({ scope: scope, value: v, ids: reqIds(o), count: reqCount(o, par), matchedAs: matchedAs, countDefaulted: reqCountDefaulted(o, par) });
                 }
             }
             // Slot-Anzahl (manche SBCs haben < 11 Spieler)
@@ -513,7 +599,19 @@
                     let child;
                     try { child = o[k]; } catch (e) { continue; }
                     if (child && typeof child === 'object' && typeof child !== 'function') {
-                        queue.push({ o: child, d: d + 1, par: childPar });
+                        // Anforderungs-Aeste ZUERST scannen (elgReq, requirements,
+                        // eligibility, constraints ...): live belegt (Gold-
+                        // Challenge, Set 1337) frass ein riesiger Belohnungs-Ast
+                        // (Kits/Player-Picks) das komplette Budget, bevor die
+                        // Vorgaben dran waren. Die Priorisierung aendert bei
+                        // ausreichendem Budget NICHTS am Ergebnis (Sammel-Logik
+                        // ist reihenfolgeunabhaengig, target nimmt das Maximum) -
+                        // sie entscheidet nur, was bei knappem Budget zuerst kommt.
+                        if (/req|elig|constraint/i.test(k)) {
+                            queue.unshift({ o: child, d: d + 1, par: childPar });
+                        } else {
+                            queue.push({ o: child, d: d + 1, par: childPar });
+                        }
                     }
                 }
             }
@@ -532,6 +630,14 @@
         out.rare = dedupe(out.rare || [], r => r.label + '|' + r.count);
         out.quality = dedupe(out.quality, q => q.label + '|' + q.quality + '|' + q.count);
         out.reqs = dedupe(out.reqs, r => r.scope + '|' + r.value + '|' + r.count + '|' + r.ids.join(','));
+        out.scopesSeen = Array.from(scopesSeenSet);
+        // Reines Beobachtungsfeld (siehe docs/LEARNINGS.md 37) - KEIN
+        // Abbruch-/Warnungskriterium. budgetExhausted/depthCapped bedeuten
+        // NICHT zwingend, dass eine Vorgabe fehlt: die BFS kann sie laengst
+        // gefunden haben, bevor Budget/Tiefe ausgeschoepft war.
+        out.visitedCount = visited;
+        out.depthCapped = depthSkipped;
+        out.budgetExhausted = (visited >= BUDGET && queue.length > 0);
         return out;
     }
     // [SBCSCAN-END]
@@ -550,27 +656,41 @@
         STATE.sbc.otherScopes = [];
         STATE.sbc.rareConstraints = [];
         STATE.sbc.reqDump = [];
+        STATE.sbc.scopesSeen = [];
         STATE.sbc.formationSlots = 11;
         STATE.sbc.squadSlotTotal = null;
         STATE.sbc.usableSlots = null;
         refreshSbcInfoUI();
     }
     // Im Challenge-Listen-JSON den Knoten der aktuell geöffneten Challenge finden.
-    function findChallengeNode(root, cid) {
+    // statsOut (additiv, optional): schreibt statsOut.findNode = { visitedCount,
+    // depthCapped, budgetExhausted } - reines Beobachtungsfeld, siehe
+    // docs/LEARNINGS.md 37. Bestehende Aufrufe ohne dritten Parameter bleiben
+    // unveraendert funktionsfaehig.
+    function findChallengeNode(root, cid, statsOut) {
         if (!root || typeof root !== 'object' || cid == null) return null;
         const seen = new Set();
         const queue = [{ o: root, d: 0 }];
         let visited = 0;
+        let depthCapped = false;
+        function writeStats() {
+            if (statsOut) {
+                statsOut.findNode = { visitedCount: visited, depthCapped: depthCapped,
+                    budgetExhausted: (visited >= 20000 && queue.length > 0) };
+            }
+        }
         while (queue.length && visited < 20000) {
             const cur = queue.shift();
             const o = cur.o, d = cur.d;
-            if (!o || typeof o !== 'object' || seen.has(o) || d > 6 || isDomOrWindow(o)) continue;
+            if (!o || typeof o !== 'object' || seen.has(o) || isDomOrWindow(o)) continue;
+            if (d > 6) { depthCapped = true; continue; }
             seen.add(o);
             visited++;
             const oid = (o.challengeId != null) ? o.challengeId : o.id;
             // Nur Knoten akzeptieren, die wie eine Challenge aussehen
             if (oid != null && String(oid) === String(cid) &&
                 (o.elgReq || o.requirements || o.eligibilityRequirements || o.name || o.challengeId != null)) {
+                writeStats();
                 return o;
             }
             if (Array.isArray(o)) {
@@ -585,6 +705,7 @@
                 }
             }
         }
+        writeStats();
         return null;
     }
     /**
@@ -592,17 +713,21 @@
      * bestimmten ID). Wird gebraucht, um nach einem 404/475 die frische Instanz
      * derselben SBC zu finden: wiederholbare SBCs bekommen pro Durchlauf eine
      * neue challengeId, und die Ansicht steht danach auf der verbrauchten.
+     * statsOut (additiv, optional): schreibt statsOut.collectNodes = { visitedCount,
+     * depthCapped, budgetExhausted }, analog zu findChallengeNode().
      */
-    function collectChallengeNodes(root) {
+    function collectChallengeNodes(root, statsOut) {
         const out = [];
         if (!root || typeof root !== 'object') return out;
         const seen = new Set();
         const queue = [{ o: root, d: 0 }];
         let visited = 0;
+        let depthCapped = false;
         while (queue.length && visited < 20000) {
             const cur = queue.shift();
             const o = cur.o, d = cur.d;
-            if (!o || typeof o !== 'object' || seen.has(o) || d > 6 || isDomOrWindow(o)) continue;
+            if (!o || typeof o !== 'object' || seen.has(o) || isDomOrWindow(o)) continue;
+            if (d > 6) { depthCapped = true; continue; }
             seen.add(o);
             visited++;
             if (o.challengeId != null &&
@@ -621,7 +746,159 @@
                 }
             }
         }
+        if (statsOut) {
+            statsOut.collectNodes = { visitedCount: visited, depthCapped: depthCapped,
+                budgetExhausted: (visited >= 20000 && queue.length > 0) };
+        }
         return out;
+    }
+    /**
+     * Liest die Erschoepfungs-/Ablauf-Felder, die EAs Set-Challenges-Knoten
+     * laut Live-Sample tragen (status, repeatable, timesCompleted, endTime) -
+     * fehlt eines, bleibt es null statt den ganzen Knoten zu verwerfen.
+     */
+    // ======================================================================
+    //  SBC-KONTINGENT (Rasmus: 90 pro voller Stunde, 300 pro Tag)
+    // ======================================================================
+    // Warum das ueberhaupt geht: EA fuehrt pro SET einen SERVERSEITIGEN
+    // Zaehler `timesCompleted` (im Hub steht er als "Completed 623 times").
+    // Die Summe ueber alle Sets ist also die Gesamtzahl abgeschlossener SBCs
+    // des ACCOUNTS - und damit geraeteuebergreifend: was Mike am Handy macht,
+    // steht in derselben Zahl. Live belegt: zwischen zwei Reports stieg der
+    // Zaehler von Set 1356 von 609 auf 615.
+    //
+    // Was NICHT geht: EA liefert keinen "heute"-Zaehler. Deshalb Stichproben:
+    // (Zeitpunkt, Summe) landen in localStorage, und "seit X" ist die Differenz
+    // zur aeltesten Probe innerhalb des Fensters. Fehlt eine Probe von VOR dem
+    // Fenster, ist das Ergebnis eine UNTERGRENZE - und wird auch so benannt,
+    // nicht als exakte Zahl verkauft.
+    const QUOTA_KEY = 'sbcOptQuotaSamples';
+    const QUOTA_HOUR_LIMIT = 90;
+    const QUOTA_DAY_LIMIT = 300;
+    function quotaLoadSamples() {
+        try {
+            const raw = localStorage.getItem(QUOTA_KEY);
+            if (!raw) return [];
+            const arr = JSON.parse(raw);
+            return Array.isArray(arr) ? arr.filter(x => x && x.t && x.total != null) : [];
+        } catch (e) { return []; }
+    }
+    function quotaSaveSamples(arr) {
+        // 36h aufbewahren: deckt Tages- und Stundenfenster ab, bleibt klein.
+        const cut = Date.now() - 36 * 3600 * 1000;
+        const keep = arr.filter(x => x.t >= cut).slice(-500);
+        try { localStorage.setItem(QUOTA_KEY, JSON.stringify(keep)); } catch (e) {}
+        return keep;
+    }
+    /** Summe aller timesCompleted aus einer sbs/sets-Antwort. */
+    function sumTimesCompleted(json) {
+        let sum = 0, sets = 0;
+        const seen = new Set();
+        const queue = [{ o: json, d: 0 }];
+        let visited = 0;
+        while (queue.length && visited < 20000) {
+            const cur = queue.shift();
+            const o = cur.o, d = cur.d;
+            if (!o || typeof o !== 'object' || seen.has(o) || d > 6) continue;
+            seen.add(o);
+            visited++;
+            // Ein Set-Knoten: hat setId UND timesCompleted. Challenge-Knoten
+            // tragen dieselbe Zahl NICHT (sonst wuerde doppelt gezaehlt).
+            if (o.setId != null && typeof o.timesCompleted === 'number') {
+                sum += o.timesCompleted;
+                sets++;
+            }
+            const kids = Array.isArray(o) ? o : Object.keys(o).map(k => {
+                try { return o[k]; } catch (e) { return null; }
+            });
+            for (const c of kids) if (c && typeof c === 'object') queue.push({ o: c, d: d + 1 });
+        }
+        return { sum: sum, sets: sets };
+    }
+    /** Aktuellen Stand holen und als Stichprobe ablegen. */
+    async function quotaSample() {
+        let json = null;
+        try { json = await apiGet('sbs/sets'); }
+        catch (e) { return null; }
+        const r = sumTimesCompleted(json);
+        if (!r.sets) return null;
+        const arr = quotaLoadSamples();
+        arr.push({ t: Date.now(), total: r.sum });
+        quotaSaveSamples(arr);
+        STATE.diag.quota = quotaUsage();
+        return r.sum;
+    }
+    /**
+     * Verbrauch im laufenden Stundenfenster (voller Stunde, wie EA es zaehlt)
+     * und seit Mitternacht. exact=false heisst: die aelteste Probe liegt INNERHALB
+     * des Fensters, die Zahl ist also eine Untergrenze.
+     */
+    function quotaUsage(nowMs) {
+        const now = nowMs != null ? nowMs : Date.now();
+        const arr = quotaLoadSamples();
+        if (!arr.length) return { total: null, hour: null, day: null, samples: 0 };
+        const latest = arr[arr.length - 1];
+        const d = new Date(now);
+        const hourStart = new Date(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours()).getTime();
+        const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+        function since(boundary) {
+            // Letzte Probe VOR der Grenze ist die exakte Basis.
+            let base = null, exact = false;
+            for (const x of arr) {
+                if (x.t <= boundary) { base = x; exact = true; }
+            }
+            if (!base) {
+                // Nur Proben INNERHALB des Fensters: aelteste als Basis, das
+                // Ergebnis ist dann eine Untergrenze.
+                base = arr.find(x => x.t > boundary) || null;
+                exact = false;
+            }
+            if (!base) return null;
+            return { used: Math.max(0, latest.total - base.total), exact: exact, since: base.t };
+        }
+        return {
+            total: latest.total,
+            stamp: latest.t,
+            samples: arr.length,
+            hour: since(hourStart),
+            day: since(dayStart),
+            hourLimit: QUOTA_HOUR_LIMIT,
+            dayLimit: QUOTA_DAY_LIMIT
+        };
+    }
+    /** Eine Zeile fuer das Panel - oder null, wenn es nichts zu sagen gibt. */
+    /**
+     * Zusatz fuer Fehlermeldungen: steht der Stundenzaehler nahe am Limit, ist
+     * das EA-Kontingent die wahrscheinlichste Ursache fuer ein abgelehntes
+     * Eintragen. Ohne Messung wird NICHTS behauptet.
+     */
+    function quotaHint() {
+        const u = quotaUsage();
+        if (!u || !u.hour) return '';
+        const near = u.hour.used >= Math.floor(QUOTA_HOUR_LIMIT * 0.8) ||
+                     (u.day && u.day.used >= Math.floor(QUOTA_DAY_LIMIT * 0.8));
+        if (!near) return '';
+        return ' Wahrscheinliche Ursache: EAs SBC-Kontingent - ' +
+            (u.hour.exact ? '' : 'mind. ') + u.hour.used + ' von ' + QUOTA_HOUR_LIMIT +
+            ' in dieser Stunde' +
+            (u.day ? ', ' + (u.day.exact ? '' : 'mind. ') + u.day.used + ' von ' +
+                     QUOTA_DAY_LIMIT + ' heute' : '') + '.';
+    }
+    function quotaText(u) {
+        if (!u || u.total == null) return null;
+        function part(name, w, limit) {
+            if (!w) return name + ': –';
+            return name + ': ' + (w.exact ? '' : 'mind. ') + w.used + '/' + limit;
+        }
+        return part('Stunde', u.hour, u.hourLimit) + ' · ' + part('Heute', u.day, u.dayLimit);
+    }
+    function extractNodeState(n) {
+        return {
+            status: (n && n.status != null) ? n.status : null,
+            repeatable: (n && n.repeatable != null) ? n.repeatable : null,
+            timesCompleted: (n && n.timesCompleted != null) ? n.timesCompleted : null,
+            endTime: (n && n.endTime != null) ? n.endTime : null
+        };
     }
     /**
      * Nach einem 404/475 die FRISCHE Instanz derselben SBC finden: Challenge-
@@ -639,10 +916,16 @@
         let json = null;
         try { json = await apiGet('sbs/setId/' + setId + '/challenges'); }
         catch (e) { warn('Frische Challenge holen fehlgeschlagen:', e && e.message); return null; }
-        const nodes = collectChallengeNodes(json);
+        STATE.diag.scanStats = STATE.diag.scanStats || {};
+        const nodes = collectChallengeNodes(json, STATE.diag.scanStats);
         STATE.diag.staleRecover = { setId: setId, oldId: oldId, nodes: nodes.length,
                                     wantTarget: wantTarget, wantSlots: wantSlots };
+        // Der Knoten der ALTEN Id, falls EA ihn in der frischen Liste noch
+        // zeigt - erklaert einen 404/475 (z.B. status "COMPLETE" statt weg).
+        const oldNode = nodes.find(n => String(n.challengeId) === String(oldId));
+        if (oldNode) STATE.diag.staleRecover.nodeState = extractNodeState(oldNode);
         const cands = [];
+        const candDetails = [];
         for (const n of nodes) {
             if (String(n.challengeId) === String(oldId)) continue;
             let scan = null;
@@ -651,25 +934,95 @@
             const okTarget = (wantTarget == null) || (String(scan.target) === String(wantTarget));
             const okSlots = (wantSlots == null) || (scan.slots == null) ||
                             (Number(scan.slots) === Number(wantSlots));
-            if (okTarget && okSlots) cands.push(n.challengeId);
+            if (okTarget && okSlots) {
+                cands.push(n.challengeId);
+                candDetails.push(Object.assign({ id: n.challengeId }, extractNodeState(n)));
+            }
         }
-        STATE.diag.staleRecover.candidates = cands.slice(0, 5);
+        // candidateCount bleibt die WAHRE Anzahl (candidates ist auf 5 gedeckelt) -
+        // submitToSbc() braucht genau 0-vs-nicht-0, um die Erschoepfungs-Meldung
+        // (LEARNINGS 9/35) von der Mehrdeutig-Meldung zu unterscheiden.
+        STATE.diag.staleRecover.candidateCount = cands.length;
+        STATE.diag.staleRecover.candidates = candDetails.slice(0, 5);
         if (cands.length !== 1) {
             // Mehrdeutig oder nichts gefunden: lieber sauber melden als in die
             // falsche SBC schreiben.
             return null;
         }
         STATE.lastSetChallenges = json;
+        // Auch den Pro-Set-Cache aktualisieren: applyFromSetChallenges()
+        // bevorzugt ihn - ohne dieses Update wuerde nach der Recovery der
+        // VERALTETE Cache-Stand gewinnen, die neue challengeId darin nie
+        // gefunden und der frische Vorgaben-Scan still nie angewendet
+        // (Nacht-Review 16.08.). typeof-Guard: solver-test.js extrahiert
+        // diese Funktion standalone, ohne den URLCLS-Block.
+        if (typeof cacheSetChallenges === 'function') cacheSetChallenges(setId, json);
+        else if (STATE.setChallengesBySet) STATE.setChallengesBySet[setId] = json;
         return cands[0];
     }
     // Anforderungen der aktuellen Challenge aus der gecachten Set-Liste ziehen.
     function applyFromSetChallenges() {
-        if (!STATE.lastSetChallenges || STATE.sbc.challengeId == null) return;
-        const node = findChallengeNode(STATE.lastSetChallenges, STATE.sbc.challengeId);
+        // Bevorzugt den Pro-Set-Cache: lastSetChallenges kann vom zuletzt
+        // geoeffneten ANDEREN Set stammen (Live-Fall 84+ TOTW, v4.58.0-Report).
+        const src = (STATE.sbc.setId != null &&
+            (STATE.setChallengesBySet || {})[STATE.sbc.setId]) ||
+            STATE.lastSetChallenges;
+        if (!src || STATE.sbc.challengeId == null) return;
+        STATE.diag.scanStats = STATE.diag.scanStats || {};
+        const node = findChallengeNode(src, STATE.sbc.challengeId, STATE.diag.scanStats);
         if (node) {
-            const scan = deepScanChallenge(node);
+            const scan = deepScanChallenge(node, 60000);
+            recordDeepScanStats(scan, 'set-node');
             applyScan(scan, 'Set-Challenges');
         }
+    }
+    // Traversal-Metriken von deepScanChallenge() (Aktion 2, LEARNINGS 37) in
+    // denselben STATE.diag.scanStats-Zweig wie findChallengeNode()/
+    // collectChallengeNodes() uebernehmen - reine Beobachtung, kein
+    // Abbruchkriterium. source unterscheidet die drei Aufrufer (netzwerk/
+    // set-node/entity) - noetig geworden, weil beim Gold-Challenge-Fall nicht
+    // erkennbar war, WELCHER Scan das Budget erschoepft hatte; deepScanBySource
+    // sammelt den jeweils letzten Stand pro Quelle.
+    function recordDeepScanStats(scan, source) {
+        STATE.diag.scanStats = STATE.diag.scanStats || {};
+        const entry = { visitedCount: scan.visitedCount,
+            depthCapped: scan.depthCapped, budgetExhausted: scan.budgetExhausted,
+            source: source || null };
+        STATE.diag.scanStats.deepScan = entry;
+        STATE.diag.scanStats.deepScanBySource = STATE.diag.scanStats.deepScanBySource || {};
+        if (source) STATE.diag.scanStats.deepScanBySource[source] = entry;
+    }
+    // Wurde IRGENDEIN Vorgaben-Scan abgeschnitten? Anders als die (zurueck-
+    // genommene) v4.34.0-Warnung urteilt das NICHT ueber reqDump-Inhalte,
+    // sondern ueber ein hartes Traversal-Faktum - und wird nur als Hinweis
+    // benutzt, nie als Abbruch.
+    function anyDeepScanTruncated() {
+        const by = (STATE.diag.scanStats || {}).deepScanBySource || {};
+        for (const k in by) { if (by[k] && by[k].budgetExhausted) return true; }
+        return false;
+    }
+    // Set-Challenges fuer das AKTUELLE Set aktiv nachladen (ein GET, laeuft
+    // durch die normale 401-Kaskade von apiGet). Die zuverlaessigste Quelle
+    // fuer Vorgaben ist der elgReq-Block dieser Antwort (klein, exakt,
+    // req/elig-priorisiert gescannt) - der Live-Entity-Scan kann dagegen im
+    // App-Objektgraphen ertrinken (Live-Fall 84+ TOTW: Vorgabe nie gefunden).
+    // Rein additiv: laedt nur, wenn fuer dieses Set noch nichts gecacht ist.
+    async function ensureSetChallenges(reason) {
+        const sid = STATE.sbc.setId;
+        if (sid == null) return false;
+        if (STATE.setChallengesBySet[sid]) { applyFromSetChallenges(); return true; }
+        try {
+            const json = await apiGet((STATE.sbc.apiPrefix || 'sbs') + '/setId/' + sid + '/challenges');
+            if (json) {
+                if (typeof cacheSetChallenges === 'function') cacheSetChallenges(sid, json);
+                else STATE.setChallengesBySet[sid] = json;
+                STATE.lastSetChallenges = json;
+                applyFromSetChallenges();
+                log('Set-Challenges nachgeladen (' + reason + '), setId', sid);
+                return true;
+            }
+        } catch (e) { reportError('ensureSetChallenges(' + reason + ')', e); }
+        return false;
     }
     function parseSbcChallenge(json, url) {
         const u = String(url);
@@ -704,7 +1057,8 @@
                 }
             }
         } catch (e) {}
-        const scan = deepScanChallenge(json);
+        const scan = deepScanChallenge(json, 60000);
+        recordDeepScanStats(scan, 'netzwerk');
         applyScan(scan, 'Netzwerk');
         // Response selbst enthielt keinen Ziel-OVR (z.B. nur das Squad)?
         // -> Anforderungen aus der gecachten Challenge-Liste des Sets holen.
@@ -740,11 +1094,17 @@
             }
         } catch (e) {}
         const scan = deepScanChallenge(challenge);
+        recordDeepScanStats(scan, 'entity');
         applyScan(scan, 'App-Service');
         if (STATE.sbc.targetOVR == null) applyFromSetChallenges();
     }
     function applyScan(scan, source) {
         let changed = false;
+        // UNGEGATED (nicht hinter dem scan.reqs.length-Gate unten): ein neuer
+        // Scope kann auftreten, ohne dass scan.reqs etwas enthaelt - genau
+        // die Whitelist-Luecke aus docs/roadmap/gaps/sbc-vorgaben-erkennung.md,
+        // Mangel 1.
+        STATE.sbc.scopesSeen = scan.scopesSeen || [];
         if (scan.target != null) { STATE.sbc.targetOVR = scan.target; changed = true; }
         if (scan.squadId != null) { STATE.sbc.squadId = scan.squadId; changed = true; }
         // usableSlots (aus playerRequirements) ist präziser als jeder
@@ -930,6 +1290,7 @@
     function readPaletoolsLocks() {
         const ids = new Set();
         let keysScanned = 0;
+        let skippedKeys = 0;
         const keyInfo = [];
         // Bricht die Schleife mitten drin ab, bleibt die Sperrliste unvollstaendig,
         // OHNE dass der Report das zeigt (CLAUDE.md: gesperrte Karten NIEMALS
@@ -937,6 +1298,21 @@
         // macht das im Report explizit sichtbar statt nur ueber niedrige Zahlen
         // erraten zu werden.
         let scanError = null;
+        // Keys, deren Wert erkennbar kein JSON ist (base64 & Co.) - erwartbar,
+        // deshalb getrennt von den echten Defekten (skippedKeys).
+        let nonJsonKeys = 0;
+        // EIN einzelner kaputter Key (nicht lesbar ODER kein valides JSON) darf
+        // die restlichen Locks nicht kosten - deshalb pro Key ueberspringen statt
+        // die ganze Schleife abzubrechen. skippedKeys zaehlt JEDEN Fall, ein
+        // reportError() aber nur einmal pro Session (STATE.locksSkipReported) -
+        // sonst waeren 50 korrupte Keys 50 identische Konsolen-/Report-Zeilen.
+        function markSkipped(k, e) {
+            skippedKeys++;
+            if (!STATE.locksSkipReported) {
+                STATE.locksSkipReported = true;
+                reportError('readPaletoolsLocks: Key uebersprungen (' + k + ')', e);
+            }
+        }
         try {
             for (let i = 0; i < localStorage.length; i++) {
                 const k = localStorage.key(i);
@@ -951,10 +1327,22 @@
                                    head: val.slice(0, 120) });
                 } catch (e) {}
                 let raw = null;
-                try { raw = localStorage.getItem(k); } catch (e) { continue; }
+                try { raw = localStorage.getItem(k); } catch (e) { markSkipped(k, e); continue; }
                 if (!raw) continue;
+                // Ein Wert, der nicht mit einer geschweiften oder eckigen
+                // Klammer beginnt, war nie JSON - PaleTools legt z.B.
+                // `paletools:settings` base64-kodiert ab ("eyJlbmFibG..."). Das
+                // ist KEIN Defekt und gehoert nicht als Fehler in den Report;
+                // live stand genau diese Zeile in jedem Log und lenkte von den
+                // echten Meldungen ab. Ueberspringen ohne markSkipped, aber im
+                // Zaehler sichtbar.
+                // Geprueft wird ueber Zeichencodes (123 = geschweift, 91 =
+                // eckig): Klammer-LITERALE in dieser Datei bringen die
+                // Funktions-Extraktion der Test-Suite aus dem Takt.
+                const code = raw.replace(/^\s+/, '').charCodeAt(0);
+                if (code !== 123 && code !== 91) { nonJsonKeys++; continue; }
                 let obj = null;
-                try { obj = JSON.parse(raw); } catch (e) { continue; }
+                try { obj = JSON.parse(raw); } catch (e) { markSkipped(k, e); continue; }
                 // Steht der Key selbst schon für die Sperrliste, ist der ganze
                 // Wert die Quelle - sonst nur die "lock"-Zweige darin.
                 // ACHTUNG: "lockedPacks" enthaelt PACK-IDs ([1030, 20038, ...]),
@@ -971,12 +1359,17 @@
             reportError('Locks lesen fehlgeschlagen', e);
         }
         STATE.diag.locks = {
+            nonJsonKeys: nonJsonKeys,
             keysScanned: keysScanned,
             found: ids.size,
             sample: Array.from(ids).slice(0, 5),
             // Nur noetig, wenn found = 0: daran ist der richtige Key ablesbar.
             keys: keyInfo.slice(0, 12),
-            error: scanError
+            error: scanError,
+            // Pro-Key uebersprungen (nicht lesbar / kein valides JSON) - anders
+            // als scanError (Gesamt-Loop-Abbruch) bleibt die Suche bei den
+            // restlichen Keys hier weiter aktiv.
+            skippedKeys: skippedKeys
         };
         return ids;
     }
@@ -1047,7 +1440,7 @@
                 refreshSbcInfoUI();
                 log(removed + ' verbaute Karten aus dem Pool entfernt (' + STATE.pool.length + ' übrig).');
             }
-        } catch (e) { warn('removeFromPool:', e.message); }
+        } catch (e) { reportError('removeFromPool', e); }
     }
     function harvestItems(json, fromStorage) {
         const items = extractItems(json);
@@ -1331,7 +1724,7 @@
         let total = Infinity;
         let gotAny = false;
         STATE.loadIncomplete = false;
-        STATE.diag.clubLoad = { pageSize: count, gap: gap, pages: 0, retries: 0, ms: 0 };
+        STATE.diag.clubLoad = { pageSize: count, gap: gap, pages: 0, retries: 0, ms: 0, loadIncomplete: false };
         const t0 = Date.now();
         while (page * count < total) {
             if (STATE.cancelLoad) break;
@@ -1358,6 +1751,12 @@
             if (!json) {
                 if (!gotAny) throw new Error('Club-Laden fehlgeschlagen (Session?). Bitte kurz in der App navigieren und erneut versuchen.');
                 STATE.loadIncomplete = true;
+                // Beide Debug-Kanaele: clubLoad.loadIncomplete steht im JSON-
+                // Report (buildDiagReport gibt clubLoad komplett zurueck),
+                // warn() landet im App-Log-Ringpuffer - der bestehende Toast
+                // (loadPool/onRunClick) bleibt zusaetzlich unveraendert bestehen.
+                STATE.diag.clubLoad.loadIncomplete = true;
+                warn('Club-Laden dauerhaft fehlgeschlagen ab Seite', page, '- Pool bleibt unvollstaendig.');
                 break;
             }
             gotAny = true;
@@ -1568,6 +1967,14 @@
         // wird in localStorage gemerkt - eine Änderung hier greift nur, wenn
         // dort noch nichts gespeichert ist oder "Zurücksetzen" gedrückt wird.
         const DEFAULT_RATING_COST_SPEC = '0-80:0, 81-83:2, 84:1, 85-88:2, 89-90:3, 91-92:4, 93+:12';
+        // Kombinatorik-Schranke fuer reserveWindowAware() (Ticket #60/#64,
+        // LEARNINGS 41): Anzahl der (Rating -> Anzahl)-Aufteilungen, die PRO
+        // VORGABE (Rarity- UND playerLevel-Reservierung teilen sich die
+        // Schranke) tatsaechlich per DP durchprobiert werden, bevor auf den
+        // Kosten-Greedy zurueckgefallen wird. Konservativ fuer Reaktionszeit
+        // am Handy geschaetzt (Lift-Plan), nicht am realen Geraet gemessen -
+        // ein spaeterer Live-Befund kann den Wert mit eigenem Beleg anpassen.
+        const RARITY_WINDOW_TRIAL_CAP = 200;
         function parseRatingCosts(spec) {
             const costs = new Array(100).fill(0);
             if (spec) {
@@ -1615,7 +2022,15 @@
                 ? cfg.protectedGroups.map(Number) : [83];
             const guardCost = Math.max(0, cfg.rarityGuardCost != null ? Number(cfg.rarityGuardCost) : 8);
             function isProtectedRarity(p) {
-                if (!guardCost || !Array.isArray(p.groups) || !p.groups.length) return false;
+                if (!guardCost) return false;
+                // rareflag 3 = TOTW = Rarity-Gruppe 83. Der Schutz darf NICHT
+                // allein am groups-Feld haengen: ein TOTW-Payload OHNE groups
+                // waere sonst ungeschuetzt und (Flachkosten unten) sogar die
+                // billigste Karte seiner Stufe - Kosten-Identitaet (rareflag)
+                // und Schutz-Identitaet (groups) muessen dieselbe Karte meinen
+                // (Nacht-Review 16.08., LEARNINGS 49).
+                if (guardGroups.indexOf(83) > -1 && isTotw(p)) return true;
+                if (!Array.isArray(p.groups) || !p.groups.length) return false;
                 for (const g of guardGroups) if (p.groups.indexOf(g) > -1) return true;
                 return false;
             }
@@ -1627,7 +2042,16 @@
                 ? Number(cfg.untradeableBonus) : 3);
             function costOf(p) {
                 const n = countByRating.get(p.rating) || 1;
-                const base = alpha / n + bandFn(p.rating);
+                // TOTW (rareflag 3) sind wertgleich - die Rating-Kosten-
+                // Baender gelten fuer sie NICHT (Produktregel von Rasmus,
+                // 16.08.): ein 87er-TOTW ist nicht "teurer" als ein 84er,
+                // nur weil 87er-GOLD im Band teuer ist. Stattdessen ein
+                // minimaler Rating-Anteil (rating/1000) als Tiebreak:
+                // niedrigere TOTW werden bei sonst gleicher Eignung zuerst
+                // verbraucht ("hoehere sind besser, aber nur minimal").
+                // Scarcity/Storage/Untradeable/Rarity-Schutz wirken weiter.
+                const band = isTotw(p) ? (p.rating / 1000) : bandFn(p.rating);
+                const base = alpha / n + band;
                 return (p.isStorage ? (base / 2 - beta) : base) +
                        (isProtectedRarity(p) ? guardCost : 0) -
                        (p.untradeable ? untrBonus : 0);
@@ -1646,6 +2070,11 @@
             if (Number(c.groupId) === 4) {
                 return p.isRare || (Array.isArray(p.groups) && p.groups.indexOf(4) > -1);
             }
+            // Gruppe 83 analog ueber rareflag absichern: TOTW ist rareflag 3 -
+            // auch ohne groups-Feld erfuellt ein TOTW eine Gruppe-83-Vorgabe
+            // (dieselbe Identitaets-Regel wie isProtectedRarity, Nacht-Review
+            // 16.08. - sonst waere die Karte geschuetzt, aber nie waehlbar).
+            if (Number(c.groupId) === 83 && isTotw(p)) return true;
             if (c.groupId != null && Array.isArray(p.groups)) {
                 return p.groups.indexOf(Number(c.groupId)) > -1;
             }
@@ -1656,10 +2085,68 @@
             // Fallback-Heuristik ohne Gruppen-Info: irgendeine Special-Karte
             return p.isSpecial;
         }
+        // Kandidaten-Eligibility fuer eine Rarity-Vorgabe - SSOT fuer die
+        // Reservierung IN solveCore (drei Call-Sites, vorher identischer Code
+        // dreimal) UND die Panel-Anzeige "N verfuegbar" (computeRarityAvailability
+        // unten, Ticket #68): freeCard/inQualityBand kommen als Parameter, weil
+        // sie in solveCore von used/usedAssets bzw. der aktiven Qualitaets-
+        // Vorgabe abhaengen - die Anzeige braucht diese Einschraenkungen nicht
+        // und nutzt die Defaults (immer frei, jedes Rating im Fenster).
+        function reservationCandidates(poolAll, rc, cfg, opts) {
+            opts = opts || {};
+            const freeCard = opts.freeCard || function () { return true; };
+            const inQualityBand = opts.inQualityBand || function () { return true; };
+            const lo = opts.lo != null ? opts.lo : 0;
+            const hi = opts.hi != null ? opts.hi : 99;
+            return poolAll.filter(function (p) {
+                return p.rating >= lo && p.rating <= hi && freeCard(p) && inQualityBand(p) &&
+                    matchesRarity(p, rc) &&
+                    (!cfg.specialOnlyFromStorage || p.isStorage || !p.isSpecial || isTotw(p));
+            });
+        }
+        // PaleTools sperrt den SPIELER, nicht die einzelne Karte: in
+        // lockedItems stehen kurze Zahlen (assetId/resourceId), keine
+        // 12-stelligen Item-IDs. Deshalb alle drei Spalten vergleichen.
+        function isLockedOut(p, lockedSet) {
+            return lockedSet.has(String(p.id)) ||
+                (p.assetId != null && lockedSet.has(String(p.assetId))) ||
+                (p.raw && p.raw.resourceId != null && lockedSet.has(String(p.raw.resourceId))) ||
+                (p.resourceId != null && lockedSet.has(String(p.resourceId)));
+        }
+        // Gesperrte Karten (z.B. per PaleTools-Schloss) fliegen komplett raus -
+        // wer eine Karte sperrt, will sie behalten. SSOT fuer solveCore UND die
+        // Panel-Verfuegbarkeits-Anzeige (Ticket #68), die denselben Bestand
+        // sehen muss wie eine tatsaechliche Reservierung.
+        function filterLockedCards(poolAll, cfg, warnings) {
+            if (!cfg.lockedIds || !cfg.lockedIds.length) return poolAll;
+            const locked = new Set(cfg.lockedIds.map(String));
+            const before = poolAll.length;
+            const out = poolAll.filter(function (p) { return !isLockedOut(p, locked); });
+            const removed = before - out.length;
+            if (removed && warnings) warnings.push(removed + ' gesperrte Karte(n) ausgeschlossen.');
+            return out;
+        }
+        // Max. Rating pro Spieler (Ticket #66): HARTER Pool-Vorfilter, SSOT
+        // fuer solve() UND die Panel-Verfuegbarkeits-Anzeige (Ticket #68) -
+        // beide muessen dieselbe Karte ab derselben Grenze ausschliessen.
+        function applyMaxRatingFilter(poolAll, cfg) {
+            return (cfg.maxRatingEnabled && cfg.maxRating)
+                ? poolAll.filter(function (p) { return p.rating <= cfg.maxRating; })
+                : poolAll;
+        }
         /**
          * Bounded-Knapsack-DP mit Kartenkosten.
          * Liefert für jedes (Anzahl j, exp-Zähler e, Summe s) die minimalen
          * Kosten und kann die konkreten Spieler rekonstruieren.
+         *
+         * exp: generische dritte DP-Dimension (Zähler + Budget für Karten ab
+         * einer Schwelle) - seit v4.62.0 an ALLEN Call-Sites null, war die
+         * Dimension des entfernten "Max. teure Spieler"-Filters (Ticket #66,
+         * LEARNINGS §44: der Filter lockerte sich bei Unlösbarkeit selbst,
+         * "Max. Rating pro Spieler" ersetzt ihn als harter Pool-Vorfilter vor
+         * solveCore statt als DP-Dimension). Bleibt als Mechanismus stehen,
+         * weil der DP-Kern laut Vorgabe nicht angefasst wird - ein künftiger
+         * "höchstens N Karten ab Rating X"-Filter könnte hier wieder andocken.
          */
         function buildDp(players, kMax, sMax, costOf, exp, cmp) {
             const groups = new Map();
@@ -1759,10 +2246,29 @@
          * (zwei FUTTIES verbaut, eine gefordert). Kosten-Feintuning hätte das
          * nur verschoben, nicht behoben.
          *
-         * Ist die SBC so nicht lösbar, wird die Sperre aufgehoben und gewarnt -
-         * gleiches Muster wie bei "max. teure Spieler".
+         * Ist die SBC so nicht lösbar, wird die Sperre aufgehoben und gewarnt.
          */
         function solve(poolAll, cfg) {
+            // Max. Rating pro Spieler (Ticket #66): HARTER Pool-Vorfilter, VOR
+            // jeder Reservierung/Suche - eine Karte über der Grenze wird nie
+            // verwendet, auch nicht fuer Vorgaben. Anders als die Rarity-Sperre
+            // oben lockert sich dieser Filter NIE selbst; Unloesbarkeit wird
+            // unten explizit gemeldet (LEARNINGS §44).
+            const rawPool = poolAll;
+            poolAll = applyMaxRatingFilter(poolAll, cfg);
+            // Die MANUELL gewaehlte Rarity-Karte ueberlebt den Max-Rating-
+            // Vorfilter (Nacht-Review 16.08.): die explizite Wahl schlaegt
+            // Filter - dieselbe Semantik wie der "trotzdem verwendet"-Pfad in
+            // solveCore. Vorher fraß der Vorfilter den Pick still, die
+            // Automatik reservierte eine ANDERE Karte und die Meldung
+            // behauptete falsch "nicht im Pool gefunden". Gesperrte Karten
+            // bleiben tabu: filterLockedCards() laeuft in solveCore NACH
+            // diesem Re-Add.
+            if (cfg.rarityPickId != null && cfg.rarityPickId !== '' &&
+                !poolAll.some(p => String(p.id) === String(cfg.rarityPickId))) {
+                const pickRaw = rawPool.find(p => String(p.id) === String(cfg.rarityPickId));
+                if (pickRaw) poolAll = poolAll.concat([pickRaw]);
+            }
             const strict = solveCore(poolAll, cfg, true);
             if (strict && strict.ok) return strict;
             const loose = solveCore(poolAll, cfg, false);
@@ -1774,7 +2280,33 @@
             }
             // Beide gescheitert: die Meldung des LOCKEREN Versuchs ist die
             // aussagekräftigere (die Sperre war dort nicht die Ursache).
-            return loose || strict;
+            const result = loose || strict;
+            if (result && !result.ok && cfg.maxRatingEnabled && cfg.maxRating) {
+                // Live-Fall 16.08.: "Rarity-Vorgabe nicht erfüllbar" bei 43
+                // TOTW im Pool - ALLE lagen über dem aktiven Max-Rating.
+                // Ein Filter, der still die Vorgabe-Kandidaten frisst, macht
+                // die Meldung irreführend - deshalb steht die Ursache jetzt
+                // IN der Meldung, nicht nur als Warnung darunter.
+                try {
+                    const parts = [];
+                    const rcs = (cfg.applyRarity === false) ? [] : (cfg.rarityConstraints || []);
+                    for (const rc of rcs) {
+                        const pre = rawPool.filter(function (p) { return matchesRarity(p, rc); }).length;
+                        const post = poolAll.filter(function (p) { return matchesRarity(p, rc); }).length;
+                        if (pre > 0 && post === 0) {
+                            parts.push('alle ' + pre + ' Kandidaten für "' + (rc.label || 'Rarity') +
+                                '" liegen über Max-Rating ' + cfg.maxRating);
+                        }
+                    }
+                    if (parts.length) {
+                        result.reason = (result.reason || 'Nicht lösbar.') +
+                            ' Ursache: ' + parts.join('; ') + ' - Max-Rating-Filter lockern oder ausschalten.';
+                    }
+                } catch (e) {}
+                result.warnings = (result.warnings || []).concat(
+                    'Mit Max-Rating ' + cfg.maxRating + ' nicht lösbar - Filter lockern?');
+            }
+            return result;
         }
         function solveCore(poolAll, cfg, limitProtected) {
             // Warnungen: KEINE Dubletten. Vorher stand die gelockerte
@@ -1874,24 +2406,7 @@
             // raus - wer eine Karte sperrt, will sie behalten. Bewusst VOR
             // allem anderen, damit sie auch nicht als Vorgabe-Karte oder Anker
             // reserviert werden kann.
-            let lockedOut = 0;
-            if (cfg.lockedIds && cfg.lockedIds.length) {
-                const locked = new Set(cfg.lockedIds.map(String));
-                const before = poolAll.length;
-                // PaleTools sperrt den SPIELER, nicht die einzelne Karte:
-                // in lockedItems stehen kurze Zahlen (assetId/resourceId), keine
-                // 12-stelligen Item-IDs. Deshalb alle drei Spalten vergleichen.
-                poolAll = poolAll.filter(p => !(
-                    locked.has(String(p.id)) ||
-                    (p.assetId != null && locked.has(String(p.assetId))) ||
-                    (p.raw && p.raw.resourceId != null && locked.has(String(p.raw.resourceId))) ||
-                    (p.resourceId != null && locked.has(String(p.resourceId)))
-                ));
-                lockedOut = before - poolAll.length;
-                if (lockedOut) {
-                    warnings.push(lockedOut + ' gesperrte Karte(n) ausgeschlossen.');
-                }
-            }
+            poolAll = filterLockedCards(poolAll, cfg, warnings);
             // Bei gemischten Vorgaben ist das erlaubte Fenster NICHT
             // durchgehend (Bronze 0-64 + Gold 75-99 laesst Silber aus), darum
             // ein Praedikat statt eines Bereichs.
@@ -1900,7 +2415,13 @@
                 : ((p) => p.rating >= qLo && p.rating <= qHi);
             let pool = poolAll.filter(inQBand);
             if (cfg.specialOnlyFromStorage) {
-                pool = pool.filter(p => !(p.isSpecial && !p.isStorage));
+                // TOTW-AUSNAHME (Produktregel, Live-Fall 16.08.): "Verein-
+                // Specials NIE in SBCs - einzige Ausnahme: TOTW (rareflag 3)".
+                // Genau diese Ausnahme fehlte hier: der Filter warf Verein-TOTW
+                // mit raus, die Reservierung (reservationCandidates hat die
+                // Ausnahme korrekt) bekam den schon leergefilterten Pool und
+                // meldete "Rarity-Vorgabe nicht erfuellbar" trotz 43 TOTW.
+                pool = pool.filter(p => !(p.isSpecial && !p.isStorage && !isTotw(p)));
             }
             // Bei Bronze/Silber-Vorgaben NUR normale Karten: ein bronzenes
             // Special ist wertvoller als sein Rating, und für die Vorgabe
@@ -2041,6 +2562,337 @@
                     warnings.push('Gewählte Rarity-Karte nicht im Pool gefunden - Automatik greift.');
                 }
             }
+            // cmp/NEED/windowV werden hier (statt bei ihrer fachlichen Herkunft,
+            // der Rarity-Vorgaben-Reservierung) berechnet, weil sowohl die
+            // Spieler-Level- als auch die Rarity-Vorgaben-Reservierung
+            // (reserveWindowAware()/searchTeam(), Ticket #60/#64, LEARNINGS 41)
+            // sie brauchen, BEVOR ihre jeweilige Reservierungs-Schleife läuft -
+            // Spieler-Level kommt im Code vor Rarity. Beide Ausdrücke sind
+            // reine Funktionen von bereits bekannten Werten (N/target), eine
+            // einzige Deklaration statt zweier synchron zu haltender Kopien
+            // (SSOT).
+            const cmp = makeConsumeCmp();
+            const NEED = target ? (N * N * target - Math.floor(N / 2)) : null;
+            // windowV: reine Funktion von cfg.maxOvershoot/N, SSOT mit
+            // searchTeam()s frueherer lokaler Kopie - reserveWindowAware()
+            // braucht denselben Wert, um ueber ALLE Trials hinweg (nicht pro
+            // Trial einzeln) das global guenstigste Ergebnis IM Fenster zu waehlen.
+            const windowV = target ? Math.max(0, Math.round(
+                (cfg.maxOvershoot != null ? cfg.maxOvershoot : 0.10) * N * N)) : 0;
+            // Wird reserveWindowAware() bei der Spieler-Level- oder der
+            // Rarity-Vorgaben-Reservierung fuendig, haelt sie hier das ueber
+            // ALLE Kandidaten-Kombinationen ermittelte globale Minimum fest
+            // (Schritt 5 im jeweiligen Aufruf). Der FINALE Such-Aufruf am Ende
+            // dieser Funktion nutzt es als vMinFloor: die endgueltige
+            // Team-Zusammenstellung darf NICHT erneut ihr EIGENES (potenziell
+            // breiteres) Fenster um die fest reservierten Vorgabe-Karten herum
+            // entdecken - sonst waere die Reservierungs-Entscheidung fuer ein
+            // Fenster getroffen worden, das die spaetere Auffuellung gar nicht
+            // mehr einhaelt (live per Fuzzing gefunden, LEARNINGS 41). Laeuft
+            // danach noch eine WEITERE window-aware Reservierung (z.B. Rarity
+            // nach Spieler-Level), ueberschreibt deren eigenes, mit den dann
+            // schon fest reservierten Karten neu ermitteltes Minimum diesen
+            // Wert - das ist erwuenscht (praeziser, weil mit mehr Kontext
+            // berechnet). Bleibt null, wenn keine window-aware Reservierung
+            // stattfand - der finale Aufruf verhaelt sich dann exakt wie zuvor
+            // (Selbst-Entdeckung).
+            let reservationVMinFloor = null;
+            // ---- searchTeam(): DP-Suche, parametrisiert statt Closure -------
+            // Mathematisch UNVERAENDERT gegenueber der bisherigen runSearch()
+            // (bandFor/scanSt/Phase 1+2/Auswahl sind byte-identisch uebernommen,
+            // siehe LEARNINGS 41 fuer den Diff-Beleg) - nur reserved/avail kommen
+            // jetzt als Parameter statt als Closure ueber die (erst nach der
+            // gesamten Reservierung feststehenden) Aussen-Variablen, damit
+            // reserveWindowAware() dieselbe Suche fuer probeweise reservierte
+            // Kandidaten-Kombinationen aufrufen kann, BEVOR die eigentliche
+            // Reservierung feststeht (Schritt 4 im Lift-Plan).
+            // expDims: durchgereicht an buildDp()'s "exp"-Parameter (siehe
+            // dessen Docblock) - seit v4.62.0 an allen vier Call-Sites null.
+            function searchTeam(reservedArr, availArr, expDims, sharedBandCache, vMinFloor) {
+                const kLocal = N - reservedArr.length;
+                // Beim echten (finalen) Aufruf ist das bereits vorher geprueft
+                // (":avail.length < k" weiter oben); ein Trial-Aufruf aus
+                // reserveWindowAware() hat diese Pruefung nicht - eine zu
+                // knappe Kombination ist dort einfach "nicht loesbar", kein Fehler.
+                if (availArr.length < kLocal) return null;
+                const reservedSumLocal = reservedArr.reduce((s, p) => s + p.rating, 0);
+                const sortedAscLocal = availArr.slice().sort((a, b) => a.rating - b.rating);
+                let kCheapestLocal = 0;
+                for (let i = 0; i < kLocal; i++) kCheapestLocal += sortedAscLocal[i].rating;
+                const stLowLocal = reservedSumLocal + kCheapestLocal;
+                const allDescLocal = reservedArr.map(p => p.rating)
+                    .concat(availArr.map(p => p.rating))
+                    .sort((a, b) => b - a)
+                    .slice(0, N);
+                function quickUBLocal(st) {
+                    let best = N * st; // b = 0
+                    let hs = 0;
+                    for (let b = 1; b <= allDescLocal.length; b++) {
+                        hs += allDescLocal[b - 1];
+                        const v = N * st + N * hs - b * st;
+                        if (v > best) best = v;
+                    }
+                    return best;
+                }
+                // windowV ist bereits vor der plList/rcList-Schleife berechnet
+                // (SSOT, siehe dort) - eine einzige Deklaration statt zweier
+                // synchron zu haltender Kopien.
+                const bandCache = sharedBandCache || new Map();
+                function bandFor(st) {
+                    const rBoost = Math.floor(st / N) + 1;
+                    let band = bandCache.get(rBoost);
+                    if (!band) {
+                        const lowP = availArr.filter(p => p.rating < rBoost);
+                        const highP = availArr.filter(p => p.rating >= rBoost);
+                        const sMaxLow = Math.min(kLocal * Math.max(0, rBoost - 1), 1300);
+                        const sMaxHigh = Math.min(kLocal * 99, 1300);
+                        band = {
+                            rBoost: rBoost,
+                            dpLow: buildDp(lowP, kLocal, sMaxLow, costOf, expDims, cmp),
+                            dpHigh: buildDp(highP, kLocal, sMaxHigh, costOf, expDims, cmp)
+                        };
+                        bandCache.set(rBoost, band);
+                    }
+                    return band;
+                }
+                function scanSt(st, vCap, cb) {
+                    const band = bandFor(st);
+                    const S_target = st - reservedSumLocal;
+                    if (S_target < 0) return;
+                    let bRes = 0, HRes = 0;
+                    for (const p of reservedArr) {
+                        if (p.rating >= band.rBoost) { bRes++; HRes += p.rating; }
+                    }
+                    const budget = expDims ? expDims.budget : 0;
+                    for (let bA = 0; bA <= kLocal; bA++) {
+                        const b = bRes + bA;
+                        const base = N * st + N * HRes - b * st;
+                        const HAmin = Math.max(0, bA * band.rBoost,
+                            Math.ceil((NEED - base) / N - 1e-9));
+                        const HAcap = (vCap === Infinity)
+                            ? Infinity : Math.floor((vCap - base) / N + 1e-9);
+                        const HAmax = Math.min(band.dpHigh.S - 1, S_target, HAcap);
+                        for (let HA = HAmin; HA <= HAmax; HA++) {
+                            const sLow = S_target - HA;
+                            const V = base + N * HA;
+                            for (let eH = 0; eH <= budget; eH++) {
+                                const cH = band.dpHigh.cost(bA, eH, HA);
+                                if (cH === Infinity) continue;
+                                for (let eL = 0; eL + eH <= budget; eL++) {
+                                    const cL = band.dpLow.cost(kLocal - bA, eL, sLow);
+                                    if (cL === Infinity) continue;
+                                    cb(V, cH + cL, { st: st, bA: bA, HA: HA, eH: eH, eL: eL, sLow: sLow });
+                                    if (!expDims) break;
+                                }
+                                if (!expDims) break;
+                            }
+                        }
+                    }
+                }
+                const stHardCapLocal = stLowLocal + 900;
+                // vMinFloor (Ticket #60, LEARNINGS 41): reserveWindowAware()
+                // ruft searchTeam() in einem ZWEITEN Durchlauf mit einem von
+                // AUSSEN vorgegebenen Fenster-Boden (dem ueber ALLE Kombinationen
+                // ermittelten globalen Minimum) statt des selbst entdeckten
+                // vBound auf - eine Kombination, deren EIGENES Minimum hoeher
+                // liegt als das globale, darf sonst faelschlich ihr EIGENES (zu
+                // weites) Fenster ausnutzen und eine Karten-Wahl ausserhalb des
+                // tatsaechlich gueltigen, globalen Fensters zurueckliefern (live
+                // per Fuzzing gefunden). Der normale (finale) Aufruf unten
+                // uebergibt hier weiterhin nichts und verhaelt sich exakt wie
+                // zuvor (Phase 1 unveraendert).
+                let vMin;
+                if (vMinFloor != null) {
+                    vMin = vMinFloor;
+                } else {
+                    let vBound = -1;
+                    for (let st = stLowLocal; st <= stHardCapLocal && vBound < 0; st++) {
+                        if (quickUBLocal(st) < NEED) continue;
+                        let found = -1;
+                        scanSt(st, Infinity, function (V) {
+                            if (found < 0 || V < found) found = V;
+                        });
+                        if (found >= 0) vBound = found;
+                    }
+                    if (vBound < 0) return null;
+                    vMin = vBound;
+                }
+                const bestByV = new Map();
+                for (let st = stLowLocal; st <= stHardCapLocal; st++) {
+                    if (N * st > vMin + windowV) break;
+                    if (quickUBLocal(st) < NEED) continue;
+                    scanSt(st, vMin + windowV, function (V, cost, ref) {
+                        if (V < NEED) return;
+                        const cur = bestByV.get(V);
+                        if (!cur || cost < cur.cost - 1e-12) {
+                            bestByV.set(V, { cost: cost, ref: ref });
+                        }
+                        if (V < vMin) vMin = V;
+                    });
+                }
+                let chosen = null;
+                bestByV.forEach(function (cand, V) {
+                    if (V > vMin + windowV) return;
+                    const obj = cand.cost + (V - vMin) * 1e-4;
+                    if (!chosen || obj < chosen.obj - 1e-12) {
+                        chosen = { obj: obj, V: V, ref: cand.ref };
+                    }
+                });
+                if (!chosen) return null;
+                const band = bandFor(chosen.ref.st);
+                const high = band.dpHigh.reconstruct(chosen.ref.bA, chosen.ref.eH, chosen.ref.HA);
+                const low = band.dpLow.reconstruct(kLocal - chosen.ref.bA, chosen.ref.eL, chosen.ref.sLow);
+                return { team: reservedArr.concat(high, low), V: chosen.V, vMin: vMin };
+            }
+            // ---- reserveWindowAware() (Ticket #60/#64, LEARNINGS 41) ---------
+            // Generalisierte fensterbewusste Vorgaben-Reservierung: fuer eine
+            // Vorgabe MIT gesetztem target (die Aufrufer entscheiden das jeweils
+            // selbst) ersetzt sie die reine Kosten-Sortierung durch eine
+            // fensterbewusste Auswahl - probiert - bounded durch
+            // RARITY_WINDOW_TRIAL_CAP - ALLE moeglichen (Rating -> Anzahl)-
+            // Aufteilungen der `stillNeed` Vorgabe-Karten unter den vom Aufrufer
+            // gelieferten Kandidaten (`cands`, das Kandidaten-Praedikat lebt
+            // beim jeweiligen Aufrufer - Rarity und Spieler-Level filtern
+            // unterschiedliche Pools/Bedingungen) tatsaechlich durch dieselbe
+            // DP-Suche (searchTeam) und reserviert die Kombination mit dem
+            // kleinsten erreichten V (Tiebreak Kosten - CLAUDE.mds
+            // Regel-Hierarchie "Fenster > Kosten"). `describeCard(p)` liefert
+            // den warnings-Text pro reservierter Karte (Aufrufer-spezifisches
+            // Format). `canShareBandCache` (Aufrufer-berechnet, siehe dort)
+            // erlaubt Trials denselben Band-Cache/Avail-Pool zu teilen, wenn
+            // KEINER der Kandidaten je in "avail" auftauchen koennte. Reserviert
+            // NICHTS (Rueckgabe 0), wenn die Kombinatorik den Cap reisst oder
+            // keine Kombination ueberhaupt ein loesbares Team ergibt - der
+            // bestehende Kosten-Greedy beim Aufrufer greift dann unveraendert
+            // (additiver Fallback, kein zweiter Fehlerpfad).
+            function reserveWindowAware(stillNeed, cands, describeCard, canShareBandCache) {
+                if (stillNeed <= 0 || !cands.length) return 0;
+                // Schritt 2 (Lift-Plan): pro Rating nur die (bis zu stillNeed)
+                // guenstigsten Kandidaten behalten - verlustfrei, weil der
+                // V-Beitrag einer Karte ausschliesslich von ihrem Rating abhaengt
+                // (squadV) und costOf bei gleichem Rating eindeutig ordnet.
+                const byRating = new Map();
+                for (const p of cands) {
+                    if (!byRating.has(p.rating)) byRating.set(p.rating, []);
+                    byRating.get(p.rating).push(p);
+                }
+                const profiles = Array.from(byRating.keys()).sort((a, b) => a - b).map(function (r) {
+                    const list = byRating.get(r).sort((a, b) => (costOf(a) - costOf(b)) || reserveCmp(a, b));
+                    return { rating: r, cards: list.slice(0, Math.min(stillNeed, list.length)) };
+                });
+                // Schritt 3: Kombinatorik-Schranke. Zaehlt NUR, ob die Anzahl
+                // moeglicher Aufteilungen den Cap ueberschreitet - bricht dafuer
+                // frueh ab (kein Materialisieren von mehr als noetig fuer die
+                // Cap-Entscheidung selbst).
+                function countCombos(idx, remain, budget) {
+                    if (remain === 0) return 1;
+                    if (idx >= profiles.length) return 0;
+                    let total = 0;
+                    const maxTake = Math.min(remain, profiles[idx].cards.length);
+                    for (let take = 0; take <= maxTake; take++) {
+                        total += countCombos(idx + 1, remain - take, budget - total);
+                        if (total > budget) return total;
+                    }
+                    return total;
+                }
+                const comboCount = countCombos(0, stillNeed, RARITY_WINDOW_TRIAL_CAP);
+                if (comboCount === 0) return 0;
+                if (comboCount > RARITY_WINDOW_TRIAL_CAP) {
+                    warnings.push('Fensterbewusste Vorgaben-Wahl uebersprungen (zu viele Kandidaten) - Kosten-Reihenfolge verwendet.');
+                    return 0;
+                }
+                // Geteilter Band-Cache ist nur sicher, wenn KEINER der Kandidaten
+                // je in "avail" landen koennte - sonst haengt avail von der
+                // konkreten Kombination ab (loser Durchlauf, limitProtected===false,
+                // wo ungenutzte geschuetzte Karten als Fueller bleiben duerfen).
+                // Der Aufrufer berechnet diese Bedingung (kennt seine eigenen
+                // Kandidaten), reserveWindowAware() selbst bleibt neutral.
+                const sharedBandCache = canShareBandCache ? new Map() : null;
+                const sharedAvail = canShareBandCache
+                    ? pool.filter(function (p) { return !used.has(p.id) && !isProtectedRarity(p); })
+                    : null;
+                // Schritt 5 (Lift-Plan): ERST alle Trials sammeln, DANN ueber
+                // ALLE hinweg das kleinste erreichte V (globalVmin) bestimmen -
+                // ein einzelner Trial darf NICHT vorschnell nur gegen den bis
+                // dahin kleinsten V-Wert tiebreaken, sonst gewinnt ein Trial mit
+                // minimal kleinerem V eine teurere Kombination, obwohl eine
+                // andere Kombination NUR wenig hoeher liegt (noch im selben
+                // Fenster) aber deutlich billiger ist - CLAUDE.mds Regel-Hierarchie
+                // "Fenster > Kosten, Kosten entscheiden IM Fenster" gilt fuer die
+                // Reservierungs-ENTSCHEIDUNG selbst, nicht nur fuer die Auffuellung.
+                // Pass 1: pro Kombination NUR das rohe (nicht fenster-
+                // optimierte) Minimum vMin ermitteln (searchTeam() ohne
+                // vMinFloor - Phase 1 unveraendert). searchTeam() optimiert
+                // sonst intern gegen das EIGENE Fenster [vMin, vMin+windowV]
+                // dieser einen Kombination - das kann eine Wahl ausserhalb des
+                // TATSAECHLICHEN, ueber ALLE Kombinationen gemeinsamen Fensters
+                // liefern (live per Fuzzing gefunden), darum Pass 2 unten.
+                function trialRawVMin(comboCards) {
+                    for (const p of comboCards) reserve(p);
+                    const trialAvail = canShareBandCache ? sharedAvail :
+                        pool.filter(function (p) { return !used.has(p.id) && (!limitProtected || !isProtectedRarity(p)); });
+                    const trialResult = searchTeam(reserved, trialAvail, null, canShareBandCache ? sharedBandCache : null);
+                    for (const p of comboCards) {
+                        used.delete(p.id);
+                        if (p.assetId != null && p.assetId !== 0) usedAssets.delete(String(p.assetId));
+                        reserved.pop();
+                    }
+                    return trialResult ? trialResult.vMin : null;
+                }
+                const combos = [];
+                (function generate(idx, remain, chosen) {
+                    if (remain === 0) { combos.push(chosen.slice()); return; }
+                    if (idx >= profiles.length) return;
+                    const maxTake = Math.min(remain, profiles[idx].cards.length);
+                    for (let take = 0; take <= maxTake; take++) {
+                        for (let i = 0; i < take; i++) chosen.push(profiles[idx].cards[i]);
+                        generate(idx + 1, remain - take, chosen);
+                        chosen.length -= take;
+                    }
+                })(0, stillNeed, []);
+                const rawVMins = combos.map(function (c) { return { combo: c, vMin: trialRawVMin(c) }; })
+                    .filter(function (t) { return t.vMin != null; });
+                if (!rawVMins.length) return 0;
+                let globalVmin = Infinity;
+                for (const t of rawVMins) if (t.vMin < globalVmin) globalVmin = t.vMin;
+                // Pass 2: nur fuer Kombinationen, deren eigenes Minimum
+                // ueberhaupt innerhalb des GLOBALEN Fensters liegen kann,
+                // searchTeam() ERNEUT aufrufen - diesmal mit vMinFloor =
+                // globalVmin, damit die kosten-optimale Wahl INNERHALB des
+                // gemeinsamen (nicht des eigenen) Fensters ermittelt wird.
+                let best = null;
+                for (const t of rawVMins) {
+                    if (t.vMin > globalVmin + windowV) continue;
+                    for (const p of t.combo) reserve(p);
+                    const trialAvail = canShareBandCache ? sharedAvail :
+                        pool.filter(function (p) { return !used.has(p.id) && (!limitProtected || !isProtectedRarity(p)); });
+                    const refined = searchTeam(reserved, trialAvail, null,
+                        canShareBandCache ? sharedBandCache : null, globalVmin);
+                    for (const p of t.combo) {
+                        used.delete(p.id);
+                        if (p.assetId != null && p.assetId !== 0) usedAssets.delete(String(p.assetId));
+                        reserved.pop();
+                    }
+                    if (!refined) continue;
+                    let cost = 0;
+                    for (const p of refined.team) cost += costOf(p);
+                    if (!best || cost < best.cost - 1e-9 ||
+                        (Math.abs(cost - best.cost) <= 1e-9 && refined.V < best.V)) {
+                        best = { V: refined.V, cost: cost, combo: t.combo };
+                    }
+                }
+                if (!best) return 0;
+                for (const p of best.combo) {
+                    reserve(p);
+                    warnings.push(describeCard(p));
+                }
+                // Der finale Such-Aufruf (Ende dieser Funktion) muss dasselbe
+                // Fenster respektieren, das diese Wahl gerade erst begruendet
+                // hat - sonst entdeckt er fuer die jetzt FEST reservierten
+                // Karten sein EIGENES (potenziell breiteres) Fenster erneut.
+                reservationVMinFloor = globalVmin;
+                return best.combo.length;
+            }
             // ---- Gemischte Qualitaets-Vorgaben (Bronze + Silber) ----------
             // Pro Stufe die guenstigsten Karten reservieren, in derselben
             // Rangfolge wie ueberall ohne Ziel-Rating: Storage vor Verein, dann
@@ -2091,9 +2943,22 @@
             if (plBoosted) {
                 warnings.push('Ohne Team-Rating: Min-OVR-Vorgabe auf alle ' + N + ' Slots angewendet.');
             }
+            // Fensterbewusste Wahl NUR mit gesetztem target (dasselbe Muster
+            // wie bei der Rarity-Vorgabe weiter unten) - ohne target bleibt der
+            // heutige, dafuer bereits korrekte Kosten-Sortier-Weg unveraendert
+            // (kein maxOvershoot-Fenster ohne Ziel-Rating).
+            function reservePlayerLevelForConstraint(pl, stillNeed) {
+                const cands = pool.filter(function (p) { return freeCard(p) && p.rating >= pl.minRating; });
+                return reserveWindowAware(stillNeed, cands, function (p) {
+                    return 'Vorgabe ' + pl.minRating + '+: ' + p.name + ' (' + p.rating + ') reserviert.';
+                }, false);
+            }
             for (const pl of plList) {
                 const needCount = pl.count || 1;
                 let have = reserved.filter(p => p.rating >= pl.minRating).length;
+                if (target && have < needCount) {
+                    have += reservePlayerLevelForConstraint(pl, needCount - have);
+                }
                 while (have < needCount) {
                     const cand = pool
                         .filter(p => freeCard(p) && p.rating >= pl.minRating)
@@ -2138,10 +3003,38 @@
                     : (p.rating >= qResLo && p.rating <= qResHi)) &&
                 // Bronze/Silber: keine Specials, auch nicht als Vorgabe-Karte.
                 !(qualityLow && p.isSpecial);
+            // cmp/NEED/windowV/reservationVMinFloor/searchTeam()/
+            // reserveWindowAware() sind bereits VOR der Spieler-Level-Schleife
+            // deklariert (SSOT, siehe dort) - beide Vorgaben-Arten teilen sich
+            // dieselbe fensterbewusste Reservierungs-Maschinerie.
+            function reserveRarityForConstraint(rc, stillNeed) {
+                const cands = reservationCandidates(poolAll, rc, cfg,
+                    { freeCard: freeCard, inQualityBand: inQualityBand, lo: minRating, hi: 99 });
+                // Geteilter Band-Cache ist nur sicher, wenn KEINER der Kandidaten
+                // je in "avail" landen koennte (siehe reserveWindowAware()) -
+                // bei einer Rarity-Vorgabe trifft das zu, wenn ALLE Kandidaten
+                // selbst geschuetzte Rarity sind (dann schliesst `limitProtected`
+                // sie ohnehin komplett aus avail aus, unabhaengig vom Trial).
+                const canShareBandCache = limitProtected && cands.every(isProtectedRarity);
+                return reserveWindowAware(stillNeed, cands, function (p) {
+                    return 'Vorgabe ' + (rc.label || 'Rarity') + ': ' + p.name + ' (' + p.rating +
+                        (p.isSpecial ? ', Special' : '') + ') reserviert.';
+                }, canShareBandCache);
+            }
             for (const rc of rcList) {
                 const needCount = rc.count || 1;
                 let have = reserved.filter(p => matchesRarity(p, rc) ||
                     (forcedPickId != null && p.id === forcedPickId)).length;
+                // Fensterbewusste Wahl NUR mit gesetztem target (Schritt 1,
+                // Lift-Plan) - der !target-Zweig direkt darunter bleibt beim
+                // heutigen, dafuer bereits korrekten makeFillCmp-Weg (LEARNINGS
+                // 15/17: dort gilt "niedrigstes Rating zuerst", kein
+                // maxOvershoot-Fenster). Erfolgreiche Reservierung hebt `have`
+                // sofort auf `needCount` - die anschliessende while-Schleife
+                // laeuft dann gar nicht mehr an (0 Iterationen bei Erfolg).
+                if (target && have < needCount) {
+                    have += reserveRarityForConstraint(rc, needCount - have);
+                }
                 while (have < needCount) {
                     // Quellen-Regel für Vorgaben (Rasmus):
                     //  - Storage: jede passende Karte (Special/TOTW) erlaubt
@@ -2156,20 +3049,16 @@
                     const rareCap = (!target && isRareGroup && cfg.maxRareRating > 0)
                         ? cfg.maxRareRating : 99;
                     const lowMin = (!target && isRareGroup) ? 0 : minRating;
-                    let cands = poolAll
-                        .filter(p => p.rating >= lowMin && p.rating <= rareCap && freeCard(p) &&
-                            inQualityBand(p) && matchesRarity(p, rc) &&
-                            (!cfg.specialOnlyFromStorage || p.isStorage || !p.isSpecial || isTotw(p)));
+                    let cands = reservationCandidates(poolAll, rc, cfg,
+                        { freeCard: freeCard, inQualityBand: inQualityBand, lo: lowMin, hi: rareCap });
                     // Die Rating-Obergrenze ist eine PRAEFERENZ (Panel) und darf
                     // fallen; das Qualitaets-Fenster ist eine SBC-Vorgabe und
                     // bleibt in jedem Fall stehen.
                     if (!cands.length && rareCap < 99) {
                         warnings.push('Keine Rare-Karte bis Rating ' + rareCap +
                             ' mehr frei - Grenze wird fuer diese SBC gelockert.');
-                        cands = poolAll
-                            .filter(p => p.rating >= lowMin && freeCard(p) &&
-                                inQualityBand(p) && matchesRarity(p, rc) &&
-                                (!cfg.specialOnlyFromStorage || p.isStorage || !p.isSpecial || isTotw(p)));
+                        cands = reservationCandidates(poolAll, rc, cfg,
+                            { freeCard: freeCard, inQualityBand: inQualityBand, lo: lowMin, hi: 99 });
                     }
                     const cand = cands.sort((!target && isRareGroup)
                         ? makeFillCmp(costOf, reserveCmp)
@@ -2205,7 +3094,8 @@
             if (avail.length < k) {
                 return { ok: false, reason: 'Nicht genug passende Spieler im Pool (' + (avail.length + reserved.length) + ' < ' + N + '). Erst "Spieler laden" ausführen oder Filter lockern.', warnings: warnings };
             }
-            const cmp = makeConsumeCmp();
+            // cmp ist bereits vor der rcList-Schleife berechnet (siehe dort) -
+            // eine einzige Deklaration statt zweier synchron zu haltender Kopien.
             // Pool-Transparenz: woraus wurde überhaupt gewählt?
             const poolInfo = (function () {
                 if (!pool.length) return null;
@@ -2353,160 +3243,26 @@
                 }
                 return finishTeam(reserved.concat(fillers));
             }
-            // ---- Max-teure-Beschränkung ----
-            let exp = null;
-            if (cfg.maxExpensiveEnabled) {
-                const th = cfg.expensiveThreshold || 99;
-                const budget = (cfg.maxExpensiveCount || 0) - reserved.filter(p => p.rating >= th).length;
-                if (budget < 0) {
-                    warnings.push('Max-teure-Vorgabe ist schon durch reservierte Spieler überschritten - Beschränkung ignoriert.');
-                } else {
-                    exp = { th: th, budget: budget };
-                }
-            }
-            const NEED = N * N * target - Math.floor(N / 2);
-            const sortedAsc = avail.slice().sort((a, b) => a.rating - b.rating);
-            let kCheapest = 0;
-            for (let i = 0; i < k; i++) kCheapest += sortedAsc[i].rating;
-            const stLow = reservedSum + kCheapest;
-            // Für die Quick-Obergrenze: höchste Ratings (reserviert + verfügbar)
+            // NEED ist bereits vor der rcList-Schleife berechnet (siehe dort) -
+            // eine einzige Deklaration statt zweier synchron zu haltender
+            // Kopien (SSOT). Für die Quick-Obergrenze: höchste Ratings
+            // (reserviert + verfügbar) - separat von searchTeam()s eigener,
+            // rein lokaler Kopie, weil die Suchfenster-Diagnose unten sie
+            // AUSSERHALB von searchTeam() braucht, nachdem diese schon null
+            // geliefert hat.
             const allDesc = reserved.map(p => p.rating)
                 .concat(avail.map(p => p.rating))
                 .sort((a, b) => b - a)
                 .slice(0, N);
-            function quickUB(st) {
-                let best = N * st; // b = 0
-                let hs = 0;
-                for (let b = 1; b <= allDesc.length; b++) {
-                    hs += allDesc[b - 1];
-                    const v = N * st + N * hs - b * st;
-                    if (v > best) best = v;
-                }
-                return best;
-            }
-            function runSearch(expDims) {
-                // Fenster in V-Einheiten: 1 Einheit = 1/121 Rating-Dezimal
-                // (bei N=11). Innerhalb des Fensters über dem V-Minimum
-                // entscheiden die KARTEN-Kosten.
-                const windowV = Math.max(0, Math.round(
-                    (cfg.maxOvershoot != null ? cfg.maxOvershoot : 0.10) * N * N));
-                // Band-Cache: DPs hängen nur von der Booster-Grenze ab
-                const bandCache = new Map();
-                function bandFor(st) {
-                    const rBoost = Math.floor(st / N) + 1;
-                    let band = bandCache.get(rBoost);
-                    if (!band) {
-                        const lowP = avail.filter(p => p.rating < rBoost);
-                        const highP = avail.filter(p => p.rating >= rBoost);
-                        // 1300 als Band-Summen-Deckel bindet für die aktuell einzige
-                        // Aufrufer-Konfiguration nie: Formationsgröße ist N<=11, k<=N,
-                        // also k*99<=1089<1300 selbst im Extremfall (alle Boosterkarten
-                        // Rating 99). Reine Sicherheitsobergrenze gegen eine künftig
-                        // größere Formation, kein aktuell wirksames Limit.
-                        const sMaxLow = Math.min(k * Math.max(0, rBoost - 1), 1300);
-                        const sMaxHigh = Math.min(k * 99, 1300);
-                        band = {
-                            rBoost: rBoost,
-                            dpLow: buildDp(lowP, k, sMaxLow, costOf, expDims, cmp),
-                            dpHigh: buildDp(highP, k, sMaxHigh, costOf, expDims, cmp)
-                        };
-                        bandCache.set(rBoost, band);
-                    }
-                    return band;
-                }
-                // Alle (Booster-Anzahl, Booster-Summe)-Kombos einer Gesamtsumme
-                // durchgehen; cb(V, kosten, ref) für jede machbare Kombination.
-                // V = N*(st + H) - b*st = N² * exaktes Rating.
-                function scanSt(st, vCap, cb) {
-                    const band = bandFor(st);
-                    const S_target = st - reservedSum;
-                    if (S_target < 0) return;
-                    let bRes = 0, HRes = 0;
-                    for (const p of reserved) {
-                        if (p.rating >= band.rBoost) { bRes++; HRes += p.rating; }
-                    }
-                    const budget = expDims ? expDims.budget : 0;
-                    for (let bA = 0; bA <= k; bA++) {
-                        const b = bRes + bA;
-                        const base = N * st + N * HRes - b * st;
-                        // NEED <= V = base + N*HA <= vCap
-                        const HAmin = Math.max(0, bA * band.rBoost,
-                            Math.ceil((NEED - base) / N - 1e-9));
-                        const HAcap = (vCap === Infinity)
-                            ? Infinity : Math.floor((vCap - base) / N + 1e-9);
-                        const HAmax = Math.min(band.dpHigh.S - 1, S_target, HAcap);
-                        for (let HA = HAmin; HA <= HAmax; HA++) {
-                            const sLow = S_target - HA;
-                            const V = base + N * HA;
-                            for (let eH = 0; eH <= budget; eH++) {
-                                const cH = band.dpHigh.cost(bA, eH, HA);
-                                if (cH === Infinity) continue;
-                                for (let eL = 0; eL + eH <= budget; eL++) {
-                                    const cL = band.dpLow.cost(k - bA, eL, sLow);
-                                    if (cL === Infinity) continue;
-                                    cb(V, cH + cL, { st: st, bA: bA, HA: HA, eH: eH, eL: eL, sLow: sLow });
-                                    if (!expDims) break;
-                                }
-                                if (!expDims) break;
-                            }
-                        }
-                    }
-                }
-                // Phase 1: erste machbare Lösung -> obere Schranke für V
-                // 900 als Suchfenster über stLow: die reale Summenspanne bei N<=11
-                // und dem üblichen Gold-Rating-Band 75-99 ist höchstens
-                // 11 * (99-75) = 264 - weit innerhalb von 900. Wird stHardCap
-                // trotzdem je erreicht, ohne dass Phase 1 eine Lösung fand,
-                // unterscheidet die Prüfung unten ("internes Suchfenster
-                // ausgeschöpft" vs. "Ziel rechnerisch unerreichbar"), statt beide
-                // Fälle in derselben Meldung zu verstecken.
-                const stHardCap = stLow + 900;
-                let vBound = -1;
-                for (let st = stLow; st <= stHardCap && vBound < 0; st++) {
-                    if (quickUB(st) < NEED) continue;
-                    let found = -1;
-                    scanSt(st, Infinity, function (V) {
-                        if (found < 0 || V < found) found = V;
-                    });
-                    if (found >= 0) vBound = found;
-                }
-                if (vBound < 0) return null;
-                // Phase 2: alle relevanten Summen scannen (V >= N*st begrenzt
-                // die Summe nach oben); beste Kosten je V sammeln.
-                let vMin = vBound;
-                const bestByV = new Map();
-                for (let st = stLow; st <= stHardCap; st++) {
-                    if (N * st > vMin + windowV) break;
-                    if (quickUB(st) < NEED) continue;
-                    scanSt(st, vMin + windowV, function (V, cost, ref) {
-                        if (V < NEED) return;
-                        const cur = bestByV.get(V);
-                        if (!cur || cost < cur.cost - 1e-12) {
-                            bestByV.set(V, { cost: cost, ref: ref });
-                        }
-                        if (V < vMin) vMin = V;
-                    });
-                }
-                // Auswahl: minimale Kosten im Fenster [vMin, vMin+windowV];
-                // bei (nahezu) gleichen Kosten das kleinere V (näher am Ziel).
-                let chosen = null;
-                bestByV.forEach(function (cand, V) {
-                    if (V > vMin + windowV) return;
-                    const obj = cand.cost + (V - vMin) * 1e-4;
-                    if (!chosen || obj < chosen.obj - 1e-12) {
-                        chosen = { obj: obj, V: V, ref: cand.ref };
-                    }
-                });
-                if (!chosen) return null;
-                const band = bandFor(chosen.ref.st);
-                const high = band.dpHigh.reconstruct(chosen.ref.bA, chosen.ref.eH, chosen.ref.HA);
-                const low = band.dpLow.reconstruct(k - chosen.ref.bA, chosen.ref.eL, chosen.ref.sLow);
-                return { team: reserved.concat(high, low), V: chosen.V, vMin: vMin };
-            }
-            let result = runSearch(exp);
-            if (!result && exp) {
-                result = runSearch(null);
-                if (result) warnings.push('Max. teure Spieler (' + cfg.maxExpensiveCount + ' ab ' + exp.th + '+) ist mit diesem Pool nicht einhaltbar - Beschränkung gelockert.');
+            let result = searchTeam(reserved, avail, null, null, reservationVMinFloor);
+            // Verteidigungslinie (sollte laut Beweis in reserveWindowAware()
+            // nie greifen, siehe LEARNINGS 41): war reservationVMinFloor gesetzt
+            // und liefert die Suche DAMIT dennoch nichts, lieber ohne Floor
+            // erneut suchen (mit Warnung) als eine loesbare SBC faelschlich
+            // abzulehnen.
+            if (!result && reservationVMinFloor != null) {
+                result = searchTeam(reserved, avail, null, null, null);
+                if (result) warnings.push('Internes Fenster der Vorgaben-Wahl passte nicht zur finalen Zusammenstellung - ohne Fenster-Vorgabe erneut gesucht. Bitte Diagnose schicken.');
             }
             if (!result) {
                 // Unterscheidung "SBC mit diesem Pool tatsächlich unlösbar" von
@@ -2556,6 +3312,48 @@
                 usedIds: Array.from(usedIds)
             };
         }
+        /**
+         * Panel-Anzeige "N verfügbar" neben dem Pool (Ticket #68): pro
+         * erkannter Rarity-Vorgabe, wie viele Karten sie JETZT erfüllen
+         * könnten - über dieselbe Eligibility wie die echte Reservierung
+         * (reservationCandidates(), KEINE Zweitlogik). Max-Rating-Filter und
+         * Locks laufen als derselbe Vorfilter wie am solve()-Eingang
+         * (applyMaxRatingFilter/filterLockedCards), damit die Anzeige nie
+         * Karten mitzählt, die eine echte Reservierung gar nicht sehen würde.
+         * Reine Funktion (kein STATE-Zugriff) - direkt per SolverCore
+         * testbar, ohne den Panel-DOM zu stubben.
+         */
+        function computeRarityAvailability(poolAll, cfg, rarityConstraints) {
+            let pool = applyMaxRatingFilter(poolAll, cfg);
+            pool = filterLockedCards(pool, cfg);
+            function tally(cands) {
+                return {
+                    available: cands.length,
+                    totwClub: cands.filter(function (p) { return isTotw(p) && !p.isStorage; }).length,
+                    totwStorage: cands.filter(function (p) { return isTotw(p) && p.isStorage; }).length,
+                    specialsStorage: cands.filter(function (p) {
+                        return p.isSpecial && p.isStorage && !isTotw(p);
+                    }).length
+                };
+            }
+            const perConstraint = (rarityConstraints || []).map(function (rc) {
+                const t = tally(reservationCandidates(pool, rc, cfg));
+                t.constraint = rc;
+                t.needed = rc.count || 1;
+                return t;
+            });
+            // Gruppe-83-Dauerzeile (TOTW/TOTS/FOF/FUTTIES), unabhaengig von
+            // einer aktiven Vorgabe - Rasmus' Ausgangsfrage ("wie viele TOTW +
+            // Storage-Specials habe ich noch"). {groupId:83} ist dieselbe
+            // Vorgabe-Form wie eine von EA erkannte Gruppe-83-Vorgabe -
+            // reservationCandidates() braucht keine Sonderbehandlung dafuer.
+            const g83 = tally(reservationCandidates(pool, { groupId: 83 }, cfg));
+            return {
+                perConstraint: perConstraint,
+                totw: g83.totwClub + g83.totwStorage,
+                specialsStorage: g83.specialsStorage
+            };
+        }
         return {
             solve: solve,
             planBatch: planBatch,
@@ -2564,7 +3362,9 @@
             squadV: squadV,
             parseRatingCosts: parseRatingCosts,
             DEFAULT_RATING_COST_SPEC: DEFAULT_RATING_COST_SPEC,
-            makeCostOf: makeCostOf
+            makeCostOf: makeCostOf,
+            reservationCandidates: reservationCandidates,
+            computeRarityAvailability: computeRarityAvailability
         };
     })();
     // [SOLVER-END]
@@ -2728,7 +3528,66 @@
             throw new Error('saveChallenge abgelehnt (Status ' + (resp && resp.status) + ').');
         return true;
     }
-    async function submitToSbc(result, _retried) {
+    /**
+     * Meldung nach 404/475, wenn KEINE frische Instanz eindeutig gefunden wurde.
+     * candidateCount unterscheidet zwei Live-Faelle (v4.61.0-Report "84+ TOTW
+     * Upgrade", Runde 9/10): 0 Kandidaten heisst EA bietet die SBC ueberhaupt
+     * nicht mehr an (Limit erreicht oder Mitternachts-Ablauf) - "schliessen und
+     * neu oeffnen" wuerde dort nichts bringen. null (Abruf der frischen Liste
+     * ist fehlgeschlagen, Zaehler unbekannt) faellt konservativ auf denselben
+     * Rat wie >=1 Kandidaten zurueck.
+     */
+    function staleInstanceMessage(msg, candidateCount, batchProgress, nodeState, quotaNote) {
+        // ZUERST der Zustand UNSERER Instanz. Live (v4.72.0-Report, setId 1356)
+        // war candidateCount 0 - aber nicht, weil EA die SBC nicht mehr anbot,
+        // sondern weil die EINE Challenge im Set genau unsere war und noch
+        // laeuft:  nodeState = {status: "IN_PROGRESS", repeatable: true,
+        // timesCompleted: 609}. Die Meldung "Limit erreicht oder abgelaufen"
+        // war damit schlicht falsch. Ein 404/475 auf eine Challenge, die EA
+        // noch als offen fuehrt, hat eine ANDERE Ursache.
+        const ns = nodeState || null;
+        const stillOpen = ns && ns.status != null &&
+            !/COMPLETE|CLOSED|EXPIRED/i.test(String(ns.status));
+        if (stillOpen) {
+            // KEIN Kontingent-Verdacht mehr (war v4.73.0 und ist widerlegt):
+            // Rasmus konnte nach einem APP-NEUSTART sofort wieder abgeben. Ein
+            // Softban durch EAs Limit sperrt mindestens eine Stunde, teils den
+            // ganzen Tag - ein Neustart hebt ihn nicht auf. Es ist also
+            // Zustand im Client, nicht das Kontingent.
+            const q = '';
+            return 'EA kennt diese Challenge noch (Status ' + ns.status +
+                (ns.repeatable ? ', wiederholbar' : '') + '), das Eintragen wurde aber mit ' +
+                msg.replace(/^.*?((?:404|475)).*$/, '$1') + ' abgelehnt. Das ist NICHT ' +
+                'die verbrauchte Instanz. Bitte die SBC im Spiel einmal schliessen und neu ' +
+                'oeffnen; bleibt es dabei, Diagnose schicken (Feld staleRecover)' + q +
+                (batchProgress
+                    ? ' — ' + batchProgress.done + ' von ' + batchProgress.total + ' geschafft.'
+                    : '.');
+        }
+        if (candidateCount === 0) {
+            return 'Keine weitere Wiederholung verfügbar (Limit erreicht oder abgelaufen)' +
+                (batchProgress
+                    ? ' — ' + batchProgress.done + ' von ' + batchProgress.total + ' geschafft.'
+                    : '.');
+        }
+        return 'Die SBC-Instanz ist veraltet (Status aus ' + msg + ') und ' +
+            'liess sich nicht eindeutig ersetzen. Wiederholbare SBCs bekommen pro ' +
+            'Durchlauf eine neue ID - bitte die SBC im Spiel einmal schliessen und ' +
+            'neu öffnen, dann erneut optimieren.';
+    }
+    // Stichprobe fuer das SBC-Kontingent - absichtlich NUR an zwei Stellen
+    // (Spieler laden, nach dem Eintragen), damit kein zusaetzlicher Request-Takt
+    // entsteht (LEARNINGS 7: Rate-Limits sind hier real).
+    async function quotaSampleQuiet() {
+        try { await quotaSample(); } catch (e) {}
+        try {
+            if (ui.quota) {
+                const qt = quotaText(quotaUsage());
+                ui.quota.textContent = qt || 'noch keine Messung';
+            }
+        } catch (e) {}
+    }
+    async function submitToSbc(result, _retried, batchProgress) {
         if (!result || !result.players || result.players.length === 0)
             throw new Error('Kein Ergebnis zum Eintragen.');
         const need = result.players.length;
@@ -2738,19 +3597,19 @@
         try {
             await submitViaApp(result);
             const c0 = await verifySquadCount(result);
-            if (c0 >= need) { STATE.diag.submitVia = 'app'; return { confirmed: c0, via: 'app' }; }
+            if (c0 >= need) { STATE.diag.submitVia = 'app'; quotaSampleQuiet(); return { confirmed: c0, via: 'app' }; }
         } catch (e) { lastErr = e; warn('App-Eintrag meldete Fehler:', e.message); diagError('submitViaApp: ' + (e.message || e)); }
         // Weg A: HTTP-PUT im exakt mitgeschnittenen App-Format.
         try { await submitViaHttp(result); }
         catch (e) { lastErr = e; warn('HTTP-Eintrag meldete Fehler:', e.message); diagError('submitViaHttp: ' + (e.message || e)); }
         // Server fragen: sind die Spieler drin? (unabhängig vom PUT-Status)
         let confirmed = await verifySquadCount(result);
-        if (confirmed >= need) { STATE.diag.submitVia = 'http'; return { confirmed: confirmed, via: 'http' }; }
+        if (confirmed >= need) { STATE.diag.submitVia = 'http'; quotaSampleQuiet(); return { confirmed: confirmed, via: 'http' }; }
         // Weg B: alter Services-Weg (Entity-Squad + saveChallenge).
         try { await submitViaServices(result); }
         catch (e) { lastErr = e; warn('Service-Eintrag meldete Fehler:', e.message); diagError('submitViaServices: ' + (e.message || e)); }
         confirmed = await verifySquadCount(result);
-        if (confirmed >= need) { STATE.diag.submitVia = 'services'; return { confirmed: confirmed, via: 'services' }; }
+        if (confirmed >= need) { STATE.diag.submitVia = 'services'; quotaSampleQuiet(); return { confirmed: confirmed, via: 'services' }; }
         // Nichts hat gegriffen. 404/475 haben eine bekannte Ursache:
         // WIEDERHOLBARE SBCs bekommen pro Durchlauf eine NEUE challengeId.
         // Live gesehen: dieselbe SBC lief unter 3829, dann 3800, dann 3771 -
@@ -2770,13 +3629,36 @@
                     log('SBC-Instanz war veraltet - weiter mit frischer ID ' + fresh + '.');
                     setCurrentChallenge(fresh);
                     applyFromSetChallenges();
-                    return await submitToSbc(result, true);
+                    return await submitToSbc(result, true, batchProgress);
+                }
+                // Keine andere Instanz, aber unsere laeuft laut EA noch
+                // (status IN_PROGRESS)? Dann ist es genau der Fall, den ein
+                // APP-NEUSTART behebt - und der Neustart erneuert vor allem die
+                // Session. Also einmal die Session erneuern und nachlegen,
+                // statt Rasmus die App neu starten zu lassen.
+                const sr0 = (STATE.diag.staleRecover &&
+                             STATE.diag.staleRecover.setId === STATE.sbc.setId)
+                    ? STATE.diag.staleRecover : null;
+                const ns0 = sr0 ? sr0.nodeState : null;
+                if (ns0 && ns0.status != null &&
+                    !/COMPLETE|CLOSED|EXPIRED/i.test(String(ns0.status))) {
+                    log('Instanz laeuft laut EA noch (' + ns0.status +
+                        ') - Session erneuern und einmal nachlegen.');
+                    STATE.diag.staleSessionRetry = (STATE.diag.staleSessionRetry || 0) + 1;
+                    await nudgeSession();
+                    await refreshChallengeCache();
+                    return await submitToSbc(result, true, batchProgress);
                 }
             }
-            throw new Error('Die SBC-Instanz ist veraltet (Status aus ' + msg + ') und ' +
-                'liess sich nicht eindeutig ersetzen. Wiederholbare SBCs bekommen pro ' +
-                'Durchlauf eine neue ID - bitte die SBC im Spiel einmal schliessen und ' +
-                'neu öffnen, dann erneut optimieren.');
+            // setId-Abgleich, weil resolveFreshChallengeId() bei setId==null
+            // oder fehlgeschlagenem Abruf FRUEH zurueckkehrt, OHNE staleRecover
+            // zu schreiben - sonst wuerde hier ein veralteter Stand einer
+            // frueheren, andersartigen SBC faelschlich als "0 Kandidaten" gelesen.
+            const sr = (STATE.diag.staleRecover && STATE.diag.staleRecover.setId === STATE.sbc.setId)
+                ? STATE.diag.staleRecover : null;
+            const candidateCount = sr ? sr.candidateCount : null;
+            throw new Error(staleInstanceMessage(msg, candidateCount, batchProgress,
+                sr ? sr.nodeState : null, quotaHint()));
         }
         // 403 heisst NICHT "veraltet", sondern "EA nimmt das so nicht an" -
         // meist eine Vorgabe, die der Solver nicht abdeckt (live: reqDump mit
@@ -3054,6 +3936,7 @@
             pointer-events: none; display: block;
         }
         #sbc-opt-fab.sbc-opt-hidden { display: none; }
+        #sbc-opt-packsection.sbc-opt-hidden { display: none; }
         /* Button in der SBC-Aktionsleiste (.sbc-button-container - dort stehen
            "Use Squad Builder" / "Clear Squad"). Die Klassen eines echten
            Nachbar-Buttons werden zur Laufzeit kopiert, hier nur das Nötige
@@ -3089,21 +3972,31 @@
         }
         .sbc-opt-body { padding: 14px 16px; }
         #sbc-opt-advanced { margin: 4px 0 10px; }
-        #sbc-opt-advanced summary {
+        /* Gemeinsame Aufklapp-Optik fuer "Erweiterte Einstellungen" UND die
+           Batch-Team-Details (Ticket #73) - eine Stelle statt zweier
+           synchron zu haltender Kopien. */
+        .sbc-opt-details-toggle summary {
             cursor: pointer; color: #9db2c8; font-weight: 600;
             padding: 8px 10px; background: #131e2b; border: 1px solid #1f2b3a;
             border-radius: 8px; user-select: none; list-style: none;
         }
-        #sbc-opt-advanced summary::-webkit-details-marker { display: none; }
-        #sbc-opt-advanced summary::before { content: '▸ '; color: #00e0b8; }
-        #sbc-opt-advanced[open] summary::before { content: '▾ '; }
-        #sbc-opt-advanced[open] summary { margin-bottom: 10px; }
+        .sbc-opt-details-toggle summary::-webkit-details-marker { display: none; }
+        .sbc-opt-details-toggle summary::before { content: '▸ '; color: #00e0b8; }
+        .sbc-opt-details-toggle[open] summary::before { content: '▾ '; }
+        .sbc-opt-details-toggle[open] summary { margin-bottom: 10px; }
         .sbc-opt-info {
             background:#131e2b; border:1px solid #1f2b3a; border-radius:8px;
             padding:8px 10px; margin-bottom:12px; line-height:1.6;
         }
         .sbc-opt-info b { color:#00e0b8; }
+        #sbc-opt-availability { font-size:12px; margin-top:4px; color:#9db2c8; }
+        /* Gleiche Warnfarbe wie .sbc-opt-warn/Toast-Warnungen - kein neues
+           Farbschema fuer "verfuegbar < gefordert". */
+        #sbc-opt-availability .low { color:#ffcf4d; font-weight:700; }
         .sbc-opt-debug { color:#7d93ab; font-size:11px; margin-top:4px; }
+        /* Seltenheit in der Zieh-Liste: dieselbe gedaempfte Farbe wie die
+           uebrigen Nebeninfos, damit Name + Rating fuehrend bleiben. */
+        .sbc-opt-dim { color:#7d93ab; }
         .sbc-opt-row { margin-bottom:12px; }
         .sbc-opt-row label { display:block; margin-bottom:4px; color:#9db2c8; font-size:12px; }
         .sbc-opt-row input[type=number], .sbc-opt-row input[type=text], .sbc-opt-row select {
@@ -3114,6 +4007,14 @@
         .sbc-opt-inline input[type=number] { flex:1; }
         .sbc-opt-toggle { display:flex; align-items:center; gap:8px; cursor:pointer; }
         .sbc-opt-toggle input { width:auto; }
+        .sbc-opt-group-title {
+            color:#00e0b8; font-size:11px; font-weight:700; text-transform:uppercase;
+            letter-spacing:.03em; margin:14px 0 6px;
+        }
+        .sbc-opt-group-title:first-of-type { margin-top:0; }
+        .sbc-opt-compact { display:flex; align-items:center; gap:8px; }
+        .sbc-opt-compact label { flex:1; margin-bottom:0; }
+        .sbc-opt-compact select { width:auto; min-width:110px; }
         .sbc-opt-btn {
             width:100%; border:none; border-radius:8px; padding:10px;
             font-weight:700; font-size:13px; cursor:pointer; margin-top:6px;
@@ -3150,11 +4051,12 @@
         .sbc-opt-btn:disabled { opacity:.5; cursor:not-allowed; }
         .sbc-opt-batch { margin-top:12px; padding-top:10px; border-top:1px solid #1f2b3a; }
         #sbc-opt-batch-preview:empty { display:none; }
-        #sbc-opt-batch-preview {
+        #sbc-opt-batch-preview, #sbc-opt-batch-detail-body {
             background:#131e2b; border:1px solid #1f2b3a; border-radius:8px;
             padding:8px 10px; margin-top:8px; font-size:12px; line-height:1.5;
             max-height:340px; overflow-y:auto;
         }
+        #sbc-opt-batch-details { margin-top:8px; }
         .sbc-opt-batch-round { padding:3px 0; border-bottom:1px solid #1b2735; }
         .sbc-opt-batch-round:last-child { border-bottom:none; }
         .sbc-opt-batch-round b { color:#00e0b8; }
@@ -3263,7 +4165,9 @@
                     Ziel-OVR: <b id="sbc-opt-target">–</b><br>
                     Vorgaben: <b id="sbc-opt-rarity">keine</b><br>
                     Spieler im Pool: <b id="sbc-opt-poolcount">0</b><br>
+                    SBC-Kontingent: <b id="sbc-opt-quota">–</b><br>
                     Status: <b id="sbc-opt-status">bereit</b>
+                    <div id="sbc-opt-availability"></div>
                     <div class="sbc-opt-debug" id="sbc-opt-debug">API: – · SID: – · Services: –</div>
                 </div>
                 <button class="sbc-opt-btn ghost" id="sbc-opt-load">Spieler laden</button>
@@ -3275,8 +4179,19 @@
                     <label>Max. Rating-Überschuss über Minimum (z.B. 0.10 = bis 84.10 statt 84.00)</label>
                     <input type="number" id="sbc-opt-maxwaste" value="0.00" min="0" max="2" step="0.01">
                 </div>
-                <details id="sbc-opt-advanced">
+                <details id="sbc-opt-advanced" class="sbc-opt-details-toggle">
                     <summary>Erweiterte Einstellungen</summary>
+                <div class="sbc-opt-group-title">Kartenwahl</div>
+                <div class="sbc-opt-row">
+                    <label class="sbc-opt-toggle">
+                        <input type="checkbox" id="sbc-opt-maxrating-en">
+                        Max. Rating pro Spieler begrenzen
+                    </label>
+                    <div class="sbc-opt-inline" style="margin-top:6px;">
+                        <input type="number" id="sbc-opt-maxrating" value="85" min="1" max="99" title="Max. Rating">
+                        <span style="color:#9db2c8;">OVR</span>
+                    </div>
+                </div>
                 <div class="sbc-opt-row">
                     <label class="sbc-opt-toggle">
                         <input type="checkbox" id="sbc-opt-applyrarity" checked>
@@ -3291,51 +4206,9 @@
                 </div>
                 <div class="sbc-opt-row">
                     <label class="sbc-opt-toggle">
-                        <input type="checkbox" id="sbc-opt-maxexp-en">
-                        Max. teure Spieler begrenzen
+                        <input type="checkbox" id="sbc-opt-uselocks" checked>
+                        Gesperrte Karten (PaleTools-Schloss) nie verbauen
                     </label>
-                    <div class="sbc-opt-inline" style="margin-top:6px;">
-                        <input type="number" id="sbc-opt-maxexp-count" value="4" min="0" max="11" title="max. Anzahl">
-                        <span style="color:#9db2c8;">Stück ab</span>
-                        <input type="number" id="sbc-opt-maxexp-th" value="88" min="1" max="99" title="Rating-Schwelle">
-                        <span style="color:#9db2c8;">OVR</span>
-                    </div>
-                </div>
-                <div class="sbc-opt-row">
-                    <label>Rating-Kosten (höher = Karten dieser Stufe mehr schonen)</label>
-                    <div class="sbc-opt-bandhead"><span></span><span>von</span><span>bis</span><span>Kosten</span><span></span></div>
-                    <div id="sbc-opt-bands"></div>
-                    <div class="sbc-opt-inline" style="margin-top:4px;">
-                        <button class="sbc-opt-btn ghost" id="sbc-opt-band-add" style="margin:0;padding:5px;">+ Stufe</button>
-                        <button class="sbc-opt-btn ghost" id="sbc-opt-band-reset" style="margin:0;padding:5px;">Zurücksetzen</button>
-                    </div>
-                </div>
-                <div class="sbc-opt-row">
-                    <label>Seltene Club-Karten schonen</label>
-                    <select id="sbc-opt-scarcity">
-                        <option value="0">Aus (nur Waste zählt)</option>
-                        <option value="8">Leicht</option>
-                        <option value="18" selected>Normal</option>
-                        <option value="35">Stark</option>
-                    </select>
-                </div>
-                <div class="sbc-opt-row">
-                    <label>Storage-Karten bevorzugt verbrauchen</label>
-                    <select id="sbc-opt-storagebonus">
-                        <option value="0">Aus</option>
-                        <option value="1">Leicht</option>
-                        <option value="2" selected>Normal</option>
-                        <option value="4">Stark</option>
-                    </select>
-                </div>
-                <div class="sbc-opt-row">
-                    <label>Unverkäufliche Karten zuerst verbauen (spart Coins)</label>
-                    <select id="sbc-opt-untradeable">
-                        <option value="0">Aus</option>
-                        <option value="1">Leicht</option>
-                        <option value="3" selected>Normal</option>
-                        <option value="6">Stark</option>
-                    </select>
                 </div>
                 <div class="sbc-opt-row">
                     <label>Gold-SBCs ohne Ziel-OVR: höchstes Rating für Rare / für Common
@@ -3347,13 +4220,17 @@
                         <input type="number" id="sbc-opt-maxcommon" value="77" min="0" max="99">
                     </div>
                 </div>
-                <div class="sbc-opt-row">
-                    <label class="sbc-opt-toggle">
-                        <input type="checkbox" id="sbc-opt-uselocks" checked>
-                        Gesperrte Karten (PaleTools-Schloss) nie verbauen
-                    </label>
+                <div class="sbc-opt-group-title">Schonen &amp; Verbrauchen</div>
+                <div class="sbc-opt-row sbc-opt-compact">
+                    <label>Seltene Club-Karten schonen</label>
+                    <select id="sbc-opt-scarcity">
+                        <option value="0">Aus (nur Waste zählt)</option>
+                        <option value="8">Leicht</option>
+                        <option value="18" selected>Normal</option>
+                        <option value="35">Stark</option>
+                    </select>
                 </div>
-                <div class="sbc-opt-row">
+                <div class="sbc-opt-row sbc-opt-compact">
                     <label>Rarity-Karten schützen (TOTW/TOTS/FOF/FUTTIES)</label>
                     <select id="sbc-opt-rarityguard">
                         <option value="0">Aus</option>
@@ -3362,6 +4239,35 @@
                         <option value="20">Stark</option>
                     </select>
                 </div>
+                <div class="sbc-opt-row sbc-opt-compact">
+                    <label>Storage-Karten bevorzugt verbrauchen</label>
+                    <select id="sbc-opt-storagebonus">
+                        <option value="0">Aus</option>
+                        <option value="1">Leicht</option>
+                        <option value="2" selected>Normal</option>
+                        <option value="4">Stark</option>
+                    </select>
+                </div>
+                <div class="sbc-opt-row sbc-opt-compact">
+                    <label>Unverkäufliche Karten zuerst verbauen (spart Coins)</label>
+                    <select id="sbc-opt-untradeable">
+                        <option value="0">Aus</option>
+                        <option value="1">Leicht</option>
+                        <option value="3" selected>Normal</option>
+                        <option value="6">Stark</option>
+                    </select>
+                </div>
+                <div class="sbc-opt-group-title">Rating-Kosten</div>
+                <div class="sbc-opt-row">
+                    <label>Rating-Kosten (höher = Karten dieser Stufe mehr schonen)</label>
+                    <div class="sbc-opt-bandhead"><span></span><span>von</span><span>bis</span><span>Kosten</span><span></span></div>
+                    <div id="sbc-opt-bands"></div>
+                    <div class="sbc-opt-inline" style="margin-top:4px;">
+                        <button class="sbc-opt-btn ghost" id="sbc-opt-band-add" style="margin:0;padding:5px;">+ Stufe</button>
+                        <button class="sbc-opt-btn ghost" id="sbc-opt-band-reset" style="margin:0;padding:5px;">Zurücksetzen</button>
+                    </div>
+                </div>
+                <div class="sbc-opt-group-title">Vorgabe-Karte übersteuern</div>
                 <div class="sbc-opt-row">
                     <label>Karte für Rarity-Vorgabe (z.B. TOTW/FUTTIES) - übersteuert die Automatik</label>
                     <input type="text" id="sbc-opt-raritypick-filter" placeholder="Name filtern..." style="margin-bottom:6px;">
@@ -3380,10 +4286,38 @@
                                style="width:64px;">
                     </div>
                     <button class="sbc-opt-btn ghost" id="sbc-opt-batch-plan">Teams planen (Vorschau)</button>
+                    <!-- Ticket #73: Zusammenfassung (Confidence + Klartext-Abweichungen)
+                         zuerst, direkt darunter die Freigabe, Kartendetails erst
+                         aufgeklappt - Rasmus scrollte vorher jedes Team einzeln durch. -->
                     <div id="sbc-opt-batch-preview"></div>
                     <button class="sbc-opt-btn danger" id="sbc-opt-batch-run" style="display:none;">
                         Alle eintragen + abgeben
                     </button>
+                    <details id="sbc-opt-batch-details" class="sbc-opt-details-toggle" style="display:none;">
+                        <summary id="sbc-opt-batch-detail-summary">Teams im Detail (0)</summary>
+                        <div id="sbc-opt-batch-detail-body"></div>
+                    </details>
+                </div>
+                <!-- PACK-OPENER (Store, Ticket #69/#76): nur in der Store-Ansicht
+                     sichtbar (syncPackSection()) - Pack-Oeffnen ist unumkehrbar,
+                     "Alle oeffnen" stoppt deshalb beim ERSTEN Fehler jeder Art. -->
+                <div class="sbc-opt-batch sbc-opt-hidden" id="sbc-opt-packsection">
+                    <div class="sbc-opt-inline" style="margin-bottom:8px;">
+                        <label style="margin:0;flex:1;">Pack-Opener (Store)</label>
+                    </div>
+                    <div class="sbc-opt-inline" style="margin-bottom:8px;">
+                        <select id="sbc-opt-pack-type" style="flex:1;">
+                            <option value="">– Aktualisieren drücken –</option>
+                        </select>
+                        <button class="sbc-opt-btn ghost" id="sbc-opt-pack-refresh" style="margin:0;padding:6px 10px;">↻</button>
+                    </div>
+                    <button class="sbc-opt-btn danger" id="sbc-opt-pack-test">Test: 1 Pack öffnen</button>
+                    <div class="sbc-opt-inline" style="margin-top:8px;margin-bottom:8px;">
+                        <label style="margin:0;flex:1;">Alle öffnen – Anzahl (leer = alle)</label>
+                        <input type="number" id="sbc-opt-pack-count" min="1" style="width:64px;" placeholder="alle">
+                    </div>
+                    <button class="sbc-opt-btn danger" id="sbc-opt-pack-all">Alle öffnen</button>
+                    <div id="sbc-opt-pack-result"></div>
                 </div>
                 <button class="sbc-opt-btn ghost" id="sbc-opt-diag" style="margin-top:10px;">Diagnose in Konsole schreiben</button>
             </div>
@@ -3407,15 +4341,16 @@
             target: panel.querySelector('#sbc-opt-target'),
             rarity: panel.querySelector('#sbc-opt-rarity'),
             poolcount: panel.querySelector('#sbc-opt-poolcount'),
+            quota: panel.querySelector('#sbc-opt-quota'),
+            availability: panel.querySelector('#sbc-opt-availability'),
             status: panel.querySelector('#sbc-opt-status'),
             debug: panel.querySelector('#sbc-opt-debug'),
             minrating: panel.querySelector('#sbc-opt-minrating'),
             maxwaste: panel.querySelector('#sbc-opt-maxwaste'),
             applyrarity: panel.querySelector('#sbc-opt-applyrarity'),
             specialstorage: panel.querySelector('#sbc-opt-specialstorage'),
-            maxexpEn: panel.querySelector('#sbc-opt-maxexp-en'),
-            maxexpCount: panel.querySelector('#sbc-opt-maxexp-count'),
-            maxexpTh: panel.querySelector('#sbc-opt-maxexp-th'),
+            maxRatingEn: panel.querySelector('#sbc-opt-maxrating-en'),
+            maxRatingVal: panel.querySelector('#sbc-opt-maxrating'),
             scarcity: panel.querySelector('#sbc-opt-scarcity'),
             storagebonus: panel.querySelector('#sbc-opt-storagebonus'),
             untradeable: panel.querySelector('#sbc-opt-untradeable'),
@@ -3436,7 +4371,17 @@
             batchCount: panel.querySelector('#sbc-opt-batch-count'),
             batchPlan: panel.querySelector('#sbc-opt-batch-plan'),
             batchPreview: panel.querySelector('#sbc-opt-batch-preview'),
-            batchRun: panel.querySelector('#sbc-opt-batch-run')
+            batchRun: panel.querySelector('#sbc-opt-batch-run'),
+            batchDetails: panel.querySelector('#sbc-opt-batch-details'),
+            batchDetailSummary: panel.querySelector('#sbc-opt-batch-detail-summary'),
+            batchDetailBody: panel.querySelector('#sbc-opt-batch-detail-body'),
+            packSection: panel.querySelector('#sbc-opt-packsection'),
+            packType: panel.querySelector('#sbc-opt-pack-type'),
+            packRefresh: panel.querySelector('#sbc-opt-pack-refresh'),
+            packTest: panel.querySelector('#sbc-opt-pack-test'),
+            packCount: panel.querySelector('#sbc-opt-pack-count'),
+            packAll: panel.querySelector('#sbc-opt-pack-all'),
+            packResult: panel.querySelector('#sbc-opt-pack-result')
         };
         panel.querySelector('#sbc-opt-close').addEventListener('click', () => panel.classList.remove('open'));
         makeDraggable(panel, panel.querySelector('.sbc-opt-header'), 'sbcOptPanelPos', {
@@ -3455,12 +4400,16 @@
         ui.diagBtn.addEventListener('click', onDiagClick);
         ui.batchPlan.addEventListener('click', onBatchPlanClick);
         ui.batchRun.addEventListener('click', onBatchRunClick);
+        ui.packRefresh.addEventListener('click', onPackRefreshClick);
+        ui.packTest.addEventListener('click', onPackTestClick);
+        ui.packAll.addEventListener('click', onPackAllClick);
         ui.rarityPickFilter.addEventListener('input', renderRarityPickOptions);
         // Zustand der "Erweiterte Einstellungen" merken
         const adv = panel.querySelector('#sbc-opt-advanced');
         try { if (localStorage.getItem('sbcOptAdvancedOpen') === '1') adv.open = true; } catch (e) {}
         adv.addEventListener('toggle', function () {
-            try { localStorage.setItem('sbcOptAdvancedOpen', adv.open ? '1' : '0'); } catch (e) {}
+            try { localStorage.setItem('sbcOptAdvancedOpen', adv.open ? '1' : '0'); }
+            catch (e) { reportError('Erweiterte-Einstellungen-Zustand speichern fehlgeschlagen', e); }
         });
         initBandEditor();
         refreshSbcInfoUI();
@@ -3501,7 +4450,8 @@
     }
     // [BANDS-END]
     function saveBands() {
-        try { localStorage.setItem('sbcOptRatingBands', JSON.stringify(ratingBands)); } catch (e) {}
+        try { localStorage.setItem('sbcOptRatingBands', JSON.stringify(ratingBands)); }
+        catch (e) { reportError('Rating-Bänder speichern fehlgeschlagen', e); }
     }
     function initBandEditor() {
         try {
@@ -3675,7 +4625,7 @@
             try {
                 const rect = el.getBoundingClientRect();
                 localStorage.setItem(posKey, JSON.stringify({ left: rect.left, top: rect.top }));
-            } catch (e) {}
+            } catch (e) { reportError('Panel-Position speichern fehlgeschlagen (' + posKey + ')', e); }
         }
         handle.addEventListener('pointerup', endDrag);
         handle.addEventListener('pointercancel', endDrag);
@@ -3690,6 +4640,7 @@
     const BTN_ID = 'pittools-sbc-btn';
     let btnAttachCount = 0;
     let launcherClicks = 0;
+    let containerFallbackUsed = 0;
     /**
      * Sind wir im SBC-Bereich? Gemessen an der View-Controller-Kette der App
      * (dieselbe Quelle, aus der auch die Challenge gelesen wird).
@@ -3743,7 +4694,35 @@
         for (let i = 0; i < all.length; i++) {
             if (all[i].offsetParent !== null || all[i].getClientRects().length) return all[i];
         }
-        return null;
+        const fallback = sbcButtonContainerByText();
+        if (fallback) containerFallbackUsed++;
+        return fallback;
+    }
+    /**
+     * Fallback, falls EA `.sbc-button-container` umbenennt: sucht sichtbare
+     * Buttons ueber ihren Text (dasselbe Muster wie `buttonDump` in
+     * buildDiagReport(), dort nur Diagnose, kein Fallback-Versuch). Nur die
+     * drei Begriffe der SBC-Aktionsleiste - ein Fehltreffer ist nicht
+     * schlimmer als der heutige Status quo (Container bleibt null, FAB bleibt
+     * Rueckfallweg). Matchen mehrere Buttons auf UNTERSCHIEDLICHE
+     * Elternknoten, ist der Container nicht sicher bestimmbar - null statt
+     * zu raten.
+     */
+    function sbcButtonContainerByText() {
+        try {
+            const btns = document.querySelectorAll('button');
+            let hit = null;
+            for (let i = 0; i < btns.length; i++) {
+                const b = btns[i];
+                if (!(b.offsetParent !== null || b.getClientRects().length)) continue;
+                if (!/squad builder|clear squad|exchange/i.test((b.textContent || '').trim())) continue;
+                const parent = b.parentNode;
+                if (!parent) continue;
+                if (hit && hit !== parent) return null;
+                hit = parent;
+            }
+            return hit;
+        } catch (e) { return null; }
     }
     function buildSbcButton(container) {
         const btn = document.createElement('button');
@@ -3813,14 +4792,19 @@
     function syncLauncher() {
         if (!ui.fab || !ui.panel) return;
         let btn = document.getElementById(BTN_ID);
-        if (!inSbcView()) {
+        // Zusaetzlich zur SBC-Ansicht bleibt der Einstieg auch in der
+        // Store-Ansicht sichtbar (Pack-Opener, Ticket #69) - sonst waere die
+        // Pack-Sektion nie erreichbar, weil Panel/FAB sonst komplett
+        // verschwinden. Der eingehaengte Button in der SBC-Aktionsleiste
+        // bleibt SBC-spezifisch (dort gibt es keine .sbc-button-container).
+        if (!inSbcView() && !inStoreView()) {
             if (btn && btn.parentNode) btn.parentNode.removeChild(btn);
             ui.fab.classList.add('sbc-opt-hidden');
             if (ui.panel.classList.contains('open')) togglePanel();
             return;
         }
         ui.fab.classList.remove('sbc-opt-hidden');
-        const cont = sbcButtonContainer();
+        const cont = inSbcView() ? sbcButtonContainer() : null;
         if (cont) {
             if (!btn || btn.parentNode !== cont) {
                 if (btn && btn.parentNode) btn.parentNode.removeChild(btn);
@@ -3849,6 +4833,53 @@
         }
         ui.rarity.textContent = parts.length ? parts.join(', ') : 'keine';
         ui.poolcount.textContent = STATE.pool.length;
+        if (ui.quota) {
+            const qt = quotaText(quotaUsage());
+            ui.quota.textContent = qt || 'noch keine Messung';
+        }
+        refreshAvailabilityUI();
+    }
+    // Vorgabe-Kandidaten-Verfügbarkeit neben dem Pool (Ticket #68): zählt
+    // dieselben Kandidaten wie eine echte Reservierung
+    // (SolverCore.computeRarityAvailability() -> reservationCandidates(),
+    // SSOT mit solveCore). Eigener Try/Catch, additiv zu den bereits
+    // etablierten Feldern in refreshSbcInfoUI(): ein Fehler hier darf
+    // Ziel-OVR/Vorgaben/Pool-Anzeige nicht mitreissen.
+    // Debounce (400ms, Nacht-Review 16.08.): refreshSbcInfoUI() laeuft beim
+    // Club-Laden PRO SEITE (~92x) - jede Verfuegbarkeits-Berechnung macht
+    // readConfig() inkl. komplettem localStorage-Scan plus 6-8 volle
+    // Pool-Filterdurchlaeufe. Im Lade-Takt (LEARNINGS 7/30, CPU-Seite) ist
+    // das unnoetige Mehrarbeit: waehrend eines Bursts rechnet erst der
+    // letzte Aufruf, Einzel-Aufrufe verzoegern sich um unmerkliche 400ms.
+    function refreshAvailabilityUI() {
+        if (!ui.availability) return;
+        if (STATE.availTimer) clearTimeout(STATE.availTimer);
+        STATE.availTimer = setTimeout(function () {
+            STATE.availTimer = null;
+            renderAvailabilityNow();
+        }, 400);
+    }
+    function renderAvailabilityNow() {
+        if (!ui.availability) return;
+        try {
+            const cfg = readConfig();
+            const avail = SolverCore.computeRarityAvailability(
+                STATE.pool, cfg, STATE.sbc.rarityConstraints || []);
+            if (avail.perConstraint.length) {
+                ui.availability.innerHTML = avail.perConstraint.map(function (c) {
+                    const breakdown = (c.totwClub || c.totwStorage || c.specialsStorage)
+                        ? ' (TOTW Verein ' + c.totwClub + ' · TOTW Storage ' + c.totwStorage +
+                          ' · Specials Storage ' + c.specialsStorage + ')'
+                        : '';
+                    const line = escapeHtml(c.constraint.label || 'Rarity') + ': ' +
+                        c.available + ' verfügbar' + escapeHtml(breakdown);
+                    return c.available < c.needed ? '<span class="low">' + line + '</span>' : line;
+                }).join('<br>');
+            } else {
+                ui.availability.textContent = 'TOTW: ' + avail.totw +
+                    ' · Storage-Specials: ' + avail.specialsStorage;
+            }
+        } catch (e) { reportError('Vorgabe-Verfügbarkeit berechnen fehlgeschlagen', e); }
     }
     function refreshDiagUI() {
         if (!ui.debug) return;
@@ -3859,6 +4890,34 @@
             ' · Services: ' + (servicesAvailable() ? '✓' : '–') +
             ' · utas: ' + STATE.diag.utasSeen;
     }
+    // [RAREHIST-BEGIN]
+    // Reine Funktion (kein STATE-Zugriff ausser dem uebergebenen pool) - so per
+    // Marker isoliert testbar (Verhaltensgleichheit zur vormaligen anonymen
+    // IIFE in buildDiagReport() ist ein eigener Testfall in solver-test.js).
+    function computeRareflagHistogram(pool) {
+        const m = {};
+        for (const p of pool) {
+            const key = String(p.rareflag);
+            m[key] = (m[key] || 0) + 1;
+        }
+        const out = { '0_common': m['0'] || 0, '1_rare': m['1'] || 0,
+                      '3_totw': m['3'] || 0 };
+        const rest = Object.keys(m).filter(k => ['0', '1', '3'].indexOf(k) < 0)
+            .map(k => ({ f: k, n: m[k] }))
+            .sort((a, b) => b.n - a.n);
+        out.topSpecials = rest.slice(0, 5).map(x => x.f + ':' + x.n).join(' ');
+        out.specialFlags = rest.length;
+        out.specialTotal = rest.reduce((a, x) => a + x.n, 0);
+        // Cap 30: haelt den Report auch bei einem theoretischen Pool-Ausreisser
+        // kompakt - in der Praxis liegt specialFlags deutlich darunter. Anders
+        // als topSpecials (nur die Top-5 nach Haeufigkeit) landen hier ALLE
+        // distincten rareflag-Werte OHNE Counts, damit ein neuer, zunaechst
+        // seltener rareflag (z.B. ein frisches Promo-Special mit 1 Karte) immer
+        // sichtbar ist, auch wenn er die Top-5-Haeufigkeitsgrenze nicht erreicht.
+        out.allSpecialFlagValues = rest.map(x => x.f).slice(0, 30).join(',');
+        return out;
+    }
+    // [RAREHIST-END]
     function buildDiagReport() {
         // Bewusst OHNE Session-Token-Werte!
         let servicesKeys = null;
@@ -3886,9 +4945,11 @@
             counts: {
                 fetchSeen: STATE.diag.fetchSeen,
                 xhrSeen: STATE.diag.xhrSeen,
-                utasSeen: STATE.diag.utasSeen
+                utasSeen: STATE.diag.utasSeen,
+                utasUnclassified: STATE.diag.utasUnclassified
             },
             lastUtasPaths: STATE.diag.lastUtasPaths,
+            lastUnclassifiedPaths: STATE.diag.lastUnclassifiedPaths,
             lastErrors: STATE.diag.lastErrors,
             uiScan: STATE.diag.uiScan || null,
             // Gesperrte Karten: wurden PaleTools-Locks gefunden und wie viele?
@@ -3901,6 +4962,27 @@
                 count: ratingBands.length,
                 isDefault: JSON.stringify(ratingBands) === JSON.stringify(defaultBands())
             },
+            // Aktive Panel-Einstellungen zum Report-Zeitpunkt (Live-Fall
+            // 16.08.: "0 Rarity-Kandidaten trotz 43 TOTW" war ohne Kenntnis
+            // des aktiven Max-Rating-Filters nicht diagnostizierbar - der
+            // Report trug bis dahin KEINE Config). Wie `bands` zur Laufzeit
+            // berechnet, kein STATE.diag-Feld.
+            cfgSnapshot: (function () {
+                try {
+                    const c = readConfig();
+                    return {
+                        minRating: c.minRating, maxOvershoot: c.maxOvershoot,
+                        maxRatingEnabled: c.maxRatingEnabled, maxRating: c.maxRating,
+                        applyRarity: c.applyRarity,
+                        specialOnlyFromStorage: c.specialOnlyFromStorage,
+                        lockedCount: (c.lockedIds || []).length,
+                        maxRareRating: c.maxRareRating, maxCommonRating: c.maxCommonRating,
+                        scarcityWeight: c.scarcityWeight, storageBonus: c.storageBonus,
+                        untradeableBonus: c.untradeableBonus, rarityGuardCost: c.rarityGuardCost,
+                        rarityPickId: c.rarityPickId
+                    };
+                } catch (e) { return { error: String(e && e.message || e) }; }
+            })(),
             // Batch: was hat der Lauf pro Runde gesehen, als er die nächste
             // Instanz öffnen wollte? (Die Abbruchmeldung verweist darauf -
             // in v4.18.0 fehlte das Feld im Report, mein Fehler.)
@@ -3912,6 +4994,16 @@
             // v4.36.0-Live-Vorfall ueber mehrere Laeufe hinweg messbar statt
             // nur aus einem einzelnen LEARNINGS-Eintrag ablesbar.
             batchStuckCount: STATE.diag.batchStuckCount || 0,
+            // Wie oft hat dismissRewardPopup() seit App-Start wirklich etwas
+            // geschlossen? Der letzte Snapshot (popupState in lastTap) zeigt nur
+            // den Einzelfall - ein wiederkehrender Popup-Typ, der Zeit im
+            // 300ms-Fenster frisst, wird erst ueber die Haeufigkeit sichtbar.
+            popupDismissCount: STATE.diag.popupDismissCount || 0,
+            // Pack-Opener (Ticket #69/#76): letzte Enumeration, letzter
+            // Einzel-Pack-Lauf (lastRun) und letzter "Alle öffnen"-Lauf
+            // (lastAllRun) - beantwortet die vier offenen Mechanik-Fragen aus
+            // docs/roadmap/vision/features/pack-opener.md (LEARNINGS §46).
+            packScan: STATE.diag.packScan || null,
             // Welches Team hat der Solver zuletzt geliefert (id/assetId/rating/
             // storage)? Bei HTTP 460 ist hier direkt zu sehen, ob eine Karte
             // oder ein Spieler doppelt drin war.
@@ -3920,6 +5012,13 @@
             // ist zu sehen, ob EA die Seitengroesse kappt und ob der Takt wegen
             // Rate-Limits hochgegangen ist.
             clubLoad: STATE.diag.clubLoad || null,
+            // SBC-Kontingent: Summe der serverseitigen timesCompleted plus
+            // Verbrauch im Stunden-/Tagesfenster (siehe quotaUsage).
+            // Frisch rechnen, aber den von quotaSample() gesetzten Stand
+            // bevorzugen (dort ist die Messung gerade gelaufen).
+            quota: STATE.diag.quota || quotaUsage(),
+            // Wie oft musste nach 404/475 die Session erneuert werden?
+            staleSessionRetry: STATE.diag.staleSessionRetry || 0,
             // Abgeben: welche Controller/Methoden kamen in Frage und welche hat
             // gegriffen? Am Handy heisst der Controller anders als am PC.
             submitCandidates: STATE.diag.submitCandidates || null,
@@ -4030,6 +5129,9 @@
                     containerSelector: '.sbc-button-container',
                     containerCount: document.querySelectorAll('.sbc-button-container').length,
                     containerVisible: !!cont,
+                    // >0 = der Text-Fallback musste einspringen, weil
+                    // .sbc-button-container selbst nichts lieferte.
+                    containerFallbackUsed: containerFallbackUsed,
                     containerRect: cont ? rect(cont) : null,
                     containerChildren: cont ? (function () {
                         const out = [];
@@ -4101,6 +5203,19 @@
                 // Scopes ohne Wert, die NICHT zur Standard-Boilerplate gehoeren -
                 // rein informativ (siehe applyScan: daraus folgt NICHTS).
                 otherScopes: STATE.sbc.otherScopes || [],
+                // ALLE erkannten Scope-Strings, ungefiltert - Gegenprobe gegen
+                // die reqDump-Whitelist (bereits auf 40 gedeckelt, LEARNINGS 37).
+                scopesSeenCount: (STATE.sbc.scopesSeen || []).length,
+                scopesSeenSample: STATE.sbc.scopesSeen || [],
+                // Wie oft griff der reqCount()-1-Fallback (kein bekannter
+                // Count-Key in der Eltern-Kette)? Reine Beobachtung.
+                countDefaultedTotal: [].concat(STATE.sbc.reqDump || [], STATE.sbc.rarityConstraints || [],
+                    STATE.sbc.playerLevelConstraints || [], STATE.sbc.qualityConstraints || [])
+                    .filter(c => c && c.countDefaulted === true).length,
+                // Traversal-Metriken (visitedCount/depthCapped/budgetExhausted) je
+                // Scanner - KEIN Abbruch-/Warnungskriterium (der v4.34.0-Fehlalarm
+                // aus einer Strukturindiz-Warnung ist die Anti-Vorlage, LEARNINGS 37).
+                scanStats: STATE.diag.scanStats || null,
                 staleRecover: STATE.diag.staleRecover || null,
                 entityCaptured: !!STATE.sbc.entity,
                 setChallengesCached: !!STATE.lastSetChallenges
@@ -4111,22 +5226,7 @@
             // GEKUERZT (der Report muss kopierbar bleiben): das volle Histogramm
             // waren ~80 Zeilen. Gebraucht werden Common/Rare - und von den
             // Special-Flags die haeufigsten fuenf plus Restsumme.
-            rareflagHistogram: (function () {
-                const m = {};
-                for (const p of STATE.pool) {
-                    const key = String(p.rareflag);
-                    m[key] = (m[key] || 0) + 1;
-                }
-                const out = { '0_common': m['0'] || 0, '1_rare': m['1'] || 0,
-                              '3_totw': m['3'] || 0 };
-                const rest = Object.keys(m).filter(k => ['0', '1', '3'].indexOf(k) < 0)
-                    .map(k => ({ f: k, n: m[k] }))
-                    .sort((a, b) => b.n - a.n);
-                out.topSpecials = rest.slice(0, 5).map(x => x.f + ':' + x.n).join(' ');
-                out.specialFlags = rest.length;
-                out.specialTotal = rest.reduce((a, x) => a + x.n, 0);
-                return out;
-            })(),
+            rareflagHistogram: computeRareflagHistogram(STATE.pool),
             poolSpecialCount: STATE.pool.filter(p => p.isSpecial).length,
             evoExcluded: STATE.diag.evoExcluded,
             // Struktur-Samples hoher Karten: verrät uns die echten Feldnamen,
@@ -4230,9 +5330,8 @@
             maxOvershoot: Math.max(0, parseFloat(String(ui.maxwaste.value).replace(',', '.')) || 0),
             applyRarity: ui.applyrarity.checked,
             specialOnlyFromStorage: ui.specialstorage.checked,
-            maxExpensiveEnabled: ui.maxexpEn.checked,
-            maxExpensiveCount: parseInt(ui.maxexpCount.value, 10) || 0,
-            expensiveThreshold: parseInt(ui.maxexpTh.value, 10) || 99,
+            maxRatingEnabled: ui.maxRatingEn.checked,
+            maxRating: parseInt(ui.maxRatingVal.value, 10) || 0,
             scarcityWeight: parseFloat(ui.scarcity.value) || 0,
             storageBonus: parseFloat(ui.storagebonus.value) || 0,
             untradeableBonus: parseFloat(ui.untradeable.value) || 0,
@@ -4317,18 +5416,57 @@
         }
     }
     async function onRunClick() {
+        // Waehrend eines laufenden Pool-Refreshs ist STATE.pool ein
+        // Uebergangszustand (onLoadClick leert ihn beim Voll-Refresh und
+        // befuellt ihn asynchron neu) - ohne diesen Guard wuerde der Solver
+        // unbemerkt gegen einen unvollstaendigen Pool loesen, ohne dass die
+        // uebliche loadIncomplete-Warnung greift (analog zum bestehenden
+        // Re-Entrancy-Schutz in onLoadClick).
+        if (STATE.loading) {
+            toast('Pool lädt noch - gleich nochmal versuchen.', 'error');
+            setStatus('Pool lädt noch...');
+            return;
+        }
         // Erkennung IMMER mit der offen sichtbaren Challenge abgleichen -
         // der Hook-Zustand kann nach Pack-Öffnen/Submit veraltet sein.
         syncSbcWithOpenChallenge();
+        // Sehen die Vorgaben leer/abgeschnitten aus, die verlaesslichste
+        // Quelle aktiv holen: elgReq aus den Set-Challenges (Live-Fall
+        // 84+ TOTW - Entity-Scan ertrank, Set-Cache hielt ein fremdes Set).
+        const constraintsEmpty = () => !STATE.sbc.targetOVR &&
+            !(STATE.sbc.playerLevelConstraints || []).length &&
+            !(STATE.sbc.rarityConstraints || []).length &&
+            !(STATE.sbc.qualityConstraints || []).length &&
+            !(STATE.sbc.rareConstraints || []).length;
+        if (constraintsEmpty() || anyDeepScanTruncated()) {
+            // ensureSetChallenges ruft applyFromSetChallenges selbst - KEIN
+            // erneutes syncSbcWithOpenChallenge danach, sonst koennte der
+            // Entity-Scan die frisch gefundenen elgReq-Vorgaben wieder
+            // ueberdecken.
+            await ensureSetChallenges('onRunClick');
+        }
         if (!STATE.sbc.targetOVR && !(STATE.sbc.playerLevelConstraints || []).length &&
             !(STATE.sbc.rarityConstraints || []).length &&
             !(STATE.sbc.qualityConstraints || []).length) {
-            toast('Kein Ziel-OVR erkannt. Bitte SBC-Challenge im Spiel öffnen (und ggf. Diagnose-Button nutzen).', 'error');
+            // Unterscheidung nach Ursache (live: Gold-Challenge Set 1337, der
+            // Scan erschoepfte sein Budget im Belohnungs-Ast und fand NICHTS):
+            // abgeschnittener Scan heisst "wir wissen es nicht", nicht "es
+            // gibt keine Vorgaben".
+            if (anyDeepScanTruncated()) {
+                toast('Vorgaben nicht erkannt: der Challenge-Scan wurde abgeschnitten. Challenge bitte neu öffnen; bleibt es dabei, Diagnose schicken.', 'error');
+            } else {
+                toast('Kein Ziel-OVR erkannt. Bitte SBC-Challenge im Spiel öffnen (und ggf. Diagnose-Button nutzen).', 'error');
+            }
             return;
         }
         if (STATE.pool.length === 0) {
             toast('Pool leer. Bitte zuerst "Spieler laden".', 'error');
             return;
+        }
+        // Scan abgeschnitten, aber ETWAS erkannt: weitermachen (kein Abbruch),
+        // aber sichtbar machen, dass die Vorgaben unvollstaendig sein koennten.
+        if (anyDeepScanTruncated()) {
+            toast('Hinweis: Der Vorgaben-Scan wurde abgeschnitten - erkannte Vorgaben könnten unvollständig sein. Ergebnis vor dem Abgeben prüfen.', 'warn');
         }
         // KEINE Vorab-Warnung aus reqDump-Scopes (war v4.34.0 und ist wieder
         // raus): "PLAYER"/"CLUB MEMBER" stehen bei JEDER SBC drin, die Warnung
@@ -4342,10 +5480,18 @@
         setStatus('optimiere...');
         ui.run.disabled = true;
         try {
-            const cfg = readConfig();
-            let res;
-            try { res = SolverCore.solve(STATE.pool, cfg); }
-            catch (e) { toast('Optimierungsfehler: ' + e.message, 'error'); setStatus('Fehler'); warn(e); return; }
+            let cfg, res;
+            try {
+                cfg = readConfig();
+                res = SolverCore.solve(STATE.pool, cfg);
+            } catch (e) {
+                toast('Optimierungsfehler: ' + e.message, 'error');
+                setStatus('Fehler');
+                // reportError warnt intern selbst — kein zusaetzliches warn(e),
+                // sonst steht dieselbe Exception doppelt in der Konsole.
+                reportError('onRunClick: readConfig/solve fehlgeschlagen', e);
+                return;
+            }
             renderResult(res);
             if (res.ok) {
                 setStatus('Lösung gefunden (OVR ' + res.ovr + ') - trage ein...');
@@ -4412,10 +5558,12 @@
     // ---- Fortschrittsanzeige fuer den Batch --------------------------------
     // Rasmus' Wunsch: "einfach ein Ladebalken und da steht SBC 1/5" - statt im
     // Panel nach dem Status zu suchen.
-    function showProgress(cur, total, step, doneText) {
+    // titlePrefix generalisiert den Balken fuer den Pack-Opener-Loop (Ticket
+    // #76) mit - Default 'SBC' haelt jeden bestehenden Aufrufer unveraendert.
+    function showProgress(cur, total, step, doneText, titlePrefix) {
         if (!ui.progress) return;
         ui.progress.classList.add('open');
-        ui.progTitle.textContent = 'SBC ' + cur + ' von ' + total;
+        ui.progTitle.textContent = (titlePrefix || 'SBC') + ' ' + cur + ' von ' + total;
         ui.progStep.textContent = step || '';
         const pct = Math.max(0, Math.min(100, Math.round(((cur - 1) / total) * 100)));
         ui.progFill.style.width = pct + '%';
@@ -4510,6 +5658,7 @@
                 }
             }
         } catch (e) {}
+        if (closed) STATE.diag.popupDismissCount = (STATE.diag.popupDismissCount || 0) + 1;
         return closed;
     }
     /**
@@ -4668,7 +5817,8 @@
             try { if (sq && typeof sq.isSquadEmpty === 'function') empty = sq.isSquadEmpty(); }
             catch (e) {}
             if (ctrl && sq && isFreshMatchingInstance(plan, STATE.sbc, empty)) {
-                steps.push({ ms: Date.now() - t0, done: true, clicked: clicked });
+                steps.push({ ms: Date.now() - t0, done: true, clicked: clicked,
+                    sameIdReuse: plan.sameIdReuse || 0 });
                 return { ok: true, steps: steps };
             }
             // Die App blieb nach dem Abgeben im SQUAD-VIEW haengen (live,
@@ -4904,27 +6054,41 @@
         const want = String(plan.setName || '').trim().toLowerCase();
         if (!want) return { ok: false, why: 'kein Set-Name gemerkt', tiles: tiles.length };
         if (!tiles.length) return { ok: false, why: 'keine Set-Kacheln sichtbar', tiles: 0 };
+        // WARUM titleSource: findet titleOf() keines der Titel-Elemente (EA baut
+        // nur die INNEREN Elemente um, .ut-sbc-set-tile-view selbst bleibt
+        // bestehen), faellt es auf den GESAMTEN Kachel-Text zurueck - genau der
+        // Zustand, der laut LEARNINGS §9 (v4.23.0) live zum Teilstring-Fehlgriff
+        // fuehrte ("Upgrade" steckt in jeder zweiten Kachel). Die Matching-Logik
+        // selbst bleibt unveraendert, titleSource macht nur sichtbar, OB dieser
+        // fragile Pfad gerade griff.
         function titleOf(t) {
             const h = t.querySelector('.tileTitle, .tileHeader, h1');
-            return ((h && h.textContent) || t.textContent || '')
+            const text = ((h && h.textContent) || t.textContent || '')
                 .replace(/\s+/g, ' ').trim().toLowerCase();
+            return { text: text, source: h ? 'element' : 'fulltext' };
         }
-        let hit = null, how = null;
-        for (const t of tiles) { if (titleOf(t) === want) { hit = t; how = 'exakt'; break; } }
+        let hit = null, how = null, hitSource = null;
+        for (const t of tiles) {
+            const ti = titleOf(t);
+            if (ti.text === want) { hit = t; how = 'exakt'; hitSource = ti.source; break; }
+        }
         if (!hit) {
             for (const t of tiles) {
                 const ti = titleOf(t);
-                if (ti.indexOf(want) === 0 || want.indexOf(ti) === 0) { hit = t; how = 'Anfang'; break; }
+                if (ti.text.indexOf(want) === 0 || want.indexOf(ti.text) === 0) {
+                    hit = t; how = 'Anfang'; hitSource = ti.source; break;
+                }
             }
         }
         if (!hit) {
             for (const t of tiles) {
-                if (titleOf(t).indexOf(want) > -1) { hit = t; how = 'enthalten'; break; }
+                const ti = titleOf(t);
+                if (ti.text.indexOf(want) > -1) { hit = t; how = 'enthalten'; hitSource = ti.source; break; }
             }
         }
         if (!hit) {
             return { ok: false, why: 'Set nicht gefunden', want: want, tiles: tiles.length,
-                     titles: tiles.slice(0, 8).map(titleOf) };
+                     titles: tiles.slice(0, 8).map(function (t) { return titleOf(t).text; }) };
         }
         // Erst die Kachel, dann ihr Titel-Element - manche Views haengen ihren
         // Tap-Handler am Kind, nicht am Container.
@@ -4933,7 +6097,7 @@
         const inner = hit.querySelector('.tileHeader, .tileTitle, h1');
         if (inner) clickLike(inner);
         return { ok: true, why: 'Set-Kachel geklickt (' + how + ')',
-                 want: want, hitTitle: titleOf(hit), tap: tap,
+                 want: want, hitTitle: titleOf(hit).text, titleSource: hitSource, tap: tap,
                  tapInner: inner ? (STATE.diag.lastTap || null) : null };
     }
     /** Challenge-Zeile in der geoeffneten Set-Ansicht anklicken. */
@@ -5020,15 +6184,25 @@
         if (Number(STATE.sbc.formationSlots || 0) !== Number(plan.slots || 0)) return false;
         return true;
     }
-    // Sperre gegen eine bereits abgegebene Instanz: passt die offene SBC den
-    // Vorgaben nach, aber ihre challengeId steckt schon in plan.usedChallengeIds
-    // (onBatchRunClick traegt sie dort nach jeder Abgabe ein), ist es im
-    // Retry-Fenster die ALTE Instanz, nicht die neue - "jede Wiederholung hat
-    // eine eigene challengeId" (CLAUDE.md). Bisher nur beobachtet
-    // (usedInstance im stuck-Diagnosezweig), hier erstmals durchgesetzt.
+    // Schutz gegen eine bereits abgegebene Instanz - mit Daily-Ausnahme.
+    // "Jede Wiederholung hat eine eigene challengeId" (LEARNINGS §9) gilt NUR
+    // fuer die Rating-Upgrade-Sets. Daily-SBCs (live belegt: "Daily Bronze
+    // Upgrade", challengeId 3068, zwei Reports v4.56.0) setzen DIESELBE
+    // challengeId einfach zurueck - die harte Sperre auf usedChallengeIds
+    // blockierte dort jede zweite Runde ("Batch gestoppt nach 1/6", das Squad
+    // wurde nie befuellt). Deshalb: eine benutzte challengeId gilt wieder als
+    // frisch, wenn die Instanz NACHWEISLICH leer ist (squadEmpty === true,
+    // strikt - null heisst "unbekannt" und bleibt gesperrt). Eine
+    // fehlgeschlagene Abgabe hinterlaesst ein volles Squad und bleibt blockiert.
     function isFreshMatchingInstance(plan, sbcState, squadEmpty) {
-        return !!(matchesPlannedSbc(plan) && squadEmpty !== false &&
-            (plan.usedChallengeIds || []).indexOf(String(sbcState.challengeId)) === -1);
+        if (!matchesPlannedSbc(plan) || squadEmpty === false) return false;
+        const used = (plan.usedChallengeIds || []).indexOf(String(sbcState.challengeId)) > -1;
+        if (!used) return true;
+        if (squadEmpty === true) {
+            plan.sameIdReuse = (plan.sameIdReuse || 0) + 1; // Diagnose: Daily-Wiederverwendung
+            return true;
+        }
+        return false;
     }
     async function onBatchPlanClick() {
         syncSbcWithOpenChallenge();
@@ -5039,14 +6213,39 @@
             return;
         }
         if (!STATE.pool.length) { toast('Pool leer. Bitte zuerst "Spieler laden".', 'error'); return; }
+        // Analog zur Warnung in onRunClick (:4509): der Batch darf trotzdem
+        // planen und abgeben (Rasmus entscheidet bei der einen Freigabe,
+        // CLAUDE.md "Batch darf abgeben") - nur informieren, nicht blockieren.
+        if (STATE.loadIncomplete) {
+            toast('ACHTUNG: Der Pool war beim Planen unvollständig geladen (' + STATE.pool.length +
+                ' Karten) - der Plan kann auf fehlenden Karten beruhen. Am besten erst "Spieler laden" erneut ausführen, dann neu planen.', 'warn');
+        }
+        if (anyDeepScanTruncated()) {
+            // Wie in onRunClick: die verlaesslichste Vorgaben-Quelle (elgReq
+            // aus den Set-Challenges) aktiv nachladen, bevor geplant wird.
+            await ensureSetChallenges('onBatchPlanClick');
+        }
+        if (anyDeepScanTruncated() && !STATE.setChallengesBySet[STATE.sbc.setId]) {
+            toast('Hinweis: Der Vorgaben-Scan wurde abgeschnitten - der Plan könnte auf unvollständigen Vorgaben beruhen. Vorschau prüfen.', 'warn');
+        }
         const want = Math.max(1, Math.min(10, parseInt(ui.batchCount.value, 10) || 1));
         ui.batchPlan.disabled = true;
         setStatus('plane ' + want + ' Teams...');
         try {
-            const plan = SolverCore.planBatch(STATE.pool, readConfig(), want);
+            const cfg = readConfig();
+            const plan = SolverCore.planBatch(STATE.pool, cfg, want);
+            // Fuer den Plan-Check (Ticket #73) am Plan festgehalten: derselbe
+            // Stand, mit dem geplant wurde - eine spaetere UI-Aenderung darf
+            // die Auswertung des schon fertigen Plans nicht verfaelschen.
+            plan.cfg = cfg;
             // Anker ist das SET plus die Vorgaben - die challengeId aendert
             // sich pro Wiederholung und taugt nicht als Vergleich.
             plan.setId = STATE.sbc.setId;
+            // Fuer die Vorschau festgehalten (renderBatchPreview): der Toast
+            // oben ist nach ein paar Sekunden weg, die Freigabe kommt aber oft
+            // erst deutlich spaeter - der Zustand muss in der Vorschau stehen
+            // bleiben.
+            plan.poolLoadIncomplete = STATE.loadIncomplete;
             plan.targetOVR = STATE.sbc.targetOVR;
             plan.slots = STATE.sbc.formationSlots;
             plan.usedChallengeIds = [];
@@ -5078,34 +6277,122 @@
         else base = 'Special rf' + rf;
         return base + ((p.groups && p.groups.indexOf(83) > -1) ? ' · Gruppe 83' : '');
     }
+    /**
+     * Plan-Check (Ticket #73): reine Auswertung des von planBatch bereits
+     * fertig geplanten Ergebnisses - kein Solver-Aufruf, keine Aenderung an
+     * der Planung selbst. Rasmus scrollte vorher jedes Team von Hand durch,
+     * um sowas wie 84.xx statt 84 oder doppeltes TOTW zu finden.
+     *
+     * Score-Konvention: bestandene / gesamte Pruefungen (gerundet). Pro
+     * Runde zaehlen IMMER 4 Pruefungen (Waste, Gruppe-83-Anzahl, Min-Rating,
+     * Storage-Anteil), global IMMER 2 (keine doppelte Karten-Id, Pool
+     * vollstaendig geladen) - ein fester Nenner, unabhaengig davon, ob eine
+     * Pruefung im Einzelfall ueberhaupt greift (z.B. Waste ohne Ziel-OVR ist
+     * strukturell 0, Min-Rating bei Bronze/Silber wird auf 0 abgesenkt -
+     * CLAUDE.md: "Min-Rating wird dabei komplett ignoriert"). Damit hat der
+     * Score in jedem Szenario dieselbe Grundlage. "Hinweis" (Storage-Anteil)
+     * zaehlt im Score mit, ist aber separat gelabelt und faerbt wie eine
+     * bestehende Warnung statt wie ein Fehler - "Fehler" nur bei echten
+     * Vorgaben-/Rating-Verstoessen.
+     */
+    function computeBatchPlanCheck(plan, cfg) {
+        const lines = []; // { level: 'error'|'hint', text }
+        let passed = 0, total = 0;
+        function runCheck(level, ok, text) {
+            total++;
+            if (ok) { passed++; return; }
+            lines.push({ level: level, text: text });
+        }
+        const rarityConstraints = (cfg.applyRarity === false) ? [] : (cfg.rarityConstraints || []);
+        // Vorgaben zaehlen wie der Solver sie erfuellt (Nacht-Review 16.08.):
+        // matchesRarity() bedient Gruppe 83 auch ueber den ids-Zweig
+        // (rareflag 3 = TOTW) - eine ids-basierte TOTW-Vorgabe erzeugte hier
+        // sonst den falschen roten Fehler "1x statt geforderter 0" auf einem
+        // korrekten Plan. Karten-Identitaet ebenso doppelt (groups ODER
+        // rareflag 3), SSOT mit isProtectedRarity/isTotw im Solver.
+        // ids zaehlen NUR ohne groupId - dieselbe Praezedenz wie matchesRarity
+        // (der ids-Zweig ist dort unerreichbar, wenn groupId greift). Sonst
+        // wuerde z.B. eine PLAYER_RARITY_GROUP-3-Vorgabe (groupId 3 UND
+        // ids [3]) faelschlich als TOTW-Vorgabe gezaehlt (Review-Runde 2).
+        const required83 = rarityConstraints
+            .filter(rc => Number(rc.groupId) === 83 ||
+                (rc.groupId == null && Array.isArray(rc.ids) && rc.ids.map(Number).indexOf(3) > -1))
+            .reduce((s, rc) => s + (rc.count || 1), 0);
+        const is83 = p => Number(p.rareflag) === 3 ||
+            !!(p.groups && p.groups.indexOf(83) > -1);
+        const qualityConstraints = (cfg.applyRarity === false) ? [] : (cfg.qualityConstraints || []);
+        // Deckt sich mit dem qualityLow-Zweig im Solver (Bronze/Silber
+        // ignorieren Min-Rating komplett, Gold nicht) - hier nur, um
+        // festzustellen, ob die Pruefung ueberhaupt greifen soll.
+        const qualityLow = qualityConstraints.some(c => Number(c.quality) === 1 || Number(c.quality) === 2);
+        const effectiveMinRating = qualityLow ? 0 : (cfg.minRating || 0);
+        const maxOvershoot = cfg.maxOvershoot || 0;
+        const seenIds = new Set();
+        let dupeCard = null;
+        (plan.rounds || []).forEach(function (r, i) {
+            const teamNo = i + 1;
+            const waste = r.waste || 0;
+            runCheck('error', waste <= maxOvershoot + 1e-9,
+                'Team ' + teamNo + ': Rating-Überschuss ' + waste.toFixed(2) + ' über dem erlaubten Fenster ' +
+                maxOvershoot.toFixed(2) + ' (exakt ' +
+                (r.ovrExact != null ? r.ovrExact.toFixed(2) : '?') + ').');
+            const n83 = r.players.filter(is83).length;
+            // Eine MANUELL gewaehlte Gruppe-83-Karte ohne passende Vorgabe ist
+            // Rasmus' explizite Entscheidung - kein roter Fehler. Aber NICHT
+            // still gruen (Review-Runde 2): die Pick-Auswahl im Panel
+            // ueberlebt SBC-Wechsel, ein VERALTETER Pick saehe sonst wie ein
+            // perfekter Plan aus. Deshalb ein sichtbarer Hinweis - direkt in
+            // lines statt ueber runCheck(), damit der feste Pruefungs-Nenner
+            // (LEARNINGS 48) unveraendert bleibt.
+            const pickedExtra = (required83 === 0 && cfg.rarityPickId != null &&
+                cfg.rarityPickId !== '' &&
+                r.players.some(p => String(p.id) === String(cfg.rarityPickId) && is83(p))) ? 1 : 0;
+            const explainedByPick = pickedExtra > 0 && n83 === required83 + pickedExtra;
+            runCheck('error', n83 === required83 || explainedByPick,
+                'Team ' + teamNo + ': ' + n83 + 'x Gruppe-83-Karte(n) (TOTW/TOTS/FOF/FUTTIES) statt geforderter ' +
+                required83 + '.');
+            if (explainedByPick) {
+                lines.push({ level: 'hint', text: 'Team ' + teamNo +
+                    ': 1x Gruppe-83-Karte stammt aus der manuellen Karten-Wahl (keine SBC-Vorgabe)' +
+                    ' - Auswahl zuruecksetzen, falls unbeabsichtigt.' });
+            }
+            const belowMin = r.players.filter(p => p.rating < effectiveMinRating);
+            runCheck('error', belowMin.length === 0,
+                'Team ' + teamNo + ': ' + belowMin.length + ' Karte(n) unter Min-Rating ' + effectiveMinRating +
+                ' (' + belowMin.map(p => p.rating).join(', ') + ').');
+            const nStore = r.players.filter(p => p.isStorage).length;
+            runCheck('hint', nStore >= 1, 'Team ' + teamNo + ': keine Storage-Karte verbaut (nur Verein).');
+            for (const p of r.players) {
+                const key = String(p.id);
+                if (seenIds.has(key) && !dupeCard) dupeCard = p.name || ('#' + key);
+                seenIds.add(key);
+            }
+        });
+        runCheck('error', !dupeCard, 'Karte "' + dupeCard + '" ist in mehreren Teams verbaut.');
+        runCheck('hint', !plan.poolLoadIncomplete,
+            'Pool war beim Planen unvollständig geladen - Plan kann auf fehlenden Karten beruhen. Vor der Freigabe ggf. "Spieler laden" erneut ausführen und neu planen.');
+        const errors = lines.filter(l => l.level === 'error').length;
+        const hints = lines.filter(l => l.level === 'hint').length;
+        return {
+            score: total ? Math.round(passed / total * 100) : 100,
+            passed: passed, total: total,
+            errors: errors, hints: hints,
+            lines: lines
+        };
+    }
     function renderBatchPreview(plan) {
         const box = ui.batchPreview;
         if (!box) return;
-        let html = '';
-        plan.rounds.forEach(function (r, i) {
-            const nStore = r.players.filter(p => p.isStorage).length;
-            const nUntr = r.players.filter(p => p.untradeable).length;
-            const nProt = r.players.filter(p => p.groups && p.groups.indexOf(83) > -1).length;
-            html += '<div class="sbc-opt-batch-round"><b>Team ' + (i + 1) + ':</b> OVR ' +
-                r.ovr + ' (' + r.ovrExact.toFixed(2) + ')' +
-                '<br><span style="color:#9db2c8;">Storage ' + nStore +
-                ' · unverkäuflich ' + nUntr +
-                (nProt ? ' · <span class="sbc-opt-batch-warn">geschützt ' + nProt + '</span>' : '') +
-                '</span><div class="sbc-opt-batch-cards">';
-            for (const p of r.players.slice().sort((a, b) => b.rating - a.rating)) {
-                const prot = !!(p.groups && p.groups.indexOf(83) > -1);
-                html += '<div class="sbc-opt-batch-card' + (prot ? ' prot' : '') + '">' +
-                    '<span class="r">' + p.rating + '</span> ' + escapeHtml(displayName(p)) +
-                    ' <span class="src">' + (p.isStorage ? 'Storage' : 'Verein') + '</span>' +
-                    ' <span class="rar">' + escapeHtml(rarityLabel(p)) + '</span>' +
-                    (p.untradeable ? ' <span class="untr">unverkäuflich</span>' : '') + '</div>';
-            }
-            html += '</div>';
-            for (const w of (r.warnings || [])) {
-                html += '<span class="sbc-opt-batch-warn">⚠ ' + escapeHtml(w) + '</span><br>';
-            }
-            html += '</div>';
-        });
+        const pc = computeBatchPlanCheck(plan, plan.cfg || {});
+        const parts = [];
+        if (pc.errors) parts.push(pc.errors + ' Fehler');
+        if (pc.hints) parts.push(pc.hints + (pc.hints === 1 ? ' Hinweis' : ' Hinweise'));
+        let html = '<div class="sbc-opt-batch-round"><b>' + plan.planned + ' Team(s) geplant</b> · Confidence <b>' +
+            pc.score + '%</b>' + (parts.length ? ' — ' + parts.join(' + ') : '') + '</div>';
+        for (const l of pc.lines) {
+            html += '<div class="sbc-opt-batch-round ' + (l.level === 'error' ? 'sbc-opt-batch-bad' : 'sbc-opt-batch-warn') + '">' +
+                (l.level === 'error' ? '✗ ' : '⚠ ') + escapeHtml(l.text) + '</div>';
+        }
         if (plan.stoppedReason) {
             html += '<div class="sbc-opt-batch-round sbc-opt-batch-bad">Nur ' + plan.planned +
                 ' von ' + plan.requested + ' möglich: ' + escapeHtml(plan.stoppedReason) + '</div>';
@@ -5114,6 +6401,36 @@
         ui.batchRun.style.display = plan.planned ? 'block' : 'none';
         ui.batchRun.disabled = false;
         ui.batchRun.textContent = 'Alle ' + plan.planned + ' eintragen + abgeben';
+        if (ui.batchDetails) {
+            let detailHtml = '';
+            plan.rounds.forEach(function (r, i) {
+                const nStore = r.players.filter(p => p.isStorage).length;
+                const nUntr = r.players.filter(p => p.untradeable).length;
+                const nProt = r.players.filter(p => p.groups && p.groups.indexOf(83) > -1).length;
+                detailHtml += '<div class="sbc-opt-batch-round"><b>Team ' + (i + 1) + ':</b> OVR ' +
+                    r.ovr + ' (' + r.ovrExact.toFixed(2) + ')' +
+                    '<br><span style="color:#9db2c8;">Storage ' + nStore +
+                    ' · unverkäuflich ' + nUntr +
+                    (nProt ? ' · <span class="sbc-opt-batch-warn">geschützt ' + nProt + '</span>' : '') +
+                    '</span><div class="sbc-opt-batch-cards">';
+                for (const p of r.players.slice().sort((a, b) => b.rating - a.rating)) {
+                    const prot = !!(p.groups && p.groups.indexOf(83) > -1);
+                    detailHtml += '<div class="sbc-opt-batch-card' + (prot ? ' prot' : '') + '">' +
+                        '<span class="r">' + p.rating + '</span> ' + escapeHtml(displayName(p)) +
+                        ' <span class="src">' + (p.isStorage ? 'Storage' : 'Verein') + '</span>' +
+                        ' <span class="rar">' + escapeHtml(rarityLabel(p)) + '</span>' +
+                        (p.untradeable ? ' <span class="untr">unverkäuflich</span>' : '') + '</div>';
+                }
+                detailHtml += '</div>';
+                for (const w of (r.warnings || [])) {
+                    detailHtml += '<span class="sbc-opt-batch-warn">⚠ ' + escapeHtml(w) + '</span><br>';
+                }
+                detailHtml += '</div>';
+            });
+            ui.batchDetailBody.innerHTML = detailHtml;
+            ui.batchDetailSummary.textContent = 'Teams im Detail (' + plan.planned + ')';
+            ui.batchDetails.style.display = plan.planned ? 'block' : 'none';
+        }
     }
     // Reiner Reducer (keine DOM-/Netzwerkabhaengigkeit, isoliert testbar): pflegt
     // den bestehenden 6er-Ring diag.batchSteps unveraendert UND haelt zusaetzlich
@@ -5175,7 +6492,7 @@
                 showProgress(i + 1, n, 'trage Team ein (OVR ' + round.ovr + ')...',
                     (doneLog.length ? doneLog.length + ' fertig' : ''));
                 setStatus(tag + ': trage ein...');
-                const sub = await submitToSbc(round);
+                const sub = await submitToSbc(round, false, { done: done, total: n });
                 if (sub && sub.via !== 'app') { await refreshChallengeCache(); refreshOpenSbcView(); }
                 removeFromPool(round.players);
                 showProgress(i + 1, n, 'gebe ab...', (doneLog.length ? doneLog.length + ' fertig' : ''));
@@ -5211,6 +6528,7 @@
             ui.batchPlan.disabled = false;
             ui.run.disabled = false;
             ui.batchRun.style.display = 'none';
+            if (ui.batchDetails) ui.batchDetails.style.display = 'none';
             STATE.batch = null;   // Plan verbraucht - kein zweites Abgeben
             let html = doneLog.length
                 ? '<div class="sbc-opt-batch-round">' + doneLog.map(escapeHtml).join('<br>') + '</div>' : '';
@@ -5302,6 +6620,769 @@
         }
     }
     // ========================================================================
+    //  PACK-OPENER (Store, Ticket #69 Stufe 1 + Ticket #76 Stufe 2)
+    // ------------------------------------------------------------------------
+    //  Mechanik-Quelle: PaleTools-Analyse vom 16.08.2026 (dekodiertes
+    //  packsOpener-Plugin, LEARNINGS §46). Pack-Oeffnen ist UNUMKEHRBAR -
+    //  runPackTestOpen() oeffnet GENAU EIN Pack (Stufe 1, Einzel-Testlauf UND
+    //  Baustein der Stufe-2-Schleife runPackOpenAll(), SSOT) und dient der
+    //  Live-Verifikation (STATE.diag.packScan beantwortet die vier offenen
+    //  Mechanik-Fragen aus docs/roadmap/vision/features/pack-opener.md). Die
+    //  Stufe-1-Mechanik ist stub-getestet, aber noch NICHT live verifiziert -
+    //  runPackOpenAll() stoppt deshalb bei JEDEM Fehler sofort: im schlimmsten
+    //  Fall degradiert "Alle oeffnen" zu einem Einzel-Pack mit klarer
+    //  Fehlermeldung, bereits geoeffnete Packs sind sicher verteilt.
+    // ========================================================================
+    // PaleTools verwendet fuer die Storage-Kapazitaet hartkodiert 100, ohne
+    // dass ein EA-Endpunkt sie liefert - UNVERIFIZIERT. runPackTestOpen()
+    // misst storageCountBefore/storageCountAfter mit; die echte Grenze zeigt
+    // sich erst, sobald move() bei vollem Storage tatsaechlich ablehnt.
+    const PACK_STORAGE_CAPACITY_ASSUMED = 100;
+    /**
+     * Sind wir in der Store-Ansicht? Analog zu inSbcView(): faellt die Kette
+     * leer/werfend aus, lieber der Abschnitt einmal zu viel sichtbar als ein
+     * Einstieg, der nie erscheint.
+     */
+    function inStoreView() {
+        try {
+            const chain = getControllerChain();
+            if (!chain.length) return true;
+            for (const c of chain) {
+                const n = (c.constructor && c.constructor.name) || '';
+                if (/store/i.test(n)) return true;
+            }
+        } catch (e) { return true; }
+        return false;
+    }
+    function syncPackSection() {
+        if (!ui.packSection) return;
+        ui.packSection.classList.toggle('sbc-opt-hidden', !inStoreView());
+    }
+    /**
+     * Alle fuer den Pack-Opener benoetigten EA-Globalen VORAB defensiv
+     * aufloesen - open() ist irreversibel, ein erst mitten im Testlauf
+     * fehlendes Global (z.B. GameCurrency fuer die Misc-Item-Erkennung) waere
+     * dann nicht mehr sauber abbrechbar (Abbruch-Disziplin).
+     */
+    function resolvePackGlobals(win) {
+        win = win || window;
+        const missing = [];
+        let store = null, item = null, repoItem = null, ItemPile = null,
+            SearchCriteria = null, GameCurrency = null;
+        try {
+            store = win.services && win.services.Store;
+            if (!store || typeof store.getPacks !== 'function') missing.push('services.Store.getPacks');
+        } catch (e) { missing.push('services.Store'); }
+        try {
+            item = win.services && win.services.Item;
+            if (!item || typeof item.requestUnassignedItems !== 'function' ||
+                typeof item.move !== 'function' || typeof item.searchStorageItems !== 'function' ||
+                typeof item.redeem !== 'function') missing.push('services.Item');
+        } catch (e) { missing.push('services.Item'); }
+        try {
+            repoItem = win.repositories && win.repositories.Item;
+            if (!repoItem || typeof repoItem.numItemsInCache !== 'function' ||
+                typeof repoItem.setDirty !== 'function') missing.push('repositories.Item');
+        } catch (e) { missing.push('repositories.Item'); }
+        try {
+            ItemPile = win.ItemPile;
+            if (!ItemPile || ItemPile.PURCHASED == null || ItemPile.CLUB == null || ItemPile.STORAGE == null) missing.push('ItemPile');
+        } catch (e) { missing.push('ItemPile'); }
+        try {
+            SearchCriteria = win.UTSearchCriteriaDTO;
+            if (typeof SearchCriteria !== 'function') missing.push('UTSearchCriteriaDTO');
+        } catch (e) { missing.push('UTSearchCriteriaDTO'); }
+        // GameCurrency ist OPTIONAL (Live-Befund 16.08., packScan: in der
+        // fc26-Web-App existiert es nicht als Global). Stufe 1 braucht es
+        // nicht: purchase(currency) wird nie gerufen (nur open() auf
+        // besessenen Packs), und isMiscPackItem() hat den itemType-Fallback.
+        // Fehlt es, wird das nur diagnostisch vermerkt, nicht blockiert.
+        const optionalMissing = [];
+        try {
+            GameCurrency = win.GameCurrency;
+            if (typeof GameCurrency !== 'function') { GameCurrency = null; optionalMissing.push('GameCurrency'); }
+        } catch (e) { GameCurrency = null; optionalMissing.push('GameCurrency'); }
+        return {
+            ok: missing.length === 0, missing: missing, optionalMissing: optionalMissing,
+            store: store, item: item, repoItem: repoItem, ItemPile: ItemPile,
+            SearchCriteria: SearchCriteria, GameCurrency: GameCurrency
+        };
+    }
+    // response.packs statt response.items - eigene Extraktion neben
+    // responseItems() statt eines Parameters daran, weil das Feld (nicht nur
+    // der Aufrufkontext) ein anderes ist.
+    function responsePacks(response) {
+        if (!response) return [];
+        const r = response.response || response.data || response;
+        if (r && Array.isArray(r.packs)) return r.packs;
+        return [];
+    }
+    /** Eigene Packs (isMyPack) nach id gruppiert - jede Instanz ein Eintrag. */
+    function groupMyPacks(packs) {
+        const order = [];
+        const byId = new Map();
+        for (const p of (packs || [])) {
+            if (!p || p.isMyPack !== true) continue;
+            if (!byId.has(p.id)) {
+                const g = { id: p.id, packName: p.packName, tradable: !!p.tradable, count: 0 };
+                byId.set(p.id, g);
+                order.push(g);
+            }
+            byId.get(p.id).count++;
+        }
+        return order;
+    }
+    function unassignedGuardOk(count) {
+        return count === 0;
+    }
+    // ---- Klartext-Namen (Live-Befund 16.08., LEARNINGS §50) ----------------
+    // EA liefert am Pack-Objekt NUR den Lokalisierungs-Key
+    // ("FUT_STORE_PACK_1082_NAME_MOBILE"); im Store-UI steht "Provisions Pack".
+    // Aufloesung ueber services.Localization.localize(key, args) - belegt in
+    // der PaleTools-Analyse (dort exakt auf pack.packName angewandt, sowohl
+    // fuer das My-Packs-Dropdown als auch fuer data-title). Ein fuehrendes
+    // '*' ist EAs Marker fuer "nicht/teilweise lokalisiert" und wird
+    // abgeschnitten (macht PaleTools genauso).
+    function localizeEaKey(key, win) {
+        win = win || (typeof window !== 'undefined' ? window : null);
+        if (!key || typeof key !== 'string' || !win) return null;
+        let fn = null;
+        try {
+            const L = win.services && win.services.Localization;
+            if (L && typeof L.localize === 'function') fn = L.localize.bind(L);
+        } catch (e) {}
+        if (!fn) { try { if (typeof win.localize === 'function') fn = win.localize; } catch (e) {} }
+        if (!fn) return null;
+        let s = null;
+        try { s = fn(key, []); } catch (e) { return null; }
+        if (typeof s !== 'string' || !s.length) return null;
+        if (s.length > 1 && s.charAt(0) === '*') s = s.substring(1);
+        return (s && s !== key) ? s : null;
+    }
+    // Fallback ohne Localization-Service: aus dem Key wenigstens die Pack-Id
+    // lesbar machen, statt "FUT_STORE_PACK_1082_NAME_MOBILE" anzuzeigen.
+    function prettifyPackKey(key, id) {
+        const m = /FUT_STORE_PACK_(\d+)/i.exec(String(key || ''));
+        if (m) return 'Pack ' + m[1];
+        if (key && !/^[A-Z0-9_]+$/.test(String(key))) return String(key);
+        return 'Pack ' + (id != null ? id : '?');
+    }
+    function packLabelOf(group, win) {
+        if (!group) return 'Pack ?';
+        return localizeEaKey(group.packName, win) || prettifyPackKey(group.packName, group.id);
+    }
+    // rareflag -> Klartext. Nur belegte Werte benennen (FUT-Standard 0/1,
+    // TOTW 3 - dieselbe Identitaet wie isTotw()); alles andere ehrlich als
+    // "Special" mit der Flag-Nummer, statt einen Namen zu erfinden.
+    function rarityLabelOf(rareflag, groups) {
+        if (rareflag == null || rareflag === '') return null;
+        const rf = Number(rareflag);
+        if (rf === 0) return 'Common';
+        if (rf === 1) return 'Rare';
+        if (rf === 3) return 'TOTW';
+        if (Array.isArray(groups) && groups.indexOf(83) > -1) return 'Special (TOTW/TOTS/FOF/FUTTIES)';
+        if (isFinite(rf)) return 'Special (' + rf + ')';
+        return null;
+    }
+    /**
+     * Name/Rating/Seltenheit einer frisch gezogenen Karte (Live-Befund 16.08.:
+     * die Zieh-Liste zeigte "#920367683733" ohne Rating). Die Items aus
+     * requestUnassignedItems() sind ENTITIES, keine JSON-DTOs: der Name steht
+     * nicht am Item selbst, sondern in den Stammdaten
+     * (getStaticData() -> _staticData -> repositories.Item.getStaticDataByDefId),
+     * und der Schluessel heisst definitionId, NICHT assetId (in EAs Entity-
+     * Klasse existiert assetId nicht). Alles belegt aus der PaleTools-Analyse.
+     *
+     * normalizePlayer() bleibt der erste Versuch (unveraendert - daran haengt
+     * das Club-Laden): liefert es einen Treffer, gewinnt der. Die Entity-Kette
+     * ist rein additiv fuer den Fall, dass es aussteigt (bei Pack-Items:
+     * rating war NaN -> null).
+     */
+    function describePackItem(it, opts) {
+        opts = opts || {};
+        // Fehler werden GESAMMELT statt still geschluckt: eine Karte, die nur
+        // ueber den Fallback lesbar ist, bleibt anzeigbar (der Lauf ist da
+        // laengst durch), aber der Grund landet ueber den Aufrufer im Report.
+        const errs = [];
+        function trap(fn) {
+            try { return fn(); } catch (e) { errs.push(String(e && e.message || e)); return null; }
+        }
+        const norm = opts.normalize ? trap(function () { return opts.normalize(it, false); }) : null;
+        const defId = safeGet(it, 'definitionId');
+        let name = norm && norm.name && !/^#/.test(norm.name) ? norm.name : null;
+        let rating = norm && norm.rating != null ? norm.rating : null;
+        let rareflag = norm && norm.rareflag != null ? norm.rareflag : null;
+        let groups = norm && norm.groups ? norm.groups : null;
+        if (rating == null) {
+            const r = safeGet(it, 'rating');
+            if (r != null && !isNaN(parseInt(r, 10))) rating = parseInt(r, 10);
+        }
+        if (rareflag == null) {
+            const rf = safeGet(it, 'rareflag');
+            if (rf != null && !isNaN(parseInt(rf, 10))) rareflag = parseInt(rf, 10);
+        }
+        if (!groups) { const g = safeGet(it, 'groups'); if (Array.isArray(g)) groups = g.map(Number); }
+        // Stammdaten-Kette (nur wenn noch etwas fehlt)
+        if (name == null || rating == null) {
+            let sd = trap(function () {
+                return (it && typeof it.getStaticData === 'function') ? it.getStaticData() : null;
+            });
+            if (!sd) sd = safeGet(it, '_staticData');
+            if (!sd && defId != null && opts.repoItem) {
+                sd = trap(function () {
+                    return (typeof opts.repoItem.getStaticDataByDefId === 'function')
+                        ? opts.repoItem.getStaticDataByDefId(defId) : null;
+                });
+            }
+            if (sd) {
+                if (name == null) {
+                    name = safeGet(sd, 'name') ||
+                        safeCall(function () { return typeof sd.getFullName === 'function' ? sd.getFullName() : null; }) ||
+                        safeGet(sd, 'commonName') ||
+                        ([safeGet(sd, 'firstName'), safeGet(sd, 'lastName')].filter(Boolean).join(' ') || null);
+                }
+                if (rating == null) {
+                    const sr = safeGet(sd, 'rating');
+                    if (sr != null && !isNaN(parseInt(sr, 10))) rating = parseInt(sr, 10);
+                }
+            }
+        }
+        return {
+            name: name || ('#' + (defId != null ? defId : safeGet(it, 'id'))),
+            rating: rating,
+            rareflag: rareflag,
+            rarity: rarityLabelOf(rareflag, groups),
+            nameResolved: !!name,
+            readError: errs.length ? errs[0] : null
+        };
+    }
+    function safeGet(o, k) {
+        try { const v = o ? o[k] : null; return v === undefined ? null : v; }
+        catch (e) { return null; }
+    }
+    function safeCall(fn) { try { return fn(); } catch (e) { return null; } }
+    /**
+     * Einmalige Feld-Aufnahme fuer die Diagnose (diagnose-feld-statt-raten):
+     * WIE sehen die Objekte wirklich aus? Beantwortet beim naechsten Report,
+     * ob Entity oder DTO, wie die Felder heissen und ob getStaticData da ist -
+     * statt weiter zu vermuten, warum ein Name fehlt.
+     */
+    function sampleObjectShape(o) {
+        if (!o || typeof o !== 'object') return null;
+        const own = safeCall(function () { return Object.keys(o).slice(0, 40); }) || [];
+        let proto = [];
+        try {
+            const p = Object.getPrototypeOf(o);
+            if (p && p !== Object.prototype) proto = Object.getOwnPropertyNames(p).slice(0, 40);
+        } catch (e) {}
+        return {
+            ownKeys: own, protoMethods: proto,
+            hasGetStaticData: typeof safeGet(o, 'getStaticData') === 'function',
+            hasStaticDataField: !!safeGet(o, '_staticData'),
+            definitionId: safeGet(o, 'definitionId'),
+            assetId: safeGet(o, 'assetId'),
+            ratingRaw: safeGet(o, 'rating'),
+            rareflagRaw: safeGet(o, 'rareflag'),
+            itemTypeRaw: safeGet(o, 'itemType')
+        };
+    }
+    /**
+     * Misc-Items (Coins etc.) muessen ueber services.Item.redeem() statt
+     * move() verteilt werden. GameCurrency ist EAs eigene Klasse dafuer
+     * (Fallback-Kette: fehlt sie, greift derselbe itemType-Weg, den
+     * normalizePlayer() bereits fuer die Spieler-Erkennung nutzt).
+     */
+    function isMiscPackItem(item, GameCurrency) {
+        try {
+            if (GameCurrency && typeof GameCurrency === 'function' && item instanceof GameCurrency) return true;
+        } catch (e) {}
+        try {
+            const t = item && (item.itemType || item.type);
+            if (t && String(t).toLowerCase() !== 'player') return true;
+        } catch (e) {}
+        return false;
+    }
+    /**
+     * Reine Verteil-Entscheidung: Nicht-Duplikate -> Verein, Duplikate ->
+     * Storage bis zur Kapazitaet, Rest bleibt liegen (Stufe 1: kein
+     * Quicksell/Transferliste), Misc-Items gesondert markiert.
+     */
+    function decidePackDistribution(items, storageCountBefore, storageCapacity, GameCurrency) {
+        const toClub = [], toStorage = [], toMisc = [], leftover = [];
+        let storageUsed = storageCountBefore;
+        for (const it of (items || [])) {
+            if (isMiscPackItem(it, GameCurrency)) { toMisc.push(it); continue; }
+            let dup = false;
+            try { dup = typeof it.isDuplicate === 'function' ? !!it.isDuplicate() : !!it.isDuplicate; }
+            catch (e) { dup = false; }
+            if (!dup) { toClub.push(it); continue; }
+            if (storageUsed < storageCapacity) { toStorage.push(it); storageUsed++; }
+            else { leftover.push(it); }
+        }
+        return { toClub: toClub, toStorage: toStorage, toMisc: toMisc, leftover: leftover, storageCountAfterPlanned: storageUsed };
+    }
+    // Wholesale-Reassign statt Feld-fuer-Feld: STATE.diag.packScan startet als
+    // null (solver-test.js §17 verlangt "null" statt eines Objekt-Literals in
+    // der STATE.diag-Deklaration selbst, siehe clubLoad/uiScan) - Object.assign
+    // ignoriert eine null-Quelle, der erste Aufruf befuellt das Feld also ohne
+    // Sonderfall.
+    function mergePackScan(patch) {
+        STATE.diag.packScan = Object.assign({}, STATE.diag.packScan, patch);
+    }
+    // Takt zwischen den Verteil-Schritten: 300-700ms, wie PaleTools' "Fast"
+    // (LEARNINGS §30-Logik) - kein festerer Wert, kein schnellerer.
+    function packTakt() { return 300 + Math.floor(Math.random() * 401); }
+    // Takt ZWISCHEN Packs (Stufe 2, Ticket #76): spuerbar laenger als
+    // packTakt() (500-1400ms statt 300-700ms) - zwischen zwei ganzen
+    // Pack-Zyklen ist mehr Abstand die konservativere Wahl, solange die
+    // open()-Instanz-Semantik noch nicht live verifiziert ist.
+    function packBetweenTakt() { return 500 + Math.floor(Math.random() * 901); }
+    async function fetchMyPacks() {
+        const g = resolvePackGlobals();
+        if (!g.ok) {
+            reportError('Pack-Enumeration: fehlende Globals', new Error(g.missing.join(', ')));
+            mergePackScan({ missingGlobals: g.missing });
+            throw new Error('Store-Schnittstellen fehlen (' + g.missing.join(', ') + ') - Diagnose prüfen.');
+        }
+        const resp = await obsPromise(g.store.getPacks());
+        if (!responseOk(resp)) {
+            throw new Error('Pack-Liste konnte nicht geladen werden (Status ' + (resp && resp.status) + ').');
+        }
+        const packs = responsePacks(resp);
+        const groups = groupMyPacks(packs);
+        STATE.packGroups = groups;
+        const byId = new Map();
+        for (const p of packs) {
+            if (!p || p.isMyPack !== true) continue;
+            const key = String(p.id);
+            if (!byId.has(key)) byId.set(key, []);
+            byId.get(key).push(p);
+        }
+        STATE.packEntitiesById = byId;
+        mergePackScan({
+            myPacks: groups.map(function (x) {
+                return { id: x.id, packName: x.packName, label: packLabelOf(x),
+                         tradable: x.tradable, count: x.count };
+            }),
+            packShape: sampleObjectShape(packs[0]),
+            missingGlobals: g.optionalMissing || []
+        });
+        return groups;
+    }
+    function renderPackTypeOptions() {
+        if (!ui.packType) return;
+        const prev = ui.packType.value;
+        const groups = STATE.packGroups || [];
+        if (!groups.length) {
+            ui.packType.innerHTML = '<option value="">– keine eigenen Packs gefunden –</option>';
+            return;
+        }
+        ui.packType.innerHTML = groups.map(function (g) {
+            return '<option value="' + escapeHtml(String(g.id)) + '">' + escapeHtml(packLabelOf(g)) +
+                   ' (' + g.count + ' Stück)</option>';
+        }).join('');
+        if (prev && groups.some(function (g) { return String(g.id) === prev; })) ui.packType.value = prev;
+    }
+    function setPackStatus(text) {
+        if (!ui.packResult) return;
+        ui.packResult.innerHTML = '<div class="sbc-opt-batch-round">' + escapeHtml(text) + '</div>';
+    }
+    function renderPackDrawList(drawn, headerText) {
+        if (!ui.packResult) return;
+        const sorted = drawn.slice().sort(function (a, b) { return (b.rating || 0) - (a.rating || 0); });
+        let html = '';
+        for (const d of sorted) {
+            // name/target koennen bei unlesbaren Items fehlen ({id, error}-
+            // Fallback des Einsammlers) - "undefined → undefined" waere die
+            // Anzeige (Nacht-Review 16.08.).
+            html += '<div class="sbc-opt-batch-round">' +
+                    (d.rating != null ? '<b>' + d.rating + '</b> ' : '') +
+                    escapeHtml(d.name || ('Item ' + (d.id != null ? d.id : '?'))) +
+                    (d.rarity ? ' <span class="sbc-opt-dim">' + escapeHtml(d.rarity) + '</span>' : '') +
+                    (d.isDuplicateRaw ? ' <span class="sbc-opt-batch-warn">[Duplikat]</span>' : '') +
+                    ' → ' + escapeHtml(d.target || (d.error ? 'Fehler: ' + d.error : 'unbekannt')) + '</div>';
+        }
+        if (!html) html = '<div class="sbc-opt-batch-round">Keine Karten gezogen.</div>';
+        // Statuszeile als KOPF ueber der Liste statt per setPackStatus()
+        // hinterher: beide schreiben dasselbe innerHTML, die Liste war sonst
+        // fuer genau einen Frame sichtbar (Nacht-Review 16.08.) - und sie ist
+        // der einzige Beleg dafuer, was ein unumkehrbarer Lauf gezogen hat.
+        if (headerText) {
+            html = '<div class="sbc-opt-batch-round"><b>' + escapeHtml(headerText) + '</b></div>' + html;
+        }
+        ui.packResult.innerHTML = html;
+    }
+    async function onPackRefreshClick() {
+        if (STATE.packOpenBusy) return;
+        ui.packRefresh.disabled = true;
+        setPackStatus('lade Packs...');
+        try {
+            const groups = await fetchMyPacks();
+            renderPackTypeOptions();
+            setPackStatus(groups.length + ' eigene Pack-Typen gefunden.');
+        } catch (e) {
+            reportError('Pack-Enumeration fehlgeschlagen', e);
+            setPackStatus('Fehler: ' + (e.message || e));
+            toast('Packs laden fehlgeschlagen: ' + (e.message || e), 'error');
+        } finally {
+            ui.packRefresh.disabled = false;
+        }
+    }
+    /**
+     * Testlauf: Unassigned-Guard -> open() auf EINER Instanz -> success-Check
+     * -> einsammeln -> verteilen (mit Takt). JEDER Fehler/success:false bricht
+     * sofort ab, KEIN Retry (Abbruch-Disziplin) - Pack-Oeffnen ist
+     * unumkehrbar, ein zweiter Versuch nach einem unklaren Fehler waere ein
+     * zweites unkontrolliertes Risiko.
+     */
+    async function runPackTestOpen(groupId) {
+        const g = resolvePackGlobals();
+        if (!g.ok) {
+            reportError('Pack-Testlauf: fehlende Globals', new Error(g.missing.join(', ')));
+            mergePackScan({ missingGlobals: g.missing });
+            return { ok: false, reason: 'Store-Schnittstellen fehlen (' + g.missing.join(', ') + ').' };
+        }
+        mergePackScan({ missingGlobals: g.optionalMissing || [], errorForm: null, lastRun: null });
+        let unassignedBefore;
+        try { unassignedBefore = g.repoItem.numItemsInCache(g.ItemPile.PURCHASED); }
+        catch (e) {
+            reportError('Pack-Testlauf: numItemsInCache fehlgeschlagen', e);
+            mergePackScan({ errorForm: { step: 'unassignedGuard', message: String(e && e.message || e) } });
+            return { ok: false, reason: 'Unassigned-Bestand konnte nicht geprüft werden.' };
+        }
+        mergePackScan({ unassignedCountBefore: unassignedBefore });
+        if (!unassignedGuardOk(unassignedBefore)) {
+            return { ok: false, reason: 'Erst die ungeöffneten Karten (Unassigned: ' + unassignedBefore + ') im Spiel wegräumen.' };
+        }
+        const entities = (STATE.packEntitiesById && STATE.packEntitiesById.get(String(groupId))) || [];
+        if (!entities.length) return { ok: false, reason: 'Pack-Typ nicht (mehr) gefunden - erst aktualisieren.' };
+        const entity = entities[0];
+        const packCountBefore = entities.length;
+        let openResp;
+        try { openResp = await obsPromise(entity.open()); }
+        catch (e) {
+            reportError('Pack-Testlauf: open() fehlgeschlagen', e);
+            mergePackScan({ errorForm: { step: 'open', message: String(e && e.message || e) } });
+            return { ok: false, reason: 'Öffnen fehlgeschlagen: ' + (e.message || e) };
+        }
+        if (!responseOk(openResp)) {
+            mergePackScan({ errorForm: { step: 'open', status: openResp && openResp.status,
+                keys: openResp ? Object.keys(openResp) : [] } });
+            return { ok: false, reason: 'Öffnen abgelehnt (Status ' + (openResp && openResp.status) + ').' };
+        }
+        // Zaehlt ab hier - open() ist die unumkehrbare Aktion, unabhaengig
+        // davon, ob das Einsammeln/Verteilen danach noch scheitert (der Pack-
+        // Verbrauch ist so oder so bereits passiert).
+        mergePackScan({ runsCount: ((STATE.diag.packScan && STATE.diag.packScan.runsCount) || 0) + 1 });
+        try { g.repoItem.setDirty(g.ItemPile.PURCHASED); }
+        catch (e) { reportError('Pack-Testlauf: setDirty fehlgeschlagen', e); }
+        let itemsResp;
+        try { itemsResp = await obsPromise(g.item.requestUnassignedItems()); }
+        catch (e) {
+            reportError('Pack-Testlauf: requestUnassignedItems fehlgeschlagen', e);
+            mergePackScan({ errorForm: { step: 'collect', message: String(e && e.message || e) } });
+            return { ok: false, reason: 'Karten einsammeln fehlgeschlagen: ' + (e.message || e) + ' Karten bleiben unassigned.' };
+        }
+        // Ein AUFGELOESTES {success:false} ist kein Throw - ohne diesen Check
+        // wuerde responseItems() auf dem abgelehnten Payload einfach [] liefern
+        // und der Lauf faelschlich als "0 Karten gezogen" statt als Ablehnung
+        // durchgehen (Validator-Fund).
+        if (!responseOk(itemsResp)) {
+            reportError('Pack-Testlauf: requestUnassignedItems abgelehnt', new Error('Status ' + (itemsResp && itemsResp.status)));
+            mergePackScan({ errorForm: { step: 'collect', status: itemsResp && itemsResp.status,
+                keys: itemsResp ? Object.keys(itemsResp) : [] } });
+            return { ok: false, reason: 'Karten einsammeln abgelehnt (Status ' + (itemsResp && itemsResp.status) + '). Karten bleiben unassigned.' };
+        }
+        const items = responseItems(itemsResp);
+        let storageBefore;
+        try {
+            const storageResp = await obsPromise(g.item.searchStorageItems(new g.SearchCriteria()));
+            if (!responseOk(storageResp)) {
+                reportError('Pack-Testlauf: searchStorageItems abgelehnt', new Error('Status ' + (storageResp && storageResp.status)));
+                mergePackScan({ errorForm: { step: 'storageCount', status: storageResp && storageResp.status,
+                    keys: storageResp ? Object.keys(storageResp) : [] } });
+                return { ok: false, reason: 'Storage-Stand abgelehnt (Status ' + (storageResp && storageResp.status) + '). Karten bleiben unassigned.' };
+            }
+            storageBefore = responseItems(storageResp).length;
+        } catch (e) {
+            reportError('Pack-Testlauf: searchStorageItems fehlgeschlagen', e);
+            mergePackScan({ errorForm: { step: 'storageCount', message: String(e && e.message || e) } });
+            return { ok: false, reason: 'Storage-Stand konnte nicht geprüft werden: ' + (e.message || e) + ' Karten bleiben unassigned.' };
+        }
+        mergePackScan({ storageCountBefore: storageBefore });
+        const decision = decidePackDistribution(items, storageBefore, PACK_STORAGE_CAPACITY_ASSUMED, g.GameCurrency);
+        for (const it of decision.toMisc) {
+            await sleep(packTakt());
+            let redeemResp;
+            try { redeemResp = await obsPromise(g.item.redeem(it)); }
+            catch (e) {
+                reportError('Pack-Testlauf: redeem() fehlgeschlagen', e);
+                mergePackScan({ errorForm: { step: 'redeem', message: String(e && e.message || e) } });
+                return { ok: false, reason: 'Einlösen (Misc/Währung) fehlgeschlagen: ' + (e.message || e) + ' Rest bleibt unassigned.' };
+            }
+            // Konsistent mit dem eigenen Versprechen "JEDER Fehler bricht ab" -
+            // vorher lief die Schleife nach einer Ablehnung einfach weiter.
+            if (!responseOk(redeemResp)) {
+                reportError('Pack-Testlauf: redeem() abgelehnt', new Error('Status ' + (redeemResp && redeemResp.status)));
+                mergePackScan({ errorForm: { step: 'redeem', status: redeemResp && redeemResp.status,
+                    keys: redeemResp ? Object.keys(redeemResp) : [] } });
+                return { ok: false, reason: 'Einlösen (Misc/Währung) abgelehnt (Status ' + (redeemResp && redeemResp.status) + '). Rest bleibt unassigned.' };
+            }
+        }
+        if (decision.toClub.length) {
+            await sleep(packTakt());
+            let clubResp;
+            try { clubResp = await obsPromise(g.item.move(decision.toClub, g.ItemPile.CLUB)); }
+            catch (e) {
+                reportError('Pack-Testlauf: move->CLUB fehlgeschlagen', e);
+                mergePackScan({ errorForm: { step: 'moveClub', message: String(e && e.message || e) } });
+                return { ok: false, reason: 'Verteilen in den Verein fehlgeschlagen: ' + (e.message || e) + ' Karten bleiben unassigned.' };
+            }
+            if (!responseOk(clubResp)) {
+                reportError('Pack-Testlauf: move->CLUB abgelehnt', new Error('Status ' + (clubResp && clubResp.status)));
+                mergePackScan({ errorForm: { step: 'moveClub', status: clubResp && clubResp.status,
+                    keys: clubResp ? Object.keys(clubResp) : [] } });
+                return { ok: false, reason: 'Verteilen in den Verein abgelehnt (Status ' + (clubResp && clubResp.status) + '). Karten bleiben unassigned.' };
+            }
+        }
+        if (decision.toStorage.length) {
+            await sleep(packTakt());
+            let storageMoveResp;
+            try { storageMoveResp = await obsPromise(g.item.move(decision.toStorage, g.ItemPile.STORAGE)); }
+            catch (e) {
+                reportError('Pack-Testlauf: move->STORAGE fehlgeschlagen', e);
+                mergePackScan({ errorForm: { step: 'moveStorage', message: String(e && e.message || e) } });
+                return { ok: false, reason: 'Verteilen in den Storage fehlgeschlagen: ' + (e.message || e) + ' Karten bleiben unassigned.' };
+            }
+            if (!responseOk(storageMoveResp)) {
+                reportError('Pack-Testlauf: move->STORAGE abgelehnt', new Error('Status ' + (storageMoveResp && storageMoveResp.status)));
+                mergePackScan({ errorForm: { step: 'moveStorage', status: storageMoveResp && storageMoveResp.status,
+                    keys: storageMoveResp ? Object.keys(storageMoveResp) : [] } });
+                return { ok: false, reason: 'Verteilen in den Storage abgelehnt (Status ' + (storageMoveResp && storageMoveResp.status) + '). Karten bleiben unassigned.' };
+            }
+        }
+        let storageAfter = null;
+        try {
+            const afterResp = await obsPromise(g.item.searchStorageItems(new g.SearchCriteria()));
+            // Rein beobachtend: die Verteilung ist an dieser Stelle bereits
+            // abgeschlossen, ein Abbruch wuerde einen tatsaechlich erfolgreichen
+            // Lauf faelschlich als Fehlschlag melden. Trotzdem KEIN Blindflug bei
+            // Ablehnung: storageAfter bleibt null statt aus einem abgelehnten
+            // Payload eine falsche Zahl abzuleiten (dasselbe Validator-Argument,
+            // nur ohne Abbruch der bereits erledigten Verteilung).
+            if (responseOk(afterResp)) storageAfter = responseItems(afterResp).length;
+            else reportError('Pack-Testlauf: Storage-Nachzählung abgelehnt', new Error('Status ' + (afterResp && afterResp.status)));
+        } catch (e) { reportError('Pack-Testlauf: Storage-Nachzählung fehlgeschlagen', e); }
+        mergePackScan({ storageCountAfter: storageAfter });
+        // Beantwortet Mechanik-Frage (a): sinkt die Anzahl gleicher Instanzen
+        // um genau 1?
+        let packCountAfterSameGroup = null;
+        try {
+            const afterPacks = responsePacks(await obsPromise(g.store.getPacks()));
+            packCountAfterSameGroup = groupMyPacks(afterPacks)
+                .filter(function (x) { return String(x.id) === String(groupId); })
+                .reduce(function (n, x) { return n + x.count; }, 0);
+        } catch (e) { reportError('Pack-Testlauf: Pack-Nachzählung fehlgeschlagen', e); }
+        const drawn = items.map(function (it) {
+            // Die Verteilung (move()/redeem()) ist an dieser Stelle bereits
+            // abgeschlossen - ein unlesbares Item darf die Zieh-Listen-
+            // Aufbereitung nicht mehr als Throw beenden (Validator-Fund):
+            // sonst wuerde runPackOpenAll() einen tatsaechlich erfolgreichen
+            // Pack-Zyklus als Fehler werten und die Serie unnoetig stoppen.
+            try {
+                const misc = isMiscPackItem(it, g.GameCurrency);
+                // Entity-Kette statt nur normalizePlayer(): bei Pack-Items
+                // stand vorher "#920367683733" ohne Rating in der Liste
+                // (Live-Befund 16.08.) - der Name liegt in den Stammdaten.
+                const d = misc ? null : describePackItem(it,
+                    { normalize: normalizePlayer, repoItem: g.repoItem });
+                // Nur teilweise lesbar: die Zeile bleibt (mit ID-Fallback),
+                // der Grund geht trotzdem in den Report - sonst waere ein
+                // stiller Namens-Ausfall nicht mehr diagnostizierbar.
+                if (d && d.readError) {
+                    reportError('Pack-Testlauf: Karte nur teilweise lesbar', new Error(d.readError));
+                }
+                let isDupRaw = null;
+                try { isDupRaw = typeof it.isDuplicate === 'function' ? it.isDuplicate() : it.isDuplicate; } catch (e) {}
+                return {
+                    misc: misc,
+                    name: d ? d.name : 'Misc/Währung',
+                    rating: d ? d.rating : null,
+                    rarity: d ? d.rarity : null,
+                    isDuplicateRaw: isDupRaw,
+                    target: misc ? 'redeem' : (decision.toStorage.indexOf(it) > -1 ? 'Storage'
+                            : (decision.leftover.indexOf(it) > -1 ? 'liegen geblieben (Storage voll)' : 'Verein'))
+                };
+            } catch (e) {
+                reportError('Pack-Testlauf: Zieh-Listen-Eintrag nicht lesbar', e);
+                return { id: it && (it.assetId || it.id), error: String(e && e.message || e) };
+            }
+        });
+        mergePackScan({
+            lastRun: {
+                itemCount: items.length,
+                items: drawn,
+                // Feld-Aufnahme des ERSTEN Items: zeigt im naechsten Report,
+                // ob Entity oder DTO und wie die Felder wirklich heissen -
+                // die Grundlage, falls ein Name weiterhin fehlt.
+                itemShape: sampleObjectShape(items[0]),
+                namesResolved: drawn.filter(function (d) { return d.name && !/^#/.test(d.name); }).length,
+                openResponseKeys: openResp ? Object.keys(openResp) : [],
+                packCountBefore: packCountBefore,
+                packCountAfterSameGroup: packCountAfterSameGroup
+            }
+        });
+        return { ok: true, drawn: drawn, storageBefore: storageBefore, storageAfter: storageAfter };
+    }
+    async function onPackTestClick() {
+        if (STATE.packOpenBusy) return;
+        const groupId = ui.packType && ui.packType.value;
+        if (!groupId) { toast('Erst einen Pack-Typ wählen (Aktualisieren drücken).', 'error'); return; }
+        STATE.packOpenBusy = true;
+        ui.packTest.disabled = true;
+        ui.packAll.disabled = true;
+        ui.packRefresh.disabled = true;
+        setPackStatus('öffne 1 Pack...');
+        try {
+            const res = await runPackTestOpen(groupId);
+            if (!res.ok) {
+                setPackStatus('Abgebrochen: ' + res.reason);
+                toast('Pack-Test abgebrochen: ' + res.reason, 'error');
+                return;
+            }
+            renderPackDrawList(res.drawn);
+            toast('1 Pack geöffnet, ' + res.drawn.length + ' Karten verteilt.', '');
+            try { await fetchMyPacks(); renderPackTypeOptions(); } catch (e) {}
+        } catch (e) {
+            reportError('Pack-Testlauf: unerwarteter Fehler', e);
+            setPackStatus('Fehler: ' + (e.message || e));
+            toast('Pack-Test fehlgeschlagen: ' + (e.message || e), 'error');
+        } finally {
+            STATE.packOpenBusy = false;
+            ui.packTest.disabled = false;
+            ui.packAll.disabled = false;
+            ui.packRefresh.disabled = false;
+        }
+    }
+    /**
+     * "Alle öffnen" (Stufe 2, Ticket #76): ruft runPackTestOpen() wiederholt
+     * für denselben Pack-Typ - EIN Stufe-1-Ablauf pro Iteration, keine zweite
+     * Kopie der Abbruch-Disziplin (SSOT). Stoppt beim ERSTEN Fehlschlag jeder
+     * Art - die Stufe-1-Mechanik ist stub-getestet, aber noch NICHT live
+     * verifiziert; im schlimmsten Fall degradiert der Lauf so zu einem
+     * Einzel-Pack-Test mit klarer Fehlermeldung, bereits geöffnete Packs sind
+     * sicher verteilt. Ein liegen gebliebenes Duplikat (Storage voll) stoppt
+     * proaktiv mit einer konkreten Meldung, statt den generischen
+     * Unassigned-Guard des nächsten Packs die Sache melden zu lassen.
+     * Zwischen erfolgreichen Packs wird die Pack-Liste per fetchMyPacks() neu
+     * geladen statt eine client-seitige Entity-Referenz weiterzuzählen - die
+     * open()-Instanz-Semantik bei mehreren Einträgen derselben id ist eine
+     * der vier noch offenen Mechanik-Fragen (LEARNINGS §46), ein frischer
+     * EA-Stand umgeht die Unsicherheit statt sie zu erraten. Ein Throw AUS
+     * der Schleife (z.B. aus runPackTestOpen()) landet im selben stopWith()-
+     * Pfad wie ein reguläres ok:false - opened/total/lastAllRun bleiben
+     * beobachtbar, und die bereits verteilten Packs bleiben in der
+     * Zieh-Liste sichtbar statt in einem unbehandelten Reject zu verschwinden.
+     */
+    async function runPackOpenAll(groupId, requestedCount, onProgress) {
+        const initialGroup = (STATE.packGroups || []).find(function (g) { return String(g.id) === String(groupId); });
+        const available = initialGroup ? initialGroup.count : 0;
+        const total = Math.max(0, Math.min(requestedCount == null ? available : requestedCount, available));
+        const drawn = [];
+        let opened = 0;
+        function stopWith(reason) {
+            const message = opened + ' von ' + total + ' geöffnet - gestoppt: ' + reason;
+            mergePackScan({ lastAllRun: { requested: requestedCount, total: total, opened: opened, ok: false, reason: reason } });
+            return { ok: false, opened: opened, total: total, reason: reason, message: message, drawn: drawn };
+        }
+        // currentPack lebt AUSSERHALB der Schleife, damit der Catch-Block
+        // (der die Schleife selbst verlassen hat) noch weiss, an welchem
+        // Pack der Throw passierte (Validator-Fund: ein Throw aus
+        // runPackTestOpen() - z.B. eine kuenftig doch ungeschuetzte Stelle -
+        // durfte die Serie sonst unbeobachtet verlassen: kein lastAllRun-
+        // Stand, keine Zieh-Liste der bereits verteilten Packs).
+        let currentPack = 0;
+        try {
+            for (let i = 0; i < total; i++) {
+                currentPack = i + 1;
+                if (onProgress) onProgress(i + 1, total, 'öffne Pack ' + (i + 1) + ' von ' + total + '...');
+                const res = await runPackTestOpen(groupId);
+                if (!res.ok) return stopWith(res.reason);
+                opened++;
+                Array.prototype.push.apply(drawn, res.drawn);
+                const stuck = res.drawn.some(function (d) { return /liegen geblieben/.test(d.target); });
+                if (stuck) {
+                    return stopWith('Storage voll — Rest-Karten liegen unassigned.');
+                }
+                if (i + 1 < total) {
+                    await sleep(packBetweenTakt());
+                    try { await fetchMyPacks(); }
+                    catch (e) {
+                        return stopWith('Pack-Liste nach Runde ' + opened + ' konnte nicht aktualisiert werden: ' + (e.message || e) + '.');
+                    }
+                    const freshGroup = (STATE.packGroups || []).find(function (g) { return String(g.id) === String(groupId); });
+                    if (!freshGroup || freshGroup.count < 1) {
+                        return stopWith('Keine weiteren Packs dieses Typs mehr verfügbar.');
+                    }
+                }
+            }
+        } catch (e) {
+            reportError('Pack-Alle-Öffnen: Abbruch bei Pack ' + currentPack, e);
+            return stopWith('Unerwarteter Fehler bei Pack ' + currentPack + ': ' + (e && e.message || e) + '.');
+        }
+        const message = opened + ' von ' + total + ' Pack(s) geöffnet und verteilt.';
+        mergePackScan({ lastAllRun: { requested: requestedCount, total: total, opened: opened, ok: true, reason: null } });
+        return { ok: true, opened: opened, total: total, message: message, drawn: drawn };
+    }
+    async function onPackAllClick() {
+        if (STATE.packOpenBusy) return;
+        const groupId = ui.packType && ui.packType.value;
+        if (!groupId) { toast('Erst einen Pack-Typ wählen (Aktualisieren drücken).', 'error'); return; }
+        const group = (STATE.packGroups || []).find(function (g) { return String(g.id) === String(groupId); });
+        const available = group ? group.count : 0;
+        const raw = ui.packCount && ui.packCount.value;
+        const requestedCount = (raw === '' || raw == null) ? null : parseInt(raw, 10);
+        if (requestedCount != null && (!Number.isFinite(requestedCount) || requestedCount < 1)) {
+            toast('Ungültige Anzahl.', 'error');
+            return;
+        }
+        const plannedTotal = Math.max(0, Math.min(requestedCount == null ? available : requestedCount, available));
+        if (plannedTotal < 1) { toast('Keine Packs dieses Typs zum Öffnen verfügbar.', 'error'); return; }
+        const packLabel = group ? packLabelOf(group) : ('Pack ' + groupId);
+        if (!window.confirm(
+            packLabel + ': ' + plannedTotal + ' Pack(s) werden nacheinander geöffnet.\n\n' +
+            'Stoppt beim ersten Fehler; bereits geöffnete Packs sind dann schon verteilt. Fortfahren?'
+        )) return;
+        STATE.packOpenBusy = true;
+        ui.packTest.disabled = true;
+        ui.packAll.disabled = true;
+        ui.packRefresh.disabled = true;
+        setPackStatus('öffne ' + plannedTotal + ' Pack(s)...');
+        try {
+            const res = await runPackOpenAll(groupId, requestedCount, function (cur, cnt, step) {
+                showProgress(cur, cnt, step, '', 'Pack');
+            });
+            renderPackDrawList(res.drawn, res.message);
+            if (!res.ok) {
+                finishProgress(res.message, false);
+                toast('Alle öffnen gestoppt: ' + res.message, 'error');
+            } else {
+                finishProgress(res.message, true);
+                toast(res.message, 'ok');
+            }
+            try { await fetchMyPacks(); renderPackTypeOptions(); } catch (e) {}
+        } catch (e) {
+            reportError('Pack-Alle-Öffnen: unerwarteter Fehler', e);
+            setPackStatus('Fehler: ' + (e.message || e));
+            toast('Alle öffnen fehlgeschlagen: ' + (e.message || e), 'error');
+        } finally {
+            STATE.packOpenBusy = false;
+            ui.packTest.disabled = false;
+            ui.packAll.disabled = false;
+            ui.packRefresh.disabled = false;
+        }
+    }
+    // ========================================================================
     //  8. BOOTSTRAP
     // ========================================================================
     function installServicesHooks() {
@@ -5351,7 +7432,7 @@
         // Menüpunkt in der EA-Leiste: häufiger als der 2s-Watchdog, damit er
         // beim View-Wechsel praktisch sofort steht. Kostet nur zwei
         // DOM-Lookups - deutlich billiger als ein Observer über die ganze App.
-        setInterval(function () { try { syncLauncher(); } catch (e) {} }, 500);
+        setInterval(function () { try { syncLauncher(); syncPackSection(); } catch (e) {} }, 500);
         // App-Services erscheinen erst nach dem App-Start.
         setInterval(installServicesHooks, 1000);
         // AUTO-LOAD: den Pool EINMAL im Hintergrund laden, sobald die Session

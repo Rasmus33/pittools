@@ -425,6 +425,194 @@ function ok(name, cond, detail) {
             && /isEmpty\(\)[\s\S]*?return null;/.test(fetchUrlBody),
         fetchUrlBody);
 
+    // ======================================================================
+    // 14. JS_BACK und JS_FILL_LOGIN (App 1.9.0)
+    // ======================================================================
+    // Beide sind - wie der Wächter - aus Java-String-Literalen zusammengesetzt
+    // und fallen am Gerät STILL aus, wenn ein Selektor oder eine Klammer nicht
+    // stimmt. Also: aus der Quelle holen und in einem Fake-DOM ausführen.
+    function jsConst(name) {
+        const at = javaSrc.indexOf('static final String ' + name + ' =');
+        if (at < 0) throw new Error('Konstante ' + name + ' nicht gefunden');
+        const end = javaSrc.indexOf('";', at);
+        return literalsFromJavaBlock(javaSrc.slice(at, end + 1));
+    }
+
+    // ---- Fake-DOM-Baukasten ---------------------------------------------
+    function el(opts) {
+        opts = opts || {};
+        const listeners = {};
+        const self = {
+            className: opts.cls || '',
+            tagName: opts.tag || 'DIV',
+            value: opts.value != null ? opts.value : '',
+            offsetParent: opts.hidden ? null : {},
+            getClientRects: () => (opts.hidden ? [] : [{}]),
+            getBoundingClientRect: () => opts.rect || { left: 0, top: 0, width: 200, height: 40 },
+            addEventListener: (t, f) => { (listeners[t] = listeners[t] || []).push(f); },
+            dispatchEvent: (ev) => {
+                self.events.push(ev && ev.type);
+                (listeners[(ev && ev.type)] || []).forEach(f => f(ev));
+                return !(opts.prevent && opts.prevent.indexOf(ev && ev.type) > -1);
+            },
+            events: [],
+            constructor: { prototype: {} }
+        };
+        return self;
+    }
+    function makeDom(map) {
+        return {
+            querySelector: (sel) => (map[sel] ? map[sel][0] : null),
+            querySelectorAll: (sel) => (map[sel] || [])
+        };
+    }
+    function runJs(code, extra) {
+        const sandbox = Object.assign({
+            window: {},
+            document: makeDom({}),
+            Event: function (t, o) { this.type = t; Object.assign(this, o || {}); },
+            MouseEvent: function (t, o) { this.type = t; Object.assign(this, o || {}); },
+            Object: Object, String: String, Math: Math, JSON: JSON
+        }, extra || {});
+        sandbox.window.innerWidth = 400;
+        sandbox.window.innerHeight = 900;
+        sandbox.window = Object.assign(sandbox.window, extra && extra.window ? extra.window : {});
+        return vm.runInNewContext('(' + JSON.stringify('x') + ', ' + code + ')', sandbox);
+    }
+
+    // ---- JS_BACK ---------------------------------------------------------
+    const jsBack = jsConst('JS_BACK');
+    ok('JS_BACK: extrahiert und syntaktisch gültig',
+        (function () { try { new Function('return ' + jsBack); return true; }
+                       catch (e) { return 'Syntaxfehler: ' + e.message; } })() === true,
+        jsBack.slice(0, 160));
+
+    // (a) Offener Dialog -> Dialog schliessen, NICHT navigieren.
+    {
+        let closed = 0;
+        const dlg = el({ cls: 'ea-dialog-view', rect: { left: 0, top: 0, width: 400, height: 800 } });
+        const res = runJs(jsBack, {
+            window: { gPopupClickShield: { closeActivePopup: () => { closed++; } },
+                      innerWidth: 400, innerHeight: 900 },
+            document: makeDom({ '[class*="click-shield"],[class*="dialog"],[class*="popup"]': [dlg] })
+        });
+        ok('JS_BACK: offener Dialog wird geschlossen', res === 'popup' && closed === 1,
+            res + ' closed=' + closed);
+    }
+    // (b) Unsere eigene UI (sbc-opt) zaehlt NICHT als Dialog.
+    {
+        let closed = 0;
+        const own = el({ cls: 'sbc-opt-panel', rect: { left: 0, top: 0, width: 400, height: 800 } });
+        const res = runJs(jsBack, {
+            window: { gPopupClickShield: { closeActivePopup: () => { closed++; } },
+                      innerWidth: 400, innerHeight: 900 },
+            document: makeDom({ '[class*="click-shield"],[class*="dialog"],[class*="popup"]': [own] })
+        });
+        ok('JS_BACK: eigenes Panel wird nicht als Dialog geschlossen',
+            closed === 0 && res === 'none', res + ' closed=' + closed);
+    }
+    // (c) EAs Navigation: obersten Controller mit pop* nehmen.
+    {
+        const calls = [];
+        const inner = { popViewController: (a) => { calls.push('inner:' + a); } };
+        const root = { getPresentedViewController: () => inner,
+                       popViewController: () => { calls.push('root'); } };
+        const res = runJs(jsBack, {
+            window: { innerWidth: 400, innerHeight: 900 },
+            getAppMain: () => ({ getRootViewController: () => root }),
+            document: makeDom({})
+        });
+        ok('JS_BACK: EAs eigene Navigation wird benutzt (oberster Controller)',
+            res === 'pop:popViewController' && calls.length === 1 && calls[0] === 'inner:true',
+            res + ' ' + JSON.stringify(calls));
+    }
+    // (d) Kein Controller -> Zurueck-Knopf im DOM, Touch zuerst.
+    {
+        const btn = el({ tag: 'BUTTON', cls: 'back', prevent: ['touchend'] });
+        const dom = makeDom({ '.ut-navigation-bar-view button.back': [btn] });
+        const res = runJs(jsBack, {
+            window: { innerWidth: 400, innerHeight: 900,
+                      Touch: function (o) { Object.assign(this, o); },
+                      TouchEvent: function (t, o) { this.type = t; Object.assign(this, o || {}); } },
+            document: dom
+        });
+        ok('JS_BACK: DOM-Zurueck-Knopf wird getippt',
+            String(res).indexOf('dom:') === 0, res);
+        ok('JS_BACK: Touch zuerst, keine Maus-Events wenn Touch verarbeitet',
+            btn.events.indexOf('touchstart') > -1 && btn.events.indexOf('click') === -1,
+            btn.events.join(','));
+    }
+    // (e) Nichts da -> 'none', damit Java die History bzw. den Doppel-Tipp nimmt.
+    {
+        const res = runJs(jsBack, { window: { innerWidth: 400, innerHeight: 900 },
+                                    document: makeDom({}) });
+        ok('JS_BACK: ohne alles kommt "none" zurueck', res === 'none', String(res));
+    }
+
+    // ---- JS_FILL_LOGIN ---------------------------------------------------
+    const jsFill = jsConst('JS_FILL_LOGIN');
+    ok('JS_FILL_LOGIN: Platzhalter sind unversehrt',
+        jsFill.indexOf('__MAIL__') > -1 && jsFill.indexOf('__PW__') > -1, jsFill.slice(0, 120));
+    const filled = jsFill.replace('__MAIL__', '"a@b.de"').replace('__PW__', '"geheim"');
+    ok('JS_FILL_LOGIN: syntaktisch gültig',
+        (function () { try { new Function('return ' + filled); return true; }
+                       catch (e) { return 'Syntaxfehler: ' + e.message; } })() === true,
+        filled.slice(0, 160));
+    {
+        const mail = el({ tag: 'INPUT' });
+        const pass = el({ tag: 'INPUT' });
+        const res = runJs(filled, {
+            document: makeDom({ '#email': [mail], '#password': [pass] }),
+            window: { innerWidth: 400, innerHeight: 900 }
+        });
+        ok('JS_FILL_LOGIN: beide Felder gefüllt', res === 'mail+pw', String(res));
+        ok('JS_FILL_LOGIN: Werte stehen in den Feldern',
+            mail.value === 'a@b.de' && pass.value === 'geheim',
+            mail.value + ' / ' + pass.value);
+        ok('JS_FILL_LOGIN: input- UND change-Event ausgelöst (React hört darauf)',
+            mail.events.indexOf('input') > -1 && mail.events.indexOf('change') > -1,
+            mail.events.join(','));
+    }
+    {
+        const res = runJs(filled, { document: makeDom({}), window: {} });
+        ok('JS_FILL_LOGIN: ohne Felder kommt "no-fields"', res === 'no-fields', String(res));
+    }
+
+    // ---- Java-Seite: kein Passwort im Log, kein Autofill ohne Daten ------
+    const autofillBody = extractBraceBlock(javaSrc, 'void maybeAutofillLogin(String url) {');
+    ok('Autofill: schreibt das Passwort NICHT in den Log',
+        /addLog\(/.test(autofillBody) && !/addLog\([^)]*pwTxt/.test(autofillBody),
+        autofillBody);
+    ok('Autofill: nur auf Login-URLs und nur mit gespeicherten Daten',
+        /isLoginUrl\(url\)/.test(autofillBody) && /loginAutofill/.test(autofillBody)
+            && /blob == null/.test(autofillBody),
+        autofillBody);
+    ok('Autofill: sendet das Formular NICHT ab (kein submit/click im JS)',
+        !/\.submit\(\)/.test(jsFill) && !/logInBtn/.test(jsFill), jsFill.slice(0, 200));
+
+    const saveBody = extractBraceBlock(javaSrc,
+        'void saveLogin(String mailTxt, String pwTxt, boolean autofill) {');
+    ok('Login speichern: Passwort nur verschlüsselt (CredStore.encrypt)',
+        /CredStore\.encrypt\(pwTxt\)/.test(saveBody) && !/putString\("loginPw", *pwTxt/.test(saveBody),
+        saveBody);
+    ok('Login speichern: leeres Feld lässt das gemerkte Passwort stehen',
+        /pwTxt\.length\(\) > 0/.test(saveBody), saveBody);
+
+    const credBody = extractBraceBlock(javaSrc, 'class CredStore {');
+    ok('CredStore: Schlüssel im AndroidKeyStore, AES/GCM',
+        /AndroidKeyStore/.test(credBody) && /AES\/GCM\/NoPadding/.test(credBody), credBody);
+    ok('CredStore: IV pro Verschlüsselung neu (c.getIV() statt fester Wert)',
+        /c\.getIV\(\)/.test(credBody), credBody);
+    ok('CredStore: löscht auch den Schlüssel',
+        /deleteEntry\(ALIAS\)/.test(credBody), credBody);
+
+    const backBody = extractBraceBlock(javaSrc, 'void handleBackResult(String res) {');
+    ok('Zurück: bei "none" erst History, dann Doppel-Tipp zum Beenden',
+        /canGoBack\(\)/.test(backBody) && /lastBackMs/.test(backBody) && /finish\(\)/.test(backBody),
+        backBody);
+    ok('Zurück: beendet NICHT beim ersten Wischen',
+        /Nochmal zurueck/.test(backBody), backBody);
+
     console.log(failed
         ? '\n' + failed + ' Test(s) fehlgeschlagen.'
         : '\nAlle Wächter-Tests bestanden.');

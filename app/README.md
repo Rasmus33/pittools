@@ -151,3 +151,23 @@ statischen App-Invarianten (Pflicht-Logging, Setter-Kapselung, Leer-Body-Guard).
   `.class`/`.dex`-Bytes). `guard-test.js` extrahiert primär über diese
   Marker, mit Fallback auf die Fragment-Literale darunter, solange beide
   Wege existieren.
+
+
+## Login-Daten (ab 1.9.0)
+
+⚙ -> "Login-Daten (nur dieses Gerät)": E-Mail und Passwort einmal eintragen.
+Auf EAs Anmeldeseite werden die Felder dann automatisch gefüllt — **abgesendet
+wird nichts**, der Login-Knopf bleibt Handarbeit (2FA/Captcha).
+
+Das Passwort wird mit einem Schlüssel aus dem Android-Keystore verschlüsselt
+(AES-256/GCM, Alias `pittools_login_v1`). Der Schlüssel kann das Gerät nicht
+verlassen; die gespeicherte Zeichenkette ist auf einem anderen Gerät wertlos.
+Das Passwort landet nicht im Log-Ringpuffer und in keinem Request.
+"Gespeicherte Daten löschen" entfernt Werte **und** Schlüssel.
+
+## Zurück-Geste (ab 1.9.0)
+
+Wischen von der Seite geht jetzt eine Ebene in der App zurück: offener Dialog →
+EAs eigene Navigation → Zurück-Knopf im DOM → WebView-History. Erst wenn es
+nichts davon gibt, beendet ein **zweites** Wischen innerhalb von 2,5 Sekunden
+die App.

@@ -2101,3 +2101,48 @@ einmalig `Object.keys`, die Prototyp-Methoden und die Rohwerte von
 rating/rareflag/definitionId/assetId auf — damit ist im naechsten Report
 sofort sichtbar, ob ein Objekt Entity oder DTO ist, statt es zu vermuten.
 `lastRun.namesResolved` zaehlt, wie viele Namen wirklich aufgeloest wurden.
+
+
+## App 1.9.0: Login-Daten und Zurueck-Geste
+
+**Zurueck-Geste.** Vorher: `canGoBack()` -> `goBack()`, sonst App zu. In der
+EA-Web-App ist die WebView-History aber LEER - alles laeuft in einer Seite.
+Jedes Wischen war deshalb ein App-Ende. Neue Reihenfolge:
+
+1. Offener Dialog -> `gPopupClickShield.closeActivePopup()` (unser eigenes
+   Panel zaehlt dabei NICHT als Dialog, `sbc-opt` wird uebersprungen).
+2. EAs eigene Navigation: den obersten Controller mit
+   `popViewController`/`popController`/`back`/`goBack` nehmen. Die Kette laeuft
+   ueber `getPresentedViewController`/`getCurrentViewController`/
+   `getCurrentController` - dieselbe Kette wie im Userscript.
+3. Zurueck-Knopf im DOM, getippt wie ueberall am Handy: Touch zuerst, Maus nur
+   wenn kein Touch-Handler `preventDefault` gerufen hat (LEARNINGS 21).
+4. WebView-History.
+5. Erst dann beenden - und zwar mit **Doppel-Tipp** (2,5s), damit ein
+   versehentliches Wischen nicht die Sitzung kostet.
+
+**Login-Daten.** Rasmus: *"das passwort sollte nirgendwo klar gespeichert
+werden bzw freigegeben werden im internet, das darf das handy nicht verlassen."*
+
+- Der Schluessel entsteht EINMAL im **Android-Keystore** (Alias
+  `pittools_login_v1`, AES-256/GCM) und ist nicht exportierbar; wo StrongBox/TEE
+  vorhanden ist, liegt er ausserhalb des Betriebssystems.
+- Gespeichert wird nur `base64(IV):base64(Geheimtext)`. Ohne den
+  geraetegebundenen Schluessel ist das nutzlos - ein Backup auf ein anderes
+  Geraet ist wertlos (dann Passwort neu eingeben).
+- Der IV ist pro Verschluesselung neu (`cipher.getIV()`), nie fest.
+- Bewusst OHNE `setUserAuthenticationRequired`: sonst waere vor jedem Autofill
+  eine Entsperrung faellig, und beim Login ist der Bildschirm ohnehin entsperrt.
+- Das Passwort geht **nie** in den Log-Ringpuffer (der wird geteilt!) und in
+  keinen Request - es wird ausschliesslich in die Felder der EA-Loginseite
+  geschrieben.
+- **Kein automatisches Absenden.** Bei 2FA/Captcha waere ein Klick eher
+  schaedlich; das Tippen der Zugangsdaten war das Problem, nicht der Login-Knopf.
+- Ein leeres Passwort-Feld heisst "nicht aendern" - sonst wuerde ein
+  versehentliches Speichern das gemerkte Passwort loeschen.
+
+**Beide JS-Bausteine liegen als Java-KONSTANTEN** (`JS_BACK`, `JS_FILL_LOGIN`)
+und werden von `app/guard-test.js` extrahiert und in einem Fake-DOM ausgefuehrt
+- dieselbe Begruendung wie beim PaleTools-Waechter: aus Literalen
+zusammengesetztes JS faellt am Geraet STILL aus. Gegenproben belegt: ein
+`addLog` mit dem Passwort und eine Klartext-Speicherung machen die Suite rot.

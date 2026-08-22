@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.72.0
+// @version      4.73.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.72.0';
+    const VERSION = '4.73.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -755,6 +755,141 @@
      * laut Live-Sample tragen (status, repeatable, timesCompleted, endTime) -
      * fehlt eines, bleibt es null statt den ganzen Knoten zu verwerfen.
      */
+    // ======================================================================
+    //  SBC-KONTINGENT (Rasmus: 90 pro voller Stunde, 300 pro Tag)
+    // ======================================================================
+    // Warum das ueberhaupt geht: EA fuehrt pro SET einen SERVERSEITIGEN
+    // Zaehler `timesCompleted` (im Hub steht er als "Completed 623 times").
+    // Die Summe ueber alle Sets ist also die Gesamtzahl abgeschlossener SBCs
+    // des ACCOUNTS - und damit geraeteuebergreifend: was Mike am Handy macht,
+    // steht in derselben Zahl. Live belegt: zwischen zwei Reports stieg der
+    // Zaehler von Set 1356 von 609 auf 615.
+    //
+    // Was NICHT geht: EA liefert keinen "heute"-Zaehler. Deshalb Stichproben:
+    // (Zeitpunkt, Summe) landen in localStorage, und "seit X" ist die Differenz
+    // zur aeltesten Probe innerhalb des Fensters. Fehlt eine Probe von VOR dem
+    // Fenster, ist das Ergebnis eine UNTERGRENZE - und wird auch so benannt,
+    // nicht als exakte Zahl verkauft.
+    const QUOTA_KEY = 'sbcOptQuotaSamples';
+    const QUOTA_HOUR_LIMIT = 90;
+    const QUOTA_DAY_LIMIT = 300;
+    function quotaLoadSamples() {
+        try {
+            const raw = localStorage.getItem(QUOTA_KEY);
+            if (!raw) return [];
+            const arr = JSON.parse(raw);
+            return Array.isArray(arr) ? arr.filter(x => x && x.t && x.total != null) : [];
+        } catch (e) { return []; }
+    }
+    function quotaSaveSamples(arr) {
+        // 36h aufbewahren: deckt Tages- und Stundenfenster ab, bleibt klein.
+        const cut = Date.now() - 36 * 3600 * 1000;
+        const keep = arr.filter(x => x.t >= cut).slice(-500);
+        try { localStorage.setItem(QUOTA_KEY, JSON.stringify(keep)); } catch (e) {}
+        return keep;
+    }
+    /** Summe aller timesCompleted aus einer sbs/sets-Antwort. */
+    function sumTimesCompleted(json) {
+        let sum = 0, sets = 0;
+        const seen = new Set();
+        const queue = [{ o: json, d: 0 }];
+        let visited = 0;
+        while (queue.length && visited < 20000) {
+            const cur = queue.shift();
+            const o = cur.o, d = cur.d;
+            if (!o || typeof o !== 'object' || seen.has(o) || d > 6) continue;
+            seen.add(o);
+            visited++;
+            // Ein Set-Knoten: hat setId UND timesCompleted. Challenge-Knoten
+            // tragen dieselbe Zahl NICHT (sonst wuerde doppelt gezaehlt).
+            if (o.setId != null && typeof o.timesCompleted === 'number') {
+                sum += o.timesCompleted;
+                sets++;
+            }
+            const kids = Array.isArray(o) ? o : Object.keys(o).map(k => {
+                try { return o[k]; } catch (e) { return null; }
+            });
+            for (const c of kids) if (c && typeof c === 'object') queue.push({ o: c, d: d + 1 });
+        }
+        return { sum: sum, sets: sets };
+    }
+    /** Aktuellen Stand holen und als Stichprobe ablegen. */
+    async function quotaSample() {
+        let json = null;
+        try { json = await apiGet('sbs/sets'); }
+        catch (e) { return null; }
+        const r = sumTimesCompleted(json);
+        if (!r.sets) return null;
+        const arr = quotaLoadSamples();
+        arr.push({ t: Date.now(), total: r.sum });
+        quotaSaveSamples(arr);
+        STATE.diag.quota = quotaUsage();
+        return r.sum;
+    }
+    /**
+     * Verbrauch im laufenden Stundenfenster (voller Stunde, wie EA es zaehlt)
+     * und seit Mitternacht. exact=false heisst: die aelteste Probe liegt INNERHALB
+     * des Fensters, die Zahl ist also eine Untergrenze.
+     */
+    function quotaUsage(nowMs) {
+        const now = nowMs != null ? nowMs : Date.now();
+        const arr = quotaLoadSamples();
+        if (!arr.length) return { total: null, hour: null, day: null, samples: 0 };
+        const latest = arr[arr.length - 1];
+        const d = new Date(now);
+        const hourStart = new Date(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours()).getTime();
+        const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+        function since(boundary) {
+            // Letzte Probe VOR der Grenze ist die exakte Basis.
+            let base = null, exact = false;
+            for (const x of arr) {
+                if (x.t <= boundary) { base = x; exact = true; }
+            }
+            if (!base) {
+                // Nur Proben INNERHALB des Fensters: aelteste als Basis, das
+                // Ergebnis ist dann eine Untergrenze.
+                base = arr.find(x => x.t > boundary) || null;
+                exact = false;
+            }
+            if (!base) return null;
+            return { used: Math.max(0, latest.total - base.total), exact: exact, since: base.t };
+        }
+        return {
+            total: latest.total,
+            stamp: latest.t,
+            samples: arr.length,
+            hour: since(hourStart),
+            day: since(dayStart),
+            hourLimit: QUOTA_HOUR_LIMIT,
+            dayLimit: QUOTA_DAY_LIMIT
+        };
+    }
+    /** Eine Zeile fuer das Panel - oder null, wenn es nichts zu sagen gibt. */
+    /**
+     * Zusatz fuer Fehlermeldungen: steht der Stundenzaehler nahe am Limit, ist
+     * das EA-Kontingent die wahrscheinlichste Ursache fuer ein abgelehntes
+     * Eintragen. Ohne Messung wird NICHTS behauptet.
+     */
+    function quotaHint() {
+        const u = quotaUsage();
+        if (!u || !u.hour) return '';
+        const near = u.hour.used >= Math.floor(QUOTA_HOUR_LIMIT * 0.8) ||
+                     (u.day && u.day.used >= Math.floor(QUOTA_DAY_LIMIT * 0.8));
+        if (!near) return '';
+        return ' Wahrscheinliche Ursache: EAs SBC-Kontingent - ' +
+            (u.hour.exact ? '' : 'mind. ') + u.hour.used + ' von ' + QUOTA_HOUR_LIMIT +
+            ' in dieser Stunde' +
+            (u.day ? ', ' + (u.day.exact ? '' : 'mind. ') + u.day.used + ' von ' +
+                     QUOTA_DAY_LIMIT + ' heute' : '') + '.';
+    }
+    function quotaText(u) {
+        if (!u || u.total == null) return null;
+        function part(name, w, limit) {
+            if (!w) return name + ': –';
+            return name + ': ' + (w.exact ? '' : 'mind. ') + w.used + '/' + limit;
+        }
+        return part('Stunde', u.hour, u.hourLimit) + ' · ' + part('Heute', u.day, u.dayLimit);
+    }
     function extractNodeState(n) {
         return {
             status: (n && n.status != null) ? n.status : null,
@@ -1161,6 +1296,9 @@
         // macht das im Report explizit sichtbar statt nur ueber niedrige Zahlen
         // erraten zu werden.
         let scanError = null;
+        // Keys, deren Wert erkennbar kein JSON ist (base64 & Co.) - erwartbar,
+        // deshalb getrennt von den echten Defekten (skippedKeys).
+        let nonJsonKeys = 0;
         // EIN einzelner kaputter Key (nicht lesbar ODER kein valides JSON) darf
         // die restlichen Locks nicht kosten - deshalb pro Key ueberspringen statt
         // die ganze Schleife abzubrechen. skippedKeys zaehlt JEDEN Fall, ein
@@ -1189,6 +1327,18 @@
                 let raw = null;
                 try { raw = localStorage.getItem(k); } catch (e) { markSkipped(k, e); continue; }
                 if (!raw) continue;
+                // Ein Wert, der nicht mit einer geschweiften oder eckigen
+                // Klammer beginnt, war nie JSON - PaleTools legt z.B.
+                // `paletools:settings` base64-kodiert ab ("eyJlbmFibG..."). Das
+                // ist KEIN Defekt und gehoert nicht als Fehler in den Report;
+                // live stand genau diese Zeile in jedem Log und lenkte von den
+                // echten Meldungen ab. Ueberspringen ohne markSkipped, aber im
+                // Zaehler sichtbar.
+                // Geprueft wird ueber Zeichencodes (123 = geschweift, 91 =
+                // eckig): Klammer-LITERALE in dieser Datei bringen die
+                // Funktions-Extraktion der Test-Suite aus dem Takt.
+                const code = raw.replace(/^\s+/, '').charCodeAt(0);
+                if (code !== 123 && code !== 91) { nonJsonKeys++; continue; }
                 let obj = null;
                 try { obj = JSON.parse(raw); } catch (e) { markSkipped(k, e); continue; }
                 // Steht der Key selbst schon für die Sperrliste, ist der ganze
@@ -1207,6 +1357,7 @@
             reportError('Locks lesen fehlgeschlagen', e);
         }
         STATE.diag.locks = {
+            nonJsonKeys: nonJsonKeys,
             keysScanned: keysScanned,
             found: ids.size,
             sample: Array.from(ids).slice(0, 5),
@@ -3384,7 +3535,32 @@
      * ist fehlgeschlagen, Zaehler unbekannt) faellt konservativ auf denselben
      * Rat wie >=1 Kandidaten zurueck.
      */
-    function staleInstanceMessage(msg, candidateCount, batchProgress) {
+    function staleInstanceMessage(msg, candidateCount, batchProgress, nodeState, quotaNote) {
+        // ZUERST der Zustand UNSERER Instanz. Live (v4.72.0-Report, setId 1356)
+        // war candidateCount 0 - aber nicht, weil EA die SBC nicht mehr anbot,
+        // sondern weil die EINE Challenge im Set genau unsere war und noch
+        // laeuft:  nodeState = {status: "IN_PROGRESS", repeatable: true,
+        // timesCompleted: 609}. Die Meldung "Limit erreicht oder abgelaufen"
+        // war damit schlicht falsch. Ein 404/475 auf eine Challenge, die EA
+        // noch als offen fuehrt, hat eine ANDERE Ursache.
+        const ns = nodeState || null;
+        const stillOpen = ns && ns.status != null &&
+            !/COMPLETE|CLOSED|EXPIRED/i.test(String(ns.status));
+        if (stillOpen) {
+            // Wenn die Challenge offen ist und EA das Schreiben trotzdem
+            // ablehnt, ist das EA-Kontingent der naechstliegende Verdacht
+            // (90 pro voller Stunde, 300 pro Tag - kontoweit, also auch von
+            // einem zweiten Geraet mitverbraucht).
+            const q = quotaNote || '';
+            return 'EA kennt diese Challenge noch (Status ' + ns.status +
+                (ns.repeatable ? ', wiederholbar' : '') + '), das Eintragen wurde aber mit ' +
+                msg.replace(/^.*?((?:404|475)).*$/, '$1') + ' abgelehnt. Das ist NICHT ' +
+                'die verbrauchte Instanz. Bitte die SBC im Spiel einmal schliessen und neu ' +
+                'oeffnen; bleibt es dabei, Diagnose schicken (Feld staleRecover)' + q +
+                (batchProgress
+                    ? ' — ' + batchProgress.done + ' von ' + batchProgress.total + ' geschafft.'
+                    : '.');
+        }
         if (candidateCount === 0) {
             return 'Keine weitere Wiederholung verfügbar (Limit erreicht oder abgelaufen)' +
                 (batchProgress
@@ -3396,6 +3572,18 @@
             'Durchlauf eine neue ID - bitte die SBC im Spiel einmal schliessen und ' +
             'neu öffnen, dann erneut optimieren.';
     }
+    // Stichprobe fuer das SBC-Kontingent - absichtlich NUR an zwei Stellen
+    // (Spieler laden, nach dem Eintragen), damit kein zusaetzlicher Request-Takt
+    // entsteht (LEARNINGS 7: Rate-Limits sind hier real).
+    async function quotaSampleQuiet() {
+        try { await quotaSample(); } catch (e) {}
+        try {
+            if (ui.quota) {
+                const qt = quotaText(quotaUsage());
+                ui.quota.textContent = qt || 'noch keine Messung';
+            }
+        } catch (e) {}
+    }
     async function submitToSbc(result, _retried, batchProgress) {
         if (!result || !result.players || result.players.length === 0)
             throw new Error('Kein Ergebnis zum Eintragen.');
@@ -3406,19 +3594,19 @@
         try {
             await submitViaApp(result);
             const c0 = await verifySquadCount(result);
-            if (c0 >= need) { STATE.diag.submitVia = 'app'; return { confirmed: c0, via: 'app' }; }
+            if (c0 >= need) { STATE.diag.submitVia = 'app'; quotaSampleQuiet(); return { confirmed: c0, via: 'app' }; }
         } catch (e) { lastErr = e; warn('App-Eintrag meldete Fehler:', e.message); diagError('submitViaApp: ' + (e.message || e)); }
         // Weg A: HTTP-PUT im exakt mitgeschnittenen App-Format.
         try { await submitViaHttp(result); }
         catch (e) { lastErr = e; warn('HTTP-Eintrag meldete Fehler:', e.message); diagError('submitViaHttp: ' + (e.message || e)); }
         // Server fragen: sind die Spieler drin? (unabhängig vom PUT-Status)
         let confirmed = await verifySquadCount(result);
-        if (confirmed >= need) { STATE.diag.submitVia = 'http'; return { confirmed: confirmed, via: 'http' }; }
+        if (confirmed >= need) { STATE.diag.submitVia = 'http'; quotaSampleQuiet(); return { confirmed: confirmed, via: 'http' }; }
         // Weg B: alter Services-Weg (Entity-Squad + saveChallenge).
         try { await submitViaServices(result); }
         catch (e) { lastErr = e; warn('Service-Eintrag meldete Fehler:', e.message); diagError('submitViaServices: ' + (e.message || e)); }
         confirmed = await verifySquadCount(result);
-        if (confirmed >= need) { STATE.diag.submitVia = 'services'; return { confirmed: confirmed, via: 'services' }; }
+        if (confirmed >= need) { STATE.diag.submitVia = 'services'; quotaSampleQuiet(); return { confirmed: confirmed, via: 'services' }; }
         // Nichts hat gegriffen. 404/475 haben eine bekannte Ursache:
         // WIEDERHOLBARE SBCs bekommen pro Durchlauf eine NEUE challengeId.
         // Live gesehen: dieselbe SBC lief unter 3829, dann 3800, dann 3771 -
@@ -3445,9 +3633,11 @@
             // oder fehlgeschlagenem Abruf FRUEH zurueckkehrt, OHNE staleRecover
             // zu schreiben - sonst wuerde hier ein veralteter Stand einer
             // frueheren, andersartigen SBC faelschlich als "0 Kandidaten" gelesen.
-            const candidateCount = (STATE.diag.staleRecover && STATE.diag.staleRecover.setId === STATE.sbc.setId)
-                ? STATE.diag.staleRecover.candidateCount : null;
-            throw new Error(staleInstanceMessage(msg, candidateCount, batchProgress));
+            const sr = (STATE.diag.staleRecover && STATE.diag.staleRecover.setId === STATE.sbc.setId)
+                ? STATE.diag.staleRecover : null;
+            const candidateCount = sr ? sr.candidateCount : null;
+            throw new Error(staleInstanceMessage(msg, candidateCount, batchProgress,
+                sr ? sr.nodeState : null, quotaHint()));
         }
         // 403 heisst NICHT "veraltet", sondern "EA nimmt das so nicht an" -
         // meist eine Vorgabe, die der Solver nicht abdeckt (live: reqDump mit
@@ -3954,6 +4144,7 @@
                     Ziel-OVR: <b id="sbc-opt-target">–</b><br>
                     Vorgaben: <b id="sbc-opt-rarity">keine</b><br>
                     Spieler im Pool: <b id="sbc-opt-poolcount">0</b><br>
+                    SBC-Kontingent: <b id="sbc-opt-quota">–</b><br>
                     Status: <b id="sbc-opt-status">bereit</b>
                     <div id="sbc-opt-availability"></div>
                     <div class="sbc-opt-debug" id="sbc-opt-debug">API: – · SID: – · Services: –</div>
@@ -4129,6 +4320,7 @@
             target: panel.querySelector('#sbc-opt-target'),
             rarity: panel.querySelector('#sbc-opt-rarity'),
             poolcount: panel.querySelector('#sbc-opt-poolcount'),
+            quota: panel.querySelector('#sbc-opt-quota'),
             availability: panel.querySelector('#sbc-opt-availability'),
             status: panel.querySelector('#sbc-opt-status'),
             debug: panel.querySelector('#sbc-opt-debug'),
@@ -4620,6 +4812,10 @@
         }
         ui.rarity.textContent = parts.length ? parts.join(', ') : 'keine';
         ui.poolcount.textContent = STATE.pool.length;
+        if (ui.quota) {
+            const qt = quotaText(quotaUsage());
+            ui.quota.textContent = qt || 'noch keine Messung';
+        }
         refreshAvailabilityUI();
     }
     // Vorgabe-Kandidaten-Verfügbarkeit neben dem Pool (Ticket #68): zählt
@@ -4795,6 +4991,9 @@
             // ist zu sehen, ob EA die Seitengroesse kappt und ob der Takt wegen
             // Rate-Limits hochgegangen ist.
             clubLoad: STATE.diag.clubLoad || null,
+            // SBC-Kontingent: Summe der serverseitigen timesCompleted plus
+            // Verbrauch im Stunden-/Tagesfenster (siehe quotaUsage).
+            quota: quotaUsage(),
             // Abgeben: welche Controller/Methoden kamen in Frage und welche hat
             // gegriffen? Am Handy heisst der Controller anders als am PC.
             submitCandidates: STATE.diag.submitCandidates || null,

@@ -3727,7 +3727,7 @@ function mulberry32(a) {
     {
         const map = {
             'paletools:locks:lockedItems': JSON.stringify([100664921, 190871]),
-            'paletools:broken:corrupt': 'not-json{{{'
+            'paletools:broken:corrupt': '{"lockedItems": [1234567,'
         };
         const localStorage = makeThrowingLocalStorage(map, null);
         const STATE = { diag: {}, locksSkipReported: false };
@@ -3770,7 +3770,7 @@ function mulberry32(a) {
     {
         const map = {
             'paletools:locks:lockedItems': JSON.stringify([100664921]),
-            'paletools:broken:corrupt': 'not-json{{{'
+            'paletools:broken:corrupt': '{"lockedItems": [1234567,'
         };
         const localStorage = makeThrowingLocalStorage(map, null);
         const STATE = { diag: {}, locksSkipReported: true };
@@ -4733,11 +4733,39 @@ function mulberry32(a) {
     check('candidateCount unbekannt (Abruf fehlgeschlagen): faellt konservativ auf den bisherigen Rat zurueck',
         /schliessen und neu/.test(unknown), unknown);
 
+    // LIVE-BEFUND v4.72.0 (setId 1356): candidateCount war 0 - aber NICHT, weil
+    // EA die SBC nicht mehr anbot, sondern weil die einzige Challenge im Set
+    // genau unsere war und noch lief:
+    //   nodeState = {status: "IN_PROGRESS", repeatable: true, timesCompleted: 609}
+    // Die Meldung "Limit erreicht oder abgelaufen" war damit falsch. Ein 404/475
+    // auf eine Challenge, die EA als offen fuehrt, hat eine andere Ursache.
+    const openNode = { status: 'IN_PROGRESS', repeatable: true, timesCompleted: 609 };
+    const msgOpen = staleInstanceMessage('PUT ... -> HTTP 475', 0, { done: 0, total: 5 }, openNode);
+    check('Offene Instanz wird NICHT als "Limit erreicht" gemeldet',
+        !/Limit erreicht/.test(msgOpen), msgOpen);
+    check('Offene Instanz: Status wird genannt',
+        /IN_PROGRESS/.test(msgOpen) && /wiederholbar/.test(msgOpen), msgOpen);
+    check('Offene Instanz: sagt ausdruecklich, dass es NICHT die verbrauchte ist',
+        /NICHT/.test(msgOpen) && /475/.test(msgOpen), msgOpen);
+    check('Offene Instanz: Batch-Fortschritt bleibt drin',
+        /0 von 5 geschafft/.test(msgOpen), msgOpen);
+    // Abgeschlossen/abgelaufen -> weiter wie bisher.
+    for (const st of ['COMPLETE', 'COMPLETED', 'EXPIRED', 'CLOSED']) {
+        const m = staleInstanceMessage('404', 0, null, { status: st, repeatable: true });
+        check('Status ' + st + ' gilt weiter als erschoepft',
+            /Limit erreicht/.test(m), m);
+    }
+    // Ohne nodeState bleibt das alte Verhalten unveraendert (die Tests darueber
+    // rufen mit drei Argumenten).
+    check('Ohne nodeState unveraendert',
+        /Limit erreicht/.test(staleInstanceMessage('404', 0, null)));
+
     // submitToSbc() muss candidateCount aus STATE.diag.staleRecover lesen und an
     // staleInstanceMessage() weiterreichen - Absicherung gegen Wegrefactorn.
     const submitSrc = extractFunction(src, 'submitToSbc');
-    check('submitToSbc uebergibt candidateCount und batchProgress an staleInstanceMessage (56)',
-        /staleInstanceMessage\(msg, candidateCount, batchProgress\)/.test(submitSrc));
+    check('submitToSbc uebergibt candidateCount, batchProgress und nodeState an staleInstanceMessage',
+        /staleInstanceMessage\(msg, candidateCount, batchProgress,/.test(submitSrc) &&
+        /sr \? sr\.nodeState : null/.test(submitSrc));
     check('submitToSbc verwirft einen staleRecover-Stand von einer anderen setId (56)',
         /staleRecover\.setId === STATE\.sbc\.setId/.test(submitSrc));
 
@@ -6299,6 +6327,175 @@ function mulberry32(a) {
         check('65f: Testlauf nimmt die Objekt-Form fuer die Diagnose auf',
             /itemShape/.test(runOpen) && /sampleObjectShape\(/.test(runOpen));
     }
+}
+
+// ========== Nicht-JSON-Keys (base64) sind kein Defekt ==========
+{
+    // Live stand in JEDEM Log: "readPaletoolsLocks: Key uebersprungen
+    // (paletools:settings): Unexpected token 'e', \"eyJlbmFibG\"...". Das ist
+    // base64, war also nie JSON - kein Defekt, sondern PaleTools' Format. Die
+    // Zeile lenkte von den echten Meldungen ab.
+    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
+    const fnSrc = [
+        extractFunction(src, 'looksLikeItemId'),
+        extractFunction(src, 'harvestIds'),
+        extractFunction(src, 'findLockBranches'),
+        extractFunction(src, 'readPaletoolsLocks')
+    ].join('\n');
+    function run(map) {
+        const keys = Object.keys(map);
+        const ls = {
+            get length() { return keys.length; },
+            key: (i) => keys[i],
+            getItem: (k) => (k in map ? map[k] : null)
+        };
+        const STATE = { diag: {} };
+        const errors = [];
+        const mod = new Function('localStorage', 'STATE', 'reportError',
+            fnSrc + '\nreturn readPaletoolsLocks;')(ls, STATE, (l) => errors.push(l));
+        const ids = mod();
+        return { diag: STATE.diag.locks, errors: errors, ids: ids };
+    }
+    // base64 (PaleTools' echtes Format) neben einer gueltigen Sperrliste.
+    const r = run({
+        'paletools:locks:lockedItems': JSON.stringify([100664921, 190871]),
+        'paletools:settings': 'eyJlbmFibGVkIjp0cnVlLCJhcHBWZXJzaW9uIjoiMjYuMC4zMCJ9'
+    });
+    check('base64-Key wird still uebersprungen (kein Fehler im Report)',
+        r.errors.length === 0, JSON.stringify(r.errors));
+    check('base64-Key zaehlt als nonJsonKeys, nicht als Defekt',
+        r.diag.nonJsonKeys === 1 && r.diag.skippedKeys === 0, JSON.stringify(r.diag));
+    check('Die gueltigen Locks kommen trotzdem an', r.diag.found === 2);
+
+    // Ein Wert, der wie JSON ANFAENGT und trotzdem kaputt ist, bleibt ein
+    // Defekt und wird gemeldet.
+    const r2 = run({
+        'paletools:locks:lockedItems': '{"lockedItems": [1234567,'
+    });
+    check('Abgeschnittenes JSON bleibt ein gemeldeter Defekt',
+        r2.diag.skippedKeys === 1 && r2.errors.length === 1, JSON.stringify(r2.diag));
+    check('Abgeschnittenes JSON zaehlt NICHT als nonJsonKeys',
+        r2.diag.nonJsonKeys === 0, JSON.stringify(r2.diag));
+}
+
+// ========== SBC-Kontingent (90/Stunde, 300/Tag, kontoweit) ==========
+{
+    // Rasmus: "man darf pro voller stunde nur 90 sbcs machen und 300 am tag.
+    // aber wenn mike am handy und ich am laptop etwas mache dann ist es schwer
+    // das zu tracken." Quelle ist EAs serverseitiges timesCompleted pro Set -
+    // damit zaehlt es beide Geraete automatisch mit.
+    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
+
+    // --- sumTimesCompleted: nur SET-Knoten zaehlen, nicht doppelt -----------
+    const sumSrc = src.slice(src.indexOf('function sumTimesCompleted'),
+                             src.indexOf('async function quotaSample'));
+    const sumFn = new Function('return ' + sumSrc.slice(sumSrc.indexOf('function')) + '; ')();
+    const sets = { itemData: [
+        { setId: 1, timesCompleted: 10, challenges: [{ challengeId: 11, timesCompleted: 10 }] },
+        { setId: 2, timesCompleted: 5,  challenges: [{ challengeId: 21 }] },
+        { setId: 3, timesCompleted: 0 }
+    ] };
+    const r = sumFn(sets);
+    check('Kontingent: Summe ueber alle Sets', r.sum === 15 && r.sets === 3,
+        JSON.stringify(r));
+    // Der Challenge-Knoten in Set 1 traegt dieselbe Zahl - er darf NICHT
+    // mitgezaehlt werden, sonst waere die Summe 25.
+    check('Kontingent: Challenge-Knoten werden nicht doppelt gezaehlt', r.sum === 15);
+    check('Kontingent: leere Antwort ergibt 0 Sets', sumFn({}).sets === 0);
+
+    // --- quotaUsage: Fensterlogik ------------------------------------------
+    // Die Funktion liest localStorage - mit einer Attrappe testbar machen.
+    const usageSrc = src.slice(src.indexOf('function quotaLoadSamples'),
+                               src.indexOf('function quotaHint'));
+    let store = null;
+    const sandbox = {
+        localStorage: {
+            getItem: () => store,
+            setItem: (k, v) => { store = v; }
+        },
+        STATE: { diag: {} },
+        apiGet: async () => ({}),
+        QUOTA_KEY: 'x',
+        QUOTA_HOUR_LIMIT: 90,
+        QUOTA_DAY_LIMIT: 300
+    };
+    const keys = Object.keys(sandbox);
+    const mk = new Function(keys.join(','),
+        usageSrc + '\nreturn { quotaUsage: quotaUsage, save: quotaSaveSamples };');
+    const q = mk.apply(null, keys.map(k => sandbox[k]));
+
+    // 14:30 Uhr. Proben: 13:50 (Basis VOR der Stunde), 14:10, 14:25.
+    const day = new Date(2026, 7, 22);
+    const at = (h, m) => new Date(2026, 7, 22, h, m).getTime();
+    const now = at(14, 30);
+    store = JSON.stringify([
+        { t: at(13, 50), total: 100 },
+        { t: at(14, 10), total: 120 },
+        { t: at(14, 25), total: 137 }
+    ]);
+    let u = q.quotaUsage(now);
+    check('Stundenfenster: exakte Basis vor der vollen Stunde',
+        u.hour.exact === true && u.hour.used === 37, JSON.stringify(u.hour));
+    check('Kontingent: Gesamtstand ist die letzte Probe', u.total === 137);
+    check('Tagesfenster: ohne Probe vor Mitternacht nur Untergrenze',
+        u.day.exact === false && u.day.used === 37, JSON.stringify(u.day));
+
+    // Nur Proben INNERHALB der Stunde -> Untergrenze, nicht als exakt verkaufen.
+    store = JSON.stringify([
+        { t: at(14, 5), total: 200 },
+        { t: at(14, 25), total: 250 }
+    ]);
+    u = q.quotaUsage(now);
+    check('Stundenfenster ohne Basis: Untergrenze statt falscher Exaktheit',
+        u.hour.exact === false && u.hour.used === 50, JSON.stringify(u.hour));
+
+    // Probe vor Mitternacht vorhanden -> Tageszahl ist exakt.
+    store = JSON.stringify([
+        { t: new Date(2026, 7, 21, 23, 30).getTime(), total: 1000 },
+        { t: at(9, 0), total: 1080 },
+        { t: at(14, 25), total: 1150 }
+    ]);
+    u = q.quotaUsage(now);
+    check('Tagesfenster: exakt mit Probe vor Mitternacht',
+        u.day.exact === true && u.day.used === 150, JSON.stringify(u.day));
+    check('Stundenfenster nutzt die 9-Uhr-Probe als Basis',
+        u.hour.exact === true && u.hour.used === 70, JSON.stringify(u.hour));
+
+    // Keine Proben -> nichts behaupten.
+    store = null;
+    u = q.quotaUsage(now);
+    check('Ohne Messung wird nichts behauptet',
+        u.total === null && u.hour === null && u.day === null, JSON.stringify(u));
+
+    // Zaehler laeuft nie negativ (z.B. wenn EA die Zahl zurueckdreht).
+    store = JSON.stringify([{ t: at(13, 0), total: 500 }, { t: at(14, 20), total: 490 }]);
+    u = q.quotaUsage(now);
+    check('Kontingent: kein negativer Verbrauch', u.hour.used === 0, JSON.stringify(u.hour));
+
+    // Aufbewahrung: aeltere Proben als 36h fliegen raus.
+    const old = q.save([
+        { t: now - 40 * 3600 * 1000, total: 1 },
+        { t: now - 2 * 3600 * 1000, total: 2 }
+    ]);
+    check('Kontingent: Proben aelter als 36h werden verworfen', old.length === 1);
+
+    // --- Verdrahtung -------------------------------------------------------
+    check('Kontingent: Panel-Zeile vorhanden',
+        /id="sbc-opt-quota"/.test(src) && /quota: panel.querySelector/.test(src));
+    check('Kontingent: nach jedem Eintragen gemessen',
+        (src.match(/quotaSampleQuiet\(\)/g) || []).length >= 4);
+    check('Kontingent: im Diagnose-Report', /quota: quotaUsage\(\)/.test(src));
+    check('Kontingent: Hinweis nur nahe am Limit',
+        /QUOTA_HOUR_LIMIT \* 0\.8/.test(src));
+    check('Kontingent: Grenzen sind 90 und 300',
+        /QUOTA_HOUR_LIMIT = 90/.test(src) && /QUOTA_DAY_LIMIT = 300/.test(src));
+
+    // Der Hinweis darf staleInstanceMessage nicht verunreinigen (die Funktion
+    // wird isoliert getestet und muss pur bleiben).
+    const smSrc = src.slice(src.indexOf('function staleInstanceMessage'),
+                            src.indexOf('async function submitToSbc'));
+    check('staleInstanceMessage bleibt pur (Hinweis kommt als Parameter)',
+        smSrc.indexOf('quotaHint()') === -1 && /quotaNote/.test(smSrc));
 }
 
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt

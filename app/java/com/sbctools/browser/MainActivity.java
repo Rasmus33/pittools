@@ -37,6 +37,8 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
+import android.window.OnBackInvokedCallback;
+import android.window.OnBackInvokedDispatcher;
 import android.webkit.CookieManager;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -255,6 +257,7 @@ public class MainActivity extends Activity {
 
         setContentView(root);
         setupWebView();
+        registerBackGesture();
         loadScriptsThenStart();
     }
 
@@ -808,9 +811,36 @@ public class MainActivity extends Activity {
     // Doppel-Tipp, damit ein versehentliches Wischen nicht die Sitzung kostet.
     long lastBackMs = 0;
 
+    /**
+     * DER GRUND, WARUM 1.9.0 die App trotzdem geschlossen hat: build.sh baut mit
+     * target-sdk 36. Ab targetSdk 36 ist Predictive Back verbindlich an, und dann
+     * ruft das System onBackPressed() NICHT mehr - es beendet die Activity
+     * direkt. Der ganze Zurueck-Pfad lief also nie los.
+     * Ab API 33 wird deshalb ein OnBackInvokedCallback registriert; darunter
+     * greift weiter onBackPressed(). Beide Wege enden in handleBackGesture().
+     */
+    void registerBackGesture() {
+        if (Build.VERSION.SDK_INT < 33) return;   // dort reicht onBackPressed()
+        try {
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                    OnBackInvokedDispatcher.PRIORITY_DEFAULT, new BackCallback(this));
+            addLog("Zurueck-Geste: OnBackInvokedCallback registriert (SDK "
+                    + Build.VERSION.SDK_INT + ").");
+        } catch (Throwable t) {
+            // Schlaegt die Registrierung fehl, bleibt das alte Verhalten - aber
+            // sichtbar im Log, nicht still.
+            addLog("Zurueck-Geste: Registrierung fehlgeschlagen (" + t + ")");
+        }
+    }
+
+    /** Gemeinsamer Einstieg fuer beide Zurueck-Wege. */
+    void handleBackGesture() {
+        web.evaluateJavascript(JS_BACK, new BackProbe(this));
+    }
+
     @Override
     public void onBackPressed() {
-        web.evaluateJavascript(JS_BACK, new BackProbe(this));
+        handleBackGesture();
     }
 
     /** Ergebnis der JS-Abfrage auswerten (vom BackProbe-Callback gerufen). */
@@ -1318,6 +1348,17 @@ class LoginClear implements View.OnClickListener {
     private final MainActivity a;
     LoginClear(MainActivity a) { this.a = a; }
     @Override public void onClick(View v) { a.clearLogin(); }
+}
+
+/**
+ * Predictive Back (API 33+). Eigene benannte Klasse, weil d8 keine anonymen
+ * inneren Klassen mag - und weil sie nur im SDK-33-Zweig geladen wird, stoert
+ * das API-33-Interface auf aelteren Geraeten nicht.
+ */
+class BackCallback implements OnBackInvokedCallback {
+    private final MainActivity a;
+    BackCallback(MainActivity a) { this.a = a; }
+    @Override public void onBackInvoked() { a.handleBackGesture(); }
 }
 
 /** Ergebnis der Zurueck-Abfrage im DOM zurueck an die Activity. */

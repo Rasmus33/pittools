@@ -2146,3 +2146,31 @@ und werden von `app/guard-test.js` extrahiert und in einem Fake-DOM ausgefuehrt
 - dieselbe Begruendung wie beim PaleTools-Waechter: aus Literalen
 zusammengesetztes JS faellt am Geraet STILL aus. Gegenproben belegt: ein
 `addLog` mit dem Passwort und eine Klartext-Speicherung machen die Suite rot.
+
+
+## App 1.9.1: warum die Zurueck-Logik aus 1.9.0 nie lief
+
+Die ganze Kette (Dialog -> EA-Navigation -> DOM-Knopf -> History -> Doppel-Tipp)
+war da - und die App schloss sich beim ersten Wischen trotzdem sofort.
+
+**Grund:** `build.sh` baut mit `--target-sdk-version $PLATV`, aktuell also **36**.
+Ab targetSdk 36 ist Predictive Back verbindlich aktiv, und dann ruft das System
+`onBackPressed()` **nicht mehr** - es beendet die Activity direkt. Die Logik lief
+also nie los. Auf Rasmus' Geraet (Android 17 / SDK 37) war das garantiert der
+Fall.
+
+Der manifest-Schalter `android:enableOnBackInvokedCallback="false"` ist KEIN
+Ausweg: ab targetSdk 36 wird er ignoriert.
+
+**Richtig:** ab API 33 einen `OnBackInvokedCallback` beim
+`OnBackInvokedDispatcher` registrieren (`PRIORITY_DEFAULT`), darunter weiter
+`onBackPressed()`. Beide Wege enden in derselben Methode `handleBackGesture()`,
+damit es keine zweite Logik gibt. Die Callback-Klasse ist benannt (d8 mag keine
+anonymen inneren Klassen) und wird nur im SDK-33-Zweig geladen - das API-33-
+Interface stoert auf aelteren Geraeten also nicht.
+
+**Muster:** eine Handler-Methode, die das System aufrufen SOLL, ist erst dann
+fertig, wenn geprueft ist, dass sie unter der gebauten `targetSdk` ueberhaupt
+noch gerufen wird. Der Test prueft deshalb nicht "gibt es die Logik", sondern
+"ist sie unter dieser target-sdk erreichbar" - er liest dazu `build.sh` mit.
+Gegenprobe: ohne die Registrierung in `onCreate` wird die Suite rot.

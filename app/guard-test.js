@@ -613,6 +613,47 @@ function ok(name, cond, detail) {
     ok('Zurück: beendet NICHT beim ersten Wischen',
         /Nochmal zurueck/.test(backBody), backBody);
 
+    // ======================================================================
+    // 15. Predictive Back: der Zurueck-Pfad muss ueberhaupt ERREICHT werden
+    // ======================================================================
+    // App 1.9.0 hatte die ganze Zurueck-Logik - und die App schloss sich
+    // trotzdem sofort. Grund: build.sh baut mit target-sdk 36, und ab
+    // targetSdk 36 ist Predictive Back verbindlich an. Dann ruft das System
+    // onBackPressed() NICHT mehr, sondern beendet die Activity direkt. Die
+    // Logik lief also nie los. Genau das prueft dieser Block: nicht "gibt es
+    // die Logik", sondern "wird sie unter der gebauten target-sdk erreicht".
+    const buildSh = fs.readFileSync(path.join(__dirname, 'build.sh'), 'utf8');
+    const usesPlatformTarget = /--target-sdk-version "\$PLATV"/.test(buildSh);
+    ok('build.sh baut gegen die Plattform-Version (Kontext fuer den Test)',
+        usesPlatformTarget, buildSh.slice(buildSh.indexOf('--min-sdk-version'), 200));
+
+    const regBody = extractBraceBlock(javaSrc, 'void registerBackGesture() {');
+    ok('Zurück: OnBackInvokedCallback wird registriert (Pflicht ab targetSdk 33+)',
+        /getOnBackInvokedDispatcher\(\)/.test(regBody)
+            && /registerOnBackInvokedCallback/.test(regBody), regBody);
+    ok('Zurück: Registrierung ist auf SDK 33+ begrenzt (aeltere nutzen onBackPressed)',
+        /Build\.VERSION\.SDK_INT < 33/.test(regBody), regBody);
+    ok('Zurück: fehlgeschlagene Registrierung wird geloggt, nicht verschluckt',
+        /addLog\(/.test(regBody) && /catch \(Throwable/.test(regBody), regBody);
+
+    const createBody = extractBraceBlock(javaSrc, 'protected void onCreate(Bundle savedInstanceState) {');
+    ok('Zurück: Registrierung passiert beim Start',
+        /registerBackGesture\(\)/.test(createBody), createBody);
+
+    const onBackBody = extractBraceBlock(javaSrc, 'public void onBackPressed() {');
+    ok('Zurück: beide Wege enden in handleBackGesture() (keine doppelte Logik)',
+        /handleBackGesture\(\)/.test(onBackBody)
+            && !/evaluateJavascript/.test(onBackBody), onBackBody);
+
+    ok('Zurück: BackCallback implementiert OnBackInvokedCallback und delegiert',
+        /class BackCallback implements OnBackInvokedCallback/.test(javaSrc)
+            && /onBackInvoked\(\) \{ a\.handleBackGesture\(\); \}/.test(javaSrc),
+        'BackCallback fehlt oder delegiert nicht');
+
+    const manifest = fs.readFileSync(path.join(__dirname, 'AndroidManifest.xml'), 'utf8');
+    ok('Manifest: enableOnBackInvokedCallback ist gesetzt',
+        /android:enableOnBackInvokedCallback="true"/.test(manifest), manifest);
+
     console.log(failed
         ? '\n' + failed + ' Test(s) fehlgeschlagen.'
         : '\nAlle Wächter-Tests bestanden.');

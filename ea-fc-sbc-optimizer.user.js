@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.73.0
+// @version      4.74.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.73.0';
+    const VERSION = '4.74.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -129,6 +129,8 @@
             evoExcluded: 0,          // ausgeschlossene Evolution-Karten
             lastSquadPutBody: null,  // letzter PUT-Body an den Squad (fuers 460-Debugging)
             staleRecover: null,      // Erholungsversuch bei veralteter challengeId
+            staleSessionRetry: 0,    // Session-Erneuerungen nach 404/475
+            quota: null,             // SBC-Kontingent (Stunde/Tag)
             locks: null,             // PaleTools-Sperrliste: Anzahl + Beispiel-IDs
             clubLoad: null,          // Club-Ladelauf: Seitengroesse/Takt/Seiten/Retries/Dauer
             submitVia: null,         // welcher Submit-Weg zuletzt gegriffen hat (app/http/services)
@@ -3547,11 +3549,12 @@
         const stillOpen = ns && ns.status != null &&
             !/COMPLETE|CLOSED|EXPIRED/i.test(String(ns.status));
         if (stillOpen) {
-            // Wenn die Challenge offen ist und EA das Schreiben trotzdem
-            // ablehnt, ist das EA-Kontingent der naechstliegende Verdacht
-            // (90 pro voller Stunde, 300 pro Tag - kontoweit, also auch von
-            // einem zweiten Geraet mitverbraucht).
-            const q = quotaNote || '';
+            // KEIN Kontingent-Verdacht mehr (war v4.73.0 und ist widerlegt):
+            // Rasmus konnte nach einem APP-NEUSTART sofort wieder abgeben. Ein
+            // Softban durch EAs Limit sperrt mindestens eine Stunde, teils den
+            // ganzen Tag - ein Neustart hebt ihn nicht auf. Es ist also
+            // Zustand im Client, nicht das Kontingent.
+            const q = '';
             return 'EA kennt diese Challenge noch (Status ' + ns.status +
                 (ns.repeatable ? ', wiederholbar' : '') + '), das Eintragen wurde aber mit ' +
                 msg.replace(/^.*?((?:404|475)).*$/, '$1') + ' abgelehnt. Das ist NICHT ' +
@@ -3626,6 +3629,24 @@
                     log('SBC-Instanz war veraltet - weiter mit frischer ID ' + fresh + '.');
                     setCurrentChallenge(fresh);
                     applyFromSetChallenges();
+                    return await submitToSbc(result, true, batchProgress);
+                }
+                // Keine andere Instanz, aber unsere laeuft laut EA noch
+                // (status IN_PROGRESS)? Dann ist es genau der Fall, den ein
+                // APP-NEUSTART behebt - und der Neustart erneuert vor allem die
+                // Session. Also einmal die Session erneuern und nachlegen,
+                // statt Rasmus die App neu starten zu lassen.
+                const sr0 = (STATE.diag.staleRecover &&
+                             STATE.diag.staleRecover.setId === STATE.sbc.setId)
+                    ? STATE.diag.staleRecover : null;
+                const ns0 = sr0 ? sr0.nodeState : null;
+                if (ns0 && ns0.status != null &&
+                    !/COMPLETE|CLOSED|EXPIRED/i.test(String(ns0.status))) {
+                    log('Instanz laeuft laut EA noch (' + ns0.status +
+                        ') - Session erneuern und einmal nachlegen.');
+                    STATE.diag.staleSessionRetry = (STATE.diag.staleSessionRetry || 0) + 1;
+                    await nudgeSession();
+                    await refreshChallengeCache();
                     return await submitToSbc(result, true, batchProgress);
                 }
             }
@@ -4993,7 +5014,11 @@
             clubLoad: STATE.diag.clubLoad || null,
             // SBC-Kontingent: Summe der serverseitigen timesCompleted plus
             // Verbrauch im Stunden-/Tagesfenster (siehe quotaUsage).
-            quota: quotaUsage(),
+            // Frisch rechnen, aber den von quotaSample() gesetzten Stand
+            // bevorzugen (dort ist die Messung gerade gelaufen).
+            quota: STATE.diag.quota || quotaUsage(),
+            // Wie oft musste nach 404/475 die Session erneuert werden?
+            staleSessionRetry: STATE.diag.staleSessionRetry || 0,
             // Abgeben: welche Controller/Methoden kamen in Frage und welche hat
             // gegriffen? Am Handy heisst der Controller anders als am PC.
             submitCandidates: STATE.diag.submitCandidates || null,

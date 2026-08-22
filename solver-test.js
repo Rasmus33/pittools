@@ -6484,7 +6484,8 @@ function mulberry32(a) {
         /id="sbc-opt-quota"/.test(src) && /quota: panel.querySelector/.test(src));
     check('Kontingent: nach jedem Eintragen gemessen',
         (src.match(/quotaSampleQuiet\(\)/g) || []).length >= 4);
-    check('Kontingent: im Diagnose-Report', /quota: quotaUsage\(\)/.test(src));
+    check('Kontingent: im Diagnose-Report',
+        /quota: STATE\.diag\.quota \|\| quotaUsage\(\)/.test(src));
     check('Kontingent: Hinweis nur nahe am Limit',
         /QUOTA_HOUR_LIMIT \* 0\.8/.test(src));
     check('Kontingent: Grenzen sind 90 und 300',

@@ -3,7 +3,9 @@
 // @namespace    https://github.com/sbc-optimizer
 // @version      4.75.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
-// @author       SBC Optimizer
+// @author       Rasmus Risse
+// @copyright    2026 Rasmus Risse
+// @license      PolyForm-Noncommercial-1.0.0; https://polyformproject.org/licenses/noncommercial/1.0.0
 // @match        https://www.ea.com/*/fc/ut/webapp/*
 // @match        https://www.ea.com/fc/ut/webapp/*
 // @match        https://www.ea.com/*/ultimate-team/web-app/*

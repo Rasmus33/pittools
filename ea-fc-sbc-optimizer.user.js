@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.76.0
+// @version      4.77.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.76.0';
+    const VERSION = '4.77.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -132,6 +132,8 @@
             lastSquadPutBody: null,  // letzter PUT-Body an den Squad (fuers 460-Debugging)
             staleRecover: null,      // Erholungsversuch bei veralteter challengeId
             staleSessionRetry: 0,    // Session-Erneuerungen nach 404/475
+            submitIds: null,         // welche challengeId jeder Submit-Weg benutzt hat
+            preloadChallenge: null,  // GET /sbs/challenge/{id} vor dem Schreiben
             quota: null,             // SBC-Kontingent (Stunde/Tag)
             locks: null,             // PaleTools-Sperrliste: Anzahl + Beispiel-IDs
             clubLoad: null,          // Club-Ladelauf: Seitengroesse/Takt/Seiten/Retries/Dauer
@@ -146,7 +148,8 @@
             submitCandidates: null,  // Controller.Methode-Kandidaten fuers Abgeben
             submitChallengeVia: null, // welcher Controller-/Service-Weg beim Abgeben gegriffen hat
             submitWithoutResponseCount: 0, // wie oft submitChallengeToEa ohne auswertbare Response als Erfolg durchging (LEARNINGS §9, v4.36.0: offen, ob Abgabe wirklich bestätigt war)
-            submitCounterChecks: null, // Abgabe gegen EAs timesCompleted-Summe geprueft (vorher/nachher/bestaetigt)
+            submitCounterChecks: null, // Abgabe gegen EAs timesCompleted geprueft (vorher/nachher/bestaetigt)
+            quotaDisabled: null,     // Kontingent-Messung nach EA-Ablehnung abgeschaltet
             submitConfirmations: null, // Post-Submit-Plausibilisierung im "ohne Response"-Zweig: via/hadResponse/squadEmptyAfter/ms je Versuch (reine Beobachtung, kein Abbruchkriterium)
             lastTap: null,           // letzter simulierter Tap: Events/Position/Abdeckung/Popup
             scanStats: null,         // Traversal-Metriken (visitedCount/depthCapped/budgetExhausted) von deepScan/findNode/collectNodes - reine Beobachtung, kein Abbruchkriterium (LEARNINGS 37)
@@ -874,7 +877,27 @@
      * Die Probe wird trotzdem abgelegt (haelt den Kontingent-Zaehler frisch).
      * Liefert null, wenn EA nicht antwortet: dann wird NICHTS behauptet.
      */
+    // NOTBREMSE. Lehnt EA einen Kontingent-Request ab (429 = zu viele
+    // Requests, dazu 426/512/521), wird fuer den Rest der Sitzung nicht mehr
+    // gemessen. Live hat genau das 23 Fehlversuche in Folge produziert und
+    // vermutlich die EA-UI mit lahmgelegt - eine Diagnose-Annehmlichkeit darf
+    // den Betrieb nie gefaehrden (LEARNINGS 7).
+    let quotaDisabled = false;
+    function quotaNoteFailure(e) {
+        const msg = String((e && e.message) || e || '');
+        if (/\b(426|429|512|521)\b/.test(msg)) {
+            quotaDisabled = true;
+            STATE.diag.quotaDisabled = 'abgeschaltet nach: ' + msg.slice(0, 80);
+            warn('Kontingent-Messung abgeschaltet (EA lehnt ab):', msg);
+        }
+        return null;
+    }
+    /**
+     * Gesamtstand ueber ALLE Sets. Schwerer Request - nur fuer die Panel-Anzeige
+     * beim Laden, NIE im Batch-Takt.
+     */
     async function quotaTotalNow() {
+        if (quotaDisabled) return null;
         try {
             const json = await apiGet('sbs/sets');
             const r = sumTimesCompleted(json);
@@ -884,7 +907,27 @@
             quotaSaveSamples(arr);
             STATE.diag.quota = quotaUsage();
             return r.sum;
-        } catch (e) { return null; }
+        } catch (e) { return quotaNoteFailure(e); }
+    }
+    /**
+     * timesCompleted NUR fuer ein Set - der leichte Weg, und genau die Zahl,
+     * die eine Abgabe bestaetigt. Liefert null, wenn nicht lesbar; dann wird
+     * NICHTS behauptet.
+     */
+    async function setTimesCompleted(setId) {
+        if (quotaDisabled || setId == null) return null;
+        try {
+            const json = await apiGet('sbs/setId/' + setId + '/challenges');
+            const r = sumTimesCompleted(json);
+            if (r.sets) return r.sum;
+            // Faellt die Set-Ebene in dieser Antwort weg, hilft der
+            // Challenge-Knoten: extractNodeState liest dieselbe Zahl.
+            const nodes = collectChallengeNodes(json);
+            for (const n of nodes) {
+                if (n && typeof n.timesCompleted === 'number') return n.timesCompleted;
+            }
+            return null;
+        } catch (e) { return quotaNoteFailure(e); }
     }
     /** Eine Zeile fuer das Panel - oder null, wenn es nichts zu sagen gibt. */
     /**
@@ -3525,6 +3568,17 @@
         }
         challenge = challenge || ctrl._challenge || STATE.sbc.entity;
         if (!challenge) throw new Error('Keine Live-Challenge gefunden.');
+        // WELCHE Challenge schreibt dieser Weg eigentlich? Die App-Entity kann
+        // eine ANDERE (aeltere) sein als STATE.sbc.challengeId - ein 404 hier
+        // bei gleichzeitig "IN_PROGRESS" in der Set-Liste waere damit erklaert.
+        // Ohne diese Zahl war jede Deutung geraten.
+        let usedId = null;
+        try { usedId = challenge.id != null ? challenge.id : challenge.challengeId; } catch (e) {}
+        STATE.diag.submitIds = Object.assign({}, STATE.diag.submitIds, {
+            app: usedId == null ? null : String(usedId),
+            state: STATE.sbc.challengeId == null ? null : String(STATE.sbc.challengeId),
+            same: (usedId != null && String(usedId) === String(STATE.sbc.challengeId))
+        });
         // Echte Entities über die App-Factory
         const factory = new window.UTItemEntityFactory();
         const entities = result.players.map(p => {
@@ -3612,24 +3666,41 @@
             throw new Error('Kein Ergebnis zum Eintragen.');
         const need = result.players.length;
         let lastErr = null;
+        // ERST die Challenge serverseitig laden - genau das, was EAs App tut.
+        // Befund aus dem v4.76.0-Report: in den funktionierenden Laeufen stand
+        // in lastUtasPaths ein einfaches GET /sbs/challenge/{id}; im
+        // gescheiterten NUR .../squad. Die Vermutung ist also, dass ohne dieses
+        // Laden serverseitig kein Arbeits-Squad bereitsteht und das PUT deshalb
+        // mit 475 abgelehnt wird.
+        // Bewusst ohne throw: schlaegt es fehl, laeuft der bisherige Weg weiter -
+        // eine unbewiesene Vermutung darf nichts kaputtmachen.
+        if (!_retried && STATE.sbc.challengeId != null) {
+            try {
+                const pfx0 = STATE.sbc.apiPrefix || 'sbs';
+                await apiGet(pfx0 + '/challenge/' + STATE.sbc.challengeId);
+                STATE.diag.preloadChallenge = 'ok';
+            } catch (e) {
+                STATE.diag.preloadChallenge = 'Fehler: ' + (e && e.message || e);
+            }
+        }
         // Weg 0: App-eigener Save (PaleTools-Rezept) - speichert UND
         // aktualisiert die offene Ansicht in einem Rutsch.
         try {
             await submitViaApp(result);
             const c0 = await verifySquadCount(result);
-            if (c0 >= need) { STATE.diag.submitVia = 'app'; quotaSampleQuiet(); return { confirmed: c0, via: 'app' }; }
+            if (c0 >= need) { STATE.diag.submitVia = 'app'; return { confirmed: c0, via: 'app' }; }
         } catch (e) { lastErr = e; warn('App-Eintrag meldete Fehler:', e.message); diagError('submitViaApp: ' + (e.message || e)); }
         // Weg A: HTTP-PUT im exakt mitgeschnittenen App-Format.
         try { await submitViaHttp(result); }
         catch (e) { lastErr = e; warn('HTTP-Eintrag meldete Fehler:', e.message); diagError('submitViaHttp: ' + (e.message || e)); }
         // Server fragen: sind die Spieler drin? (unabhängig vom PUT-Status)
         let confirmed = await verifySquadCount(result);
-        if (confirmed >= need) { STATE.diag.submitVia = 'http'; quotaSampleQuiet(); return { confirmed: confirmed, via: 'http' }; }
+        if (confirmed >= need) { STATE.diag.submitVia = 'http'; return { confirmed: confirmed, via: 'http' }; }
         // Weg B: alter Services-Weg (Entity-Squad + saveChallenge).
         try { await submitViaServices(result); }
         catch (e) { lastErr = e; warn('Service-Eintrag meldete Fehler:', e.message); diagError('submitViaServices: ' + (e.message || e)); }
         confirmed = await verifySquadCount(result);
-        if (confirmed >= need) { STATE.diag.submitVia = 'services'; quotaSampleQuiet(); return { confirmed: confirmed, via: 'services' }; }
+        if (confirmed >= need) { STATE.diag.submitVia = 'services'; return { confirmed: confirmed, via: 'services' }; }
         // Nichts hat gegriffen. 404/475 haben eine bekannte Ursache:
         // WIEDERHOLBARE SBCs bekommen pro Durchlauf eine NEUE challengeId.
         // Live gesehen: dieselbe SBC lief unter 3829, dann 3800, dann 3771 -
@@ -4084,6 +4155,14 @@
         .sbc-opt-batch-bad { color:#ff6b6b; }
         /* Schnellwahl: kleine Knoepfe unter dem Feld. Bewusst flach und
            schmal - sie sollen Tipparbeit sparen, nicht Platz kosten. */
+        /* Knopf an EAs Pack-Kachel. Bewusst erkennbar ANDERS als EAs eigene
+           Knoepfe (unsere Akzentfarbe), damit niemand ihn mit "Open"
+           verwechselt - er oeffnet ALLE Packs des Typs. */
+        .sbc-opt-tilebtn { margin-left:8px; background:#2b6cb0; color:#fff;
+                           border:1px solid #3d8ad6; border-radius:6px;
+                           padding:6px 12px; font-size:13px; font-weight:600;
+                           cursor:pointer; vertical-align:middle; }
+        .sbc-opt-tilebtn:disabled { opacity:.5; cursor:not-allowed; }
         .sbc-opt-chips { display:flex; gap:4px; margin:-4px 0 8px; align-items:center;
                          flex-wrap:wrap; }
         .sbc-opt-chip { background:#1d2a38; color:#cfe0f0; border:1px solid #2f4256;
@@ -5178,6 +5257,10 @@
             quota: STATE.diag.quota || quotaUsage(),
             // Wie oft musste nach 404/475 die Session erneuert werden?
             staleSessionRetry: STATE.diag.staleSessionRetry || 0,
+            // Welche challengeId hat welcher Weg benutzt? Weicht app von state
+            // ab, schreibt die App-Entity in eine andere Instanz.
+            submitIds: STATE.diag.submitIds || null,
+            preloadChallenge: STATE.diag.preloadChallenge || null,
             // Abgeben: welche Controller/Methoden kamen in Frage und welche hat
             // gegriffen? Am Handy heisst der Controller anders als am PC.
             submitCandidates: STATE.diag.submitCandidates || null,
@@ -5188,6 +5271,7 @@
             submitWithoutResponseCount: STATE.diag.submitWithoutResponseCount || 0,
             // Wurde jede Batch-Abgabe von EAs Zaehler bestaetigt?
             submitCounterChecks: STATE.diag.submitCounterChecks || null,
+            quotaDisabled: STATE.diag.quotaDisabled || null,
             // Griff eine Abgabe "ohne Response" wirklich? isSquadEmpty() 400ms danach
             // erneut gelesen - reine Beobachtung (kein throw/Retry), siehe submitChallengeToEa.
             submitConfirmations: STATE.diag.submitConfirmations || null,
@@ -5564,6 +5648,11 @@
             renderAnchorOptions();
             setStatus(STATE.cancelLoad ? 'abgebrochen (' + STATE.pool.length + ')' : 'Pool bereit (' + STATE.pool.length + ')');
             toast(STATE.pool.length + ' Spieler im Pool.', '');
+            // EINZIGER Messpunkt fuer das SBC-Kontingent. Bewusst hier und
+            // nirgends sonst: der Request ueber ALLE Sets ist schwer, und im
+            // Batch-Takt hat er live 429er ausgeloest (LEARNINGS 7). Einmal
+            // pro "Spieler laden" reicht fuer "wie viele SBCs heute".
+            quotaSampleQuiet();
         } catch (e) {
             if (!STATE.pool.length) { STATE.poolById = backupById; STATE.pool = backupPool; }
             setStatus('Fehler beim Laden');
@@ -6638,6 +6727,9 @@
      * falsch abgegebene SBC.
      */
     async function onBatchRunClick() {
+        // Stand von EAs timesCompleted fuer dieses Set. Wird pro Runde EINMAL
+        // gelesen und dient der naechsten Runde als Basis.
+        let batchCountBase = null;
         const plan = STATE.batch;
         if (!plan || !plan.planned) { toast('Erst "Teams planen" ausführen.', 'error'); return; }
         const n = plan.planned;
@@ -6693,9 +6785,13 @@
                 // abgegeben - dann wird hier gestoppt statt eine Fehlerkette zu
                 // produzieren. Antwortet EA gar nicht (null), wird NICHTS
                 // behauptet und wie bisher weitergemacht.
-                const cntBefore = await quotaTotalNow();
+                // Basis ist der Stand aus der VORIGEN Runde - so bleibt es bei
+                // EINEM leichten Request pro Runde statt zwei schweren.
+                const cntBefore = (batchCountBase != null)
+                    ? batchCountBase : await setTimesCompleted(STATE.sbc.setId);
                 await submitChallengeToEa();
-                const cntAfter = await quotaTotalNow();
+                const cntAfter = await setTimesCompleted(STATE.sbc.setId);
+                batchCountBase = (cntAfter != null) ? cntAfter : null;
                 const confirmed = (cntBefore != null && cntAfter != null)
                     ? (cntAfter > cntBefore) : null;
                 STATE.diag.submitCounterChecks = (STATE.diag.submitCounterChecks || []).concat([{
@@ -6864,9 +6960,54 @@
         } catch (e) { return true; }
         return false;
     }
+    // Merker fuer die FLANKE "Store betreten" - die Sichtbarkeits-Pruefung
+    // laeuft alle 500ms, ein Refresh pro Tick waere sinnlos und wuerde EA
+    // beschiessen.
+    let packViewWasIn = false;
+    let lastAutoPackRefresh = 0;
     function syncPackSection() {
         if (!ui.packSection) return;
-        ui.packSection.classList.toggle('sbc-opt-hidden', !inStoreView());
+        const inStore = inStoreView();
+        ui.packSection.classList.toggle('sbc-opt-hidden', !inStore);
+        if (inStore) {
+            if (!packViewWasIn) {
+                packViewWasIn = true;
+                // Kein await: syncPackSection laeuft im Intervall und darf
+                // nicht darauf warten.
+                autoPackRefresh();
+            }
+            injectPackTileButtons();
+        } else {
+            packViewWasIn = false;
+        }
+    }
+    /**
+     * Pack-Liste beim Betreten des Stores selbst holen.
+     * Bewusst zurueckhaltend: nicht waehrend eines laufenden Pack-Laufs, mit
+     * Abklingzeit (mehrfaches Rein/Raus soll EA nicht beschiessen, LEARNINGS 7),
+     * und mit kurzer Verzoegerung - die Store-Ansicht baut sich noch auf.
+     */
+    async function autoPackRefresh() {
+        if (STATE.packOpenBusy) return;
+        const now = Date.now();
+        if (now - lastAutoPackRefresh < 8000) return;
+        lastAutoPackRefresh = now;
+        await sleep(600);
+        if (!inStoreView() || STATE.packOpenBusy) return;
+        try {
+            setPackStatus('lade Packs...');
+            const groups = await fetchMyPacks();
+            renderPackTypeOptions();
+            setPackStatus(groups.length + ' eigene Pack-Typen (automatisch geladen).');
+            mergePackScan({ autoRefreshCount: ((STATE.diag.packScan || {}).autoRefreshCount || 0) + 1 });
+            injectPackTileButtons();
+        } catch (e) {
+            // Nicht toasten: der Nutzer hat nichts angeklickt, ein Fehler hier
+            // darf ihn nicht anspringen. Der Refresh-Knopf bleibt der Weg von
+            // Hand, und der Status sagt, was war.
+            setPackStatus('automatisches Laden fehlgeschlagen: ' + (e.message || e));
+            mergePackScan({ autoRefreshError: String(e && e.message || e) });
+        }
     }
     /**
      * Alle fuer den Pack-Opener benoetigten EA-Globalen VORAB defensiv
@@ -7222,6 +7363,86 @@
         }
         ui.packResult.innerHTML = html;
     }
+    // ======================================================================
+    //  "Alle oeffnen" DIREKT an EAs Pack-Kachel
+    // ======================================================================
+    // Anker sind bewusst NICHT EAs Klassennamen (die kennen wir nicht und sie
+    // aendern sich), sondern zwei Dinge, die im Bild stehen: ein Knopf mit dem
+    // Text "Open" und der Pack-NAME in derselben Kachel. Der Name wird gegen
+    // unsere geladene Pack-Liste abgeglichen - EXAKT oder als Praefix, NIE
+    // unscharf: Packs oeffnen ist unumkehrbar, ein Fehltreffer waere teuer.
+    const PACK_BTN_MARK = 'data-sbc-opt-openall';
+    function packTileTitleOf(container) {
+        // Der laengste Textknoten, der wie ein Titel aussieht. Ueber die
+        // Kachel-Struktur wissen wir nichts Verlaessliches, ueber den Text
+        // schon: der Pack-Name steht dort ausgeschrieben.
+        let best = '';
+        try {
+            const nodes = container.querySelectorAll('h1,h2,h3,h4,span,div,p');
+            for (let i = 0; i < nodes.length; i++) {
+                const n = nodes[i];
+                if (n.children && n.children.length) continue;   // nur Blaetter
+                const t = String(n.textContent || '').replace(/\s+/g, ' ').trim();
+                if (t.length > best.length && t.length <= 80) best = t;
+            }
+        } catch (e) {}
+        return best;
+    }
+    /** Pack-Gruppe zu einem Kachel-Titel finden - exakt, sonst Praefix. */
+    function matchPackGroupByTitle(title) {
+        const t = String(title || '').toLowerCase().replace(/\s+/g, ' ').trim();
+        if (!t) return null;
+        const groups = STATE.packGroups || [];
+        let exact = null, prefix = null;
+        for (const g of groups) {
+            const label = String(packLabelOf(g) || '').toLowerCase().replace(/\s+/g, ' ').trim();
+            if (!label) continue;
+            if (label === t) { exact = exact || g; continue; }
+            if (t.indexOf(label) === 0 || label.indexOf(t) === 0) prefix = prefix || g;
+        }
+        return exact || prefix || null;
+    }
+    /**
+     * Neben jeden "Open"-Knopf einen eigenen setzen. Laeuft aus dem 500ms-Takt,
+     * ist also idempotent: schon markierte Knoepfe werden uebersprungen, und
+     * wenn EA neu rendert, kommt der Knopf von selbst wieder.
+     */
+    function injectPackTileButtons() {
+        if (!(STATE.packGroups || []).length) return;   // ohne Liste kein Abgleich
+        let added = 0, skipped = 0;
+        try {
+            const btns = document.querySelectorAll('button, a, [role="button"]');
+            for (let i = 0; i < btns.length; i++) {
+                const b = btns[i];
+                const txt = String(b.textContent || '').trim().toLowerCase();
+                if (txt !== 'open' && txt !== 'öffnen') continue;
+                if (b.getAttribute(PACK_BTN_MARK) === '1') continue;
+                // Kachel = naechster Vorfahr, in dem ein Pack-Name steckt.
+                let box = b.parentElement, group = null, hops = 0;
+                while (box && hops++ < 5) {
+                    group = matchPackGroupByTitle(packTileTitleOf(box));
+                    if (group) break;
+                    box = box.parentElement;
+                }
+                b.setAttribute(PACK_BTN_MARK, '1');   // auch bei Misserfolg: nicht jede Runde neu versuchen
+                if (!group || !box) { skipped++; continue; }
+                const own = document.createElement('button');
+                own.type = 'button';
+                own.className = 'sbc-opt-tilebtn';
+                own.textContent = 'Alle ' + group.count + ' öffnen';
+                own.setAttribute('data-sbc-opt-pack', String(group.id));
+                own.addEventListener('click', function (ev) {
+                    try { ev.stopPropagation(); ev.preventDefault(); } catch (e) {}
+                    openAllForPack(String(group.id));
+                });
+                try { b.parentElement.insertBefore(own, b.nextSibling); added++; }
+                catch (e) { skipped++; }
+            }
+        } catch (e) {}
+        if (added || skipped) {
+            mergePackScan({ tileButtons: { added: added, skipped: skipped } });
+        }
+    }
     async function onPackRefreshClick() {
         if (STATE.packOpenBusy) return;
         ui.packRefresh.disabled = true;
@@ -7462,7 +7683,25 @@
             }
             renderPackDrawList(res.drawn);
             toast('1 Pack geöffnet, ' + res.drawn.length + ' Karten verteilt.', '');
-            try { await fetchMyPacks(); renderPackTypeOptions(); } catch (e) {}
+            try {
+                await fetchMyPacks();
+                renderPackTypeOptions();
+                // Kachel-Knoepfe neu aufbauen: die Anzahl hat sich geaendert,
+                // und ein Knopf mit alter Zahl waere irrefuehrend.
+                try {
+                    const stale = document.querySelectorAll('.sbc-opt-tilebtn');
+                    for (let i = 0; i < stale.length; i++) {
+                        const b = stale[i];
+                        if (b.parentElement) b.parentElement.removeChild(b);
+                    }
+                    const marked = document.querySelectorAll('[' + PACK_BTN_MARK + ']');
+                    for (let i = 0; i < marked.length; i++) marked[i].removeAttribute(PACK_BTN_MARK);
+                } catch (e2) {}
+                injectPackTileButtons();
+            } catch (e) {}
+            // Die gezogenen Spieler stehen im Panel - vom Store aus ist das
+            // sonst unsichtbar, und genau die wollte Rasmus sehen.
+            try { if (ui.panel) ui.panel.classList.add('open'); } catch (e) {}
         } catch (e) {
             reportError('Pack-Testlauf: unerwarteter Fehler', e);
             setPackStatus('Fehler: ' + (e.message || e));
@@ -7548,14 +7787,24 @@
         if (STATE.packOpenBusy) return;
         const groupId = ui.packType && ui.packType.value;
         if (!groupId) { toast('Erst einen Pack-Typ wählen (Aktualisieren drücken).', 'error'); return; }
-        const group = (STATE.packGroups || []).find(function (g) { return String(g.id) === String(groupId); });
-        const available = group ? group.count : 0;
         const raw = ui.packCount && ui.packCount.value;
         const requestedCount = (raw === '' || raw == null) ? null : parseInt(raw, 10);
         if (requestedCount != null && (!Number.isFinite(requestedCount) || requestedCount < 1)) {
             toast('Ungültige Anzahl.', 'error');
             return;
         }
+        await openAllForPack(groupId, requestedCount);
+    }
+    /**
+     * Alle (oder N) Packs eines Typs oeffnen. EINE Routine fuer den
+     * Panel-Knopf UND den Knopf an EAs Kachel - zwei Pfade wuerden
+     * auseinanderlaufen, und dieser hier ist unumkehrbar.
+     * requestedCount == null heisst "alle vorhandenen".
+     */
+    async function openAllForPack(groupId, requestedCount) {
+        if (STATE.packOpenBusy) return;
+        const group = (STATE.packGroups || []).find(function (g) { return String(g.id) === String(groupId); });
+        const available = group ? group.count : 0;
         const plannedTotal = Math.max(0, Math.min(requestedCount == null ? available : requestedCount, available));
         if (plannedTotal < 1) { toast('Keine Packs dieses Typs zum Öffnen verfügbar.', 'error'); return; }
         const packLabel = group ? packLabelOf(group) : ('Pack ' + groupId);
@@ -7564,9 +7813,7 @@
             'Stoppt beim ersten Fehler; bereits geöffnete Packs sind dann schon verteilt. Fortfahren?'
         )) return;
         STATE.packOpenBusy = true;
-        ui.packTest.disabled = true;
-        ui.packAll.disabled = true;
-        ui.packRefresh.disabled = true;
+        setPackButtonsDisabled(true);
         setPackStatus('öffne ' + plannedTotal + ' Pack(s)...');
         try {
             const res = await runPackOpenAll(groupId, requestedCount, function (cur, cnt, step) {
@@ -7580,17 +7827,47 @@
                 finishProgress(res.message, true);
                 toast(res.message, 'ok');
             }
-            try { await fetchMyPacks(); renderPackTypeOptions(); } catch (e) {}
+            try {
+                await fetchMyPacks();
+                renderPackTypeOptions();
+                // Kachel-Knoepfe neu aufbauen: die Anzahl hat sich geaendert,
+                // ein Knopf mit alter Zahl waere irrefuehrend.
+                try {
+                    const stale = document.querySelectorAll('.sbc-opt-tilebtn');
+                    for (let k = 0; k < stale.length; k++) {
+                        const b = stale[k];
+                        if (b.parentElement) b.parentElement.removeChild(b);
+                    }
+                    const marked = document.querySelectorAll('[' + PACK_BTN_MARK + ']');
+                    for (let k = 0; k < marked.length; k++) marked[k].removeAttribute(PACK_BTN_MARK);
+                } catch (e2) {}
+                injectPackTileButtons();
+            } catch (e) {}
+            // Die gezogenen Spieler stehen im Panel - vom Store aus ist das
+            // sonst unsichtbar, und genau die wollte Rasmus sehen.
+            try { if (ui.panel) ui.panel.classList.add('open'); } catch (e) {}
         } catch (e) {
             reportError('Pack-Alle-Öffnen: unerwarteter Fehler', e);
             setPackStatus('Fehler: ' + (e.message || e));
             toast('Alle öffnen fehlgeschlagen: ' + (e.message || e), 'error');
         } finally {
             STATE.packOpenBusy = false;
-            ui.packTest.disabled = false;
-            ui.packAll.disabled = false;
-            ui.packRefresh.disabled = false;
+            setPackButtonsDisabled(false);
         }
+    }
+    /**
+     * Panel-Knoepfe UND die Knoepfe an EAs Kacheln sperren. Wichtig beim
+     * Aufruf von der Kachel: sonst koennte man daneben ein zweites Mal
+     * tippen, waehrend der erste Lauf noch oeffnet.
+     */
+    function setPackButtonsDisabled(off) {
+        for (const b of [ui.packTest, ui.packAll, ui.packRefresh]) {
+            if (b) b.disabled = !!off;
+        }
+        try {
+            const own = document.querySelectorAll('.sbc-opt-tilebtn');
+            for (let i = 0; i < own.length; i++) own[i].disabled = !!off;
+        } catch (e) {}
     }
     // ========================================================================
     //  8. BOOTSTRAP

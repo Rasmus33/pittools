@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.77.0
+// @version      4.78.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.77.0';
+    const VERSION = '4.78.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -132,6 +132,7 @@
             lastSquadPutBody: null,  // letzter PUT-Body an den Squad (fuers 460-Debugging)
             staleRecover: null,      // Erholungsversuch bei veralteter challengeId
             staleSessionRetry: 0,    // Session-Erneuerungen nach 404/475
+            throttle: null,          // EA weist ab: Anzahl/letzte Meldung (429/503/512/Failed to fetch)
             submitIds: null,         // welche challengeId jeder Submit-Weg benutzt hat
             preloadChallenge: null,  // GET /sbs/challenge/{id} vor dem Schreiben
             quota: null,             // SBC-Kontingent (Stunde/Tag)
@@ -161,7 +162,37 @@
     };
     function log(...args) { try { console.log(LOG_PREFIX, ...args); } catch (e) {} }
     function warn(...args) { try { console.warn(LOG_PREFIX, ...args); } catch (e) {} }
+    // ======================================================================
+    //  DROSSEL-ERKENNUNG
+    // ======================================================================
+    // Live (Report v4.77.0): "Failed to fetch" (9x), 503, 512 - und danach
+    // PUT -> 475. Der 475 ist also die FOLGE davon, dass EA den Client abweist,
+    // kein Zustandsproblem der Challenge. Ohne diese Unterscheidung erklaeren
+    // wir seit Tagen das falsche Symptom.
+    const THROTTLE_RE = /\b(426|429|503|512|521)\b|Failed to fetch|NetworkError|load failed/i;
+    function noteThrottle(msg) {
+        if (!THROTTLE_RE.test(String(msg || ''))) return false;
+        const t = STATE.diag.throttle || (STATE.diag.throttle = { count: 0, last: null, lastAt: 0 });
+        t.count++;
+        t.last = String(msg).slice(0, 120);
+        t.lastAt = Date.now();
+        return true;
+    }
+    /** Wird gerade gedrosselt? (Fenster: die letzten 20 Sekunden) */
+    function throttledNow() {
+        const t = STATE.diag.throttle;
+        return !!(t && t.count > 0 && (Date.now() - t.lastAt) < 20000);
+    }
+    function throttleNote() {
+        const t = STATE.diag.throttle;
+        if (!t || !t.count) return '';
+        return ' EA weist gerade Anfragen ab (' + t.count + 'x, zuletzt: ' +
+               t.last + ') - das ist der wahrscheinliche Grund. Kurz warten und ' +
+               'erneut versuchen; ein Neustart der App hilft oft auch.';
+    }
     function diagError(msg) {
+        // Zentral: jede Fehlermeldung wird auf Drossel-Signaturen geprueft.
+        try { noteThrottle(msg); } catch (e) {}
         try {
             const arr = STATE.diag.lastErrors;
             arr.push(String(msg).slice(0, 300));
@@ -3611,7 +3642,7 @@
      * ist fehlgeschlagen, Zaehler unbekannt) faellt konservativ auf denselben
      * Rat wie >=1 Kandidaten zurueck.
      */
-    function staleInstanceMessage(msg, candidateCount, batchProgress, nodeState, quotaNote) {
+    function staleInstanceMessage(msg, candidateCount, batchProgress, nodeState, quotaNote, throttleTxt) {
         // ZUERST der Zustand UNSERER Instanz. Live (v4.72.0-Report, setId 1356)
         // war candidateCount 0 - aber nicht, weil EA die SBC nicht mehr anbot,
         // sondern weil die EINE Challenge im Set genau unsere war und noch
@@ -3628,7 +3659,10 @@
             // Softban durch EAs Limit sperrt mindestens eine Stunde, teils den
             // ganzen Tag - ein Neustart hebt ihn nicht auf. Es ist also
             // Zustand im Client, nicht das Kontingent.
-            const q = '';
+            // Liegt eine Drosselung vor, ist SIE die Erklaerung - nicht der
+            // Zustand der Challenge. Live: 9x "Failed to fetch" + 503 + 512,
+            // danach 475.
+            const q = (throttleTxt || quotaNote || '');
             return 'EA kennt diese Challenge noch (Status ' + ns.status +
                 (ns.repeatable ? ', wiederholbar' : '') + '), das Eintragen wurde aber mit ' +
                 msg.replace(/^.*?((?:404|475)).*$/, '$1') + ' abgelehnt. Das ist NICHT ' +
@@ -3749,7 +3783,7 @@
                 ? STATE.diag.staleRecover : null;
             const candidateCount = sr ? sr.candidateCount : null;
             throw new Error(staleInstanceMessage(msg, candidateCount, batchProgress,
-                sr ? sr.nodeState : null, quotaHint()));
+                sr ? sr.nodeState : null, quotaHint(), throttleNote()));
         }
         // 403 heisst NICHT "veraltet", sondern "EA nimmt das so nicht an" -
         // meist eine Vorgabe, die der Solver nicht abdeckt (live: reqDump mit
@@ -5257,6 +5291,8 @@
             quota: STATE.diag.quota || quotaUsage(),
             // Wie oft musste nach 404/475 die Session erneuert werden?
             staleSessionRetry: STATE.diag.staleSessionRetry || 0,
+            // Drosselung durch EA - erklaert 475/404 beim Eintragen.
+            throttle: STATE.diag.throttle || null,
             // Welche challengeId hat welcher Weg benutzt? Weicht app von state
             // ab, schreibt die App-Entity in eine andere Instanz.
             submitIds: STATE.diag.submitIds || null,
@@ -6787,6 +6823,14 @@
                 // behauptet und wie bisher weitergemacht.
                 // Basis ist der Stand aus der VORIGEN Runde - so bleibt es bei
                 // EINEM leichten Request pro Runde statt zwei schweren.
+                // Wird gerade gedrosselt, hat Weitermachen keinen Sinn: das
+                // naechste Schreiben laeuft in denselben 475. Sauber abbrechen
+                // ist besser als eine Fehlerkette (und als eine Abgabe, die
+                // niemand bestaetigen kann).
+                if (throttledNow()) {
+                    throw new Error('Abgebrochen nach ' + done + ' von ' + n + ' Teams.' +
+                        throttleNote());
+                }
                 const cntBefore = (batchCountBase != null)
                     ? batchCountBase : await setTimesCompleted(STATE.sbc.setId);
                 await submitChallengeToEa();
@@ -6949,13 +6993,34 @@
      * leer/werfend aus, lieber der Abschnitt einmal zu viel sichtbar als ein
      * Einstieg, der nie erscheint.
      */
+    /**
+     * Knoepfe, die wie EAs "Open" an einer Pack-Kachel aussehen.
+     * Das ist gleichzeitig der VERLAESSLICHSTE Hinweis darauf, dass wir in der
+     * Pack-Ansicht sind: der Controller-Name half nicht (siehe inStoreView).
+     */
+    function packOpenButtons() {
+        const out = [];
+        try {
+            const els = document.querySelectorAll('button, a, [role="button"]');
+            for (let i = 0; i < els.length; i++) {
+                const t = String(els[i].textContent || '').trim().toLowerCase();
+                if (t === 'open' || t === 'öffnen') out.push(els[i]);
+            }
+        } catch (e) {}
+        return out;
+    }
     function inStoreView() {
+        // ZUERST das DOM: liegen Pack-Kacheln mit "Open" auf dem Schirm, sind
+        // wir in der Pack-Ansicht - egal wie EA den Controller nennt. Der
+        // Namens-Test allein war zu eng ("My Packs" enthaelt kein "store"),
+        // und dann lief weder der Auto-Refresh noch die Knopf-Injection.
+        try { if (packOpenButtons().length) return true; } catch (e) {}
         try {
             const chain = getControllerChain();
             if (!chain.length) return true;
             for (const c of chain) {
                 const n = (c.constructor && c.constructor.name) || '';
-                if (/store/i.test(n)) return true;
+                if (/store|pack/i.test(n)) return true;
             }
         } catch (e) { return true; }
         return false;
@@ -6994,19 +7059,29 @@
         lastAutoPackRefresh = now;
         await sleep(600);
         if (!inStoreView() || STATE.packOpenBusy) return;
+        // Schrittweise, damit im Report steht, WO es geknallt hat. Live kam nur
+        // "Cannot read properties of undefined (reading 'toLowerCase')" ohne Ort -
+        // damit war nicht entscheidbar, ob der Fehler bei uns oder in EAs
+        // Store-Service liegt.
+        let step = 'start';
         try {
             setPackStatus('lade Packs...');
+            step = 'fetchMyPacks';
             const groups = await fetchMyPacks();
+            step = 'renderPackTypeOptions';
             renderPackTypeOptions();
+            step = 'status';
             setPackStatus(groups.length + ' eigene Pack-Typen (automatisch geladen).');
             mergePackScan({ autoRefreshCount: ((STATE.diag.packScan || {}).autoRefreshCount || 0) + 1 });
+            step = 'injectPackTileButtons';
             injectPackTileButtons();
+            step = 'fertig';
         } catch (e) {
             // Nicht toasten: der Nutzer hat nichts angeklickt, ein Fehler hier
             // darf ihn nicht anspringen. Der Refresh-Knopf bleibt der Weg von
             // Hand, und der Status sagt, was war.
-            setPackStatus('automatisches Laden fehlgeschlagen: ' + (e.message || e));
-            mergePackScan({ autoRefreshError: String(e && e.message || e) });
+            setPackStatus('automatisches Laden fehlgeschlagen (' + step + '): ' + (e.message || e));
+            mergePackScan({ autoRefreshError: step + ': ' + String(e && e.message || e) });
         }
     }
     /**
@@ -7372,20 +7447,35 @@
     // unsere geladene Pack-Liste abgeglichen - EXAKT oder als Praefix, NIE
     // unscharf: Packs oeffnen ist unumkehrbar, ein Fehltreffer waere teuer.
     const PACK_BTN_MARK = 'data-sbc-opt-openall';
-    function packTileTitleOf(container) {
-        // Der laengste Textknoten, der wie ein Titel aussieht. Ueber die
-        // Kachel-Struktur wissen wir nichts Verlaessliches, ueber den Text
-        // schon: der Pack-Name steht dort ausgeschrieben.
-        let best = '';
+    const PACK_BTN_TRIES = 'data-sbc-opt-tries';
+    /**
+     * Alle Texte einer Kachel, die als Pack-Name in Frage kommen.
+     * Vorher wurden NUR Blatt-Knoten betrachtet - im Bild bricht der Name aber
+     * ueber zwei Zeilen ("10x 85+ Rare Gold\nPlayers Pack"), steckt also
+     * womoeglich in einem Element MIT Kindern. Deshalb: bevorzugt Elemente mit
+     * "title"/"header" in der Klasse und Ueberschriften, danach kurze Container
+     * und Blaetter - alle als Kandidaten, nicht nur einer.
+     */
+    function packTileTitleCandidates(container) {
+        const out = [];
+        function add(t) {
+            const c = String(t || '').replace(/\s+/g, ' ').trim();
+            if (c.length >= 3 && c.length <= 90 && out.indexOf(c) < 0) out.push(c);
+        }
         try {
-            const nodes = container.querySelectorAll('h1,h2,h3,h4,span,div,p');
-            for (let i = 0; i < nodes.length; i++) {
-                const n = nodes[i];
-                if (n.children && n.children.length) continue;   // nur Blaetter
-                const t = String(n.textContent || '').replace(/\s+/g, ' ').trim();
-                if (t.length > best.length && t.length <= 80) best = t;
-            }
+            const pref = container.querySelectorAll(
+                '[class*="title"],[class*="Title"],[class*="header"],[class*="name"],h1,h2,h3,h4');
+            for (let i = 0; i < pref.length; i++) add(pref[i].textContent);
+            const nodes = container.querySelectorAll('span,div,p');
+            for (let i = 0; i < nodes.length && out.length < 40; i++) add(nodes[i].textContent);
         } catch (e) {}
+        return out;
+    }
+    // Bleibt fuer die Diagnose: der laengste Kandidat ist meist der Name.
+    function packTileTitleOf(container) {
+        const cands = packTileTitleCandidates(container);
+        let best = '';
+        for (const c of cands) if (c.length > best.length) best = c;
         return best;
     }
     /** Pack-Gruppe zu einem Kachel-Titel finden - exakt, sonst Praefix. */
@@ -7408,24 +7498,56 @@
      * wenn EA neu rendert, kommt der Knopf von selbst wieder.
      */
     function injectPackTileButtons() {
-        if (!(STATE.packGroups || []).length) return;   // ohne Liste kein Abgleich
-        let added = 0, skipped = 0;
+        const btns = packOpenButtons();
+        // Die Diagnose sagt in EINEM Blick, woran es haengt - vorher war
+        // "kein Knopf da" nicht von "Titel nicht gelesen" zu unterscheiden.
+        const scan = {
+            openButtons: btns.length,
+            packGroups: (STATE.packGroups || []).length,
+            titlesSeen: [],
+            added: 0, skipped: 0, reason: null
+        };
+        if (!btns.length) {
+            scan.reason = 'keine Open-Knoepfe im DOM';
+            mergePackScan({ tileScan: scan });
+            return;
+        }
+        if (!scan.packGroups) {
+            // Ohne geladene Liste gibt es nichts zum Abgleichen. Kein
+            // Blindraten: Packs oeffnen ist unumkehrbar.
+            scan.reason = 'Pack-Liste noch nicht geladen';
+            mergePackScan({ tileScan: scan });
+            return;
+        }
         try {
-            const btns = document.querySelectorAll('button, a, [role="button"]');
             for (let i = 0; i < btns.length; i++) {
                 const b = btns[i];
-                const txt = String(b.textContent || '').trim().toLowerCase();
-                if (txt !== 'open' && txt !== 'öffnen') continue;
                 if (b.getAttribute(PACK_BTN_MARK) === '1') continue;
-                // Kachel = naechster Vorfahr, in dem ein Pack-Name steckt.
-                let box = b.parentElement, group = null, hops = 0;
-                while (box && hops++ < 5) {
-                    group = matchPackGroupByTitle(packTileTitleOf(box));
+                // Fehlversuche zaehlen statt sofort aufzugeben: die Kachel kann
+                // ihren Namen spaeter nachliefern. Nach 5 Anlaeufen ist Ruhe.
+                const tries = parseInt(b.getAttribute(PACK_BTN_TRIES) || '0', 10);
+                if (tries >= 5) continue;
+                let box = b.parentElement, group = null, hops = 0, seen = [];
+                while (box && hops++ < 6) {
+                    const cands = packTileTitleCandidates(box);
+                    for (const c of cands) {
+                        if (seen.length < 6 && seen.indexOf(c) < 0) seen.push(c);
+                        const g = matchPackGroupByTitle(c);
+                        if (g) { group = g; break; }
+                    }
                     if (group) break;
                     box = box.parentElement;
                 }
-                b.setAttribute(PACK_BTN_MARK, '1');   // auch bei Misserfolg: nicht jede Runde neu versuchen
-                if (!group || !box) { skipped++; continue; }
+                if (!group || !box) {
+                    b.setAttribute(PACK_BTN_TRIES, String(tries + 1));
+                    scan.skipped++;
+                    for (const t of seen) {
+                        if (scan.titlesSeen.length < 8 && scan.titlesSeen.indexOf(t) < 0) {
+                            scan.titlesSeen.push(t);
+                        }
+                    }
+                    continue;
+                }
                 const own = document.createElement('button');
                 own.type = 'button';
                 own.className = 'sbc-opt-tilebtn';
@@ -7435,13 +7557,22 @@
                     try { ev.stopPropagation(); ev.preventDefault(); } catch (e) {}
                     openAllForPack(String(group.id));
                 });
-                try { b.parentElement.insertBefore(own, b.nextSibling); added++; }
-                catch (e) { skipped++; }
+                try {
+                    b.parentElement.insertBefore(own, b.nextSibling);
+                    b.setAttribute(PACK_BTN_MARK, '1');   // NUR bei Erfolg endgueltig
+                    scan.added++;
+                } catch (e) {
+                    b.setAttribute(PACK_BTN_TRIES, String(tries + 1));
+                    scan.skipped++;
+                }
             }
-        } catch (e) {}
-        if (added || skipped) {
-            mergePackScan({ tileButtons: { added: added, skipped: skipped } });
+        } catch (e) {
+            scan.reason = 'Fehler: ' + (e && e.message || e);
         }
+        if (!scan.added && !scan.reason) {
+            scan.reason = 'kein Kachel-Titel passte zu einem Pack-Namen';
+        }
+        mergePackScan({ tileScan: scan });
     }
     async function onPackRefreshClick() {
         if (STATE.packOpenBusy) return;
@@ -7694,8 +7825,12 @@
                         const b = stale[i];
                         if (b.parentElement) b.parentElement.removeChild(b);
                     }
-                    const marked = document.querySelectorAll('[' + PACK_BTN_MARK + ']');
-                    for (let i = 0; i < marked.length; i++) marked[i].removeAttribute(PACK_BTN_MARK);
+                    const marked = document.querySelectorAll(
+                        '[' + PACK_BTN_MARK + '],[' + PACK_BTN_TRIES + ']');
+                    for (let i = 0; i < marked.length; i++) {
+                        marked[i].removeAttribute(PACK_BTN_MARK);
+                        marked[i].removeAttribute(PACK_BTN_TRIES);
+                    }
                 } catch (e2) {}
                 injectPackTileButtons();
             } catch (e) {}
@@ -7838,8 +7973,12 @@
                         const b = stale[k];
                         if (b.parentElement) b.parentElement.removeChild(b);
                     }
-                    const marked = document.querySelectorAll('[' + PACK_BTN_MARK + ']');
-                    for (let k = 0; k < marked.length; k++) marked[k].removeAttribute(PACK_BTN_MARK);
+                    const marked = document.querySelectorAll(
+                        '[' + PACK_BTN_MARK + '],[' + PACK_BTN_TRIES + ']');
+                    for (let k = 0; k < marked.length; k++) {
+                        marked[k].removeAttribute(PACK_BTN_MARK);
+                        marked[k].removeAttribute(PACK_BTN_TRIES);
+                    }
                 } catch (e2) {}
                 injectPackTileButtons();
             } catch (e) {}

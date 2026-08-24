@@ -2221,3 +2221,43 @@ schon in Reichweite, weil das Kontingent-Feature ihn ohnehin liest.
 rechnete gegen ein FESTES Testdatum, `quotaSaveSamples()` aber gegen die echte
 Uhr. Der Test war genau einen Tag gruen und danach rot. Zeitfenster-Tests immer
 relativ zu `Date.now()` bauen.
+
+
+## App 1.10.1: warum das Autofill aus 1.9.0 nie ausgefuellt hat
+
+Drei Fehler auf einmal, alle in `maybeAutofillLogin()`:
+
+1. **Ein einziger Versuch, und der zu frueh.** Die Methode lief nur in
+   `onPageFinished`. EAs Login (Juno) ist eine JS-App - zu diesem Zeitpunkt gibt
+   es `#email`/`#password` noch nicht. Das JS lieferte `no-fields`, und danach
+   passierte NIE WIEDER etwas.
+2. **EA fragt zweistufig.** Erst die E-Mail, das Passwort-Feld erscheint danach.
+   `pick()` verlangt Sichtbarkeit - selbst im Glueckfall waere also nur die Mail
+   gefuellt worden und das Passwort nie.
+3. **Kein Rueckkanal.** `evaluateJavascript(js, null)` verwarf das Ergebnis, und
+   der Log schrieb "Login-Felder werden gefuellt", BEVOR ein Erfolg feststand -
+   eine Erfolgsmeldung ohne Beleg. Dazu kehrten drei Faelle STILL zurueck (keine
+   Login-URL, Autofill aus, keine Daten): am Geraet war nicht zu sehen, woran es
+   lag.
+
+Behoben:
+
+- **Wiederholte Anlaeufe** (`AUTOFILL_DELAYS`, Summe > 30s, erst dicht, dann
+  weiter) bis BEIDE Felder gemeldet sind. Damit wird auch der zweite Schritt
+  des Logins getroffen.
+- **Ergebnis auswerten** (`AutofillResult`) und jeden Versuch loggen -
+  `Autofill: Versuch 3 -> mail, naechster in 1000ms`. Ohne die Werte.
+- **Nachkontrolle im JS**: gemeldet wird nur, was danach wirklich im Feld steht
+  (`m.value===mail`); React setzt Werte gern zurueck. Sonst `set-failed`.
+- **Handknopf "Jetzt ausfuellen"** im Login-Dialog, unabhaengig von der
+  URL-Erkennung - damit ist am Geraet pruefbar, ob das Fuellen selbst geht.
+- `isLoginUrl` erkennt zusaetzlich `juno` (EAs Login ist
+  `signin.ea.com/p/juno/login`).
+
+**Muster (dritter Fall dieser Art nach dem PaleTools-Waechter und der
+Zurueck-Geste):** eine Automatik gegen eine fremde JS-App ist erst fertig, wenn
+sie (a) mehrfach versucht, weil das Ziel spaeter entsteht, und (b) ihr Ergebnis
+zurueckmeldet. Eine Erfolgsmeldung VOR dem Beleg ist schlimmer als keine -
+sie kostet die Fehlersuche.
+
+Gegenproben belegt: ohne Wiederholung rot, ohne Ergebnis-Callback rot.

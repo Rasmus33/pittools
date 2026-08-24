@@ -585,8 +585,49 @@ function ok(name, cond, detail) {
         autofillBody);
     ok('Autofill: nur auf Login-URLs und nur mit gespeicherten Daten',
         /isLoginUrl\(url\)/.test(autofillBody) && /loginAutofill/.test(autofillBody)
-            && /blob == null/.test(autofillBody),
+            && /loginPwBlob", null\) == null/.test(autofillBody),
         autofillBody);
+    // App 1.10.0 fuellte NIE aus. Drei Fehler, hier festgeschrieben:
+    //  (1) genau EIN Versuch in onPageFinished - da existieren EAs Felder noch
+    //      nicht (JS lieferte 'no-fields', danach nichts mehr)
+    //  (2) EA fragt ZWEISTUFIG, das Passwort-Feld kommt erst nach der E-Mail
+    //  (3) evaluateJavascript(js, null) - Ergebnis verworfen, und der Log
+    //      meldete Erfolg, BEVOR einer feststand
+    ok('Autofill: kehrt nicht mehr STILL zurueck (jeder Fall wird geloggt)',
+        (autofillBody.match(/addLog\(/g) || []).length >= 2, autofillBody);
+    const stepBody = extractBraceBlock(javaSrc, 'void autofillStep() {');
+    ok('Autofill: Ergebnis wird ausgewertet, nicht verworfen',
+        /new AutofillResult\(this\)/.test(stepBody) && !/evaluateJavascript\(js, null\)/.test(stepBody),
+        stepBody);
+    const resBody = extractBraceBlock(javaSrc, 'void onAutofillResult(String value) {');
+    ok('Autofill: Erfolg erst, wenn BEIDE Felder gemeldet sind',
+        /indexOf\("mail"\) > -1 && r\.indexOf\("pw"\) > -1/.test(resBody), resBody);
+    ok('Autofill: versucht es erneut, statt nach einem Fehlschlag aufzugeben',
+        /postDelayed\(new AutofillStep/.test(resBody), resBody);
+    ok('Autofill: gibt irgendwann auf und sagt es (keine Endlosschleife)',
+        /autofillTry >= AUTOFILL_DELAYS\.length/.test(resBody)
+            && /aufgegeben nach/.test(resBody), resBody);
+    ok('Autofill: das Ergebnis-Log enthaelt die Werte NICHT',
+        !/pwTxt/.test(resBody) && !/mailTxt/.test(resBody), resBody);
+    ok('Autofill: mehrere Anlaeufe ueber mindestens 30s',
+        (function () {
+            const m = javaSrc.match(/AUTOFILL_DELAYS = \{([^}]*)\}/);
+            if (!m) return 'AUTOFILL_DELAYS fehlt';
+            const sum = m[1].split(',').map(x => parseInt(x.trim(), 10))
+                            .filter(x => !isNaN(x)).reduce((a, b) => a + b, 0);
+            return sum >= 30000 ? true : 'Summe nur ' + sum + 'ms';
+        })() === true,
+        'Verzoegerungen zu kurz');
+    ok('Autofill: "Jetzt ausfuellen" von Hand vorhanden',
+        /class LoginFillNow implements View\.OnClickListener/.test(javaSrc)
+            && /startAutofill\("von Hand"\)/.test(javaSrc),
+        'Handknopf fehlt');
+    ok('Autofill: JS meldet nur, was WIRKLICH im Feld steht',
+        /okM=!!\(m&&m\.value===mail\)/.test(jsFill) && /set-failed/.test(jsFill),
+        jsFill.slice(0, 200));
+    ok('isLoginUrl erkennt auch EAs juno-Login',
+        /indexOf\("juno"\)/.test(extractBraceBlock(javaSrc, 'static boolean isLoginUrl(String url) {')),
+        'juno fehlt');
     ok('Autofill: sendet das Formular NICHT ab (kein submit/click im JS)',
         !/\.submit\(\)/.test(jsFill) && !/logInBtn/.test(jsFill), jsFill.slice(0, 200));
 

@@ -703,6 +703,14 @@ public class MainActivity extends Activity {
         st.setTextSize(11f);
         box.addView(st);
 
+        // Von Hand ausloesen - unabhaengig von der URL-Erkennung. Damit laesst
+        // sich am Geraet pruefen, ob das Fuellen selbst funktioniert, und der
+        // Log zeigt das Ergebnis.
+        Button now = new Button(this);
+        now.setText("Jetzt ausfuellen");
+        now.setOnClickListener(new LoginFillNow(this));
+        box.addView(now);
+
         Button del = new Button(this);
         del.setText("Gespeicherte Daten loeschen");
         del.setOnClickListener(new LoginClear(this));
@@ -752,8 +760,11 @@ public class MainActivity extends Activity {
     static boolean isLoginUrl(String url) {
         if (url == null) return false;
         String u = url.toLowerCase();
+        // "juno" ist EAs Login-Produkt (signin.ea.com/p/juno/login) - eigener
+        // Treffer, damit auch Zwischenschritte des Ablaufs erkannt werden.
         return u.indexOf("signin.ea.com") > -1 || u.indexOf("accounts.ea.com") > -1
-            || u.indexOf("/login") > -1 || u.indexOf("/connect/auth") > -1;
+            || u.indexOf("/login") > -1 || u.indexOf("/connect/auth") > -1
+            || u.indexOf("juno") > -1;
     }
 
     /**
@@ -763,21 +774,86 @@ public class MainActivity extends Activity {
      */
     void maybeAutofillLogin(String url) {
         if (!isLoginUrl(url)) return;
-        if (!prefs.getBoolean("loginAutofill", true)) return;
+        // Diese drei Faelle kehrten vorher STILL zurueck - dann sieht man am
+        // Geraet nicht, WORAN es lag.
+        if (!prefs.getBoolean("loginAutofill", true)) {
+            addLog("Autofill: abgeschaltet (Haken im Login-Dialog).");
+            return;
+        }
+        if (prefs.getString("loginMail", "").length() == 0
+                || prefs.getString("loginPwBlob", null) == null) {
+            addLog("Autofill: keine Zugangsdaten gespeichert.");
+            return;
+        }
+        startAutofill("Seite geladen");
+    }
+
+    /**
+     * Fuellt die Login-Felder - WIEDERHOLT, nicht nur einmal.
+     *
+     * Warum: EAs Login ist eine JS-App. Bei onPageFinished existieren die Felder
+     * meist noch nicht (JS lieferte dann 'no-fields' und es passierte nie wieder
+     * etwas). Und EA fragt ZWEISTUFIG: erst die E-Mail, das Passwort-Feld kommt
+     * danach - ein einzelner Versuch kann es also gar nicht treffen.
+     * Deshalb: mehrere Anlaeufe ueber ~35s, und erst wenn BEIDE Felder gesetzt
+     * sind, ist Schluss.
+     */
+    void startAutofill(String reason) {
+        autofillTry = 0;
+        autofillDone = false;
+        addLog("Autofill: gestartet (" + reason + ").");
+        web.post(new AutofillStep(this));
+    }
+
+    int autofillTry = 0;
+    boolean autofillDone = false;
+    // Abstaende in ms. Erst dicht (die Felder kommen oft nach 1-2s), dann
+    // weiter auseinander fuer den zweiten Schritt des Logins.
+    static final int[] AUTOFILL_DELAYS = { 500, 700, 1000, 1500, 2500, 4000, 6000, 8000, 11000 };
+
+    /** Ein Versuch; plant sich selbst neu, solange noch etwas fehlt. */
+    void autofillStep() {
+        if (autofillDone) return;
         String mailTxt = prefs.getString("loginMail", "");
         String blob = prefs.getString("loginPwBlob", null);
         if (mailTxt.length() == 0 || blob == null) return;
         String pwTxt = CredStore.decrypt(blob);
         if (pwTxt == null) {
             addLog("Autofill: Passwort nicht entschluesselbar (Keystore-Schluessel weg?).");
+            autofillDone = true;
             return;
         }
-        // KEIN addLog mit den Werten - der Ringpuffer wird geteilt.
-        addLog("Autofill: Login-Felder werden gefuellt (Passwort bleibt im Geraet).");
         String js = JS_FILL_LOGIN
             .replace("__MAIL__", jsQuote(mailTxt))
             .replace("__PW__", jsQuote(pwTxt));
-        web.evaluateJavascript(js, null);
+        // MIT Callback: vorher wurde das Ergebnis verworfen und der Log meldete
+        // Erfolg, ohne einen zu haben.
+        web.evaluateJavascript(js, new AutofillResult(this));
+    }
+
+    /** Ergebnis eines Versuchs auswerten (nie mit den Werten!). */
+    void onAutofillResult(String value) {
+        String r = (value == null) ? "" : value.replace("\"", "").trim();
+        boolean complete = r.indexOf("mail") > -1 && r.indexOf("pw") > -1;
+        if (complete) {
+            autofillDone = true;
+            addLog("Autofill: beide Felder gefuellt (Versuch " + (autofillTry + 1) + ").");
+            return;
+        }
+        if (autofillTry >= AUTOFILL_DELAYS.length) {
+            addLog("Autofill: aufgegeben nach " + (autofillTry + 1)
+                    + " Versuchen, letzter Stand: " + (r.isEmpty() ? "keine Antwort" : r)
+                    + ". Im Login-Dialog gibt es 'Jetzt ausfuellen' fuer einen Versuch von Hand.");
+            autofillDone = true;
+            return;
+        }
+        int delay = AUTOFILL_DELAYS[autofillTry];
+        autofillTry++;
+        // Teil-Erfolg (nur E-Mail) ist der Normalfall bei EAs zweistufigem
+        // Login - das Passwort-Feld kommt erst nach dem naechsten Schritt.
+        addLog("Autofill: Versuch " + autofillTry + " -> " + (r.isEmpty() ? "keine Antwort" : r)
+                + ", naechster in " + delay + "ms.");
+        web.postDelayed(new AutofillStep(this), delay);
     }
 
     // Auch das als Konstante, damit app/guard-test.js es in einem Fake-DOM
@@ -801,7 +877,11 @@ public class MainActivity extends Activity {
         "    try{el.dispatchEvent(new Event('input',{bubbles:true}));" +
         "        el.dispatchEvent(new Event('change',{bubbles:true}));}catch(e2){}}" +
         "  set(m,mail);set(p,pw);" +
-        "  return (m?'mail':'')+(p?'+pw':'');" +
+        // NACHKONTROLLE: React kann den Wert direkt wieder zuruecksetzen. Nur
+        // was wirklich im Feld steht, wird als Erfolg gemeldet - sonst haette
+        // der Log wieder Erfolg behauptet, ohne einen zu haben.
+        "  var okM=!!(m&&m.value===mail),okP=!!(p&&p.value===pw);" +
+        "  return (okM?'mail':'')+(okP?'+pw':'')||((m||p)?'set-failed':'no-fields');" +
         "}catch(e){return 'error';}})()";
 
     // ---- Log hochladen ------------------------------------------------------
@@ -1599,4 +1679,25 @@ class LogUploadDone implements Runnable {
     private final String err;
     LogUploadDone(MainActivity a, String err) { this.a = a; this.err = err; }
     @Override public void run() { a.onUploadDone(err); }
+}
+
+/** Ein Autofill-Versuch (d8 mag keine anonymen Klassen). */
+class AutofillStep implements Runnable {
+    private final MainActivity a;
+    AutofillStep(MainActivity a) { this.a = a; }
+    @Override public void run() { a.autofillStep(); }
+}
+
+/** Ergebnis eines Autofill-Versuchs. */
+class AutofillResult implements ValueCallback<String> {
+    private final MainActivity a;
+    AutofillResult(MainActivity a) { this.a = a; }
+    @Override public void onReceiveValue(String value) { a.onAutofillResult(value); }
+}
+
+/** "Jetzt ausfuellen" im Login-Dialog. */
+class LoginFillNow implements View.OnClickListener {
+    private final MainActivity a;
+    LoginFillNow(MainActivity a) { this.a = a; }
+    @Override public void onClick(View v) { a.startAutofill("von Hand"); }
 }

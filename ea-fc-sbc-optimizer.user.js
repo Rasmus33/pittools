@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.75.0
+// @version      4.76.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.75.0';
+    const VERSION = '4.76.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -4082,6 +4082,19 @@
         .sbc-opt-batch-round b { color:#00e0b8; }
         .sbc-opt-batch-warn { color:#ffb454; }
         .sbc-opt-batch-bad { color:#ff6b6b; }
+        /* Schnellwahl: kleine Knoepfe unter dem Feld. Bewusst flach und
+           schmal - sie sollen Tipparbeit sparen, nicht Platz kosten. */
+        .sbc-opt-chips { display:flex; gap:4px; margin:-4px 0 8px; align-items:center;
+                         flex-wrap:wrap; }
+        .sbc-opt-chip { background:#1d2a38; color:#cfe0f0; border:1px solid #2f4256;
+                        border-radius:10px; padding:2px 9px; font-size:12px;
+                        cursor:pointer; line-height:18px; }
+        .sbc-opt-chip:hover { border-color:#4a6d92; }
+        .sbc-opt-chip.on { background:#2b6cb0; border-color:#3d8ad6; color:#fff;
+                           font-weight:600; }
+        .sbc-opt-chip.edit { opacity:.6; }
+        .sbc-opt-chipedit { display:none; gap:4px; margin:-4px 0 8px; }
+        .sbc-opt-chipedit input { width:120px; }
         .sbc-opt-batch-cards { margin:4px 0 2px; }
         .sbc-opt-batch-card {
             font-size:11px; color:#cfe0f2; padding:1px 0;
@@ -4195,6 +4208,11 @@
                     <label>Min. Rating pro Spieler</label>
                     <input type="number" id="sbc-opt-minrating" value="75" min="1" max="99">
                 </div>
+                <div class="sbc-opt-chips" id="sbc-opt-minrating-chips"></div>
+                <div class="sbc-opt-chipedit sbc-opt-inline" id="sbc-opt-minrating-edit">
+                    <input type="text" id="sbc-opt-minrating-editval" placeholder="75, 85">
+                    <button class="sbc-opt-btn ghost" id="sbc-opt-minrating-editok">OK</button>
+                </div>
                 <div class="sbc-opt-row">
                     <label>Max. Rating-Überschuss über Minimum (z.B. 0.10 = bis 84.10 statt 84.00)</label>
                     <input type="number" id="sbc-opt-maxwaste" value="0.00" min="0" max="2" step="0.01">
@@ -4302,8 +4320,13 @@
                 <div class="sbc-opt-batch">
                     <div class="sbc-opt-inline" style="margin-bottom:8px;">
                         <label style="margin:0;flex:1;">SBC mehrfach abschließen</label>
-                        <input type="number" id="sbc-opt-batch-count" value="3" min="1" max="10"
+                        <input type="number" id="sbc-opt-batch-count" value="5" min="1" max="10"
                                style="width:64px;">
+                    </div>
+                    <div class="sbc-opt-chips" id="sbc-opt-batch-chips"></div>
+                    <div class="sbc-opt-chipedit sbc-opt-inline" id="sbc-opt-batch-edit">
+                        <input type="text" id="sbc-opt-batch-editval" placeholder="3, 5, 10">
+                        <button class="sbc-opt-btn ghost" id="sbc-opt-batch-editok">OK</button>
                     </div>
                     <button class="sbc-opt-btn ghost" id="sbc-opt-batch-plan">Teams planen (Vorschau)</button>
                     <!-- Ticket #73: Zusammenfassung (Confidence + Klartext-Abweichungen)
@@ -4366,6 +4389,10 @@
             status: panel.querySelector('#sbc-opt-status'),
             debug: panel.querySelector('#sbc-opt-debug'),
             minrating: panel.querySelector('#sbc-opt-minrating'),
+            minratingChips: panel.querySelector('#sbc-opt-minrating-chips'),
+            minratingEdit: panel.querySelector('#sbc-opt-minrating-edit'),
+            minratingEditVal: panel.querySelector('#sbc-opt-minrating-editval'),
+            minratingEditOk: panel.querySelector('#sbc-opt-minrating-editok'),
             maxwaste: panel.querySelector('#sbc-opt-maxwaste'),
             applyrarity: panel.querySelector('#sbc-opt-applyrarity'),
             specialstorage: panel.querySelector('#sbc-opt-specialstorage'),
@@ -4389,6 +4416,10 @@
             submit: panel.querySelector('#sbc-opt-submit'),
             diagBtn: panel.querySelector('#sbc-opt-diag'),
             batchCount: panel.querySelector('#sbc-opt-batch-count'),
+            batchChips: panel.querySelector('#sbc-opt-batch-chips'),
+            batchEdit: panel.querySelector('#sbc-opt-batch-edit'),
+            batchEditVal: panel.querySelector('#sbc-opt-batch-editval'),
+            batchEditOk: panel.querySelector('#sbc-opt-batch-editok'),
             batchPlan: panel.querySelector('#sbc-opt-batch-plan'),
             batchPreview: panel.querySelector('#sbc-opt-batch-preview'),
             batchRun: panel.querySelector('#sbc-opt-batch-run'),
@@ -4418,6 +4449,25 @@
         ui.run.addEventListener('click', onRunClick);
         ui.submit.addEventListener('click', onSubmitClick);
         ui.diagBtn.addEventListener('click', onDiagClick);
+        // Schnellwahl aufbauen und mit den Feldern verbinden. Tippt Rasmus von
+        // Hand einen Wert, aktualisiert sich nur die Hervorhebung - der Wert
+        // wird NICHT ueberschrieben.
+        renderChips('minrating', ui.minratingChips, ui.minrating, ui.minratingEdit);
+        renderChips('batch', ui.batchChips, ui.batchCount, ui.batchEdit);
+        ui.minrating.addEventListener('input', function () {
+            renderChips('minrating', ui.minratingChips, ui.minrating, ui.minratingEdit);
+        });
+        ui.batchCount.addEventListener('input', function () {
+            renderChips('batch', ui.batchChips, ui.batchCount, ui.batchEdit);
+        });
+        ui.minratingEditOk.addEventListener('click', function () {
+            applyChipEdit('minrating', ui.minratingChips, ui.minrating,
+                          ui.minratingEdit, ui.minratingEditVal);
+        });
+        ui.batchEditOk.addEventListener('click', function () {
+            applyChipEdit('batch', ui.batchChips, ui.batchCount,
+                          ui.batchEdit, ui.batchEditVal);
+        });
         ui.batchPlan.addEventListener('click', onBatchPlanClick);
         ui.batchRun.addEventListener('click', onBatchRunClick);
         ui.packRefresh.addEventListener('click', onPackRefreshClick);
@@ -4836,6 +4886,95 @@
         } else if (btn && btn.parentNode) {
             btn.parentNode.removeChild(btn);
         }
+    }
+    // ======================================================================
+    //  SCHNELLWAHL (Chips) fuer Min-Rating und Batch-Anzahl
+    // ======================================================================
+    // Rasmus nimmt fast immer dieselben Werte (75 fuer 84er-Teams, 85 fuer
+    // 88+; 3/5/10 Wiederholungen) und musste jedes Mal ins Zahlenfeld tippen.
+    // Die Chips setzen den Wert mit einem Tipp; das Feld bleibt frei
+    // editierbar, und die Chip-Werte selbst sind ueber "✎" anpassbar (kein
+    // window.prompt - das ist in der WebView nicht verlaesslich, sondern ein
+    // eingebettetes Textfeld).
+    const CHIP_SETS = {
+        minrating: { key: 'sbcOptChipsMinrating', def: [75, 85], min: 1, max: 99 },
+        batch: { key: 'sbcOptChipsBatch', def: [3, 5, 10], min: 1, max: 10 }
+    };
+    function chipValues(name) {
+        const spec = CHIP_SETS[name];
+        try {
+            const raw = localStorage.getItem(spec.key);
+            if (raw) {
+                const arr = JSON.parse(raw);
+                if (Array.isArray(arr)) {
+                    const clean = arr.map(Number)
+                        .filter(v => isFinite(v) && v >= spec.min && v <= spec.max)
+                        .filter((v, i, a) => a.indexOf(v) === i)
+                        .sort((a, b) => a - b);
+                    if (clean.length) return clean;
+                }
+            }
+        } catch (e) {}
+        return spec.def.slice();
+    }
+    function saveChipValues(name, arr) {
+        try { localStorage.setItem(CHIP_SETS[name].key, JSON.stringify(arr)); } catch (e) {}
+    }
+    /**
+     * Baut die Chip-Reihe neu. Der aktive Chip (= aktueller Feldwert) ist
+     * hervorgehoben, damit auf einen Blick klar ist, was gerade gilt.
+     */
+    function renderChips(name, box, input, editBox) {
+        if (!box || !input) return;
+        box.innerHTML = '';
+        const cur = String(parseInt(input.value, 10));
+        for (const v of chipValues(name)) {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'sbc-opt-chip' + (String(v) === cur ? ' on' : '');
+            b.textContent = String(v);
+            b.addEventListener('click', function () {
+                input.value = String(v);
+                // input-Event, damit alles reagiert, was am Feld haengt
+                // (Verfuegbarkeits-Anzeige, gespeicherte Einstellungen).
+                try { input.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) {}
+                try { input.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+                renderChips(name, box, input, editBox);
+            });
+            box.appendChild(b);
+        }
+        const e = document.createElement('button');
+        e.type = 'button';
+        e.className = 'sbc-opt-chip edit';
+        e.textContent = '✎';
+        e.title = 'Schnellwahl-Werte anpassen';
+        e.addEventListener('click', function () {
+            if (!editBox) return;
+            const open = editBox.style.display === 'flex';
+            editBox.style.display = open ? 'none' : 'flex';
+            if (!open) {
+                const f = editBox.querySelector('input');
+                if (f) { f.value = chipValues(name).join(', '); f.focus(); }
+            }
+        });
+        box.appendChild(e);
+    }
+    /** "OK" im Bearbeiten-Feld: Werte uebernehmen, Reihe neu bauen. */
+    function applyChipEdit(name, box, input, editBox, valInput) {
+        const spec = CHIP_SETS[name];
+        const arr = String(valInput ? valInput.value : '')
+            .split(/[^0-9]+/).map(Number)
+            .filter(v => isFinite(v) && v >= spec.min && v <= spec.max)
+            .filter((v, i, a) => a.indexOf(v) === i)
+            .sort((a, b) => a - b);
+        if (!arr.length) {
+            toast('Keine gültigen Werte (' + spec.min + '-' + spec.max + ') - Schnellwahl unverändert.', 'warn');
+            return;
+        }
+        saveChipValues(name, arr);
+        if (editBox) editBox.style.display = 'none';
+        renderChips(name, box, input, editBox);
+        toast('Schnellwahl gespeichert: ' + arr.join(', '), 'ok');
     }
     function setStatus(txt) { if (ui.status) ui.status.textContent = txt; }
     function refreshSbcInfoUI() {
@@ -6402,6 +6541,21 @@
             lines: lines
         };
     }
+    /**
+     * Karten-Herkunft ueber ALLE geplanten Runden. Reine Funktion, damit die
+     * Zahl in der Kopfzeile testbar ist und nicht still falsch werden kann.
+     * Alles, was nicht Storage ist, ist Verein - dieselbe Zweiteilung wie in
+     * der Detailansicht.
+     */
+    function countPlanSources(plan) {
+        let storage = 0, club = 0;
+        for (const r of ((plan && plan.rounds) || [])) {
+            for (const p of ((r && r.players) || [])) {
+                if (p && p.isStorage) storage++; else club++;
+            }
+        }
+        return { storage: storage, club: club, total: storage + club };
+    }
     function renderBatchPreview(plan) {
         const box = ui.batchPreview;
         if (!box) return;
@@ -6409,8 +6563,16 @@
         const parts = [];
         if (pc.errors) parts.push(pc.errors + ' Fehler');
         if (pc.hints) parts.push(pc.hints + (pc.hints === 1 ? ' Hinweis' : ' Hinweise'));
+        // Herkunft der Karten direkt in die Kopfzeile (Rasmus: "kurz und knapp
+        // daneben"). Ueber ALLE geplanten Teams gezaehlt, nicht pro Team - im
+        // Detail steht es ohnehin schon je Runde.
+        const src = countPlanSources(plan);
+        const srcInfo = src.total
+            ? ' · <span style="color:#9db2c8;">Storage <b>' + src.storage +
+              '</b> / Verein <b>' + src.club + '</b></span>'
+            : '';
         let html = '<div class="sbc-opt-batch-round"><b>' + plan.planned + ' Team(s) geplant</b> · Confidence <b>' +
-            pc.score + '%</b>' + (parts.length ? ' — ' + parts.join(' + ') : '') + '</div>';
+            pc.score + '%</b>' + srcInfo + (parts.length ? ' — ' + parts.join(' + ') : '') + '</div>';
         for (const l of pc.lines) {
             html += '<div class="sbc-opt-batch-round ' + (l.level === 'error' ? 'sbc-opt-batch-bad' : 'sbc-opt-batch-warn') + '">' +
                 (l.level === 'error' ? '✗ ' : '⚠ ') + escapeHtml(l.text) + '</div>';

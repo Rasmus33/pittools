@@ -2174,3 +2174,50 @@ fertig, wenn geprueft ist, dass sie unter der gebauten `targetSdk` ueberhaupt
 noch gerufen wird. Der Test prueft deshalb nicht "gibt es die Logik", sondern
 "ist sie unter dieser target-sdk erreichbar" - er liest dazu `build.sh` mit.
 Gegenprobe: ohne die Registrierung in `onCreate` wird die Suite rot.
+
+
+## Batch: eine Abgabe ohne Bestaetigung ist keine Abgabe
+
+**Live v4.74.0** ("immer haeufiger Fehler, wenn ich eine SBC mehrfach
+abschliesse"). Der Report zeigt die Kette von hinten nach vorne:
+
+```
+submitChallengeVia:  "ctrl._submitChallenge (ohne Response)"
+submitWithoutResponseCount: 1
+submitConfirmations: [{hadResponse:false, squadEmptyAfter:false}]
+lastErrors: 404 / 475 / 404  (zweimal, dazwischen staleSessionRetry 1)
+Batch gestoppt nach 1/3
+staleRecover.nodeState: {status:"IN_PROGRESS", repeatable:true, timesCompleted:732}
+```
+
+Runde 1 lief ueber `ctrl._submitChallenge` und lieferte **keine auswertbare
+Response**. Der Code liess das bewusst als Erfolg durchgehen - mit dem
+ausdruecklichen Vermerk, dass `isSquadEmpty()===false` erst dann ein
+Abbruchkriterium sein darf, wenn ein ZWEITER Beleg zeigt, dass es wirklich einen
+Fehlschlag bedeutet (sonst haette ein Netzwerk-Race "2 von 5 fertig" kaputt
+gemacht). Alles danach - die 404/475 auf dieselbe Instanz, die
+Session-Erneuerung, der Abbruch - war Folgefehler.
+
+**Der zweite Beleg ist jetzt da:** EAs serverseitige `timesCompleted`-Summe
+(dieselbe Quelle wie das SBC-Kontingent). Der Batch liest sie **vor und nach**
+jeder Abgabe:
+
+- Summe gestiegen -> abgegeben, weiter.
+- Summe unveraendert -> **nicht** abgegeben. Abbruch mit Klartext und
+  Fortschritt, BEVOR die naechste Runde eine Fehlerkette produziert.
+- EA antwortet nicht (null) -> es wird NICHTS behauptet und wie bisher
+  weitergemacht. Ein Fehlalarm waere hier schlimmer als keine Pruefung.
+
+Das kostet einen Request pro Runde und haelt den Kontingent-Zaehler nebenbei
+frisch. Neues Diagnose-Feld `submitCounterChecks` (vorher/nachher/bestaetigt je
+Runde). Gegenprobe: ohne den Abbruch wird die Suite rot.
+
+**Muster:** wenn eine Aktion keine auswertbare Antwort liefert, ist die Frage
+nicht "hat der Aufruf geklappt", sondern "hat sich am SERVER etwas geaendert".
+Ein Zaehler, den der Server fuehrt, ist der belastbarste Beleg - und hier lag er
+schon in Reichweite, weil das Kontingent-Feature ihn ohnehin liest.
+
+**Randnotiz zu einem eigenen Fehler:** der Aufbewahrungs-Test des Zaehlers
+rechnete gegen ein FESTES Testdatum, `quotaSaveSamples()` aber gegen die echte
+Uhr. Der Test war genau einen Tag gruen und danach rot. Zeitfenster-Tests immer
+relativ zu `Date.now()` bauen.

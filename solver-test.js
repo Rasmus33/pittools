@@ -6473,11 +6473,16 @@ function mulberry32(a) {
     check('Kontingent: kein negativer Verbrauch', u.hour.used === 0, JSON.stringify(u.hour));
 
     // Aufbewahrung: aeltere Proben als 36h fliegen raus.
+    // WICHTIG relativ zu Date.now() rechnen, nicht zum festen Testdatum oben -
+    // quotaSaveSamples() schneidet gegen die ECHTE Uhr. Mit einem festen Datum
+    // war der Test genau einen Tag lang gruen und danach rot (selbst erlebt).
+    const realNow = Date.now();
     const old = q.save([
-        { t: now - 40 * 3600 * 1000, total: 1 },
-        { t: now - 2 * 3600 * 1000, total: 2 }
+        { t: realNow - 40 * 3600 * 1000, total: 1 },
+        { t: realNow - 2 * 3600 * 1000, total: 2 }
     ]);
-    check('Kontingent: Proben aelter als 36h werden verworfen', old.length === 1);
+    check('Kontingent: Proben aelter als 36h werden verworfen',
+        old.length === 1 && old[0].total === 2, JSON.stringify(old));
 
     // --- Verdrahtung -------------------------------------------------------
     check('Kontingent: Panel-Zeile vorhanden',
@@ -6497,6 +6502,49 @@ function mulberry32(a) {
                             src.indexOf('async function submitToSbc'));
     check('staleInstanceMessage bleibt pur (Hinweis kommt als Parameter)',
         smSrc.indexOf('quotaHint()') === -1 && /quotaNote/.test(smSrc));
+}
+
+// ========== Batch-Abgabe gegen EAs Zaehler bestaetigen ==========
+{
+    // Live-Report v4.74.0, der Grund fuer die Fehlerketten beim mehrfachen
+    // Abschliessen: Runde 1 ging ueber ctrl._submitChallenge "OHNE Response"
+    // durch (submitWithoutResponseCount 1, squadEmptyAfter false) - ob EA die
+    // Abgabe angenommen hatte, war nicht ablesbar. Der Batch lief weiter und
+    // produzierte 404/475 auf dieselbe Instanz, zweimal, plus eine
+    // Session-Erneuerung. Alles Folgefehler.
+    //
+    // Der bisher fehlende zweite Beleg (so stand es als Begruendung im Code)
+    // ist jetzt da: EAs serverseitige timesCompleted-Summe.
+    const src = require('fs').readFileSync(__dirname + '/ea-fc-sbc-optimizer.user.js', 'utf8');
+    const runFn = extractFunction(src, 'onBatchRunClick');
+
+    check('Abgabe: Zaehler wird VOR und NACH dem Abgeben gelesen',
+        /const cntBefore = await quotaTotalNow\(\)/.test(runFn) &&
+        /const cntAfter = await quotaTotalNow\(\)/.test(runFn), 'quotaTotalNow fehlt');
+    check('Abgabe: bestaetigt heisst "Zaehler ist gestiegen"',
+        /cntAfter > cntBefore/.test(runFn), runFn.slice(0, 80));
+    check('Abgabe: unbestaetigt bricht ab, BEVOR die naechste Runde laeuft',
+        /confirmed === false/.test(runFn) &&
+        runFn.indexOf('confirmed === false') < runFn.indexOf('openNextInstance'),
+        'Reihenfolge falsch oder Abbruch fehlt');
+    check('Abgabe: antwortet EA nicht (null), wird NICHTS behauptet',
+        /cntBefore != null && cntAfter != null/.test(runFn), runFn.slice(0, 80));
+    check('Abgabe: die Abbruchmeldung nennt den Fortschritt',
+        /von . \+ n \+ . fertig/.test(runFn.replace(/['"]/g, '.')), 'Fortschritt fehlt');
+    check('Abgabe: Pruefung landet im Report',
+        /submitCounterChecks/.test(runFn) &&
+        /submitCounterChecks: STATE\.diag\.submitCounterChecks/.test(src));
+
+    // quotaTotalNow: liefert die Summe, legt eine Probe ab, und bei einem
+    // Fehler NULL (statt 0 - sonst waere "0 > 0" ein falsches Nein).
+    const qtnSrc = src.slice(src.indexOf('async function quotaTotalNow'),
+                             src.indexOf('/** Eine Zeile fuer das Panel'));
+    check('quotaTotalNow: Fehler ergibt null, nicht 0',
+        /catch \(e\) \{ return null; \}/.test(qtnSrc), qtnSrc);
+    check('quotaTotalNow: leere Set-Liste ergibt null',
+        /if \(!r\.sets\) return null;/.test(qtnSrc), qtnSrc);
+    check('quotaTotalNow: haelt den Kontingent-Zaehler frisch',
+        /quotaSaveSamples\(arr\)/.test(qtnSrc), qtnSrc);
 }
 
 // Erst die asynchronen Blöcke abwarten, dann abrechnen. Ohne das killt

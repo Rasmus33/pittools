@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.74.0
+// @version      4.75.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       SBC Optimizer
 // @match        https://www.ea.com/*/fc/ut/webapp/*
@@ -63,7 +63,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.74.0';
+    const VERSION = '4.75.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -144,6 +144,7 @@
             submitCandidates: null,  // Controller.Methode-Kandidaten fuers Abgeben
             submitChallengeVia: null, // welcher Controller-/Service-Weg beim Abgeben gegriffen hat
             submitWithoutResponseCount: 0, // wie oft submitChallengeToEa ohne auswertbare Response als Erfolg durchging (LEARNINGS §9, v4.36.0: offen, ob Abgabe wirklich bestätigt war)
+            submitCounterChecks: null, // Abgabe gegen EAs timesCompleted-Summe geprueft (vorher/nachher/bestaetigt)
             submitConfirmations: null, // Post-Submit-Plausibilisierung im "ohne Response"-Zweig: via/hadResponse/squadEmptyAfter/ms je Versuch (reine Beobachtung, kein Abbruchkriterium)
             lastTap: null,           // letzter simulierter Tap: Events/Position/Abdeckung/Popup
             scanStats: null,         // Traversal-Metriken (visitedCount/depthCapped/budgetExhausted) von deepScan/findNode/collectNodes - reine Beobachtung, kein Abbruchkriterium (LEARNINGS 37)
@@ -865,6 +866,23 @@
             hourLimit: QUOTA_HOUR_LIMIT,
             dayLimit: QUOTA_DAY_LIMIT
         };
+    }
+    /**
+     * Nur die Summe holen, ohne Panel-Kram - fuer die Abgabe-Bestaetigung.
+     * Die Probe wird trotzdem abgelegt (haelt den Kontingent-Zaehler frisch).
+     * Liefert null, wenn EA nicht antwortet: dann wird NICHTS behauptet.
+     */
+    async function quotaTotalNow() {
+        try {
+            const json = await apiGet('sbs/sets');
+            const r = sumTimesCompleted(json);
+            if (!r.sets) return null;
+            const arr = quotaLoadSamples();
+            arr.push({ t: Date.now(), total: r.sum });
+            quotaSaveSamples(arr);
+            STATE.diag.quota = quotaUsage();
+            return r.sum;
+        } catch (e) { return null; }
     }
     /** Eine Zeile fuer das Panel - oder null, wenn es nichts zu sagen gibt. */
     /**
@@ -5027,6 +5045,8 @@
             // trotzdem als Erfolg? (LEARNINGS §9, v4.36.0: offen gelassene Frage,
             // ob EA die Abgabe wirklich bestaetigt hat.)
             submitWithoutResponseCount: STATE.diag.submitWithoutResponseCount || 0,
+            // Wurde jede Batch-Abgabe von EAs Zaehler bestaetigt?
+            submitCounterChecks: STATE.diag.submitCounterChecks || null,
             // Griff eine Abgabe "ohne Response" wirklich? isSquadEmpty() 400ms danach
             // erneut gelesen - reine Beobachtung (kein throw/Retry), siehe submitChallengeToEa.
             submitConfirmations: STATE.diag.submitConfirmations || null,
@@ -6497,7 +6517,33 @@
                 removeFromPool(round.players);
                 showProgress(i + 1, n, 'gebe ab...', (doneLog.length ? doneLog.length + ' fertig' : ''));
                 setStatus(tag + ': gebe ab...');
+                // ABGABE GEGEN EAs EIGENEN ZAEHLER PRUEFEN.
+                // Der Live-Report v4.74.0 zeigte den Grund fuer die Fehlerketten:
+                // Runde 1 ging ueber ctrl._submitChallenge "ohne Response" durch
+                // (submitWithoutResponseCount 1, squadEmptyAfter false) - ob EA
+                // die Abgabe angenommen hat, war NICHT ablesbar. Der Batch lief
+                // weiter, und alles danach war Folgefehler (404/475 auf dieselbe
+                // Instanz).
+                // Der bisher fehlende zweite Beleg ist jetzt da: die Summe der
+                // serverseitigen timesCompleted. Steigt sie nicht, wurde nicht
+                // abgegeben - dann wird hier gestoppt statt eine Fehlerkette zu
+                // produzieren. Antwortet EA gar nicht (null), wird NICHTS
+                // behauptet und wie bisher weitergemacht.
+                const cntBefore = await quotaTotalNow();
                 await submitChallengeToEa();
+                const cntAfter = await quotaTotalNow();
+                const confirmed = (cntBefore != null && cntAfter != null)
+                    ? (cntAfter > cntBefore) : null;
+                STATE.diag.submitCounterChecks = (STATE.diag.submitCounterChecks || []).concat([{
+                    round: i + 1, before: cntBefore, after: cntAfter, confirmed: confirmed
+                }]).slice(-6);
+                if (confirmed === false) {
+                    throw new Error('Abgabe von Team ' + (i + 1) + ' wurde von EA nicht ' +
+                        'bestätigt (Zähler unverändert bei ' + cntAfter + ') - ' + done +
+                        ' von ' + n + ' fertig. Abgebrochen, bevor daraus eine Fehlerkette ' +
+                        'wird: bitte die SBC im Spiel einmal schliessen, neu öffnen und ' +
+                        'nachsehen, ob das Team noch drin steht.');
+                }
                 done++;
                 doneLog.push('Team ' + (i + 1) + ': OVR ' + round.ovr + ' abgegeben');
                 log('[Batch] Team ' + (i + 1) + '/' + n + ' abgegeben (OVR ' + round.ovr + ').');

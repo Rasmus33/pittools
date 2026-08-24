@@ -82,6 +82,9 @@ public class MainActivity extends Activity {
             "https://raw.githubusercontent.com/Rasmus33/pittools/main/ea-fc-sbc-optimizer.user.js";
     static final String DEFAULT_PALETOOLS_URL =
             "https://pale.tools/fifa/dist/latest/paletools-mobile.user.js";
+    // Ziel fuer den Log-Upload: PRIVATES Repo. Bewusst nicht "pittools" - das
+    // ist oeffentlich, und im Log stehen EA-Nutzer-ID und Karten-IDs.
+    static final String DEFAULT_LOG_REPO = "Rasmus33/pittools-logs";
 
     // Rohzeichen pro evaluateJavascript-Aufruf. Durch das Unicode-Escaping
     // wird daraus im Extremfall das Sechsfache - mit 60k bleibt jeder
@@ -635,6 +638,11 @@ public class MainActivity extends Activity {
         bCopy.setOnClickListener(new LogCopy(this));
         box.addView(bCopy);
 
+        Button bUp = new Button(this);
+        bUp.setText("Log hochladen (privates Repo)");
+        bUp.setOnClickListener(new LogUploadOpen(this));
+        box.addView(bUp);
+
         TextView l3 = new TextView(this);
         l3.setText("\nLogin");
         box.addView(l3);
@@ -795,6 +803,172 @@ public class MainActivity extends Activity {
         "  set(m,mail);set(p,pw);" +
         "  return (m?'mail':'')+(p?'+pw':'');" +
         "}catch(e){return 'error';}})()";
+
+    // ---- Log hochladen ------------------------------------------------------
+    // Rasmus: ein Knopf, der den Log irgendwo ablegt, wo ich ihn direkt rausziehe.
+    // Weg: GitHub Contents-API, PUT in ein PRIVATES Repo. Kein eigener Server,
+    // keine Fremdanbieter, die Daten bleiben in seinem GitHub-Konto.
+    //
+    // Der Token liegt verschluesselt im Android-Keystore (dieselbe Mechanik wie
+    // das EA-Passwort, CredStore) und wird NIE geloggt - auch nicht maskiert
+    // rekonstruierbar, weil er gar nicht in den Ringpuffer geht.
+    void showUploadDialog() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = 40;
+        box.setPadding(pad, pad, pad, pad);
+
+        TextView hint = new TextView(this);
+        hint.setText("Log-Upload in ein privates GitHub-Repo.\n\n"
+                + "Token: auf github.com unter Settings -> Developer settings -> "
+                + "Personal access tokens -> Fine-grained. Nur dieses eine Repo "
+                + "auswaehlen, Berechtigung 'Contents: Read and write'. Sonst nichts.\n\n"
+                + "Der Token wird wie das Passwort im Android-Keystore verschluesselt "
+                + "und landet nicht im Log.");
+        hint.setTextSize(11f);
+        box.addView(hint);
+
+        EditText repo = new EditText(this);
+        repo.setHint("owner/repo");
+        repo.setText(prefs.getString("logRepo", DEFAULT_LOG_REPO));
+        box.addView(repo);
+
+        EditText tok = new EditText(this);
+        tok.setHint(hasLogToken() ? "Token (gespeichert - zum Aendern neu einfuegen)" : "Token (github_pat_...)");
+        tok.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        box.addView(tok);
+
+        TextView st = new TextView(this);
+        st.setText(hasLogToken() ? "Status: Token ist gespeichert."
+                                 : "Status: kein Token gespeichert.");
+        st.setTextSize(11f);
+        box.addView(st);
+
+        Button up = new Button(this);
+        up.setText("Jetzt hochladen");
+        up.setOnClickListener(new LogUploadNow(this, repo, tok));
+        box.addView(up);
+
+        Button del = new Button(this);
+        del.setText("Token loeschen");
+        del.setOnClickListener(new LogTokenClear(this));
+        box.addView(del);
+
+        new AlertDialog.Builder(this)
+            .setTitle("Log hochladen (privates Repo)")
+            .setView(box)
+            .setPositiveButton("Speichern", new LogUploadSave(this, repo, tok))
+            .setNegativeButton("Schliessen", (DialogInterface.OnClickListener) null)
+            .show();
+    }
+
+    boolean hasLogToken() {
+        String b = prefs.getString("logTokenBlob", null);
+        return b != null && b.length() > 0;
+    }
+
+    void saveLogSettings(String repoTxt, String tokTxt) {
+        SharedPreferences.Editor e = prefs.edit();
+        if (repoTxt != null && repoTxt.trim().length() > 0) {
+            e.putString("logRepo", repoTxt.trim());
+        }
+        // Leeres Feld heisst "nicht aendern" - wie beim EA-Passwort.
+        if (tokTxt != null && tokTxt.trim().length() > 0) {
+            String blob = CredStore.encrypt(tokTxt.trim());
+            if (blob == null) {
+                Toast.makeText(this, "Token konnte nicht verschluesselt werden - nicht gespeichert.",
+                        Toast.LENGTH_LONG).show();
+            } else {
+                e.putString("logTokenBlob", blob);
+            }
+        }
+        e.apply();
+        Toast.makeText(this, "Upload-Einstellungen gespeichert.", Toast.LENGTH_SHORT).show();
+    }
+
+    void clearLogToken() {
+        prefs.edit().remove("logTokenBlob").apply();
+        Toast.makeText(this, "Token geloescht.", Toast.LENGTH_SHORT).show();
+    }
+
+    /** Startet den Upload im Hintergrund (Netz auf dem Main-Thread wirft). */
+    void startLogUpload(String repoTxt, String tokTxt) {
+        saveLogSettings(repoTxt, tokTxt);
+        String repoNow = prefs.getString("logRepo", DEFAULT_LOG_REPO);
+        String blob = prefs.getString("logTokenBlob", null);
+        if (blob == null) {
+            Toast.makeText(this, "Kein Token gespeichert - erst Token einfuegen.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        String token = CredStore.decrypt(blob);
+        if (token == null) {
+            Toast.makeText(this, "Token nicht entschluesselbar - bitte neu einfuegen.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        Toast.makeText(this, "Log wird hochgeladen...", Toast.LENGTH_SHORT).show();
+        new Thread(new LogUploadTask(this, repoNow, token, buildLogReport())).start();
+    }
+
+    /**
+     * Der eigentliche PUT. Laeuft im Hintergrund-Thread.
+     * Rueckgabe: null bei Erfolg, sonst eine Fehlermeldung fuer den Toast.
+     * WICHTIG: der Token darf in KEINE Meldung geraten - deshalb wird die
+     * Server-Antwort bei Fehlern nur gekuerzt ausgegeben und der Token nie
+     * mitformatiert.
+     */
+    String uploadLogNow(String repoTxt, String token, String body) {
+        HttpURLConnection c = null;
+        try {
+            String name = "logs/" + logFileName();
+            URL u = new URL("https://api.github.com/repos/" + repoTxt + "/contents/" + name);
+            c = (HttpURLConnection) u.openConnection();
+            c.setRequestMethod("PUT");
+            c.setConnectTimeout(10000);
+            c.setReadTimeout(20000);
+            c.setDoOutput(true);
+            c.setRequestProperty("Authorization", "Bearer " + token);
+            c.setRequestProperty("Accept", "application/vnd.github+json");
+            c.setRequestProperty("X-GitHub-Api-Version", "2022-11-28");
+            c.setRequestProperty("Content-Type", "application/json");
+            String payload = "{\"message\":" + jsQuote("PitTools-Log " + name)
+                    + ",\"content\":" + jsQuote(
+                        Base64.encodeToString(body.getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP))
+                    + "}";
+            c.getOutputStream().write(payload.getBytes(StandardCharsets.UTF_8));
+            c.getOutputStream().flush();
+            int code = c.getResponseCode();
+            if (code == 201 || code == 200) return null;
+            String err = "";
+            try { err = readStream(c.getErrorStream()); } catch (Exception e2) {}
+            if (err.length() > 160) err = err.substring(0, 160);
+            return "HTTP " + code + (err.isEmpty() ? "" : " - " + err);
+        } catch (Exception e) {
+            return String.valueOf(e.getMessage());
+        } finally {
+            try { if (c != null) c.disconnect(); } catch (Exception e) {}
+        }
+    }
+
+    /** Dateiname mit Zeitstempel - eindeutig, damit kein sha noetig ist. */
+    String logFileName() {
+        java.text.SimpleDateFormat f =
+                new java.text.SimpleDateFormat("yyyy-MM-dd_HHmmss", java.util.Locale.US);
+        String dev = String.valueOf(Build.MODEL).replaceAll("[^A-Za-z0-9]", "");
+        if (dev.length() > 16) dev = dev.substring(0, 16);
+        return f.format(new java.util.Date()) + "_" + dev + ".txt";
+    }
+
+    void onUploadDone(String err) {
+        if (err == null) {
+            addLog("Log-Upload: erfolgreich.");
+            Toast.makeText(this, "Log hochgeladen.", Toast.LENGTH_LONG).show();
+        } else {
+            addLog("Log-Upload fehlgeschlagen: " + err);
+            Toast.makeText(this, "Upload fehlgeschlagen: " + err, Toast.LENGTH_LONG).show();
+        }
+    }
 
     void saveGearPos(float x, float y) {
         prefs.edit().putFloat("gearX", x).putFloat("gearY", y).apply();
@@ -1366,4 +1540,63 @@ class BackProbe implements ValueCallback<String> {
     private final MainActivity a;
     BackProbe(MainActivity a) { this.a = a; }
     @Override public void onReceiveValue(String value) { a.handleBackResult(value); }
+}
+
+/** Oeffnet den Upload-Dialog. */
+class LogUploadOpen implements View.OnClickListener {
+    private final MainActivity a;
+    LogUploadOpen(MainActivity a) { this.a = a; }
+    @Override public void onClick(View v) { a.showUploadDialog(); }
+}
+
+class LogUploadSave implements DialogInterface.OnClickListener {
+    private final MainActivity a;
+    private final EditText repo;
+    private final EditText tok;
+    LogUploadSave(MainActivity a, EditText repo, EditText tok) {
+        this.a = a; this.repo = repo; this.tok = tok;
+    }
+    @Override public void onClick(DialogInterface d, int which) {
+        a.saveLogSettings(repo.getText().toString(), tok.getText().toString());
+    }
+}
+
+class LogUploadNow implements View.OnClickListener {
+    private final MainActivity a;
+    private final EditText repo;
+    private final EditText tok;
+    LogUploadNow(MainActivity a, EditText repo, EditText tok) {
+        this.a = a; this.repo = repo; this.tok = tok;
+    }
+    @Override public void onClick(View v) {
+        a.startLogUpload(repo.getText().toString(), tok.getText().toString());
+    }
+}
+
+class LogTokenClear implements View.OnClickListener {
+    private final MainActivity a;
+    LogTokenClear(MainActivity a) { this.a = a; }
+    @Override public void onClick(View v) { a.clearLogToken(); }
+}
+
+/** Netz-Arbeit im Hintergrund, Ergebnis zurueck auf den UI-Thread. */
+class LogUploadTask implements Runnable {
+    private final MainActivity a;
+    private final String repo;
+    private final String token;
+    private final String body;
+    LogUploadTask(MainActivity a, String repo, String token, String body) {
+        this.a = a; this.repo = repo; this.token = token; this.body = body;
+    }
+    @Override public void run() {
+        final String err = a.uploadLogNow(repo, token, body);
+        a.runOnUiThread(new LogUploadDone(a, err));
+    }
+}
+
+class LogUploadDone implements Runnable {
+    private final MainActivity a;
+    private final String err;
+    LogUploadDone(MainActivity a, String err) { this.a = a; this.err = err; }
+    @Override public void run() { a.onUploadDone(err); }
 }

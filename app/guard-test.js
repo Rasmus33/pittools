@@ -654,6 +654,66 @@ function ok(name, cond, detail) {
     ok('Manifest: enableOnBackInvokedCallback ist gesetzt',
         /android:enableOnBackInvokedCallback="true"/.test(manifest), manifest);
 
+    // ======================================================================
+    // 16. Log-Upload (App 1.10.0)
+    // ======================================================================
+    // Ein Knopf laedt den Log in ein PRIVATES GitHub-Repo. Hier haengt ein
+    // Geheimnis dran (der Token), deshalb dieselbe Strenge wie beim Passwort:
+    // nie im Log, nur verschluesselt, und die Netzarbeit nicht auf dem
+    // Main-Thread (das wuerfe NetworkOnMainThreadException).
+    const upBody = extractBraceBlock(javaSrc,
+        'String uploadLogNow(String repoTxt, String token, String body) {');
+    ok('Upload: HTTPS zur GitHub-API',
+        /https:\/\/api\.github\.com\/repos\//.test(upBody), upBody);
+    ok('Upload: Bearer-Token im Header, nicht in der URL',
+        /setRequestProperty\("Authorization", "Bearer " \+ token\)/.test(upBody)
+            && !/token=/.test(upBody), upBody);
+    ok('Upload: PUT auf contents/, Inhalt base64',
+        /setRequestMethod\("PUT"\)/.test(upBody) && /Base64\.encodeToString/.test(upBody),
+        upBody);
+    ok('Upload: der Token landet in KEINER Fehlermeldung',
+        !/token/.test(upBody.replace(/\+ token\)/g, '').replace(/String token/g, '')
+                            .split('return "HTTP "')[1] || ''),
+        upBody);
+    ok('Upload: Fehlertext wird gekuerzt (kein ganzer Body im Toast)',
+        /err\.substring\(0, 160\)/.test(upBody), upBody);
+    ok('Upload: 200 und 201 gelten als Erfolg',
+        /code == 201 \|\| code == 200/.test(upBody), upBody);
+
+    const startBody = extractBraceBlock(javaSrc,
+        'void startLogUpload(String repoTxt, String tokTxt) {');
+    ok('Upload: laeuft in einem eigenen Thread (Netz nicht auf dem Main-Thread)',
+        /new Thread\(new LogUploadTask\(/.test(startBody), startBody);
+    ok('Upload: ohne Token wird gar nicht losgelaufen',
+        /blob == null/.test(startBody) && /Kein Token gespeichert/.test(startBody),
+        startBody);
+    ok('Upload: nimmt den echten Log-Report (buildLogReport)',
+        /buildLogReport\(\)/.test(startBody), startBody);
+
+    const saveTokBody = extractBraceBlock(javaSrc,
+        'void saveLogSettings(String repoTxt, String tokTxt) {');
+    ok('Upload: Token nur verschluesselt gespeichert',
+        /CredStore\.encrypt\(tokTxt\.trim\(\)\)/.test(saveTokBody)
+            && !/putString\("logToken", *tokTxt/.test(saveTokBody), saveTokBody);
+    ok('Upload: leeres Token-Feld laesst das gespeicherte stehen',
+        /tokTxt\.trim\(\)\.length\(\) > 0/.test(saveTokBody), saveTokBody);
+
+    const nameBody = extractBraceBlock(javaSrc, 'String logFileName() {');
+    ok('Upload: Dateiname mit Zeitstempel (eindeutig, kein sha noetig)',
+        /yyyy-MM-dd_HHmmss/.test(nameBody), nameBody);
+    ok('Upload: Geraetename wird entschaerft und begrenzt',
+        /replaceAll\("\[\^A-Za-z0-9\]", ""\)/.test(nameBody) && /substring\(0, 16\)/.test(nameBody),
+        nameBody);
+
+    ok('Upload: Ziel ist ein PRIVATES Repo, nicht das oeffentliche pittools',
+        /DEFAULT_LOG_REPO = "Rasmus33\/pittools-logs"/.test(javaSrc)
+            && !/DEFAULT_LOG_REPO = "Rasmus33\/pittools"/.test(javaSrc),
+        'DEFAULT_LOG_REPO falsch');
+
+    const doneBody = extractBraceBlock(javaSrc, 'void onUploadDone(String err) {');
+    ok('Upload: Ergebnis kommt als Toast UND in den Log',
+        /Toast\.makeText/.test(doneBody) && /addLog\(/.test(doneBody), doneBody);
+
     console.log(failed
         ? '\n' + failed + ' Test(s) fehlgeschlagen.'
         : '\nAlle Wächter-Tests bestanden.');

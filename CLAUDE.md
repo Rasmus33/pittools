@@ -112,6 +112,28 @@ Konkret:
 - Panel-UI: "Spieler laden" oben, Min-Rating + Max-Überschuss prominent,
   alles andere unter "Erweiterte Einstellungen" (Zustand wird gemerkt).
 
+## Log-Upload und Auswerte-Buchfuehrung
+
+Rasmus tippt im ⚙-Menue auf „Log hochladen" — die App legt den Log in das
+PRIVATE Repo `Rasmus33/pittools-logs` unter `logs/<zeit>_<geraet>.txt`
+(GitHub Contents-API, Token verschluesselt im Android-Keystore). Bewusst nicht
+ins oeffentliche `pittools`: im Log stehen EA-Nutzer-ID und Karten-IDs.
+
+Sagt Rasmus „werte die neuesten Logs aus", dann GENAU diese Routine:
+
+```
+node log-review.js status     # wie viele sind neu?
+node log-review.js fetch      # nur die NEUEN herunterladen, Pfade lesen
+#   ... auswerten ...
+node log-review.js mark-all   # als ausgewertet buchen
+```
+
+Der Stand liegt in `state/evaluated.json` IM Repo, nicht lokal — sonst waere er
+nach jedem Sitzungswechsel weg. `mark-all` bucht genau die Dateien, die `fetch`
+geholt hat (nicht die, die zwischendurch dazukamen). Ohne `mark-all` gilt ein Log
+als NICHT ausgewertet — im Zweifel also erst buchen, wenn die Auswertung
+wirklich beim Nutzer angekommen ist.
+
 ## Debugging-Konvention
 
 Zwei Kanäle vom Handy — beide liefert Rasmus per Copy-Paste in den Chat:

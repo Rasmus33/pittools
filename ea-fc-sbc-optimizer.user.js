@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.78.0
+// @version      4.79.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.78.0';
+    const VERSION = '4.79.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -178,10 +178,26 @@
         t.lastAt = Date.now();
         return true;
     }
-    /** Wird gerade gedrosselt? (Fenster: die letzten 20 Sekunden) */
+    /**
+     * Eine ERFOLGREICHE Anfrage beweist, dass der Client nicht blockiert ist -
+     * damit ist der Zaehler hinfaellig. Ohne das blockierte ein einzelner
+     * Schluckauf (live: EIN 503 beim Club-Laden, danach 50 Seiten fehlerfrei)
+     * noch 20 Sekunden spaeter den ganzen Batch.
+     */
+    function noteRequestOk() {
+        const t = STATE.diag.throttle;
+        if (!t || !t.count) return;
+        t.recovered = (t.recovered || 0) + t.count;
+        t.count = 0;
+    }
+    /**
+     * Wird gerade gedrosselt? Verlangt MEHRERE Fehler ohne zwischenzeitlichen
+     * Erfolg im Fenster - ein einzelner Aussetzer ist normal und wird von den
+     * Retries ohnehin abgefangen.
+     */
     function throttledNow() {
         const t = STATE.diag.throttle;
-        return !!(t && t.count > 0 && (Date.now() - t.lastAt) < 20000);
+        return !!(t && t.count >= 2 && (Date.now() - t.lastAt) < 20000);
     }
     function throttleNote() {
         const t = STATE.diag.throttle;
@@ -191,8 +207,11 @@
                'erneut versuchen; ein Neustart der App hilft oft auch.';
     }
     function diagError(msg) {
-        // Zentral: jede Fehlermeldung wird auf Drossel-Signaturen geprueft.
-        try { noteThrottle(msg); } catch (e) {}
+        // KEIN noteThrottle() hier (war v4.78.0 und falsch): diagError bekommt
+        // auch unsere EIGENEN zusammengesetzten Meldungen, und die zitieren den
+        // Fehlertext. Der Zaehler hat sich dadurch selbst hochgezaehlt - im
+        // Report stand die eigene Abbruchmeldung als "Beweis" fuer Drosselung.
+        // Gezaehlt wird jetzt an der Request-Schicht (apiGet/apiPut).
         try {
             const arr = STATE.diag.lastErrors;
             arr.push(String(msg).slice(0, 300));
@@ -1750,6 +1769,7 @@
         try {
             resp = await _origFetch(url, { method: 'GET', headers: apiHeaders(), credentials: 'omit' });
         } catch (e) {
+            noteThrottle('GET ' + path + ' -> ' + (e.message || e));
             diagError('GET ' + path + ' -> ' + (e.message || e));
             throw e;
         }
@@ -1762,9 +1782,12 @@
                 else { await sleep(3000); }
                 return apiGet(path, (_attempt || 0) + 1);
             }
+            noteThrottle('GET ' + path + ' -> HTTP ' + resp.status);
             diagError('GET ' + path + ' -> HTTP ' + resp.status);
             throw new Error(httpErrText('GET', path, resp.status));
         }
+        // Erfolg: der Client ist offensichtlich nicht blockiert.
+        noteRequestOk();
         return resp.json();
     }
     async function apiPut(path, body, _attempt) {
@@ -1778,6 +1801,7 @@
                 body: JSON.stringify(body)
             });
         } catch (e) {
+            noteThrottle('PUT ' + path + ' -> ' + (e.message || e));
             diagError('PUT ' + path + ' -> ' + (e.message || e));
             throw e;
         }
@@ -1791,9 +1815,11 @@
             // (z.B. "item not owned" bei veraltetem Pool).
             let bodyTxt = '';
             try { bodyTxt = (await resp.text()).slice(0, 200); } catch (e) {}
+            noteThrottle('PUT ' + path + ' -> HTTP ' + resp.status);
             diagError('PUT ' + path + ' -> HTTP ' + resp.status + (bodyTxt ? ' BODY: ' + bodyTxt : ''));
             throw new Error(httpErrText('PUT', path, resp.status));
         }
+        noteRequestOk();
         try { return await resp.json(); } catch (e) { return {}; }
     }
     async function fetchClubViaHttp(onProgress) {
@@ -3715,6 +3741,11 @@
                 STATE.diag.preloadChallenge = 'ok';
             } catch (e) {
                 STATE.diag.preloadChallenge = 'Fehler: ' + (e && e.message || e);
+                // Dieser GET ist BEST EFFORT (er soll nur nachahmen, was EAs App
+                // tut). Sein Scheitern darf den Drossel-Zaehler nicht fuellen -
+                // live hat genau das den Batch blockiert, bevor er anfing.
+                const t = STATE.diag.throttle;
+                if (t && t.count > 0) t.count--;
             }
         }
         // Weg 0: App-eigener Save (PaleTools-Rezept) - speichert UND

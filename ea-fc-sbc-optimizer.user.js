@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.95.0
+// @version      4.96.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.95.0';
+    const VERSION = '4.96.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -1682,6 +1682,11 @@
                 name: challengeNodeName(n, scan.target),
                 target: scan.target,
                 slots: scan.slots,
+                // Nur fuer die Diagnose: im Live-Report war slots durchweg
+                // null (EAs Challenge-Knoten hat kein slots-Feld, nur
+                // "formation":"f442"). Damit ist beim naechsten Bericht
+                // ablesbar, ob 11 die richtige Annahme war.
+                formation: (typeof n.formation === 'string') ? n.formation : null,
                 done: challengeNodeDone(st),
                 state: st,
                 scan: scan
@@ -5572,8 +5577,10 @@
                                 title="Pack-Liste neu laden"
                                 style="margin:0;padding:6px 10px;width:auto;flex:0 0 auto;">↻</button>
                     </div>
-                    <button class="sbc-opt-btn danger" id="sbc-opt-pack-test">Test: 1 Pack öffnen</button>
-                    <div class="sbc-opt-compact" style="margin-top:10px;margin-bottom:2px;">
+                    <!-- "Test: 1 Pack oeffnen" ist weg (Rasmus: "brauchen wir auch
+                         nicht mehr, 'Alle oeffnen' reicht vollkommen"). Wer einen
+                         Testlauf will, traegt bei Anzahl eine 1 ein. -->
+                    <div class="sbc-opt-compact" style="margin-top:2px;margin-bottom:2px;">
                         <label>Anzahl (leer = alle)</label>
                         <input type="number" id="sbc-opt-pack-count" min="1"
                                style="width:72px;flex:0 0 auto;" placeholder="alle">
@@ -5656,7 +5663,6 @@
             packSection: panel.querySelector('#sbc-opt-packsection'),
             packType: panel.querySelector('#sbc-opt-pack-type'),
             packRefresh: panel.querySelector('#sbc-opt-pack-refresh'),
-            packTest: panel.querySelector('#sbc-opt-pack-test'),
             packCount: panel.querySelector('#sbc-opt-pack-count'),
             packAll: panel.querySelector('#sbc-opt-pack-all'),
             packResult: panel.querySelector('#sbc-opt-pack-result')
@@ -5702,7 +5708,6 @@
         });
         ui.queuePlan.addEventListener('click', onQueuePlanClick);
         ui.packRefresh.addEventListener('click', onPackRefreshClick);
-        ui.packTest.addEventListener('click', onPackTestClick);
         ui.packAll.addEventListener('click', onPackAllClick);
         ui.rarityPickFilter.addEventListener('input', renderRarityPickOptions);
         // Zustand der "Erweiterte Einstellungen" merken
@@ -7376,7 +7381,20 @@
             // der landet u.U. in der Challenge-Liste des Sets statt im Hub.
             if (!ctrl && (clicked || wentBack) && (i === 10 || i === 25)) {
                 const s2 = clickChallengeRow();
-                if (s2.ok) { steps.push({ ms: Date.now() - t0, chRow: s2 }); await batchWait(500); }
+                if (s2.ok) {
+                    steps.push({ ms: Date.now() - t0, chRow: s2 });
+                    await batchWait(700);
+                    // Derselbe zweite Schritt wie in der Reihe: bei einem Set
+                    // mit mehreren Challenges waehlt die Zeile nur aus. Dem
+                    // Batch ist das nie aufgefallen, weil er ueber die
+                    // Set-Kachel oeffnet und dabei bei EINER Challenge direkt
+                    // im Squad landet. Rein additiv: der Knopf wird nur nach
+                    // einem erfolgreichen Zeilen-Klick und nur bei exakter
+                    // Beschriftung gedrueckt.
+                    const s2b = clickChallengeEnterButton();
+                    steps.push({ ms: Date.now() - t0, enter: s2b });
+                    if (s2b.ok) await batchWait(700);
+                }
                 else if (i === 10) steps.push({ ms: Date.now() - t0, chRow: s2 });
             }
             await batchWait(300);
@@ -7401,7 +7419,10 @@
     async function openChallengeFromList(step) {
         const steps = [];
         const t0 = Date.now();
-        let clicked = 0, backs = 0;
+        let clicked = 0, backs = 0, entered = 0, waited = 0;
+        // Zwei Schritte, nicht einer: erst die Zeile WAEHLEN, dann die
+        // Challenge BETRETEN. Der zweite fehlte bis v4.95.0 komplett.
+        let phase = 'zeile';
         for (let i = 0; i < 60; i++) {          // 60 x 300ms = max ~18s
             dismissRewardPopup();
             syncSbcWithOpenChallenge();
@@ -7427,9 +7448,12 @@
                     const b = clickBackButton();
                     backs++;
                     steps.push({ ms: Date.now() - t0, back: b });
+                    // Nach dem Zurueck stehen wir wieder in der Liste - also
+                    // wieder mit der Zeilen-Auswahl anfangen.
+                    phase = 'zeile';
                     if (b.ok) { await batchWait(900); continue; }
                 }
-            } else if (!clicked || i === 15 || i === 35) {
+            } else if (phase === 'zeile') {
                 // In der Challenge-Liste: liegt ein Dialog oben, ignoriert EA
                 // den Tap (live belegt beim Kachel-Klick) - erst aufraeumen.
                 const pop = popupState();
@@ -7440,12 +7464,37 @@
                 }
                 const r = clickChallengeRow(step);
                 steps.push({ ms: Date.now() - t0, chRow: r });
-                if (r.ok) { clicked++; await batchWait(600); continue; }
+                if (r.ok) {
+                    clicked++;
+                    phase = 'betreten';
+                    // Der Auswahl Zeit lassen: rechts baut sich der
+                    // Anforderungs-Block neu auf, und der Eintritts-Knopf
+                    // gehoert zu DIESER Auswahl.
+                    await batchWait(700);
+                    continue;
+                }
+                // Zeilen noch nicht da - einfach im Takt weiter versuchen.
+            } else if (phase === 'betreten') {
+                // ZWEITER Schritt, der bis v4.95.0 fehlte: die Zeile WAEHLT
+                // nur aus, betreten wird ueber den Knopf ("Go to Challenge" /
+                // "Start Challenge").
+                const e = clickChallengeEnterButton();
+                steps.push({ ms: Date.now() - t0, enter: e });
+                phase = 'warten';
+                if (e.ok) { entered++; await batchWait(900); continue; }
+                // Kein Knopf gefunden: am Handy navigiert der Zeilen-Tap
+                // moeglicherweise direkt. Dann greift oben der Controller-Test.
+            } else {
+                // Gewartet und nichts passiert - nach ein paar Sekunden ein
+                // neuer Anlauf, statt bis zum Zeitablauf stillzustehen.
+                waited++;
+                if (waited % 10 === 0) phase = 'zeile';
             }
             await batchWait(300);
         }
         steps.push({ ms: Date.now() - t0, popup: popupState(),
-                     why: 'Zeitueberschreitung', openId: STATE.sbc.challengeId });
+                     why: 'Zeitueberschreitung', openId: STATE.sbc.challengeId,
+                     phase: phase, rowClicks: clicked, enterClicks: entered });
         return { ok: false, steps: steps };
     }
     /**
@@ -7698,6 +7747,63 @@
         }
         return { ok: clickLike(rows[idx]), why: 'Zeile ' + (idx + 1) + ' von ' +
                  rows.length + ' geklickt', hit: texts[idx].slice(0, 60) };
+    }
+    // Beschriftungen des Knopfes, der eine AUSGEWAEHLTE Challenge betritt.
+    // EA wechselt sie je nach Zustand: "Start Challenge" bei einer noch nicht
+    // begonnenen, "Go to Challenge" bei einer laufenden (beides live gesehen).
+    // Bewusst eine kurze Liste mit EXAKTEM Vergleich - lieber "nicht gefunden"
+    // als ein geratener Klick in einer Ansicht voller Knoepfe.
+    const CHALLENGE_ENTER_LABELS = [
+        'go to challenge', 'start challenge',
+        'zur challenge', 'challenge starten', 'challenge öffnen'
+    ];
+    /**
+     * Welcher der sichtbaren Knoepfe betritt die ausgewaehlte Challenge?
+     * Rein (es kommen nur Beschriftung + "steckt in einer Zeile" herein),
+     * damit die Auswahl ohne DOM testbar ist.
+     * `inRow` schliesst die Knoepfe INNERHALB einer Challenge-Zeile aus: die
+     * heissen genauso, sind aber nur die Auswahl - genau der Klick, der live
+     * dreimal ins Leere ging.
+     */
+    function pickEnterButton(info) {
+        const norm = (x) => String(x || '').toLowerCase().replace(/\s+/g, ' ').trim();
+        for (const want of CHALLENGE_ENTER_LABELS) {
+            for (let i = 0; i < (info || []).length; i++) {
+                if (!info[i] || info[i].inRow) continue;
+                if (norm(info[i].text) === want) return i;
+            }
+        }
+        return -1;
+    }
+    /** Den Eintritts-Knopf der Set-Ansicht klicken. */
+    function clickChallengeEnterButton() {
+        let rows = [];
+        try {
+            rows = Array.prototype.slice.call(document.querySelectorAll(
+                '.ut-sbc-challenge-table-row-view, .ut-sbc-challenge-tile-view'));
+        } catch (e) {}
+        function inRow(el) {
+            for (const r of rows) {
+                try { if (r === el || r.contains(el)) return true; } catch (e) {}
+            }
+            return false;
+        }
+        const els = visibleAll('button, .btn-standard');
+        const info = els.map(function (el) {
+            return {
+                text: String((el && el.textContent) || '').replace(/\s+/g, ' ').trim(),
+                inRow: inRow(el)
+            };
+        });
+        const idx = pickEnterButton(info);
+        if (idx < 0) {
+            return { ok: false, why: 'kein Eintritts-Knopf gefunden',
+                     seen: info.filter(function (x) { return !x.inRow; })
+                               .slice(0, 8)
+                               .map(function (x) { return x.text.slice(0, 30); }) };
+        }
+        return { ok: clickLike(els[idx]), why: 'Eintritts-Knopf geklickt',
+                 label: info[idx].text.slice(0, 40) };
     }
     // Eigene, pur testbare Bedingung statt inline in openNextInstance - der
     // v4.36.0-Live-Vorfall (App blieb im Squad-View haengen) war bisher nur per
@@ -8649,7 +8755,8 @@
             STATE.diag.queueScan = { setId: sid, count: items.length,
                 items: items.slice(0, 12).map(function (it) {
                     return { id: it.id, name: it.name, target: it.target,
-                             slots: it.slots, done: it.done, status: it.state.status };
+                             slots: it.slots, formation: it.formation,
+                             done: it.done, status: it.state.status };
                 }) };
             log('SBC-Reihe: ' + items.length + ' Challenge(s) in Set ' + sid);
         } catch (e) {
@@ -8752,13 +8859,37 @@
             ui.batchPlan.disabled = false;
         }
     }
+    /**
+     * Entscheidet fuer EIN Element, ob es der Pack-Knopf ist. Rein (nur Text
+     * des Elements und Text des Elternteils), damit die Ebenen-Regel testbar
+     * ist - an ihr hing der Fehler.
+     *   text       Text des Elements
+     *   parentText Text des Elternteils (null, wenn keins)
+     * Genommen wird die AEUSSERSTE Huelle, deren Text noch genau "Open" ist:
+     * bei <div><span>Open</span></div> also das div. Das innerste zu nehmen
+     * wuerde unseren Knopf INNERHALB von EAs Knopf einhaengen.
+     */
+    function isPackOpenLabel(text, parentText) {
+        const norm = (x) => String(x == null ? '' : x).replace(/\s+/g, ' ').trim().toLowerCase();
+        const t = norm(text);
+        if (t !== 'open' && t !== 'öffnen') return false;
+        if (parentText != null && norm(parentText) === t) return false;
+        return true;
+    }
     function packOpenButtons() {
         const out = [];
         try {
-            const els = document.querySelectorAll('button, a, [role="button"]');
+            // BREIT suchen. Vorher stand hier nur 'button, a, [role="button"]' -
+            // und im Live-Report waren openButtons 0, waehrend drei "Open"
+            // sichtbar auf dem Schirm lagen (Bild vom 25.08.). EAs
+            // Pack-Kachel-Knopf ist keines dieser drei Dinge.
+            const els = document.querySelectorAll(
+                'button, a, [role="button"], div, span, li, p');
             for (let i = 0; i < els.length; i++) {
-                const t = String(els[i].textContent || '').trim().toLowerCase();
-                if (t === 'open' || t === 'öffnen') out.push(els[i]);
+                const el = els[i];
+                if (!isPackOpenLabel(el.textContent,
+                        el.parentElement ? el.parentElement.textContent : null)) continue;
+                out.push(el);
             }
         } catch (e) {}
         return out;
@@ -8882,10 +9013,18 @@
             GameCurrency = win.GameCurrency;
             if (typeof GameCurrency !== 'function') { GameCurrency = null; optionalMissing.push('GameCurrency'); }
         } catch (e) { GameCurrency = null; optionalMissing.push('GameCurrency'); }
+        // Die Verwerf-Methode ist OPTIONAL: fehlt sie, funktioniert alles
+        // Bisherige weiter, nur "Verwerten" verweigert den Start. Ihr Name
+        // (und im Fehlerfall die Liste aller vorhandenen Methoden) geht in die
+        // Diagnose - EAs Namen sind nicht dokumentiert.
+        const discard = resolveDiscardFn(item);
+        if (!discard) optionalMissing.push('services.Item.discard');
         return {
             ok: missing.length === 0, missing: missing, optionalMissing: optionalMissing,
             store: store, item: item, repoItem: repoItem, ItemPile: ItemPile,
-            SearchCriteria: SearchCriteria, GameCurrency: GameCurrency
+            SearchCriteria: SearchCriteria, GameCurrency: GameCurrency,
+            discard: discard,
+            itemMethods: discard ? null : itemServiceMethodNames(item)
         };
     }
     // response.packs statt response.items - eigene Extraktion neben
@@ -9031,6 +9170,12 @@
             name: name || ('#' + (defId != null ? defId : safeGet(it, 'id'))),
             rating: rating,
             rareflag: rareflag,
+            // groups und untradeable werden zum Verwerten gebraucht: die
+            // Seltenheits-Gruppe entscheidet ueber den Stopp, unverkaeuflich
+            // entscheidet ueber Wegwerfen oder Einsortieren.
+            groups: Array.isArray(groups) ? groups : null,
+            untradeable: !!safeGet(it, 'untradeable'),
+            itemId: safeGet(it, 'id'),
             rarity: rarityLabelOf(rareflag, groups),
             nameResolved: !!name,
             readError: errs.length ? errs[0] : null
@@ -9100,6 +9245,115 @@
             else { leftover.push(it); }
         }
         return { toClub: toClub, toStorage: toStorage, toMisc: toMisc, leftover: leftover, storageCountAfterPlanned: storageUsed };
+    }
+    // ======================================================================
+    //  VERWERTEN (Quicksell): erst alles pruefen, dann handeln
+    // ======================================================================
+    // EAs Methodenname fuer "Karte verwerten" ist nicht dokumentiert, und
+    // raten ist bei einer unumkehrbaren Aktion die schlechteste Idee. Deshalb:
+    // eine Kandidatenliste PROBIEREN und das Ergebnis in die Diagnose schreiben.
+    // Findet sich keine, wird der Lauf verweigert - und der naechste Report
+    // enthaelt die echten Methodennamen von services.Item, womit es in einem
+    // Schritt behoben ist ("erst ein Diagnose-Feld einbauen, dann fixen").
+    const DISCARD_CANDIDATES = ['discard', 'discardItems', 'quickSell', 'quicksell', 'sell'];
+    function resolveDiscardFn(itemService) {
+        if (!itemService) return null;
+        for (const n of DISCARD_CANDIDATES) {
+            let f = null;
+            try { f = itemService[n]; } catch (e) { continue; }
+            if (typeof f === 'function') return { name: n, fn: f.bind(itemService) };
+        }
+        return null;
+    }
+    /** Alle aufrufbaren Namen von services.Item - fuer den Report, wenn nichts passt. */
+    function itemServiceMethodNames(itemService) {
+        const out = [];
+        if (!itemService) return out;
+        try {
+            for (const k of Object.keys(itemService)) {
+                if (typeof itemService[k] === 'function') out.push(k);
+            }
+        } catch (e) {}
+        try {
+            const p = Object.getPrototypeOf(itemService);
+            if (p && p !== Object.prototype) {
+                for (const k of Object.getOwnPropertyNames(p)) {
+                    if (k === 'constructor' || out.indexOf(k) > -1) continue;
+                    let v = null;
+                    try { v = itemService[k]; } catch (e) { continue; }
+                    if (typeof v === 'function') out.push(k);
+                }
+            }
+        } catch (e) {}
+        return out.sort().slice(0, 60);
+    }
+    /**
+     * Was passiert mit den Karten EINES Packs? Reine Entscheidung ueber die
+     * GANZE Liste - es wird nichts verworfen, solange irgendetwas darin einen
+     * Stopp verlangt.
+     *
+     * Ergebnis:
+     *   toDiscard  normale, verkaeufliche Karten -> verwerten
+     *   toKeep     normale, UNVERKAEUFLICHE Karten -> einsortieren (SBC-Futter)
+     *   toMisc     Coins & Co. -> einloesen
+     *   stoppers   Grund(e), warum NICHTS verworfen werden darf
+     */
+    function decidePackDiscard(items, opts) {
+        const o = opts || {};
+        const describe = o.describe || function () { return {}; };
+        const isMisc = o.isMisc || function () { return false; };
+        const locked = o.lockedIds || {};
+        const toDiscard = [], toKeep = [], toMisc = [], stoppers = [], rows = [];
+        for (const it of items || []) {
+            if (isMisc(it)) { toMisc.push(it); rows.push({ target: 'einlösen', misc: true }); continue; }
+            let d = null;
+            try { d = describe(it); } catch (e) { d = null; }
+            if (!d) {
+                // Unlesbar ist ein STOPP, keine Annahme. Bei einer
+                // unumkehrbaren Aktion ist "wird schon normal sein" die
+                // teuerste Vermutung im ganzen Script.
+                stoppers.push({ why: 'nicht lesbar', name: '?' });
+                continue;
+            }
+            const name = d.name || '?';
+            const id = (d.itemId != null) ? String(d.itemId) : null;
+            if (id && locked[id]) {
+                stoppers.push({ why: 'per PaleTools gesperrt', name: name });
+                continue;
+            }
+            const rf = Number(d.rareflag);
+            const g83 = !!(d.groups && d.groups.indexOf(83) > -1);
+            // Nur eine NACHWEISLICH normale Karte darf weg. isNormalCard()
+            // laesst NaN durch (fuer den Solver richtig: unbekannt heisst dort
+            // "nicht besonders") - hier NICHT: keine Zahl heisst kein Wegwerfen.
+            if (!isFinite(rf) || !isNormalCard(rf) || g83) {
+                stoppers.push({ why: 'Special-Karte (' + (d.rarity || ('rf' + d.rareflag)) + ')',
+                                name: name, rating: d.rating });
+                continue;
+            }
+            if (d.untradeable) {
+                // Rasmus' eigene Regel: unverkaeufliche Karten sind
+                // SBC-Material. Behalten, nicht wegwerfen.
+                toKeep.push(it);
+                rows.push({ target: 'behalten (unverkäuflich)', name: name, rating: d.rating,
+                            rarity: d.rarity });
+                continue;
+            }
+            toDiscard.push(it);
+            rows.push({ target: 'verwertet', name: name, rating: d.rating, rarity: d.rarity });
+        }
+        return { toDiscard: toDiscard, toKeep: toKeep, toMisc: toMisc,
+                 stoppers: stoppers, rows: rows };
+    }
+    /** Klartext-Grund fuer den Stopp - er landet 1:1 in der Meldung. */
+    function discardStopReason(stoppers) {
+        const list = (stoppers || []).slice(0, 4).map(function (st) {
+            return st.name + (st.rating != null ? ' (' + st.rating + ')' : '') + ' - ' + st.why;
+        });
+        const rest = Math.max(0, (stoppers || []).length - list.length);
+        return 'nichts verwertet: ' + list.join(', ') +
+            (rest ? ' und ' + rest + ' weitere' : '') +
+            '. Die Karten liegen unassigned - bitte im Spiel selbst entscheiden.';
     }
     // Wholesale-Reassign statt Feld-fuer-Feld: STATE.diag.packScan startet als
     // null (solver-test.js §17 verlangt "null" statt eines Objekt-Literals in
@@ -9257,6 +9511,12 @@
         // "kein Knopf da" nicht von "Titel nicht gelesen" zu unterscheiden.
         const scan = {
             openButtons: btns.length,
+            // Tag und Klasse der gefundenen Knoepfe. Ohne das war "zu eng
+            // gesucht" nur aus dem Vergleich von Bild und Report ableitbar.
+            openForm: btns.slice(0, 4).map(function (b) {
+                return String(b.tagName || '?').toLowerCase() + '.' +
+                       String(b.className || '').slice(0, 40);
+            }),
             packGroups: (STATE.packGroups || []).length,
             titlesSeen: [],
             added: 0, skipped: 0, reason: null
@@ -9550,58 +9810,6 @@
         });
         return { ok: true, drawn: drawn, storageBefore: storageBefore, storageAfter: storageAfter };
     }
-    async function onPackTestClick() {
-        if (STATE.packOpenBusy) return;
-        const groupId = ui.packType && ui.packType.value;
-        if (!groupId) { toast('Erst einen Pack-Typ wählen (Aktualisieren drücken).', 'error'); return; }
-        STATE.packOpenBusy = true;
-        ui.packTest.disabled = true;
-        ui.packAll.disabled = true;
-        ui.packRefresh.disabled = true;
-        setPackStatus('öffne 1 Pack...');
-        try {
-            const res = await runPackTestOpen(groupId);
-            if (!res.ok) {
-                setPackStatus('Abgebrochen: ' + res.reason);
-                toast('Pack-Test abgebrochen: ' + res.reason, 'error');
-                return;
-            }
-            renderPackDrawList(res.drawn);
-            toast('1 Pack geöffnet, ' + res.drawn.length + ' Karten verteilt.', '');
-            try {
-                await fetchMyPacks();
-                renderPackTypeOptions();
-                // Kachel-Knoepfe neu aufbauen: die Anzahl hat sich geaendert,
-                // und ein Knopf mit alter Zahl waere irrefuehrend.
-                try {
-                    const stale = document.querySelectorAll('.sbc-opt-tilebtn');
-                    for (let i = 0; i < stale.length; i++) {
-                        const b = stale[i];
-                        if (b.parentElement) b.parentElement.removeChild(b);
-                    }
-                    const marked = document.querySelectorAll(
-                        '[' + PACK_BTN_MARK + '],[' + PACK_BTN_TRIES + ']');
-                    for (let i = 0; i < marked.length; i++) {
-                        marked[i].removeAttribute(PACK_BTN_MARK);
-                        marked[i].removeAttribute(PACK_BTN_TRIES);
-                    }
-                } catch (e2) {}
-                injectPackTileButtons();
-            } catch (e) {}
-            // Die gezogenen Spieler stehen im Panel - vom Store aus ist das
-            // sonst unsichtbar, und genau die wollte Rasmus sehen.
-            try { if (ui.panel) ui.panel.classList.add('open'); } catch (e) {}
-        } catch (e) {
-            reportError('Pack-Testlauf: unerwarteter Fehler', e);
-            setPackStatus('Fehler: ' + (e.message || e));
-            toast('Pack-Test fehlgeschlagen: ' + (e.message || e), 'error');
-        } finally {
-            STATE.packOpenBusy = false;
-            ui.packTest.disabled = false;
-            ui.packAll.disabled = false;
-            ui.packRefresh.disabled = false;
-        }
-    }
     /**
      * "Alle öffnen" (Stufe 2, Ticket #76): ruft runPackTestOpen() wiederholt
      * für denselben Pack-Typ - EIN Stufe-1-Ablauf pro Iteration, keine zweite
@@ -9754,7 +9962,7 @@
      * tippen, waehrend der erste Lauf noch oeffnet.
      */
     function setPackButtonsDisabled(off) {
-        for (const b of [ui.packTest, ui.packAll, ui.packRefresh]) {
+        for (const b of [ui.packAll, ui.packRefresh]) {
             if (b) b.disabled = !!off;
         }
         try {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.92.0
+// @version      4.93.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.92.0';
+    const VERSION = '4.93.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -5878,12 +5878,33 @@
         try { localStorage.setItem(CHIP_SETS[name].key, JSON.stringify(arr)); } catch (e) {}
     }
     /**
+     * Soll das Zahlenfeld sichtbar sein? (Rasmus: "das eingabe feld unsichtbar,
+     * solange man eh nur 75 und 85 nimmt")
+     * Sichtbar nur, wenn der Bearbeiten-Knopf offen ist ODER der aktuelle Wert
+     * keiner der Schnellwahl-Werte ist - ein von Hand gesetzter Wert muss
+     * sichtbar bleiben, sonst ist nicht erkennbar, was gilt (dann ist auch kein
+     * Chip hervorgehoben).
+     */
+    function chipFieldVisible(name, input, editBox) {
+        const editOpen = !!(editBox && editBox.style.display === 'flex');
+        if (editOpen) return true;
+        const cur = parseInt(input && input.value, 10);
+        if (!isFinite(cur)) return true;
+        return chipValues(name).indexOf(cur) === -1;
+    }
+    /** Regel anwenden - das LABEL bleibt stehen, nur das Feld verschwindet. */
+    function applyChipFieldVisibility(name, input, editBox) {
+        if (!input) return;
+        input.style.display = chipFieldVisible(name, input, editBox) ? '' : 'none';
+    }
+    /**
      * Baut die Chip-Reihe neu. Der aktive Chip (= aktueller Feldwert) ist
      * hervorgehoben, damit auf einen Blick klar ist, was gerade gilt.
      */
     function renderChips(name, box, input, editBox) {
         if (!box || !input) return;
         box.innerHTML = '';
+        applyChipFieldVisibility(name, input, editBox);
         const cur = String(parseInt(input.value, 10));
         for (const v of chipValues(name)) {
             const b = document.createElement('button');
@@ -5904,15 +5925,19 @@
         e.type = 'button';
         e.className = 'sbc-opt-chip edit';
         e.textContent = '✎';
-        e.title = 'Schnellwahl-Werte anpassen';
+        e.title = 'Wert von Hand eintragen / Schnellwahl-Werte anpassen';
         e.addEventListener('click', function () {
             if (!editBox) return;
             const open = editBox.style.display === 'flex';
             editBox.style.display = open ? 'none' : 'flex';
             if (!open) {
                 const f = editBox.querySelector('input');
-                if (f) { f.value = chipValues(name).join(', '); f.focus(); }
+                if (f) { f.value = chipValues(name).join(', '); }
             }
+            // Neu bauen, damit das Zahlenfeld der Regel folgt: der
+            // Bearbeiten-Knopf ist genau der Weg, es sichtbar zu machen.
+            renderChips(name, box, input, editBox);
+            if (!open && input) { try { input.focus(); } catch (err) {} }
         });
         box.appendChild(e);
     }

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.82.0
+// @version      4.83.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.82.0';
+    const VERSION = '4.83.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -133,6 +133,7 @@
             staleRecover: null,      // Erholungsversuch bei veralteter challengeId
             staleSessionRetry: 0,    // Session-Erneuerungen nach 404/475
             throttle: null,          // EA weist ab: Anzahl/letzte Meldung (429/503/512/Failed to fetch)
+            confirmDisabled: null,   // Abgabe-Bestaetigung abgeschaltet (eigene Notbremse)
             poolCache: null,         // Pool-Cache: geschrieben? Groesse? Grund fuer Nein?
             poolCacheRead: null,     // Pool-Cache: benutzt? sonst WARUM nicht?
             submitIds: null,         // welche challengeId jeder Submit-Weg benutzt hat
@@ -172,40 +173,66 @@
     // kein Zustandsproblem der Challenge. Ohne diese Unterscheidung erklaeren
     // wir seit Tagen das falsche Symptom.
     const THROTTLE_RE = /\b(426|429|503|512|521)\b|Failed to fetch|NetworkError|load failed/i;
+    // Gedrosselt heisst: MEHRERE Fehler in kurzer Zeit. Gefuehrt wird deshalb
+    // ein Ring der Fehler-ZEITPUNKTE, kein Zaehler.
+    //
+    // Warum nicht mehr "Zaehler, den ein Erfolg loescht" (war v4.79.0): live
+    // standen 9x "Failed to fetch" plus ein 512 im Report - und der Zaehler auf
+    // 0. Zwischen den Fehlern liegen 49 erfolgreiche Club-Seiten, er wurde also
+    // dauernd zurueckgesetzt und stand nie auf 2. v4.78.0 war zu scharf
+    // (ein Schluckauf brach den Batch ab), v4.79.0 war zu lasch (nie).
+    // Erfolge loeschen die Vergangenheit jetzt nicht mehr - sie tragen nur
+    // nichts bei.
+    const THROTTLE_WINDOW_MS = 60000;
+    const THROTTLE_MIN_HITS = 3;
     function noteThrottle(msg) {
         if (!THROTTLE_RE.test(String(msg || ''))) return false;
-        const t = STATE.diag.throttle || (STATE.diag.throttle = { count: 0, last: null, lastAt: 0 });
-        t.count++;
+        const t = STATE.diag.throttle ||
+                  (STATE.diag.throttle = { count: 0, hits: [], last: null, lastAt: 0 });
+        if (!Array.isArray(t.hits)) t.hits = [];
+        const now = Date.now();
+        t.hits.push(now);
+        // Nur das Fenster behalten - und hart deckeln, damit der Report nicht
+        // von Zeitstempeln ertrinkt.
+        t.hits = t.hits.filter(x => now - x < THROTTLE_WINDOW_MS).slice(-40);
+        t.count = t.hits.length;
+        t.total = (t.total || 0) + 1;
         t.last = String(msg).slice(0, 120);
-        t.lastAt = Date.now();
+        t.lastAt = now;
         return true;
     }
     /**
-     * Eine ERFOLGREICHE Anfrage beweist, dass der Client nicht blockiert ist -
-     * damit ist der Zaehler hinfaellig. Ohne das blockierte ein einzelner
-     * Schluckauf (live: EIN 503 beim Club-Laden, danach 50 Seiten fehlerfrei)
-     * noch 20 Sekunden spaeter den ganzen Batch.
+     * Eine erfolgreiche Anfrage wird nur GEZAEHLT. Sie darf die Fehler-Historie
+     * NICHT loeschen: sonst genuegt ein erfolgreicher Request zwischen zwei
+     * Fehlern, um die Erkennung auszuschalten - genau das ist live passiert.
      */
     function noteRequestOk() {
         const t = STATE.diag.throttle;
-        if (!t || !t.count) return;
-        t.recovered = (t.recovered || 0) + t.count;
-        t.count = 0;
+        if (!t) return;
+        t.recovered = (t.recovered || 0) + 1;
+    }
+    /** Wie viele Fehler liegen im Fenster? */
+    function throttleHits(nowMs) {
+        const t = STATE.diag.throttle;
+        if (!t || !Array.isArray(t.hits)) return 0;
+        const now = nowMs != null ? nowMs : Date.now();
+        return t.hits.filter(x => now - x < THROTTLE_WINDOW_MS).length;
     }
     /**
-     * Wird gerade gedrosselt? Verlangt MEHRERE Fehler ohne zwischenzeitlichen
-     * Erfolg im Fenster - ein einzelner Aussetzer ist normal und wird von den
-     * Retries ohnehin abgefangen.
+     * Wird gerade gedrosselt? Drei Fehler im Fenster - ein einzelner Aussetzer
+     * (live: EIN 503 beim Club-Laden, danach 49 Seiten fehlerfrei) faengt sich
+     * ueber die Retries selbst und darf keinen Batch abwuergen.
      */
     function throttledNow() {
-        const t = STATE.diag.throttle;
-        return !!(t && t.count >= 2 && (Date.now() - t.lastAt) < 20000);
+        return throttleHits() >= THROTTLE_MIN_HITS;
     }
     function throttleNote() {
+        const n = throttleHits();
+        if (!n) return '';
         const t = STATE.diag.throttle;
-        if (!t || !t.count) return '';
-        return ' EA weist gerade Anfragen ab (' + t.count + 'x, zuletzt: ' +
-               t.last + ') - das ist der wahrscheinliche Grund. Kurz warten und ' +
+        return ' EA weist gerade Anfragen ab (' + n + 'x in ' +
+               Math.round(THROTTLE_WINDOW_MS / 1000) + 's, zuletzt: ' +
+               (t && t.last) + ') - das ist der wahrscheinliche Grund. Kurz warten und ' +
                'erneut versuchen; ein Neustart der App hilft oft auch.';
     }
     function diagError(msg) {
@@ -1357,11 +1384,21 @@
      * die eine Abgabe bestaetigt. Liefert null, wenn nicht lesbar; dann wird
      * NICHTS behauptet.
      */
+    // EIGENE Notbremse fuer die Bestaetigung - NICHT die vom Kontingent.
+    // Live (Report v4.79.0) hat ein einzelner HTTP 512 auf
+    // sbs/setId/1356/challenges die Kontingent-Notbremse ausgeloest, und weil
+    // setTimesCompleted() an DEMSELBEN Schalter hing, war damit auch die
+    // Abgabe-Bestaetigung tot: sechs Runden mit confirmed:null, danach 475/404.
+    // Die Notbremse schuetzt vor einem Request-Sturm auf das SCHWERE sbs/sets;
+    // dieser Weg hier ist leicht (ein Set) und eine Korrektheits-Pruefung.
+    let confirmDisabled = false;
+    let confirmFailStreak = 0;
     async function setTimesCompleted(setId) {
-        if (quotaDisabled || setId == null) return null;
+        if (confirmDisabled || setId == null) return null;
         try {
             const json = await apiGet('sbs/setId/' + setId + '/challenges');
             const r = sumTimesCompleted(json);
+            confirmFailStreak = 0;
             if (r.sets) return r.sum;
             // Faellt die Set-Ebene in dieser Antwort weg, hilft der
             // Challenge-Knoten: extractNodeState liest dieselbe Zahl.
@@ -1370,7 +1407,19 @@
                 if (n && typeof n.timesCompleted === 'number') return n.timesCompleted;
             }
             return null;
-        } catch (e) { return quotaNoteFailure(e); }
+        } catch (e) {
+            // Erst nach DREI Fehlschlaegen in Folge aufgeben - und dann
+            // sichtbar, nicht still. Ein einzelner 512 darf die Pruefung nicht
+            // fuer die Sitzung abschalten.
+            confirmFailStreak++;
+            if (confirmFailStreak >= 3) {
+                confirmDisabled = true;
+                STATE.diag.confirmDisabled = 'nach 3 Fehlschlägen, zuletzt: ' +
+                    String((e && e.message) || e).slice(0, 80);
+                warn('Abgabe-Bestätigung abgeschaltet:', e && e.message);
+            }
+            return null;
+        }
     }
     /** Eine Zeile fuer das Panel - oder null, wenn es nichts zu sagen gibt. */
     /**
@@ -2566,8 +2615,24 @@
             const guardGroups = Array.isArray(cfg.protectedGroups) && cfg.protectedGroups.length
                 ? cfg.protectedGroups.map(Number) : [83];
             const guardCost = Math.max(0, cfg.rarityGuardCost != null ? Number(cfg.rarityGuardCost) : 8);
+            // SCHUTZ-MODUS (Produktregel von Rasmus, 25.08.2026): EA hat die
+            // Seltenheitsgruppe veraendert - waehrend FUTTIES bekommt JEDE
+            // gezogene Karte Gruppe 83, damit ist die Gruppe nicht mehr
+            // wertvoll. Der harte Schutz zieht deshalb auf Vereins-TOTW um.
+            //   'vereinTotw' (Default) - nur TOTW aus dem VEREIN ist hart
+            //                            geschuetzt; Storage ist Verbrauchs-
+            //                            material, auch als Special.
+            //   'gruppe83'             - das alte Verhalten, falls EA
+            //                            zurueckdreht (ohne neue Version).
+            //   'aus'                  - kein harter Schutz.
+            const rarityMode = cfg.rarityMode || 'vereinTotw';
             function isProtectedRarity(p) {
-                if (!guardCost) return false;
+                if (!guardCost || rarityMode === 'aus') return false;
+                if (rarityMode === 'vereinTotw') {
+                    // Nur der Verein ist ein Lager, aus dem nichts verschwinden
+                    // soll. Storage-TOTW bleibt nutzbar (siehe totwSoftCost).
+                    return isTotw(p) && !p.isStorage;
+                }
                 // rareflag 3 = TOTW = Rarity-Gruppe 83. Der Schutz darf NICHT
                 // allein am groups-Feld haengen: ein TOTW-Payload OHNE groups
                 // waere sonst ungeschuetzt und (Flachkosten unten) sogar die
@@ -2585,6 +2650,14 @@
             // NACH dem Storage-Rabatt (wird also nicht halbiert).
             const untrBonus = Math.max(0, cfg.untradeableBonus != null
                 ? Number(cfg.untradeableBonus) : 3);
+            // Aufschlag fuer TOTW, die NICHT hart geschuetzt sind (also aus dem
+            // Storage): "trotzdem nicht unnoetigerweise benutzen".
+            const totwSoft = Math.max(0, cfg.totwSoftCost != null
+                ? Number(cfg.totwSoftCost) : 8);
+            // Aufschlag fuer sonstige Specials - stellt "Gold-Storage vor
+            // Special-Storage" her, ohne Specials zu blockieren.
+            const specialSoft = Math.max(0, cfg.specialCost != null
+                ? Number(cfg.specialCost) : 1);
             function costOf(p) {
                 const n = countByRating.get(p.rating) || 1;
                 // TOTW (rareflag 3) sind wertgleich - die Rating-Kosten-
@@ -2597,8 +2670,20 @@
                 // Scarcity/Storage/Untradeable/Rarity-Schutz wirken weiter.
                 const band = isTotw(p) ? (p.rating / 1000) : bandFn(p.rating);
                 const base = alpha / n + band;
+                // WEICHE Aufschlaege, beide NACH dem Storage-Rabatt (also nicht
+                // halbiert) - sie verbieten nichts, sie ordnen nur:
+                //  - Storage-TOTW: "TOTW nicht unnoetigerweise benutzen". Ein
+                //    Aufschlag, kein Verbot: bei gleichem Rating geht jede
+                //    andere Karte vor, gebraucht wird sie trotzdem.
+                //  - Storage-Specials: der kleine Aufschlag stellt die von
+                //    Rasmus genannte Reihenfolge her - "gold storage ->
+                //    special storage -> gold verein". Klein, weil Specials fuer
+                //    hohe Ratings unverzichtbar sind: bei gleichem Rating geht
+                //    Gold vor, bei fehlendem Rating gewinnt der Special.
+                const soft = (!isProtectedRarity(p) && isTotw(p) ? totwSoft : 0) +
+                             (!isTotw(p) && p.isSpecial ? specialSoft : 0);
                 return (p.isStorage ? (base / 2 - beta) : base) +
-                       (isProtectedRarity(p) ? guardCost : 0) -
+                       (isProtectedRarity(p) ? guardCost : 0) + soft -
                        (p.untradeable ? untrBonus : 0);
             }
             costOf.isProtectedRarity = isProtectedRarity;
@@ -2819,8 +2904,10 @@
             const loose = solveCore(poolAll, cfg, false);
             if (loose && loose.ok) {
                 loose.warnings = (loose.warnings || []).concat(
-                    'Ohne zusätzliche geschützte Karten (TOTW/TOTS/FOF/FUTTIES) ist die ' +
-                    'SBC mit diesem Pool nicht lösbar - Schutz gelockert.');
+                    'Ohne zusätzliche geschützte Karten (' +
+                    (cfg.rarityMode === 'gruppe83' ? 'TOTW/TOTS/FOF/FUTTIES'
+                                                   : 'TOTW aus dem Verein') +
+                    ') ist die SBC mit diesem Pool nicht lösbar - Schutz gelockert.');
                 return loose;
             }
             // Beide gescheitert: die Meldung des LOCKEREN Versuchs ist die
@@ -4179,10 +4266,13 @@
             } catch (e) {
                 STATE.diag.preloadChallenge = 'Fehler: ' + (e && e.message || e);
                 // Dieser GET ist BEST EFFORT (er soll nur nachahmen, was EAs App
-                // tut). Sein Scheitern darf den Drossel-Zaehler nicht fuellen -
+                // tut). Sein Scheitern darf die Drossel-Erkennung nicht fuellen -
                 // live hat genau das den Batch blockiert, bevor er anfing.
                 const t = STATE.diag.throttle;
-                if (t && t.count > 0) t.count--;
+                if (t && Array.isArray(t.hits) && t.hits.length) {
+                    t.hits.pop();
+                    t.count = t.hits.length;
+                }
             }
         }
         // Weg 0: App-eigener Save (PaleTools-Rezept) - speichert UND
@@ -4856,12 +4946,37 @@
                     </select>
                 </div>
                 <div class="sbc-opt-row sbc-opt-compact">
-                    <label>Rarity-Karten schützen (TOTW/TOTS/FOF/FUTTIES)</label>
+                    <label>Rarity-Schutz: was ist hart geschützt?</label>
+                    <select id="sbc-opt-raritymode">
+                        <option value="vereinTotw" selected>Nur TOTW aus dem Verein</option>
+                        <option value="gruppe83">Ganze Gruppe (TOTW/TOTS/FOF/FUTTIES)</option>
+                        <option value="aus">Nichts</option>
+                    </select>
+                </div>
+                <div class="sbc-opt-row sbc-opt-compact">
+                    <label>Stärke des harten Schutzes</label>
                     <select id="sbc-opt-rarityguard">
                         <option value="0">Aus</option>
                         <option value="4">Leicht</option>
                         <option value="8" selected>Normal</option>
                         <option value="20">Stark</option>
+                    </select>
+                </div>
+                <div class="sbc-opt-row sbc-opt-compact">
+                    <label>Aufschlag für Storage-TOTW (nicht unnötig verbauen)</label>
+                    <select id="sbc-opt-totwsoft">
+                        <option value="0">Aus</option>
+                        <option value="4">Leicht</option>
+                        <option value="8" selected>Normal</option>
+                        <option value="20">Stark</option>
+                    </select>
+                </div>
+                <div class="sbc-opt-row sbc-opt-compact">
+                    <label>Aufschlag für Storage-Specials (Gold zuerst)</label>
+                    <select id="sbc-opt-specialsoft">
+                        <option value="0">Aus (Gold und Special gleich)</option>
+                        <option value="1" selected>Klein (Gold zuerst)</option>
+                        <option value="4">Deutlich</option>
                     </select>
                 </div>
                 <div class="sbc-opt-row sbc-opt-compact">
@@ -4993,6 +5108,9 @@
             useLocks: panel.querySelector('#sbc-opt-uselocks'),
             poolCacheBox: panel.querySelector('#sbc-opt-poolcache'),
             rarityguard: panel.querySelector('#sbc-opt-rarityguard'),
+            raritymode: panel.querySelector('#sbc-opt-raritymode'),
+            totwsoft: panel.querySelector('#sbc-opt-totwsoft'),
+            specialsoft: panel.querySelector('#sbc-opt-specialsoft'),
             bands: panel.querySelector('#sbc-opt-bands'),
             bandAdd: panel.querySelector('#sbc-opt-band-add'),
             bandReset: panel.querySelector('#sbc-opt-band-reset'),
@@ -5726,6 +5844,10 @@
                         maxRareRating: c.maxRareRating, maxCommonRating: c.maxCommonRating,
                         scarcityWeight: c.scarcityWeight, storageBonus: c.storageBonus,
                         untradeableBonus: c.untradeableBonus, rarityGuardCost: c.rarityGuardCost,
+                        // Der Schutz-Modus MUSS im Report stehen: er entscheidet,
+                        // welche Karten der Solver ueberhaupt anfassen darf.
+                        rarityMode: c.rarityMode, totwSoftCost: c.totwSoftCost,
+                        specialCost: c.specialCost,
                         rarityPickId: c.rarityPickId
                     };
                 } catch (e) { return { error: String(e && e.message || e) }; }
@@ -5796,6 +5918,9 @@
             // Wurde jede Batch-Abgabe von EAs Zaehler bestaetigt?
             submitCounterChecks: STATE.diag.submitCounterChecks || null,
             quotaDisabled: STATE.diag.quotaDisabled || null,
+            // Getrennt von quotaDisabled: die Bestaetigung ist eine
+            // Korrektheits-Pruefung, keine Diagnose-Annehmlichkeit.
+            confirmDisabled: STATE.diag.confirmDisabled || null,
             // Griff eine Abgabe "ohne Response" wirklich? isSquadEmpty() 400ms danach
             // erneut gelesen - reine Beobachtung (kein throw/Retry), siehe submitChallengeToEa.
             submitConfirmations: STATE.diag.submitConfirmations || null,
@@ -6110,6 +6235,9 @@
             maxRareRating: parseInt(ui.maxRare.value, 10) || 0,
             maxCommonRating: parseInt(ui.maxCommon.value, 10) || 0,
             rarityGuardCost: parseFloat(ui.rarityguard.value) || 0,
+            rarityMode: ui.raritymode ? ui.raritymode.value : 'vereinTotw',
+            totwSoftCost: ui.totwsoft ? (parseFloat(ui.totwsoft.value) || 0) : 8,
+            specialCost: ui.specialsoft ? (parseFloat(ui.specialsoft.value) || 0) : 1,
             ratingCostSpec: bandsToSpec(ratingBands),
             anchorId: null,
             rarityPickId: ui.rarityPick.value || null,
@@ -7274,6 +7402,8 @@
         // Stand von EAs timesCompleted fuer dieses Set. Wird pro Runde EINMAL
         // gelesen und dient der naechsten Runde als Basis.
         let batchCountBase = null;
+        // Runden hintereinander, die EA nicht bestaetigt hat.
+        let unconfirmedStreak = 0;
         const plan = STATE.batch;
         if (!plan || !plan.planned) { toast('Erst "Teams planen" ausführen.', 'error'); return; }
         const n = plan.planned;
@@ -7353,6 +7483,26 @@
                 // gelesen. Bis v4.79.0 wurde sie weggeworfen, und deshalb
                 // bewegte sich der Kontingent-Zaehler bei einem Batch nicht.
                 if (confirmed === true) quotaAddEvent(cntAfter - cntBefore, 'local');
+                // Keine Bestaetigung ist auch keine gute Nachricht. Live liefen
+                // sechs Runden mit confirmed:null durch und endeten in 475/404 -
+                // die einzige echte Wache war abgeschaltet. Eine EINZELNE
+                // fehlende Bestaetigung bleibt geduldet (Schluckauf), zwei in
+                // Folge brechen ab: "2 von 5 fertig" ist besser als vier
+                // Abgaben, von denen niemand weiss, ob sie angekommen sind.
+                if (confirmed === null) {
+                    unconfirmedStreak++;
+                    warn('[Batch] Runde ' + (i + 1) + ' ohne Bestätigung von EA (' +
+                         unconfirmedStreak + ' in Folge).');
+                    if (unconfirmedStreak >= 2) {
+                        throw new Error('Zwei Runden hintereinander liessen sich nicht ' +
+                            'bestätigen (EAs Zähler war nicht lesbar) - ' + done + ' von ' +
+                            n + ' fertig. Abgebrochen, bevor daraus eine Fehlerkette wird: ' +
+                            'bitte im Spiel nachsehen, welche Teams wirklich drin sind.' +
+                            throttleNote());
+                    }
+                } else {
+                    unconfirmedStreak = 0;
+                }
                 if (confirmed === false) {
                     throw new Error('Abgabe von Team ' + (i + 1) + ' wurde von EA nicht ' +
                         'bestätigt (Zähler unverändert bei ' + cntAfter + ') - ' + done +
@@ -8552,6 +8702,27 @@
         injectStyles();
         buildPanel();
         installLauncherDelegation();
+        // Rarity-Einstellungen aus localStorage herstellen. Sie MUESSEN ein
+        // Neuladen ueberleben: die Seite entsteht bei jedem Login neu, und ein
+        // Schutz-Modus, der dabei auf den Default zurueckfaellt, verbaut still
+        // die falschen Karten.
+        try {
+            const RM = [['raritymode', 'sbcOptRarityMode'],
+                        ['rarityguard', 'sbcOptRarityGuard'],
+                        ['totwsoft', 'sbcOptTotwSoft'],
+                        ['specialsoft', 'sbcOptSpecialSoft']];
+            for (const [key, lsKey] of RM) {
+                const el = ui[key];
+                if (!el) continue;
+                try {
+                    const saved = localStorage.getItem(lsKey);
+                    if (saved != null) el.value = saved;
+                } catch (e) {}
+                el.addEventListener('change', function () {
+                    try { localStorage.setItem(lsKey, el.value); } catch (e) {}
+                });
+            }
+        } catch (e) { reportError('Rarity-Einstellungen', e); }
         try {
             if (ui.poolCacheBox) {
                 ui.poolCacheBox.checked = poolCacheEnabled();

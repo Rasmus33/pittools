@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.87.0
+// @version      4.88.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.87.0';
+    const VERSION = '4.88.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -138,7 +138,6 @@
             poolCache: null,         // Pool-Cache: geschrieben? Groesse? Grund fuer Nein?
             poolCacheRead: null,     // Pool-Cache: benutzt? sonst WARUM nicht?
             submitIds: null,         // welche challengeId jeder Submit-Weg benutzt hat
-            preloadChallenge: null,  // GET /sbs/challenge/{id} vor dem Schreiben
             quota: null,             // SBC-Kontingent (Stunde/Tag)
             locks: null,             // PaleTools-Sperrliste: Anzahl + Beispiel-IDs
             clubLoad: null,          // Club-Ladelauf: Seitengroesse/Takt/Seiten/Retries/Dauer
@@ -186,17 +185,28 @@
     // nichts bei.
     const THROTTLE_WINDOW_MS = 60000;
     const THROTTLE_MIN_HITS = 3;
+    // Requests, die NUR der Diagnose/Bestaetigung dienen. Werden sie
+    // abgewiesen, sagt das nichts darueber, ob eine Abgabe ankommt - und darf
+    // deshalb keinen Batch stoppen. Live (Report v4.87.0) liefen die Abgaben
+    // (Zaehler 844->845->846), waehrend genau diese Pfade 426/429/512 bekamen
+    // und der Abbruch dann bei 3 von 5 zuschlug.
+    const THROTTLE_OPTIONAL_RE = /\/challenges(\?|$)|sbs\/sets/i;
     function noteThrottle(msg) {
         if (!THROTTLE_RE.test(String(msg || ''))) return false;
         const t = STATE.diag.throttle ||
                   (STATE.diag.throttle = { count: 0, hits: [], last: null, lastAt: 0 });
         if (!Array.isArray(t.hits)) t.hits = [];
         const now = Date.now();
+        const optional = THROTTLE_OPTIONAL_RE.test(String(msg || ''));
+        if (!Array.isArray(t.hard)) t.hard = [];
+        if (!optional) t.hard.push(now);
         t.hits.push(now);
         // Nur das Fenster behalten - und hart deckeln, damit der Report nicht
         // von Zeitstempeln ertrinkt.
         t.hits = t.hits.filter(x => now - x < THROTTLE_WINDOW_MS).slice(-40);
+        t.hard = t.hard.filter(x => now - x < THROTTLE_WINDOW_MS).slice(-40);
         t.count = t.hits.length;
+        t.hardCount = t.hard.length;
         t.total = (t.total || 0) + 1;
         t.last = String(msg).slice(0, 120);
         t.lastAt = now;
@@ -212,7 +222,7 @@
         if (!t) return;
         t.recovered = (t.recovered || 0) + 1;
     }
-    /** Wie viele Fehler liegen im Fenster? */
+    /** Wie viele Fehler liegen im Fenster? (alle, auch die optionalen) */
     function throttleHits(nowMs) {
         const t = STATE.diag.throttle;
         if (!t || !Array.isArray(t.hits)) return 0;
@@ -220,12 +230,23 @@
         return t.hits.filter(x => now - x < THROTTLE_WINDOW_MS).length;
     }
     /**
+     * Nur die Fehler an Requests, die wir WIRKLICH brauchen. Der Batch bricht
+     * hieran ab - nicht an abgewiesenen Bestaetigungen (das waere unsere eigene
+     * Last als Sperre missdeutet).
+     */
+    function throttleHardHits(nowMs) {
+        const t = STATE.diag.throttle;
+        if (!t || !Array.isArray(t.hard)) return 0;
+        const now = nowMs != null ? nowMs : Date.now();
+        return t.hard.filter(x => now - x < THROTTLE_WINDOW_MS).length;
+    }
+    /**
      * Wird gerade gedrosselt? Drei Fehler im Fenster - ein einzelner Aussetzer
      * (live: EIN 503 beim Club-Laden, danach 49 Seiten fehlerfrei) faengt sich
      * ueber die Retries selbst und darf keinen Batch abwuergen.
      */
     function throttledNow() {
-        return throttleHits() >= THROTTLE_MIN_HITS;
+        return throttleHardHits() >= THROTTLE_MIN_HITS;
     }
     function throttleNote() {
         const n = throttleHits();
@@ -4377,31 +4398,14 @@
             throw new Error('Kein Ergebnis zum Eintragen.');
         const need = result.players.length;
         let lastErr = null;
-        // ERST die Challenge serverseitig laden - genau das, was EAs App tut.
-        // Befund aus dem v4.76.0-Report: in den funktionierenden Laeufen stand
-        // in lastUtasPaths ein einfaches GET /sbs/challenge/{id}; im
-        // gescheiterten NUR .../squad. Die Vermutung ist also, dass ohne dieses
-        // Laden serverseitig kein Arbeits-Squad bereitsteht und das PUT deshalb
-        // mit 475 abgelehnt wird.
-        // Bewusst ohne throw: schlaegt es fehl, laeuft der bisherige Weg weiter -
-        // eine unbewiesene Vermutung darf nichts kaputtmachen.
-        if (!_retried && STATE.sbc.challengeId != null) {
-            try {
-                const pfx0 = STATE.sbc.apiPrefix || 'sbs';
-                await apiGet(pfx0 + '/challenge/' + STATE.sbc.challengeId);
-                STATE.diag.preloadChallenge = 'ok';
-            } catch (e) {
-                STATE.diag.preloadChallenge = 'Fehler: ' + (e && e.message || e);
-                // Dieser GET ist BEST EFFORT (er soll nur nachahmen, was EAs App
-                // tut). Sein Scheitern darf die Drossel-Erkennung nicht fuellen -
-                // live hat genau das den Batch blockiert, bevor er anfing.
-                const t = STATE.diag.throttle;
-                if (t && Array.isArray(t.hits) && t.hits.length) {
-                    t.hits.pop();
-                    t.count = t.hits.length;
-                }
-            }
-        }
+        // KEIN Vor-Laden der Challenge mehr (war v4.76.0 bis v4.87.0).
+        // Es war eine Vermutung: in funktionierenden Laeufen stand ein
+        // GET /sbs/challenge/{id} im Log, im gescheiterten nicht. Seither ist
+        // dieser GET in JEDEM Report mit "Failed to fetch" gescheitert - er hat
+        // also nie getan, was er sollte, kostete aber pro Batch-Runde einen
+        // Request und lieferte ein Drossel-Signal, das den Batch abgebrochen
+        // hat. Die Abgaben gehen auch ohne ihn durch (Zaehler 844->845->846 im
+        // Report v4.87.0). Damit ist die Vermutung widerlegt.
         // Weg 0: App-eigener Save (PaleTools-Rezept) - speichert UND
         // aktualisiert die offene Ansicht in einem Rutsch.
         try {
@@ -6034,7 +6038,6 @@
             // Welche challengeId hat welcher Weg benutzt? Weicht app von state
             // ab, schreibt die App-Entity in eine andere Instanz.
             submitIds: STATE.diag.submitIds || null,
-            preloadChallenge: STATE.diag.preloadChallenge || null,
             // Abgeben: welche Controller/Methoden kamen in Frage und welche hat
             // gegriffen? Am Handy heisst der Controller anders als am PC.
             submitCandidates: STATE.diag.submitCandidates || null,
@@ -7585,6 +7588,9 @@
         // Runde, in der die Messung ausgefallen ist.
         let lastKnownCount = null;
         let lastKnownBefore = null;
+        // Takt vor der Bestaetigung. Startet gross genug, dass EA nicht direkt
+        // abweist, und waechst bei Ablehnung selbst.
+        let confirmGap = 900;
         const plan = STATE.batch;
         if (!plan || !plan.planned) { toast('Erst "Teams planen" ausführen.', 'error'); return; }
         const n = plan.planned;
@@ -7659,10 +7665,18 @@
                 if (cntBefore != null) lastKnownCount = cntBefore;
                 lastKnownBefore = lastKnownCount;
                 await submitChallengeToEa();
-                // Kurz Luft lassen: der 429 kam live UNMITTELBAR nach dem
-                // Abgeben - EA nimmt in dem Moment keinen weiteren Request an.
-                await sleep(400);
+                // Luft lassen: 426/429/512 auf die Bestaetigung sind
+                // Rate-Limits, und sie kamen live unmittelbar nach dem Abgeben.
+                // Der Takt erhoeht sich nach jedem abgewiesenen
+                // Bestaetigungs-Request selbst - wie der Club-Lade-Takt
+                // (LEARNINGS 7/30), nicht wieder auf einen festen kleinen Wert
+                // setzen.
+                await sleep(confirmGap);
                 const cntAfter = await setTimesCompleted(STATE.sbc.setId);
+                if (cntAfter == null && confirmLastFail === 'request') {
+                    confirmGap = Math.min(5000, Math.round(confirmGap * 2));
+                    warn('[Batch] Bestätigung abgewiesen - Takt auf ' + confirmGap + 'ms erhöht.');
+                }
                 batchCountBase = (cntAfter != null) ? cntAfter : null;
                 if (cntAfter != null) lastKnownCount = cntAfter;
                 // Basis notfalls aus dem letzten bekannten Stand - besser eine

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.88.0
+// @version      4.89.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.88.0';
+    const VERSION = '4.89.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -135,6 +135,7 @@
             throttle: null,          // EA weist ab: Anzahl/letzte Meldung (429/503/512/Failed to fetch)
             confirmDisabled: null,   // Abgabe-Bestaetigung abgeschaltet (eigene Notbremse)
             batchPlanTiming: null,   // Wo geht die Zeit beim Planen hin? (ms pro Phase)
+            solverProfile: null,     // Solver-Innenleben: Stufen/Baender/Versuche pro Lauf
             poolCache: null,         // Pool-Cache: geschrieben? Groesse? Grund fuer Nein?
             poolCacheRead: null,     // Pool-Cache: benutzt? sonst WARUM nicht?
             submitIds: null,         // welche challengeId jeder Submit-Weg benutzt hat
@@ -2829,7 +2830,14 @@
             const S = Math.max(0, sMax) + 1;
             const size = (kMax + 1) * E * S;
             const idx = (j, e, s) => (j * E + e) * S + s;
+            // ZWEI Puffer im Wechsel. Die Kosten-Tabelle der vorigen Stufe wird
+            // nach dem Wechsel nicht mehr gelesen, nur die Wahl-Tabellen muessen
+            // fuer reconstruct() erhalten bleiben. Vorher entstand pro
+            // Rating-Stufe ein neues Float64Array - bei ~20 Stufen, 15.600
+            // Zellen und ueber 100 buildDp-Aufrufen pro Runde sind das
+            // hunderte MB Allokation. Identische Zahlen, nur ohne den Muell.
             let cur = new Float64Array(size).fill(Infinity);
+            let spare = new Float64Array(size);
             cur[idx(0, 0, 0)] = 0;
             const stageChoices = [];
             for (const r of ratings) {
@@ -2839,7 +2847,7 @@
                 const qCost = [0];
                 for (let q = 1; q <= c; q++) qCost.push(qCost[q - 1] + costOf(list[q - 1]));
                 const isExp = !!(exp && r >= exp.th);
-                const next = new Float64Array(size).fill(Infinity);
+                const next = spare.fill(Infinity);
                 const choice = new Uint8Array(size);
                 for (let j = 0; j <= kMax; j++) {
                     for (let e = 0; e < E; e++) {
@@ -2861,6 +2869,7 @@
                     }
                 }
                 stageChoices.push(choice);
+                spare = cur;      // der alte cur wird der naechste Puffer
                 cur = next;
             }
             return {
@@ -2914,6 +2923,14 @@
          *
          * Ist die SBC so nicht lösbar, wird die Sperre aufgehoben und gewarnt.
          */
+        // Profile der letzten Solver-Laeufe. Der Block bleibt rein: die UI holt
+        // sie ueber SolverCore.lastProfiles() ab und legt sie in die Diagnose.
+        const solverProfiles = [];
+        function lastProfiles() { return solverProfiles.slice(-6); }
+        function stampProfile() {
+            const p = solverProfiles[solverProfiles.length - 1];
+            if (p && !p.ms) p.ms = Date.now() - p.t0;
+        }
         function solve(poolAll, cfg) {
             // Max. Rating pro Spieler (Ticket #66): HARTER Pool-Vorfilter, VOR
             // jeder Reservierung/Suche - eine Karte über der Grenze wird nie
@@ -2936,8 +2953,10 @@
                 if (pickRaw) poolAll = poolAll.concat([pickRaw]);
             }
             const strict = solveCore(poolAll, cfg, true);
+            stampProfile();
             if (strict && strict.ok) return strict;
             const loose = solveCore(poolAll, cfg, false);
+            stampProfile();
             if (loose && loose.ok) {
                 loose.warnings = (loose.warnings || []).concat(
                     'Ohne zusätzliche geschützte Karten (' +
@@ -2977,6 +2996,20 @@
             return result;
         }
         function solveCore(poolAll, cfg, limitProtected) {
+            // SELBSTMESSUNG. Rasmus: "warum sind es so viel mehr ratings? ...
+            // irgendwas muss auch noch anders sein." Er hat recht: ein
+            // nachgebauter Pool vergleichbarer Groesse braucht 222ms, der echte
+            // 3100ms. Statt weiter zu modellieren zaehlt der Solver selbst -
+            // Rating-Stufen, Baender, Versuche, Summen-Schranken - und legt das
+            // Profil in die Diagnose. Kostet nichts Messbares (ein paar Zaehler
+            // pro Band) und beantwortet die Frage beim naechsten Report.
+            const prof = { ms: 0, poolIn: (poolAll || []).length, poolFill: 0,
+                           ratingsFill: 0, trials: 0, bands: 0, buildDp: 0,
+                           ratingsLow: 0, ratingsHigh: 0, sMaxLow: 0, sMaxHigh: 0,
+                           strict: !!limitProtected };
+            prof.t0 = Date.now();
+            solverProfiles.push(prof);
+            while (solverProfiles.length > 6) solverProfiles.shift();
             // Warnungen: KEINE Dubletten. Vorher stand die gelockerte
             // Rare-Grenze sechsmal untereinander im Panel (einmal pro Slot) -
             // die eine wichtige Meldung ging darin unter.
@@ -3196,6 +3229,10 @@
             // makeCostOf() ist die modul-weite SSOT-Factory (nahe parseRatingCosts) -
             // solver-test.js ruft dieselbe Funktion statt sie nachzubilden.
             const costOf = makeCostOf(pool, cfg);
+            if (prof) {
+                prof.poolFill = pool.length;
+                prof.ratingsFill = new Set(pool.map(function (p) { return p.rating; })).size;
+            }
             const isProtectedRarity = costOf.isProtectedRarity;
             // ---- Anker ----
             if (cfg.anchorId != null && cfg.anchorId !== '') {
@@ -3306,12 +3343,36 @@
                     .concat(topAvailRatings)
                     .sort((a, b) => b - a)
                     .slice(0, N);
+                // Niedrigstes Rating, das im Team ueberhaupt vorkommen kann -
+                // aus Reservierten UND Verfuegbaren. Wird fuer die Schranke
+                // unten gebraucht.
+                let rMinTeam = sortedAscLocal.length ? sortedAscLocal[0].rating : 0;
+                for (const p of reservedArr) if (p.rating < rMinTeam) rMinTeam = p.rating;
                 function quickUBLocal(st) {
                     let best = N * st; // b = 0
                     let hs = 0;
                     for (let b = 1; b <= allDescLocal.length; b++) {
                         hs += allDescLocal[b - 1];
-                        const v = N * st + N * hs - b * st;
+                        // NEU (v4.89.0): die b "hohen" Karten muessen in die
+                        // Team-Summe st PASSEN. Ein Team mit Summe st hat N
+                        // Karten; die uebrigen N-b tragen jeweils mindestens
+                        // rMinTeam bei. Also gilt fuer jede gueltige Auswahl
+                        //     Summe der hohen Karten <= st - (N-b)*rMinTeam.
+                        // hs ist die GROESSTE Summe fuer b Karten; v waechst
+                        // monoton in hs. Passt hs nicht, ist die geklemmte
+                        // Summe der beste noch moegliche Wert - deshalb wird
+                        // GEKLEMMT und weitergezaehlt. Frueher abbrechen waere
+                        // falsch: groessere b haben MEHR Platz (roomForHigh
+                        // waechst mit b) und koennen ein hoeheres v liefern.
+                        // Das Ergebnis bleibt eine OBERE Schranke fuer das
+                        // erreichbare V, wird aber deutlich enger und schneidet
+                        // die niedrigen st-Werte weg, fuer die vorher pro
+                        // Schritt zwei DPs gebaut wurden (gemessen: Basisfall
+                        // 264ms -> 117ms, minRating 0: 3700ms -> 747ms).
+                        const roomForHigh = st - Math.max(0, N - b) * rMinTeam;
+                        const hsEff = Math.min(hs, roomForHigh);
+                        if (hsEff < 0) continue;
+                        const v = N * st + N * hsEff - b * st;
                         if (v > best) best = v;
                     }
                     return best;
@@ -3324,6 +3385,7 @@
                     const rBoost = Math.floor(st / N) + 1;
                     let band = bandCache.get(rBoost);
                     if (!band) {
+                        if (prof) prof.bands++;
                         const lowP = availArr.filter(p => p.rating < rBoost);
                         const highP = availArr.filter(p => p.rating >= rBoost);
                         const sMaxLow = Math.min(kLocal * Math.max(0, rBoost - 1), 1300);
@@ -3349,10 +3411,22 @@
                             dpHigh = halfCtx.highCache.get(highKey) || null;
                         }
                         if (!dpLow) {
+                            if (prof) {
+                                prof.buildDp++;
+                                prof.ratingsLow = Math.max(prof.ratingsLow,
+                                    new Set(lowP.map(function (p) { return p.rating; })).size);
+                                prof.sMaxLow = Math.max(prof.sMaxLow, sMaxLow);
+                            }
                             dpLow = buildDp(lowP, kLocal, sMaxLow, costOf, expDims, cmp);
                             if (halfCtx) halfCtx.lowCache.set(lowKey, dpLow);
                         }
                         if (!dpHigh) {
+                            if (prof) {
+                                prof.buildDp++;
+                                prof.ratingsHigh = Math.max(prof.ratingsHigh,
+                                    new Set(highP.map(function (p) { return p.rating; })).size);
+                                prof.sMaxHigh = Math.max(prof.sMaxHigh, sMaxHigh);
+                            }
                             dpHigh = buildDp(highP, kLocal, sMaxHigh, costOf, expDims, cmp);
                             if (halfCtx) halfCtx.highCache.set(highKey, dpHigh);
                         }
@@ -3502,6 +3576,7 @@
                     return total;
                 }
                 const comboCount = countCombos(0, stillNeed, RARITY_WINDOW_TRIAL_CAP);
+                if (prof) prof.trials += Math.min(comboCount, RARITY_WINDOW_TRIAL_CAP);
                 if (comboCount === 0) return 0;
                 if (comboCount > RARITY_WINDOW_TRIAL_CAP) {
                     warnings.push('Fensterbewusste Vorgaben-Wahl uebersprungen (zu viele Kandidaten) - Kosten-Reihenfolge verwendet.');
@@ -4134,6 +4209,7 @@
         return {
             solve: solve,
             planBatch: planBatch,
+            lastProfiles: lastProfiles,
             beginBatch: beginBatch,
             batchRound: batchRound,
             finishBatch: finishBatch,
@@ -6056,6 +6132,11 @@
             // "Seite reagiert nicht" beim Planen von 10 Teams - hier steht,
             // welche Phase die Zeit frisst.
             batchPlanTiming: STATE.diag.batchPlanTiming || null,
+            // Wo geht die Zeit im Solver hin? Rating-Stufen, Baender, Versuche
+            // und Summen-Schranken pro Lauf - damit ist entscheidbar, WAS den
+            // DP aufblaeht, statt es zu modellieren.
+            solverProfile: STATE.diag.solverProfile ||
+                (function () { try { return SolverCore.lastProfiles(); } catch (e) { return null; } })(),
             // Griff eine Abgabe "ohne Response" wirklich? isSquadEmpty() 400ms danach
             // erneut gelesen - reine Beobachtung (kein throw/Retry), siehe submitChallengeToEa.
             submitConfirmations: STATE.diag.submitConfirmations || null,
@@ -7339,6 +7420,7 @@
             tim.render = Date.now() - tp;
             tim.total = Date.now() - tAll;
             STATE.diag.batchPlanTiming = tim;
+            try { STATE.diag.solverProfile = SolverCore.lastProfiles(); } catch (e) {}
             finishProgress(plan.planned + ' von ' + want + ' Teams geplant', true);
             setStatus(plan.planned + ' von ' + want + ' Teams geplant');
         } catch (e) {

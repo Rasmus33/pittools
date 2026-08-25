@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.84.0
+// @version      4.85.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.84.0';
+    const VERSION = '4.85.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -3241,7 +3241,8 @@
             // Reservierung feststeht (Schritt 4 im Lift-Plan).
             // expDims: durchgereicht an buildDp()'s "exp"-Parameter (siehe
             // dessen Docblock) - seit v4.62.0 an allen vier Call-Sites null.
-            function searchTeam(reservedArr, availArr, expDims, sharedBandCache, vMinFloor) {
+            function searchTeam(reservedArr, availArr, expDims, sharedBandCache, vMinFloor,
+                                availSortedAsc) {
                 const kLocal = N - reservedArr.length;
                 // Beim echten (finalen) Aufruf ist das bereits vorher geprueft
                 // (":avail.length < k" weiter oben); ein Trial-Aufruf aus
@@ -3249,12 +3250,25 @@
                 // knappe Kombination ist dort einfach "nicht loesbar", kein Fehler.
                 if (availArr.length < kLocal) return null;
                 const reservedSumLocal = reservedArr.reduce((s, p) => s + p.rating, 0);
-                const sortedAscLocal = availArr.slice().sort((a, b) => a.rating - b.rating);
+                // availSortedAsc: der Aufrufer garantiert, dass availArr schon
+                // aufsteigend nach Rating sortiert ist. Dann entfallen BEIDE
+                // Sortierungen. Grund (Report v4.84.0): reserveWindowAware()
+                // ruft searchTeam pro Kandidaten-Kombination auf - bei 8554
+                // Karten und ~19 Kombinationen waren das 38 volle Sortierungen
+                // pro Runde, 6,3s. Die Zahlen sind identisch, nur der Weg
+                // dorthin ist O(n) statt O(n log n).
+                const sortedAscLocal = availSortedAsc
+                    ? availArr : availArr.slice().sort((a, b) => a.rating - b.rating);
                 let kCheapestLocal = 0;
                 for (let i = 0; i < kLocal; i++) kCheapestLocal += sortedAscLocal[i].rating;
                 const stLowLocal = reservedSumLocal + kCheapestLocal;
+                // Die N hoechsten Ratings. Ist avail sortiert, sind das die
+                // LETZTEN N - kein Sortieren von 8554 Werten noetig.
+                const topAvailRatings = availSortedAsc
+                    ? availArr.slice(Math.max(0, availArr.length - N)).map(p => p.rating)
+                    : availArr.map(p => p.rating);
                 const allDescLocal = reservedArr.map(p => p.rating)
-                    .concat(availArr.map(p => p.rating))
+                    .concat(topAvailRatings)
                     .sort((a, b) => b - a)
                     .slice(0, N);
                 function quickUBLocal(st) {
@@ -3444,6 +3458,21 @@
                 const sharedAvail = canShareBandCache
                     ? pool.filter(function (p) { return !used.has(p.id) && !isProtectedRarity(p); })
                     : null;
+                // BASIS FUER DIE VERSUCHE, einmal gebaut: gefiltert wie im
+                // Versuch, aber OHNE die Karten der jeweiligen Kombination -
+                // die kommen pro Versuch per filter() heraus, was die
+                // Sortierung erhaelt. Vorher entstand dieser Pool pro Versuch
+                // neu und wurde in searchTeam zweimal sortiert (Report
+                // v4.84.0: 6,3s pro Runde).
+                const trialBaseAsc = (canShareBandCache ? sharedAvail
+                    : pool.filter(function (p) {
+                        return !used.has(p.id) && (!limitProtected || !isProtectedRarity(p));
+                    })).slice().sort(function (a, b) { return a.rating - b.rating; });
+                function trialAvailFor(comboCards) {
+                    if (!comboCards.length) return trialBaseAsc;
+                    const skip = new Set(comboCards.map(function (p) { return p.id; }));
+                    return trialBaseAsc.filter(function (p) { return !skip.has(p.id); });
+                }
                 // Schritt 5 (Lift-Plan): ERST alle Trials sammeln, DANN ueber
                 // ALLE hinweg das kleinste erreichte V (globalVmin) bestimmen -
                 // ein einzelner Trial darf NICHT vorschnell nur gegen den bis
@@ -3462,9 +3491,9 @@
                 // liefern (live per Fuzzing gefunden), darum Pass 2 unten.
                 function trialRawVMin(comboCards) {
                     for (const p of comboCards) reserve(p);
-                    const trialAvail = canShareBandCache ? sharedAvail :
-                        pool.filter(function (p) { return !used.has(p.id) && (!limitProtected || !isProtectedRarity(p)); });
-                    const trialResult = searchTeam(reserved, trialAvail, null, canShareBandCache ? sharedBandCache : null);
+                    const trialAvail = trialAvailFor(comboCards);
+                    const trialResult = searchTeam(reserved, trialAvail, null,
+                        canShareBandCache ? sharedBandCache : null, undefined, true);
                     for (const p of comboCards) {
                         used.delete(p.id);
                         if (p.assetId != null && p.assetId !== 0) usedAssets.delete(String(p.assetId));
@@ -3497,10 +3526,9 @@
                 for (const t of rawVMins) {
                     if (t.vMin > globalVmin + windowV) continue;
                     for (const p of t.combo) reserve(p);
-                    const trialAvail = canShareBandCache ? sharedAvail :
-                        pool.filter(function (p) { return !used.has(p.id) && (!limitProtected || !isProtectedRarity(p)); });
+                    const trialAvail = trialAvailFor(t.combo);
                     const refined = searchTeam(reserved, trialAvail, null,
-                        canShareBandCache ? sharedBandCache : null, globalVmin);
+                        canShareBandCache ? sharedBandCache : null, globalVmin, true);
                     for (const p of t.combo) {
                         used.delete(p.id);
                         if (p.assetId != null && p.assetId !== 0) usedAssets.delete(String(p.assetId));
@@ -7319,6 +7347,10 @@
             .reduce((s, rc) => s + (rc.count || 1), 0);
         const is83 = p => Number(p.rareflag) === 3 ||
             !!(p.groups && p.groups.indexOf(83) > -1);
+        // TOTW aus dem VEREIN - seit v4.83.0 die einzige hart geschuetzte
+        // Sorte (EA hat die Gruppe entwertet, siehe CLAUDE.md "Rarity-Staffel").
+        const isTotwClub = p => Number(p.rareflag) === 3 && !p.isStorage;
+        const rarityMode = cfg.rarityMode || 'vereinTotw';
         const qualityConstraints = (cfg.applyRarity === false) ? [] : (cfg.qualityConstraints || []);
         // Deckt sich mit dem qualityLow-Zweig im Solver (Bronze/Silber
         // ignorieren Min-Rating komplett, Gold nicht) - hier nur, um
@@ -7335,24 +7367,42 @@
                 'Team ' + teamNo + ': Rating-Überschuss ' + waste.toFixed(2) + ' über dem erlaubten Fenster ' +
                 maxOvershoot.toFixed(2) + ' (exakt ' +
                 (r.ovrExact != null ? r.ovrExact.toFixed(2) : '?') + ').');
-            const n83 = r.players.filter(is83).length;
-            // Eine MANUELL gewaehlte Gruppe-83-Karte ohne passende Vorgabe ist
-            // Rasmus' explizite Entscheidung - kein roter Fehler. Aber NICHT
-            // still gruen (Review-Runde 2): die Pick-Auswahl im Panel
-            // ueberlebt SBC-Wechsel, ein VERALTETER Pick saehe sonst wie ein
-            // perfekter Plan aus. Deshalb ein sichtbarer Hinweis - direkt in
-            // lines statt ueber runCheck(), damit der feste Pruefungs-Nenner
+            // WAS gezaehlt wird, haengt am Schutz-Modus - genau wie im Solver.
+            // Bis v4.84.0 verlangte die Pruefung immer GENAU die geforderte
+            // Anzahl Gruppe-83-Karten. Seit EA die Gruppe entwertet hat, sind
+            // mehrere davon aus dem Storage voellig in Ordnung; teuer ist nur
+            // TOTW aus dem Verein.
+            const countedName = (rarityMode === 'gruppe83')
+                ? 'Gruppe-83-Karte(n) (TOTW/TOTS/FOF/FUTTIES)'
+                : 'TOTW aus dem Verein';
+            const counted = (rarityMode === 'gruppe83') ? is83 : isTotwClub;
+            const nCounted = r.players.filter(counted).length;
+            // Eine MANUELL gewaehlte Karte ohne passende Vorgabe ist Rasmus'
+            // explizite Entscheidung - kein roter Fehler. Aber NICHT still
+            // gruen (Review-Runde 2): die Pick-Auswahl im Panel ueberlebt
+            // SBC-Wechsel, ein VERALTETER Pick saehe sonst wie ein perfekter
+            // Plan aus. Deshalb ein sichtbarer Hinweis - direkt in lines statt
+            // ueber runCheck(), damit der feste Pruefungs-Nenner
             // (LEARNINGS 48) unveraendert bleibt.
             const pickedExtra = (required83 === 0 && cfg.rarityPickId != null &&
                 cfg.rarityPickId !== '' &&
-                r.players.some(p => String(p.id) === String(cfg.rarityPickId) && is83(p))) ? 1 : 0;
-            const explainedByPick = pickedExtra > 0 && n83 === required83 + pickedExtra;
-            runCheck('error', n83 === required83 || explainedByPick,
-                'Team ' + teamNo + ': ' + n83 + 'x Gruppe-83-Karte(n) (TOTW/TOTS/FOF/FUTTIES) statt geforderter ' +
+                r.players.some(p => String(p.id) === String(cfg.rarityPickId) && counted(p))) ? 1 : 0;
+            const explainedByPick = pickedExtra > 0 && nCounted === required83 + pickedExtra;
+            // 'gruppe83' verlangt GENAU die Anzahl (alte Regel). Sonst gilt
+            // HOECHSTENS die geforderte Anzahl Vereins-TOTW: weniger ist immer
+            // besser, mehr waere ein unnoetig verbrannter Anker. Modus 'aus'
+            // schuetzt nichts - dann gibt es hier nichts zu bemaengeln.
+            const rarityOk = (rarityMode === 'aus') ? true
+                : (rarityMode === 'gruppe83'
+                    ? (nCounted === required83 || explainedByPick)
+                    : (nCounted <= required83 || explainedByPick));
+            runCheck('error', rarityOk,
+                'Team ' + teamNo + ': ' + nCounted + 'x ' + countedName +
+                (rarityMode === 'gruppe83' ? ' statt geforderter ' : ' - erlaubt sind höchstens ') +
                 required83 + '.');
             if (explainedByPick) {
                 lines.push({ level: 'hint', text: 'Team ' + teamNo +
-                    ': 1x Gruppe-83-Karte stammt aus der manuellen Karten-Wahl (keine SBC-Vorgabe)' +
+                    ': 1x ' + countedName + ' stammt aus der manuellen Karten-Wahl (keine SBC-Vorgabe)' +
                     ' - Auswahl zuruecksetzen, falls unbeabsichtigt.' });
             }
             const belowMin = r.players.filter(p => p.rating < effectiveMinRating);

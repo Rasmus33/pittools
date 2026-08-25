@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.80.0
+// @version      4.81.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.80.0';
+    const VERSION = '4.81.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -133,6 +133,8 @@
             staleRecover: null,      // Erholungsversuch bei veralteter challengeId
             staleSessionRetry: 0,    // Session-Erneuerungen nach 404/475
             throttle: null,          // EA weist ab: Anzahl/letzte Meldung (429/503/512/Failed to fetch)
+            poolCache: null,         // Pool-Cache: geschrieben? Groesse? Grund fuer Nein?
+            poolCacheRead: null,     // Pool-Cache: benutzt? sonst WARUM nicht?
             submitIds: null,         // welche challengeId jeder Submit-Weg benutzt hat
             preloadChallenge: null,  // GET /sbs/challenge/{id} vor dem Schreiben
             quota: null,             // SBC-Kontingent (Stunde/Tag)
@@ -828,6 +830,251 @@
     // zur aeltesten Probe innerhalb des Fensters. Fehlt eine Probe von VOR dem
     // Fenster, ist das Ergebnis eine UNTERGRENZE - und wird auch so benannt,
     // nicht als exakte Zahl verkauft.
+    // ======================================================================
+    //  POOL-CACHE (nur der Verein)
+    // ======================================================================
+    // Logs vom 24.08.: drei komplette Pool-Ladevorgaenge in einer Sitzung, je
+    // 16-24s fuer 8459 Karten - weil die Seite dreimal neu geladen wurde
+    // (Session weg -> Login -> neues Dokument). Der Verein kostet 50 Requests,
+    // Unassigned und Storage zusammen zwei. Also wird nur der Verein
+    // gespeichert; die beiden kleinen Listen kommen immer frisch.
+    //
+    // Gespeichert wird in IndexedDB, nicht in localStorage: jede Karte schleppt
+    // ihr EA-Rohobjekt mit (fuer UTItemEntityFactory beim Eintragen
+    // unverzichtbar, siehe LEARNINGS 5), und 8500 davon sprengen die
+    // localStorage-Grenze. Abgelegt wird ein JSON-STRING - kein
+    // structuredClone: die Rohobjekte aus dem Services-Fallback koennen
+    // Funktionen tragen, und die wuerden das Klonen zum Scheitern bringen.
+    const POOL_DB = 'sbcOptPoolCache';
+    const POOL_STORE = 'pool';
+    const POOL_CACHE_KEY = 'club';
+    const POOL_CACHE_V = 1;
+    const POOL_CACHE_TTL_MS = 10 * 60 * 1000;      // s. Sperre 1
+    const POOL_CACHE_MAX_BYTES = 80 * 1024 * 1024; // Notbremse gegen Ausufern
+    const POOL_CACHE_TOGGLE = 'sbcOptPoolCacheOn';
+    function poolCacheEnabled() {
+        try { return localStorage.getItem(POOL_CACHE_TOGGLE) !== '0'; }
+        catch (e) { return true; }
+    }
+    function idbOpen() {
+        return new Promise(function (res, rej) {
+            if (!window.indexedDB) { rej(new Error('IndexedDB nicht verfügbar')); return; }
+            const req = indexedDB.open(POOL_DB, 1);
+            req.onupgradeneeded = function () {
+                const db = req.result;
+                if (!db.objectStoreNames.contains(POOL_STORE)) db.createObjectStore(POOL_STORE);
+            };
+            req.onsuccess = function () { res(req.result); };
+            req.onerror = function () { rej(req.error || new Error('IndexedDB open')); };
+        });
+    }
+    function idbRun(mode, fn) {
+        return idbOpen().then(function (db) {
+            return new Promise(function (res, rej) {
+                const tx = db.transaction(POOL_STORE, mode);
+                const st = tx.objectStore(POOL_STORE);
+                let out = null;
+                try { out = fn(st); } catch (e) { rej(e); return; }
+                tx.oncomplete = function () {
+                    try { db.close(); } catch (e) {}
+                    res(out && out.result !== undefined ? out.result : null);
+                };
+                tx.onerror = function () {
+                    try { db.close(); } catch (e) {}
+                    rej(tx.error || new Error('IndexedDB tx'));
+                };
+                tx.onabort = function () {
+                    try { db.close(); } catch (e) {}
+                    rej(tx.error || new Error('IndexedDB abort'));
+                };
+            });
+        });
+    }
+    /**
+     * Was beim Vereins-Laden mitgeschrieben wird, damit der Cache spaeter
+     * pruefbar ist: EAs Gesamtzahl, die Ids der ERSTEN Seite (nach Wert
+     * sortiert - dort schlaegt jede wertvolle Neuerwerbung auf) und die Karten.
+     */
+    let clubHarvest = null;
+    function clubHarvestBegin() {
+        clubHarvest = { total: null, firstIds: [], players: [], ok: false };
+    }
+    function clubHarvestPage(page, items, players, total) {
+        if (!clubHarvest) return;
+        if (total != null && total !== Infinity) clubHarvest.total = total;
+        if (page === 0) {
+            clubHarvest.firstIds = items.map(function (it) {
+                return String((it && (it.id != null ? it.id : it.itemId)) || '');
+            }).filter(Boolean);
+        }
+        for (const p of players) clubHarvest.players.push(p);
+    }
+    function clubHarvestDone(complete) {
+        if (clubHarvest) clubHarvest.ok = !!complete;
+    }
+    /**
+     * Karten, die WIR seit dem Cache-Stand verbraucht haben. Nur Vereins-Karten
+     * zaehlen in EAs totalItemCount - deshalb wird gegen die Id-Liste des
+     * Caches geprueft und nicht gegen das isStorage-Flag (Unassigned traegt
+     * dasselbe Flag wie Verein).
+     */
+    let poolCacheState = null;   // { ids: Set, consumed: Set }
+    function poolCacheNoteRemoved(players) {
+        if (!poolCacheState) return;
+        for (const p of players) {
+            if (!p) continue;
+            const k = String(p.id);
+            if (poolCacheState.ids.has(k)) poolCacheState.consumed.add(k);
+        }
+        schedulePoolCacheSave();
+    }
+    // Schreiben ist gross (mehrere MB) - deshalb nicht bei jeder Aenderung
+    // sofort, sondern gebuendelt. Es geht um das Ueberleben eines Neuladens,
+    // nicht um Millisekunden.
+    let poolCacheSaveTimer = null;
+    function schedulePoolCacheSave() {
+        if (poolCacheSaveTimer) return;
+        poolCacheSaveTimer = setTimeout(function () {
+            poolCacheSaveTimer = null;
+            savePoolCache();
+        }, 8000);
+    }
+    async function savePoolCache() {
+        if (!poolCacheEnabled() || !poolCacheState) return;
+        const st = poolCacheState;
+        try {
+            const payload = {
+                v: POOL_CACHE_V,
+                t: st.t,
+                script: VERSION,
+                user: st.user,
+                total: st.total,
+                firstIds: st.firstIds,
+                consumed: Array.from(st.consumed),
+                players: st.players
+            };
+            const json = JSON.stringify(payload);
+            if (json.length > POOL_CACHE_MAX_BYTES) {
+                STATE.diag.poolCache = { wrote: false, reason: 'zu gross: ' + json.length };
+                return;
+            }
+            const t0 = Date.now();
+            await idbRun('readwrite', function (store) { store.put(json, POOL_CACHE_KEY); });
+            STATE.diag.poolCache = {
+                wrote: true, chars: json.length, players: st.players.length,
+                consumed: st.consumed.size, ms: Date.now() - t0
+            };
+            log('Pool-Cache geschrieben: ' + st.players.length + ' Vereins-Karten, ' +
+                Math.round(json.length / 1024) + ' KB, ' + (Date.now() - t0) + 'ms.');
+        } catch (e) {
+            STATE.diag.poolCache = { wrote: false, reason: String(e && e.message || e) };
+            warn('Pool-Cache konnte nicht geschrieben werden:', e && e.message);
+        }
+    }
+    /** Den Cache nach dem Vereins-Laden anlegen. */
+    function adoptClubHarvest() {
+        if (!poolCacheEnabled() || !clubHarvest || !clubHarvest.ok) return;
+        if (clubHarvest.total == null || !clubHarvest.players.length) return;
+        const ids = new Set(clubHarvest.players.map(function (p) { return String(p.id); }));
+        poolCacheState = {
+            t: Date.now(),
+            user: STATE.session.nucleusId || null,
+            total: clubHarvest.total,
+            firstIds: clubHarvest.firstIds,
+            players: clubHarvest.players,
+            ids: ids,
+            consumed: new Set()
+        };
+        savePoolCache();
+    }
+    /** Cache verwerfen - nach einer von EA abgelehnten Karte oder auf Wunsch. */
+    async function dropPoolCache(why) {
+        poolCacheState = null;
+        try { await idbRun('readwrite', function (store) { store.delete(POOL_CACHE_KEY); }); }
+        catch (e) {}
+        STATE.diag.poolCache = { wrote: false, reason: 'verworfen: ' + (why || '') };
+        log('Pool-Cache verworfen' + (why ? ' (' + why + ')' : '') + '.');
+    }
+    /**
+     * Versuchen, den Verein aus dem Cache zu nehmen. Liefert einen Bericht
+     * (immer, auch bei Ablehnung - er landet in der Diagnose, damit nie
+     * geraten werden muss, WARUM voll geladen wurde).
+     */
+    async function tryPoolCache() {
+        const rep = { used: false, reason: null, age: null, players: 0 };
+        if (!poolCacheEnabled()) { rep.reason = 'abgeschaltet'; return rep; }
+        if (!sessionReady()) { rep.reason = 'keine Session'; return rep; }
+        let payload = null;
+        try {
+            const json = await idbRun('readonly', function (store) {
+                return store.get(POOL_CACHE_KEY);
+            });
+            if (!json) { rep.reason = 'kein Cache'; return rep; }
+            payload = JSON.parse(json);
+        } catch (e) {
+            rep.reason = 'nicht lesbar: ' + String(e && e.message || e);
+            return rep;
+        }
+        // --- Sperre 1 + 2: Format, Version, Konto, Alter -------------------
+        if (!payload || payload.v !== POOL_CACHE_V) { rep.reason = 'anderes Format'; return rep; }
+        if (payload.script !== VERSION) { rep.reason = 'andere Script-Version'; return rep; }
+        rep.age = Date.now() - (payload.t || 0);
+        if (rep.age > POOL_CACHE_TTL_MS) {
+            rep.reason = 'zu alt (' + Math.round(rep.age / 1000) + 's)';
+            return rep;
+        }
+        const user = STATE.session.nucleusId || null;
+        if (payload.user && user && String(payload.user) !== String(user)) {
+            rep.reason = 'anderes Konto';
+            return rep;
+        }
+        if (!Array.isArray(payload.players) || !payload.players.length) {
+            rep.reason = 'leer'; return rep;
+        }
+        // --- Sperre 3: EIN Request muss den Stand bestaetigen --------------
+        let json0 = null;
+        try {
+            json0 = await apiGet('club?sort=desc&sortBy=value&type=player&count=175&start=0');
+        } catch (e) {
+            rep.reason = 'Prüf-Request fehlgeschlagen: ' + String(e && e.message || e);
+            return rep;
+        }
+        const consumed = new Set((payload.consumed || []).map(String));
+        const expect = payload.total - consumed.size;
+        if (json0.totalItemCount != null && Number(json0.totalItemCount) !== expect) {
+            rep.reason = 'Verein hat sich geändert (EA: ' + json0.totalItemCount +
+                         ', erwartet: ' + expect + ')';
+            return rep;
+        }
+        const known = new Set(payload.players.map(function (p) { return String(p.id); }));
+        for (const it of extractItems(json0)) {
+            const k = String((it && (it.id != null ? it.id : it.itemId)) || '');
+            if (!k) continue;
+            if (!known.has(k) || consumed.has(k)) {
+                rep.reason = 'neue/unbekannte Karte auf Seite 1 (' + k + ')';
+                return rep;
+            }
+        }
+        // --- angenommen -----------------------------------------------------
+        const usable = payload.players.filter(function (p) {
+            return p && !consumed.has(String(p.id));
+        });
+        mergeIntoPool(usable);
+        poolCacheState = {
+            t: payload.t,
+            user: payload.user,
+            total: payload.total,
+            firstIds: payload.firstIds || [],
+            players: payload.players,
+            ids: known,
+            consumed: consumed
+        };
+        rep.used = true;
+        rep.players = usable.length;
+        log('Verein aus dem Cache: ' + usable.length + ' Karten (' +
+            Math.round(rep.age / 1000) + 's alt, 1 Prüf-Request statt ~50).');
+        return rep;
+    }
     // ======================================================================
     //  SCRIPT-STARTS: wie oft entsteht der JS-Kontext neu?
     // ======================================================================
@@ -1698,6 +1945,9 @@
                 if (ui.poolcount) ui.poolcount.textContent = String(STATE.pool.length);
                 refreshSbcInfoUI();
                 log(removed + ' verbaute Karten aus dem Pool entfernt (' + STATE.pool.length + ' übrig).');
+                // Der Cache muss wissen, was weg ist - sonst stimmt seine
+                // Pruefzahl gegen EAs totalItemCount beim naechsten Start nicht.
+                poolCacheNoteRemoved(players);
             }
         } catch (e) { reportError('removeFromPool', e); }
     }
@@ -1971,6 +2221,7 @@
     async function fetchClubViaHttp(onProgress) {
         let page = 0;
         let found = 0;
+        clubHarvestBegin();
         // GROESSERE SEITEN. 91 war geraten; PaleTools faehrt laut seinen
         // Settings mit maxItemsCount 150, EA nimmt also mehr als 91. Wir fragen
         // 175 an und lernen die echte Obergrenze aus der ERSTEN Antwort: liefert
@@ -2048,6 +2299,7 @@
                 if (p) players.push(p);
             }
             found += players.length;
+            clubHarvestPage(page, items, players, total);
             mergeIntoPool(players);
             if (onProgress) onProgress(STATE.pool.length, total === Infinity ? null : total);
             if (items.length === 0) break;
@@ -2060,6 +2312,10 @@
         }
         STATE.diag.clubLoad.pages = page;
         STATE.diag.clubLoad.ms = Date.now() - t0;
+        // Nur ein VOLLSTAENDIGER Durchlauf darf in den Cache: ein abgebrochener
+        // oder unvollstaendiger Verein wuerde als "kompletter Pool" gelten und
+        // die naechste SBC schlechter oder unloesbar machen.
+        clubHarvestDone(!STATE.cancelLoad && !STATE.diag.clubLoad.loadIncomplete);
         log('Verein geladen: ' + found + ' Spieler in ' + page + ' Seiten (' +
             count + ' pro Seite, ' + STATE.diag.clubLoad.ms + 'ms, Takt ' + gap + 'ms).');
         return found;
@@ -2088,6 +2344,22 @@
         return out;
     }
     // ---- Kombinierter Pool-Load ---------------------------------------------
+    /**
+     * Unassigned + Storage: zusammen zwei Requests. Werden NIE gecacht -
+     * sie sind billig, und so bleibt die Cache-Buchhaltung auf den Verein
+     * beschraenkt (nur der zaehlt in EAs totalItemCount).
+     */
+    async function loadPoolSmallLists() {
+        const canServices = servicesAvailable() &&
+                            typeof window.UTBucketedItemSearchViewModel === 'function';
+        let unassigned = sessionReady() ? await fetchUnassignedViaHttp() : [];
+        if (!unassigned.length && canServices) unassigned = await fetchUnassignedViaServices();
+        let storage = sessionReady() ? await fetchStorageViaHttp() : [];
+        if (!storage.length && canServices) storage = await fetchStorageViaServices();
+        mergeIntoPool(unassigned);
+        mergeIntoPool(storage); // Storage zuletzt: Storage-Flag gewinnt beim Merge
+        return { unassigned: unassigned.length, storage: storage.length };
+    }
     async function loadPool(onProgress) {
         const canServices = servicesAvailable() &&
                             typeof window.UTBucketedItemSearchViewModel === 'function';
@@ -2127,6 +2399,7 @@
         }
         mergeIntoPool(unassigned);
         mergeIntoPool(storage); // Storage zuletzt: Storage-Flag gewinnt beim Merge
+        adoptClubHarvest();
         log('Pool geladen:', STATE.pool.length, 'Spieler (Storage:', storage.length,
             ', Unassigned:', unassigned.length, ')' + (STATE.cancelLoad ? ' [abgebrochen]' : ''));
         if (STATE.loadIncomplete || (!storage.length && !STATE.cancelLoad)) {
@@ -3707,7 +3980,17 @@
         // den Fall, dass noch kein Praefix beobachtet wurde - andere Semantik,
         // kein Regex-Duplikat (dasselbe gilt fuer verifySquadCount unten).
         const pfx = STATE.sbc.apiPrefix || 'sbs';
-        await apiPut(pfx + '/challenge/' + STATE.sbc.challengeId + '/squad', { players: players });
+        try {
+            await apiPut(pfx + '/challenge/' + STATE.sbc.challengeId + '/squad', { players: players });
+        } catch (e) {
+            // Kam der Verein aus dem Cache, ist eine abgelehnte Karte der Fall,
+            // den die drei Sperren NICHT abdecken koennen: eine billige Karte
+            // verkauft und eine billige gekauft laesst Gesamtzahl und erste
+            // Seite unberuehrt. Dann ist der Cache das Erste, was verdaechtig
+            // ist - weg damit, der naechste Start laedt ehrlich voll.
+            if (poolCacheState) dropPoolCache('Eintragen abgelehnt: ' + (e && e.message || e));
+            throw e;
+        }
         return true;
     }
     // Server-Wahrheit: wie viele der gewünschten Spieler stehen WIRKLICH im
@@ -4541,6 +4824,12 @@
                     </label>
                 </div>
                 <div class="sbc-opt-row">
+                    <label class="sbc-opt-toggle">
+                        <input type="checkbox" id="sbc-opt-poolcache" checked>
+                        Verein zwischenspeichern (nach Neuladen sofort da)
+                    </label>
+                </div>
+                <div class="sbc-opt-row">
                     <label>Gold-SBCs ohne Ziel-OVR: höchstes Rating für Rare / für Common
                         (Rare darüber bleibt für Rating-SBCs)</label>
                     <div class="sbc-opt-inline">
@@ -4696,6 +4985,7 @@
             maxRare: panel.querySelector('#sbc-opt-maxrare'),
             maxCommon: panel.querySelector('#sbc-opt-maxcommon'),
             useLocks: panel.querySelector('#sbc-opt-uselocks'),
+            poolCacheBox: panel.querySelector('#sbc-opt-poolcache'),
             rarityguard: panel.querySelector('#sbc-opt-rarityguard'),
             bands: panel.querySelector('#sbc-opt-bands'),
             bandAdd: panel.querySelector('#sbc-opt-band-add'),
@@ -5476,6 +5766,9 @@
             // Wie oft ist der JS-Kontext neu entstanden, und WIE? Mehrere
             // Starts kurz hintereinander erklaeren einen Pool, der "jedes Mal
             // neu laedt" - und 'nav' sagt, welcher Weg dahin gefuehrt hat.
+            // Pool-Cache: wurde geschrieben/gelesen, und WARUM nicht?
+            poolCache: STATE.diag.poolCache || null,
+            poolCacheRead: STATE.diag.poolCacheRead || null,
             scriptRuns: loadScriptRuns(),
             navigation: navigationKind(),
             // Wie oft musste nach 404/475 die Session erneuert werden?
@@ -5828,6 +6121,23 @@
         if (ui.load) ui.load.textContent = 'Abbrechen';
         setStatus('lade Spieler automatisch...');
         try {
+            // Erst der Cache: nach einem Neuladen der Seite (Session weg ->
+            // Login -> neues Dokument) ist der Verein Sekunden alt und ein
+            // volles Laden waere 50 Requests fuer nichts.
+            const cache = await tryPoolCache();
+            STATE.diag.poolCacheRead = cache;
+            if (cache.used) {
+                setStatus('Verein aus Cache - lade Storage...');
+                await loadPoolSmallLists();
+                refreshSbcInfoUI();
+                renderAnchorOptions();
+                setStatus('Pool bereit (' + STATE.pool.length + ', Verein aus Cache)');
+                toast('Verein aus dem Cache (' + STATE.pool.length + ' Karten) - ' +
+                      'kein vollständiges Neuladen nötig.', '');
+                quotaMeasureQuiet();
+                return;
+            }
+            log('Pool-Cache nicht verwendet: ' + cache.reason);
             await loadPool((n, total) => {
                 setStatus('lade (auto)... ' + n + (total ? ' / ' + total : ''));
                 if (ui.poolcount) ui.poolcount.textContent = String(n);
@@ -8236,6 +8546,21 @@
         injectStyles();
         buildPanel();
         installLauncherDelegation();
+        try {
+            if (ui.poolCacheBox) {
+                ui.poolCacheBox.checked = poolCacheEnabled();
+                ui.poolCacheBox.addEventListener('change', function () {
+                    // In localStorage, nicht nur im DOM: der Schalter muss ein
+                    // Neuladen der Seite ueberleben - das ist der Fall, um den
+                    // es beim Cache ueberhaupt geht.
+                    try {
+                        localStorage.setItem(POOL_CACHE_TOGGLE,
+                            ui.poolCacheBox.checked ? '1' : '0');
+                    } catch (e) {}
+                    if (!ui.poolCacheBox.checked) dropPoolCache('im Panel abgeschaltet');
+                });
+            }
+        } catch (e) { reportError('Pool-Cache-Schalter', e); }
         log('UI initialisiert. Version', VERSION);
     }
     function waitForBody() {

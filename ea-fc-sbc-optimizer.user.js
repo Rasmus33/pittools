@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.83.0
+// @version      4.84.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.83.0';
+    const VERSION = '4.84.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -134,6 +134,7 @@
             staleSessionRetry: 0,    // Session-Erneuerungen nach 404/475
             throttle: null,          // EA weist ab: Anzahl/letzte Meldung (429/503/512/Failed to fetch)
             confirmDisabled: null,   // Abgabe-Bestaetigung abgeschaltet (eigene Notbremse)
+            batchPlanTiming: null,   // Wo geht die Zeit beim Planen hin? (ms pro Phase)
             poolCache: null,         // Pool-Cache: geschrieben? Groesse? Grund fuer Nein?
             poolCacheRead: null,     // Pool-Cache: benutzt? sonst WARUM nicht?
             submitIds: null,         // welche challengeId jeder Submit-Weg benutzt hat
@@ -3919,30 +3920,71 @@
          * bis dahin geplanten Teams samt Grund; so sieht man in der Vorschau
          * ehrlich "3 von 5 möglich" statt einer Überraschung mitten im Abgeben.
          */
-        function planBatch(poolAll, cfg, count) {
-            const n = Math.max(1, Math.min(20, Math.floor(count) || 1));
-            const rounds = [];
-            const usedIds = new Set();
-            let stoppedReason = null;
-            for (let i = 0; i < n; i++) {
-                const pool = poolAll.filter(p => !usedIds.has(String(p.id)));
-                const res = solve(pool, cfg);
-                if (!res || !res.ok) {
-                    stoppedReason = (res && res.reason) || 'Kein Team mehr möglich.';
-                    break;
-                }
-                for (const p of res.players) usedIds.add(String(p.id));
-                rounds.push(res);
-            }
+        /**
+         * Batch-Planung in EINZELSCHRITTEN. Grund: 10 Runden in einem Rutsch
+         * blockieren den Hauptthread (gemessen: 608ms pro Runde bei 8558
+         * Karten), und der Browser meldet "Seite reagiert nicht". Der Aufrufer
+         * kann zwischen den Runden an den Browser zurueckgeben.
+         * planBatch() unten bleibt als Wrapper - der Solver-Block bleibt rein
+         * und synchron, das Warten passiert ausserhalb.
+         */
+        function beginBatch(poolAll, cfg, count) {
             return {
-                rounds: rounds,
-                planned: rounds.length,
-                requested: n,
-                stoppedReason: stoppedReason,
+                poolAll: poolAll,
+                cfg: cfg,
+                n: Math.max(1, Math.min(20, Math.floor(count) || 1)),
+                rounds: [],
+                usedIds: new Set(),
+                stoppedReason: null,
+                done: false,
+                roundMs: []
+            };
+        }
+        /** Eine Runde. Liefert das Team oder null (dann ist Schluss). */
+        function batchRound(st) {
+            if (st.done || st.rounds.length >= st.n) { st.done = true; return null; }
+            const pool = st.poolAll.filter(p => !st.usedIds.has(String(p.id)));
+            // Reicht der Pool ueberhaupt noch fuer ein Team? Dann gar nicht
+            // erst rechnen - die Unmoeglichkeit zu BEWEISEN ist der teure Teil,
+            // und bei 10 geplanten Teams aus einem knappen Pool passiert das
+            // sonst mehrfach hintereinander.
+            const slots = Math.max(1, st.cfg.slots || 11);
+            if (pool.length < slots) {
+                st.stoppedReason = 'Nicht mehr genug Karten im Pool (' + pool.length +
+                    ' übrig, ' + slots + ' gebraucht).';
+                st.done = true;
+                return null;
+            }
+            const t0 = Date.now();
+            const res = solve(pool, st.cfg);
+            st.roundMs.push(Date.now() - t0);
+            if (!res || !res.ok) {
+                st.stoppedReason = (res && res.reason) || 'Kein Team mehr möglich.';
+                st.done = true;
+                return null;
+            }
+            for (const p of res.players) st.usedIds.add(String(p.id));
+            st.rounds.push(res);
+            return res;
+        }
+        function finishBatch(st) {
+            return {
+                rounds: st.rounds,
+                planned: st.rounds.length,
+                requested: st.n,
+                stoppedReason: st.stoppedReason,
+                roundMs: st.roundMs,
                 // Alle verbauten IDs über alle Runden - zum Gegenprüfen, dass
                 // keine Karte doppelt eingeplant wurde.
-                usedIds: Array.from(usedIds)
+                usedIds: Array.from(st.usedIds)
             };
+        }
+        // Der alte Weg, unveraendert im Verhalten: alles in einem Rutsch.
+        // Bleibt fuer die Tests und als einfacher Aufruf ohne UI.
+        function planBatch(poolAll, cfg, count) {
+            const st = beginBatch(poolAll, cfg, count);
+            while (batchRound(st)) { /* bis null */ }
+            return finishBatch(st);
         }
         /**
          * Panel-Anzeige "N verfügbar" neben dem Pool (Ticket #68): pro
@@ -3989,6 +4031,9 @@
         return {
             solve: solve,
             planBatch: planBatch,
+            beginBatch: beginBatch,
+            batchRound: batchRound,
+            finishBatch: finishBatch,
             squadRating: squadRating,
             squadRatingExact: squadRatingExact,
             squadV: squadV,
@@ -5921,6 +5966,10 @@
             // Getrennt von quotaDisabled: die Bestaetigung ist eine
             // Korrektheits-Pruefung, keine Diagnose-Annehmlichkeit.
             confirmDisabled: STATE.diag.confirmDisabled || null,
+            // Phasen des Planens in ms: config / rounds[] / render / total.
+            // "Seite reagiert nicht" beim Planen von 10 Teams - hier steht,
+            // welche Phase die Zeit frisst.
+            batchPlanTiming: STATE.diag.batchPlanTiming || null,
             // Griff eine Abgabe "ohne Response" wirklich? isSquadEmpty() 400ms danach
             // erneut gelesen - reine Beobachtung (kein throw/Retry), siehe submitChallengeToEa.
             submitConfirmations: STATE.diag.submitConfirmations || null,
@@ -7154,8 +7203,31 @@
         ui.batchPlan.disabled = true;
         setStatus('plane ' + want + ' Teams...');
         try {
+            // PHASEN MESSEN. "Seite reagiert nicht" kam beim Planen von 10
+            // Teams; gemessen ist eine Solver-Runde bei 8558 Karten ~600ms,
+            // das erklaert keine zweistelligen Sekunden. Ohne diese Zahlen
+            // waere die naechste Runde wieder Raten.
+            const tim = { total: 0, config: 0, rounds: [], render: 0 };
+            const tAll = Date.now();
+            let tp = Date.now();
             const cfg = readConfig();
-            const plan = SolverCore.planBatch(STATE.pool, cfg, want);
+            tim.config = Date.now() - tp;
+            // Runden EINZELN rechnen und zwischendurch an den Browser
+            // zurueckgeben - sonst friert die Seite fuer die ganze Dauer ein.
+            const st = SolverCore.beginBatch(STATE.pool, cfg, want);
+            for (let i = 0; i < want; i++) {
+                showProgress(i + 1, want, 'plane Team ' + (i + 1) + ' von ' + want + '...',
+                    (st.rounds.length ? st.rounds.length + ' fertig' : ''));
+                // VOR dem Rechnen warten: so kommt der Fortschritt wirklich
+                // auf den Schirm. Nach dem Rechnen waere der erste Frame nie
+                // gezeichnet worden.
+                await sleep(0);
+                const tr = Date.now();
+                const r = SolverCore.batchRound(st);
+                tim.rounds.push(Date.now() - tr);
+                if (!r) break;
+            }
+            const plan = SolverCore.finishBatch(st);
             // Fuer den Plan-Check (Ticket #73) am Plan festgehalten: derselbe
             // Stand, mit dem geplant wurde - eine spaetere UI-Aenderung darf
             // die Auswertung des schon fertigen Plans nicht verfaelschen.
@@ -7182,7 +7254,12 @@
             plan.setName = (plan.setEntity &&
                 (plan.setEntity.name || plan.setEntity.setName)) || null;
             STATE.batch = plan;
+            tp = Date.now();
             renderBatchPreview(plan);
+            tim.render = Date.now() - tp;
+            tim.total = Date.now() - tAll;
+            STATE.diag.batchPlanTiming = tim;
+            finishProgress(plan.planned + ' von ' + want + ' Teams geplant', true);
             setStatus(plan.planned + ' von ' + want + ' Teams geplant');
         } catch (e) {
             toast('Batch-Planung fehlgeschlagen: ' + e.message, 'error');

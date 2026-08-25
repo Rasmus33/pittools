@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.86.0
+// @version      4.87.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.86.0';
+    const VERSION = '4.87.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -1394,21 +1394,35 @@
     // dieser Weg hier ist leicht (ein Set) und eine Korrektheits-Pruefung.
     let confirmDisabled = false;
     let confirmFailStreak = 0;
+    // Warum war die letzte Messung null? 'request' = der Request selbst ist
+    // gescheitert (429, Failed to fetch) - ein MESSPROBLEM. 'unreadable' = die
+    // Antwort kam, enthielt aber keine brauchbare Zahl. Die Unterscheidung
+    // entscheidet, ob der Batch abbricht: live (Report v4.85.0) hat ein
+    // doppelter 429 einen Batch gestoppt, obwohl beide Abgaben durchgingen.
+    let confirmLastFail = null;
     async function setTimesCompleted(setId) {
-        if (confirmDisabled || setId == null) return null;
+        if (confirmDisabled || setId == null) {
+            confirmLastFail = confirmDisabled ? 'request' : null;
+            return null;
+        }
         try {
             const json = await apiGet('sbs/setId/' + setId + '/challenges');
             const r = sumTimesCompleted(json);
             confirmFailStreak = 0;
-            if (r.sets) return r.sum;
+            confirmLastFail = 'unreadable';
+            if (r.sets) { confirmLastFail = null; return r.sum; }
             // Faellt die Set-Ebene in dieser Antwort weg, hilft der
             // Challenge-Knoten: extractNodeState liest dieselbe Zahl.
             const nodes = collectChallengeNodes(json);
             for (const n of nodes) {
-                if (n && typeof n.timesCompleted === 'number') return n.timesCompleted;
+                if (n && typeof n.timesCompleted === 'number') {
+                    confirmLastFail = null;
+                    return n.timesCompleted;
+                }
             }
             return null;
         } catch (e) {
+            confirmLastFail = 'request';
             // Erst nach DREI Fehlschlaegen in Folge aufgeben - und dann
             // sichtbar, nicht still. Ein einzelner 512 darf die Pruefung nicht
             // fuer die Sitzung abschalten.
@@ -4818,6 +4832,9 @@
         .sbc-opt-btn.primary { background:#00e0b8; color:#001018; }
         .sbc-opt-btn.blue { background:#0077ff; color:#fff; }
         .sbc-opt-btn.ghost { background:#1c2938; color:#cfe0f2; }
+        /* "Teams planen" hebt sich von "Diagnose" ab (Rasmus): der
+           Diagnose-Knopf ist ghost, beide standen vorher gleich da. */
+        .sbc-opt-btn.plan { background:#6b46c1; color:#f2edff; }
         /* Fortschritt während des Batch-Laufs: mittig über allem, damit man
            nicht im Panel nach dem Status suchen muss. */
         #sbc-opt-progress {
@@ -4997,10 +5014,6 @@
                     <input type="text" id="sbc-opt-minrating-editval" placeholder="75, 85">
                     <button class="sbc-opt-btn ghost" id="sbc-opt-minrating-editok">OK</button>
                 </div>
-                <div class="sbc-opt-row">
-                    <label>Max. Rating-Überschuss über Minimum (z.B. 0.10 = bis 84.10 statt 84.00)</label>
-                    <input type="number" id="sbc-opt-maxwaste" value="0.00" min="0" max="2" step="0.01">
-                </div>
                 <details id="sbc-opt-advanced" class="sbc-opt-details-toggle">
                     <summary>Erweiterte Einstellungen</summary>
                 <div class="sbc-opt-group-title">Kartenwahl</div>
@@ -5057,6 +5070,11 @@
                         <option value="18" selected>Normal</option>
                         <option value="35">Stark</option>
                     </select>
+                </div>
+                <div class="sbc-opt-row">
+                    <label>Max. Rating-Überschuss über Minimum (z.B. 0.10 = bis 84.10 statt
+                        84.00). Steht praktisch immer auf 0 - deshalb hier unten.</label>
+                    <input type="number" id="sbc-opt-maxwaste" value="0.00" min="0" max="2" step="0.01">
                 </div>
                 <div class="sbc-opt-row sbc-opt-compact">
                     <label>Rarity-Schutz: was ist hart geschützt?</label>
@@ -5129,7 +5147,6 @@
                 </details>
                 <button class="sbc-opt-btn primary" id="sbc-opt-run">Optimieren + Eintragen</button>
                 <div class="sbc-opt-result" id="sbc-opt-result"></div>
-                <button class="sbc-opt-btn blue" id="sbc-opt-submit" style="display:none;">Erneut eintragen</button>
                 <!-- BATCH: dieselbe SBC mehrfach. Zwei Schritte - erst planen und
                      ansehen, dann EINE Freigabe für den ganzen Lauf. -->
                 <div class="sbc-opt-batch">
@@ -5143,7 +5160,7 @@
                         <input type="text" id="sbc-opt-batch-editval" placeholder="3, 5, 10">
                         <button class="sbc-opt-btn ghost" id="sbc-opt-batch-editok">OK</button>
                     </div>
-                    <button class="sbc-opt-btn ghost" id="sbc-opt-batch-plan">Teams planen (Vorschau)</button>
+                    <button class="sbc-opt-btn plan" id="sbc-opt-batch-plan">Teams planen (Vorschau)</button>
                     <!-- Ticket #73: Zusammenfassung (Confidence + Klartext-Abweichungen)
                          zuerst, direkt darunter die Freigabe, Kartendetails erst
                          aufgeklappt - Rasmus scrollte vorher jedes Team einzeln durch. -->
@@ -5232,7 +5249,6 @@
             load: panel.querySelector('#sbc-opt-load'),
             run: panel.querySelector('#sbc-opt-run'),
             result: panel.querySelector('#sbc-opt-result'),
-            submit: panel.querySelector('#sbc-opt-submit'),
             diagBtn: panel.querySelector('#sbc-opt-diag'),
             batchCount: panel.querySelector('#sbc-opt-batch-count'),
             batchChips: panel.querySelector('#sbc-opt-batch-chips'),
@@ -5266,7 +5282,6 @@
         });
         ui.load.addEventListener('click', onLoadClick);
         ui.run.addEventListener('click', onRunClick);
-        ui.submit.addEventListener('click', onSubmitClick);
         ui.diagBtn.addEventListener('click', onDiagClick);
         // Schnellwahl aufbauen und mit den Feldern verbinden. Tippt Rasmus von
         // Hand einen Wert, aktualisiert sich nur die Hervorhebung - der Wert
@@ -6552,17 +6567,15 @@
             let h = '<div class="sbc-opt-warn">' + escapeHtml(res.reason || 'Keine Lösung.') + '</div>';
             for (const w of (res.warnings || [])) h += '<div class="sbc-opt-warn">⚠ ' + escapeHtml(w) + '</div>';
             ui.result.innerHTML = h;
-            ui.submit.style.display = 'none';
             return;
         }
+        // KEINE Karten-Liste beim Einzellauf (Rasmus): "die liste an spielern
+        // brauche ich nicht fuer eine einzeln abgegebene sbc. ich sehe die
+        // spieler ja auf dem feld bevor ich submit druecke." Die Zusammenfassung
+        // bleibt - sie sagt, was das Feld nicht sagt (Ueberschuss, Storage,
+        // Warnungen). In der BATCH-Vorschau bleibt die Liste, dort gibt es
+        // kein Spielfeld zum Nachsehen.
         let html = '';
-        const players = res.players.slice().sort((a, b) => b.rating - a.rating);
-        for (const p of players) {
-            const badgeCls = 'sbc-opt-badge' + (p.isSpecial ? ' special' : '') + (p.isStorage ? ' storage' : '');
-            html += '<div class="sbc-opt-player"><span>' + escapeHtml(displayName(p)) +
-                    (p.isStorage ? ' <span style="color:#0077ff;font-size:11px;">[Storage]</span>' : '') +
-                    '</span><span class="' + badgeCls + '">' + p.rating + '</span></div>';
-        }
         const nStorage = res.players.filter(p => p.isStorage).length;
         const wasteTxt = (typeof res.waste === 'number')
             ? ((res.waste >= 0 ? '+' : '') + res.waste.toFixed(2)) : '–';
@@ -6579,10 +6592,6 @@
         if (!res.ok && res.reason) html += '<div class="sbc-opt-warn">⚠ ' + escapeHtml(res.reason) + '</div>';
         ui.result.className = 'sbc-opt-result show';
         ui.result.innerHTML = html;
-        ui.submit.style.display = res.ok ? 'block' : 'none';
-    }
-    async function onSubmitClick() {
-        await submitCurrentResult();
     }
     // ========================================================================
     //  BATCH: dieselbe SBC mehrfach abschliessen
@@ -7571,6 +7580,11 @@
         let batchCountBase = null;
         // Runden hintereinander, die EA nicht bestaetigt hat.
         let unconfirmedStreak = 0;
+        // Letzter WIRKLICH gelesener Zaehlerstand - und der Stand, der vor der
+        // laufenden Runde galt. Damit ueberlebt eine Bestaetigung auch eine
+        // Runde, in der die Messung ausgefallen ist.
+        let lastKnownCount = null;
+        let lastKnownBefore = null;
         const plan = STATE.batch;
         if (!plan || !plan.planned) { toast('Erst "Teams planen" ausführen.', 'error'); return; }
         const n = plan.planned;
@@ -7638,13 +7652,31 @@
                 }
                 const cntBefore = (batchCountBase != null)
                     ? batchCountBase : await setTimesCompleted(STATE.sbc.setId);
+                // Letzten bekannten Stand behalten: fehlt der aktuelle Wert,
+                // taugt der alte weiter als Basis. Live (Report v4.85.0) lagen
+                // "vor Runde 1: 2" und "nach Runde 2: 4" vor - die Bestaetigung
+                // ging trotzdem verloren, weil dazwischen ein 429 lag.
+                if (cntBefore != null) lastKnownCount = cntBefore;
+                lastKnownBefore = lastKnownCount;
                 await submitChallengeToEa();
+                // Kurz Luft lassen: der 429 kam live UNMITTELBAR nach dem
+                // Abgeben - EA nimmt in dem Moment keinen weiteren Request an.
+                await sleep(400);
                 const cntAfter = await setTimesCompleted(STATE.sbc.setId);
                 batchCountBase = (cntAfter != null) ? cntAfter : null;
-                const confirmed = (cntBefore != null && cntAfter != null)
-                    ? (cntAfter > cntBefore) : null;
+                if (cntAfter != null) lastKnownCount = cntAfter;
+                // Basis notfalls aus dem letzten bekannten Stand - besser eine
+                // Bestaetigung ueber zwei Runden hinweg als keine.
+                const baseForCmp = (cntBefore != null) ? cntBefore
+                    : (cntAfter != null ? lastKnownBefore : null);
+                const confirmed = (baseForCmp != null && cntAfter != null)
+                    ? (cntAfter > baseForCmp) : null;
                 STATE.diag.submitCounterChecks = (STATE.diag.submitCounterChecks || []).concat([{
-                    round: i + 1, before: cntBefore, after: cntAfter, confirmed: confirmed
+                    round: i + 1, before: cntBefore, after: cntAfter, confirmed: confirmed,
+                    // Warum null? 'request' = Messung ausgefallen (kein
+                    // Abbruchgrund), 'unreadable' = Antwort ohne Zahl.
+                    nullReason: (confirmed === null ? confirmLastFail : null),
+                    basis: baseForCmp
                 }]).slice(-6);
                 // Die Zahl ist da - sie wurde fuer die Bestaetigung ohnehin
                 // gelesen. Bis v4.79.0 wurde sie weggeworfen, und deshalb
@@ -7657,9 +7689,16 @@
                 // Folge brechen ab: "2 von 5 fertig" ist besser als vier
                 // Abgaben, von denen niemand weiss, ob sie angekommen sind.
                 if (confirmed === null) {
-                    unconfirmedStreak++;
+                    // MESSPROBLEM vs. SACHPROBLEM. Ein gescheiterter
+                    // Bestaetigungs-Request (429, Failed to fetch) sagt NICHTS
+                    // ueber die Abgabe - live hat genau das einen Batch nach
+                    // 1/5 gestoppt, obwohl der Zaehler von 2 auf 4 ging.
+                    // Deshalb zaehlt er nicht auf die Abbruch-Kette.
+                    const messproblem = (confirmLastFail === 'request');
+                    if (!messproblem) unconfirmedStreak++;
                     warn('[Batch] Runde ' + (i + 1) + ' ohne Bestätigung von EA (' +
-                         unconfirmedStreak + ' in Folge).');
+                         (messproblem ? 'Messung ausgefallen: ' + confirmLastFail
+                                      : unconfirmedStreak + ' in Folge') + ').');
                     if (unconfirmedStreak >= 2) {
                         throw new Error('Zwei Runden hintereinander liessen sich nicht ' +
                             'bestätigen (EAs Zähler war nicht lesbar) - ' + done + ' von ' +
@@ -7771,7 +7810,6 @@
             toast('Kein gültiges Ergebnis zum Eintragen. Erst "Optimieren" ausführen.', 'error');
             return;
         }
-        ui.submit.disabled = true;
         setStatus('trage in SBC ein...');
         try {
             // Sicherstellen, dass wir in die offen sichtbare Challenge eintragen.
@@ -7800,7 +7838,6 @@
                 : '';
             toast('Eintragen fehlgeschlagen: ' + (e.message || e) + hint, 'error');
         } finally {
-            ui.submit.disabled = false;
         }
     }
     // ========================================================================

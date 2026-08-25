@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.96.0
+// @version      4.97.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.96.0';
+    const VERSION = '4.97.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -1774,6 +1774,22 @@
         const st = beginQueue(pool, baseCfg);
         for (const step of steps || []) queueRound(st, step, solveFn);
         return finishQueue(st);
+    }
+    /**
+     * Aus einer geplanten RUNDE den Navigations-Anker bauen.
+     * Eigene Funktion, weil genau diese Umformung der Fehler war: die Runde
+     * traegt ihre Id als `challengeId`, der Oeffner liest `id`. Ein
+     * fremdgeformtes Objekt einfach weiterzugeben hat 18 Sekunden gegen eine
+     * unerfuellbare Bedingung laufen lassen.
+     */
+    function roundToStep(round) {
+        if (!round) return null;
+        return {
+            id: round.challengeId,
+            name: round.challengeName,
+            target: round.target,
+            slots: round.slots
+        };
     }
     /**
      * Passt die OFFENE SBC zu der Runde, die jetzt eingetragen werden soll?
@@ -5580,11 +5596,17 @@
                     <!-- "Test: 1 Pack oeffnen" ist weg (Rasmus: "brauchen wir auch
                          nicht mehr, 'Alle oeffnen' reicht vollkommen"). Wer einen
                          Testlauf will, traegt bei Anzahl eine 1 ein. -->
-                    <div class="sbc-opt-compact" style="margin-top:2px;margin-bottom:2px;">
+                    <div class="sbc-opt-compact" style="margin-top:2px;margin-bottom:8px;">
                         <label>Anzahl (leer = alle)</label>
                         <input type="number" id="sbc-opt-pack-count" min="1"
                                style="width:72px;flex:0 0 auto;" placeholder="alle">
                     </div>
+                    <!-- Was mit den Karten passiert - als Segment-Schalter, wie
+                         die Schnellwahl oben. Sichtbar statt in einem zweiten
+                         Knopf versteckt: "Verwerten" ist unumkehrbar. -->
+                    <label class="sbc-opt-chiplabel">Nach dem Öffnen</label>
+                    <div class="sbc-opt-chips" id="sbc-opt-pack-mode"></div>
+                    <div id="sbc-opt-pack-modehint" class="sbc-opt-debug"></div>
                     <button class="sbc-opt-btn danger" id="sbc-opt-pack-all">Alle öffnen</button>
                     <div id="sbc-opt-pack-result"></div>
                 </div>
@@ -5663,6 +5685,8 @@
             packSection: panel.querySelector('#sbc-opt-packsection'),
             packType: panel.querySelector('#sbc-opt-pack-type'),
             packRefresh: panel.querySelector('#sbc-opt-pack-refresh'),
+            packModeBox: panel.querySelector('#sbc-opt-pack-mode'),
+            packModeHint: panel.querySelector('#sbc-opt-pack-modehint'),
             packCount: panel.querySelector('#sbc-opt-pack-count'),
             packAll: panel.querySelector('#sbc-opt-pack-all'),
             packResult: panel.querySelector('#sbc-opt-pack-result')
@@ -5707,6 +5731,7 @@
             loadQueueList(true);
         });
         ui.queuePlan.addEventListener('click', onQueuePlanClick);
+        renderPackMode();
         ui.packRefresh.addEventListener('click', onPackRefreshClick);
         ui.packAll.addEventListener('click', onPackAllClick);
         ui.rarityPickFilter.addEventListener('input', renderRarityPickOptions);
@@ -7418,8 +7443,21 @@
      */
     async function openChallengeFromList(step) {
         const steps = [];
+        // OHNE Anker gibt es nichts zu erkennen. Vorher lief die Schleife in
+        // dem Fall 18 Sekunden gegen String(undefined) === String(3948) - eine
+        // Bedingung, die nie wahr werden konnte. Wer auf etwas Unmoegliches
+        // wartet, soll es sagen.
+        if (!step || step.id == null) {
+            return { ok: false, steps: [{ why: 'kein Challenge-Anker übergeben',
+                                          step: step ? Object.keys(step) : null }] };
+        }
         const t0 = Date.now();
         let clicked = 0, backs = 0, entered = 0, waited = 0;
+        // Wann wurde zuletzt betreten? Direkt danach laedt die Ansicht, und die
+        // challengeId kommt erst mit ihr. Ein Zurueck-Klick in diesem Fenster
+        // wirft genau das weg, was man gerade geoeffnet hat - live dreimal
+        // passiert (Back bei ms 2944, 11494).
+        let enteredAt = -99;
         // Zwei Schritte, nicht einer: erst die Zeile WAEHLEN, dann die
         // Challenge BETRETEN. Der zweite fehlte bis v4.95.0 komplett.
         let phase = 'zeile';
@@ -7444,7 +7482,7 @@
                 // Eine ANDERE Challenge ist offen - zurueck in die Liste. Der
                 // erste Versuch sofort (nach dem Abgeben stehen wir immer in
                 // der gerade fertigen), danach im Takt von shouldTryBack.
-                if (i === 0 || shouldTryBack(i)) {
+                if ((i === 0 || shouldTryBack(i)) && (i - enteredAt) >= 6) {
                     const b = clickBackButton();
                     backs++;
                     steps.push({ ms: Date.now() - t0, back: b });
@@ -7481,7 +7519,7 @@
                 const e = clickChallengeEnterButton();
                 steps.push({ ms: Date.now() - t0, enter: e });
                 phase = 'warten';
-                if (e.ok) { entered++; await batchWait(900); continue; }
+                if (e.ok) { entered++; enteredAt = i; await batchWait(900); continue; }
                 // Kein Knopf gefunden: am Handy navigiert der Zeilen-Tap
                 // moeglicherweise direkt. Dann greift oben der Controller-Test.
             } else {
@@ -7906,7 +7944,8 @@
             toast('Keine SBC-Vorgaben erkannt. Bitte Challenge im Spiel öffnen.', 'error');
             return;
         }
-        if (!STATE.pool.length) { toast('Pool leer. Bitte zuerst "Spieler laden".', 'error'); return; }
+        const tooSmallBatch = poolTooSmallReason(STATE.sbc.formationSlots || 11);
+        if (tooSmallBatch) { toast(tooSmallBatch, 'error'); return; }
         // Analog zur Warnung in onRunClick (:4509): der Batch darf trotzdem
         // planen und abgeben (Rasmus entscheidet bei der einen Freigabe,
         // CLAUDE.md "Batch darf abgeben") - nur informieren, nicht blockieren.
@@ -8181,13 +8220,34 @@
               '</b> / Verein <b>' + src.club + '</b></span>'
             : '';
         const noun = (plan.mode === 'reihe') ? ' SBC(s) geplant' : ' Team(s) geplant';
-        let html = '<div class="sbc-opt-batch-round"><b>' + plan.planned + noun + '</b> · Confidence <b>' +
-            pc.score + '%</b>' + srcInfo + (parts.length ? ' — ' + parts.join(' + ') : '') + '</div>';
+        let html;
+        if (!plan.planned) {
+            // KEIN Confidence-Wert ohne Plan. Der Score ist "bestandene von
+            // durchgefuehrten Pruefungen" - ohne Runde bleiben nur die zwei
+            // globalen, die trivial bestehen, und das ergab live die
+            // irrefuehrende Zeile "0 SBC(s) geplant · Confidence 100%".
+            html = '<div class="sbc-opt-batch-round sbc-opt-batch-bad"><b>Nichts geplant</b>' +
+                ' — es gibt also nichts abzugeben.</div>';
+        } else {
+            html = '<div class="sbc-opt-batch-round"><b>' + plan.planned + noun +
+                '</b> · Confidence <b>' + pc.score + '%</b>' + srcInfo +
+                (parts.length ? ' — ' + parts.join(' + ') : '') + '</div>';
+        }
         for (const l of pc.lines) {
             html += '<div class="sbc-opt-batch-round ' + (l.level === 'error' ? 'sbc-opt-batch-bad' : 'sbc-opt-batch-warn') + '">' +
                 (l.level === 'error' ? '✗ ' : '⚠ ') + escapeHtml(l.text) + '</div>';
         }
-        for (const sk of plan.skipped || []) {
+        // Steht in JEDER uebersprungenen Zeile derselbe Pool-Grund, gehoert die
+        // Handlung EINMAL nach oben statt dreimal daneben.
+        const skipped = plan.skipped || [];
+        const allPool = skipped.length &&
+            skipped.every(function (sk) { return /Pool/i.test(String(sk.reason)); });
+        if (allPool) {
+            html += '<div class="sbc-opt-batch-round sbc-opt-batch-bad">' +
+                'Der Pool reicht für kein Team (' + STATE.pool.length + ' Karten). ' +
+                'Oben auf <b>Spieler laden</b> drücken, dann erneut planen.</div>';
+        }
+        for (const sk of skipped) {
             html += '<div class="sbc-opt-batch-round sbc-opt-batch-warn">⚠ "' +
                 escapeHtml((sk.step && sk.step.name) || '?') + '" übersprungen: ' +
                 escapeHtml(String(sk.reason)) + '</div>';
@@ -8334,7 +8394,7 @@
                     showProgress(i + 1, n, 'öffne ' + (round.challengeName || 'SBC') + '...',
                         (doneLog.length ? doneLog.length + ' fertig' : ''));
                     setStatus(tag + ': öffne ' + (round.challengeName || 'SBC') + '...');
-                    const opened = await openChallengeFromList(round);
+                    const opened = await openChallengeFromList(roundToStep(round));
                     recordBatchStep(STATE.diag, i + 1, opened);
                     if (!opened.ok) {
                         throw new Error(tag + ': "' + (round.challengeName || round.challengeId) +
@@ -8792,6 +8852,23 @@
         ui.queueSection.classList.toggle('sbc-opt-hidden', !show);
     }
     /**
+     * Reicht der Pool ueberhaupt fuer EIN Team? "Pool leer" war zu eng - live
+     * standen fuenf Karten drin (der automatische Ladevorgang war noch nicht
+     * durch), und das Ergebnis war ein leerer Plan mit dreimal derselben
+     * Warnung. Liefert einen Klartext-Grund oder null.
+     */
+    function poolTooSmallReason(needSlots) {
+        const n = STATE.pool.length;
+        const need = Math.max(1, needSlots || 11);
+        if (!n) return 'Pool leer. Bitte zuerst "Spieler laden".';
+        if (n < need) {
+            return 'Der Pool hat nur ' + n + ' Karten - für ein Team mit ' + need +
+                ' Slots zu wenig. Bitte zuerst "Spieler laden" (läuft beim Start ' +
+                'automatisch, kann ein paar Sekunden dauern).';
+        }
+        return null;
+    }
+    /**
      * Die angehakten SBCs planen. Schrittweise, mit Rueckgabe an den Browser
      * zwischen den Challenges - ein Solver-Lauf pro Challenge, und die Seite
      * darf dabei nicht einfrieren.
@@ -8799,7 +8876,9 @@
     async function onQueuePlanClick() {
         const chosen = queueSelection(queueItems, queueChecked);
         if (!chosen.length) { toast('Keine SBC angehakt.', 'error'); return; }
-        if (!STATE.pool.length) { toast('Pool leer. Bitte zuerst "Spieler laden".', 'error'); return; }
+        const tooSmall = poolTooSmallReason(Math.max.apply(null,
+            chosen.map(function (c) { return c.slots || 11; })));
+        if (tooSmall) { toast(tooSmall, 'error'); return; }
         if (STATE.loadIncomplete) {
             toast('ACHTUNG: Der Pool war beim Planen unvollständig geladen (' + STATE.pool.length +
                 ' Karten) - der Plan kann auf fehlenden Karten beruhen.', 'warn');
@@ -9256,6 +9335,21 @@
     // enthaelt die echten Methodennamen von services.Item, womit es in einem
     // Schritt behoben ist ("erst ein Diagnose-Feld einbauen, dann fixen").
     const DISCARD_CANDIDATES = ['discard', 'discardItems', 'quickSell', 'quicksell', 'sell'];
+    // Was passiert nach dem Oeffnen? In localStorage, weil die Wahl ein
+    // Neuladen ueberleben MUSS: sonst stuende nach jedem Login wieder
+    // "Einsortieren" da, waehrend Rasmus "Verwerten" erwartet - und
+    // umgekehrt waere schlimmer.
+    const PACK_MODE_KEY = 'sbcOptPackMode';
+    function packMode() {
+        try {
+            return localStorage.getItem(PACK_MODE_KEY) === 'verwerten'
+                ? 'verwerten' : 'einsortieren';
+        } catch (e) { return 'einsortieren'; }
+    }
+    function setPackMode(m) {
+        try { localStorage.setItem(PACK_MODE_KEY, m === 'verwerten' ? 'verwerten' : 'einsortieren'); }
+        catch (e) { reportError('Pack-Modus speichern fehlgeschlagen', e); }
+    }
     function resolveDiscardFn(itemService) {
         if (!itemService) return null;
         for (const n of DISCARD_CANDIDATES) {
@@ -9321,12 +9415,18 @@
                 stoppers.push({ why: 'per PaleTools gesperrt', name: name });
                 continue;
             }
-            const rf = Number(d.rareflag);
+            const rfRaw = d.rareflag;
+            const rf = Number(rfRaw);
             const g83 = !!(d.groups && d.groups.indexOf(83) > -1);
-            // Nur eine NACHWEISLICH normale Karte darf weg. isNormalCard()
-            // laesst NaN durch (fuer den Solver richtig: unbekannt heisst dort
-            // "nicht besonders") - hier NICHT: keine Zahl heisst kein Wegwerfen.
-            if (!isFinite(rf) || !isNormalCard(rf) || g83) {
+            // Nur eine NACHWEISLICH normale Karte darf weg. Drei Faellen wird
+            // hier bewusst misstraut:
+            //  - null/undefined: Number(null) ist 0, und 0 ist "Common" -
+            //    eine Karte ohne lesbare rareflag waere also durchgegangen.
+            //    (Der Testfall dazu hat genau das aufgedeckt.)
+            //  - NaN: isNormalCard() laesst es durch (fuer den Solver richtig,
+            //    "unbekannt heisst nicht besonders"); zum Wegwerfen nicht.
+            //  - Gruppe 83, auch bei gewoehnlicher rareflag.
+            if (rfRaw == null || !isFinite(rf) || !isNormalCard(rf) || g83) {
                 stoppers.push({ why: 'Special-Karte (' + (d.rarity || ('rf' + d.rareflag)) + ')',
                                 name: name, rating: d.rating });
                 continue;
@@ -9402,6 +9502,48 @@
             missingGlobals: g.optionalMissing || []
         });
         return groups;
+    }
+    // Beschriftungen an EINER Stelle - Schalter, Knopf und Rueckfrage muessen
+    // dasselbe sagen. Zwei Texte, die auseinanderlaufen, sind bei einer
+    // unumkehrbaren Aktion ein echtes Risiko.
+    const PACK_MODES = [
+        { id: 'einsortieren', label: 'Einsortieren',
+          button: 'Alle öffnen',
+          hint: 'Neue Karten in den Verein, Duplikate in den Storage.' },
+        { id: 'verwerten', label: 'Verwerten',
+          button: 'Alle öffnen + verwerten',
+          hint: 'Normale Karten werden VERWERTET (unwiderruflich). Special-Karten ' +
+                'stoppen den Lauf, unverkäufliche werden einsortiert.' }
+    ];
+    function packModeSpec(id) {
+        for (const m of PACK_MODES) { if (m.id === id) return m; }
+        return PACK_MODES[0];
+    }
+    /**
+     * Segment-Schalter fuer den Modus - dieselben Klassen wie die Schnellwahl,
+     * damit das Panel EINE Bedien-Sprache spricht.
+     */
+    function renderPackMode() {
+        const box = ui.packModeBox;
+        if (!box) return;
+        const cur = packMode();
+        box.innerHTML = '';
+        for (const m of PACK_MODES) {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'sbc-opt-chip' + (m.id === cur ? ' on' : '');
+            b.textContent = m.label;
+            b.title = m.hint;
+            b.addEventListener('click', function () {
+                if (STATE.packOpenBusy) return;      // nicht mitten im Lauf umschalten
+                setPackMode(m.id);
+                renderPackMode();
+            });
+            box.appendChild(b);
+        }
+        const spec = packModeSpec(cur);
+        if (ui.packModeHint) ui.packModeHint.textContent = spec.hint;
+        if (ui.packAll) ui.packAll.textContent = spec.button;
     }
     function renderPackTypeOptions() {
         if (!ui.packType) return;
@@ -9611,7 +9753,7 @@
      * unumkehrbar, ein zweiter Versuch nach einem unklaren Fehler waere ein
      * zweites unkontrolliertes Risiko.
      */
-    async function runPackTestOpen(groupId) {
+    async function runPackTestOpen(groupId, mode) {
         const g = resolvePackGlobals();
         if (!g.ok) {
             reportError('Pack-Testlauf: fehlende Globals', new Error(g.missing.join(', ')));
@@ -9686,7 +9828,50 @@
             return { ok: false, reason: 'Storage-Stand konnte nicht geprüft werden: ' + (e.message || e) + ' Karten bleiben unassigned.' };
         }
         mergePackScan({ storageCountBefore: storageBefore });
-        const decision = decidePackDistribution(items, storageBefore, PACK_STORAGE_CAPACITY_ASSUMED, g.GameCurrency);
+        // ---------------------------------------------------------------
+        //  VERWERTEN: erst die GANZE Liste beurteilen, dann handeln
+        // ---------------------------------------------------------------
+        const wantDiscard = (mode === 'verwerten');
+        let discardPlan = null;
+        if (wantDiscard) {
+            if (!g.discard) {
+                mergePackScan({ errorForm: { step: 'discard',
+                    message: 'keine Verwerf-Methode gefunden', itemMethods: g.itemMethods } });
+                return { ok: false, reason: 'EA-Methode zum Verwerten nicht gefunden - ' +
+                    'bitte Diagnose schicken (packScan.errorForm.itemMethods). Die Karten ' +
+                    'dieses Packs liegen unassigned.' };
+            }
+            const locks = {};
+            try {
+                for (const id of readPaletoolsLocks()) locks[String(id)] = true;
+            } catch (e) { reportError('Verwerten: Schloss-Liste nicht lesbar', e); }
+            discardPlan = decidePackDiscard(items, {
+                describe: function (it) {
+                    return describePackItem(it, { normalize: normalizePlayer, repoItem: g.repoItem });
+                },
+                isMisc: function (it) { return isMiscPackItem(it, g.GameCurrency); },
+                lockedIds: locks
+            });
+            mergePackScan({ lastDiscard: {
+                toDiscard: discardPlan.toDiscard.length,
+                toKeep: discardPlan.toKeep.length,
+                toMisc: discardPlan.toMisc.length,
+                stoppers: discardPlan.stoppers.slice(0, 6),
+                via: g.discard.name
+            } });
+            if (discardPlan.stoppers.length) {
+                // KEINE Karte angefasst. Genau so wollte Rasmus es: "bei special
+                // karten einfach stoppen, denn bei special karten moechte ich
+                // selbst entscheiden, ob die weggeworfen werden oder nicht."
+                return { ok: false, stopped: true, drawn: [],
+                         reason: discardStopReason(discardPlan.stoppers) };
+            }
+        }
+        // Verteilt wird nur, was NICHT verworfen wird. Beim Einsortieren ist
+        // das die ganze Liste - dann ist dieser Ausdruck items selbst.
+        const toDistribute = wantDiscard
+            ? discardPlan.toKeep.concat(discardPlan.toMisc) : items;
+        const decision = decidePackDistribution(toDistribute, storageBefore, PACK_STORAGE_CAPACITY_ASSUMED, g.GameCurrency);
         for (const it of decision.toMisc) {
             await sleep(packTakt());
             let redeemResp;
@@ -9737,6 +9922,40 @@
                 return { ok: false, reason: 'Verteilen in den Storage abgelehnt (Status ' + (storageMoveResp && storageMoveResp.status) + '). Karten bleiben unassigned.' };
             }
         }
+        // JETZT verwerten - nach dem Einsortieren der Behalten-Karten, damit ein
+        // Fehlschlag beim Einsortieren nichts verworfen hat.
+        let discardedCount = 0;
+        if (wantDiscard && discardPlan.toDiscard.length) {
+            // EINZELN, mit Takt: so steht im Fehlerfall fest, wie viele
+            // wirklich weg sind. Ein Sammelaufruf, der auf halber Strecke
+            // abgelehnt wird, laesst genau das offen.
+            for (const it of discardPlan.toDiscard) {
+                await sleep(packTakt());
+                let dResp;
+                try { dResp = await obsPromise(g.discard.fn([it])); }
+                catch (e) {
+                    reportError('Verwerten: ' + g.discard.name + '() fehlgeschlagen', e);
+                    mergePackScan({ errorForm: { step: 'discard', via: g.discard.name,
+                        message: String(e && e.message || e), done: discardedCount } });
+                    return { ok: false, reason: 'Verwerten fehlgeschlagen nach ' +
+                        discardedCount + ' Karte(n): ' + (e.message || e) +
+                        ' Der Rest liegt unassigned.' };
+                }
+                if (!responseOk(dResp)) {
+                    reportError('Verwerten: ' + g.discard.name + '() abgelehnt',
+                        new Error('Status ' + (dResp && dResp.status)));
+                    mergePackScan({ errorForm: { step: 'discard', via: g.discard.name,
+                        status: dResp && dResp.status, done: discardedCount,
+                        keys: dResp ? Object.keys(dResp) : [] } });
+                    return { ok: false, reason: 'Verwerten abgelehnt (Status ' +
+                        (dResp && dResp.status) + ') nach ' + discardedCount +
+                        ' Karte(n). Der Rest liegt unassigned.' };
+                }
+                discardedCount++;
+            }
+            mergePackScan({ lastDiscard: Object.assign(
+                {}, (STATE.diag.packScan || {}).lastDiscard, { discarded: discardedCount }) });
+        }
         let storageAfter = null;
         try {
             const afterResp = await obsPromise(g.item.searchStorageItems(new g.SearchCriteria()));
@@ -9786,8 +10005,11 @@
                     rating: d ? d.rating : null,
                     rarity: d ? d.rarity : null,
                     isDuplicateRaw: isDupRaw,
-                    target: misc ? 'redeem' : (decision.toStorage.indexOf(it) > -1 ? 'Storage'
-                            : (decision.leftover.indexOf(it) > -1 ? 'liegen geblieben (Storage voll)' : 'Verein'))
+                    target: misc ? 'redeem'
+                        : (wantDiscard && discardPlan.toDiscard.indexOf(it) > -1 ? 'verwertet'
+                        : (decision.toStorage.indexOf(it) > -1 ? 'Storage'
+                        : (decision.leftover.indexOf(it) > -1 ? 'liegen geblieben (Storage voll)'
+                        : 'Verein')))
                 };
             } catch (e) {
                 reportError('Pack-Testlauf: Zieh-Listen-Eintrag nicht lesbar', e);
@@ -9808,7 +10030,8 @@
                 packCountAfterSameGroup: packCountAfterSameGroup
             }
         });
-        return { ok: true, drawn: drawn, storageBefore: storageBefore, storageAfter: storageAfter };
+        return { ok: true, drawn: drawn, discarded: discardedCount,
+                 storageBefore: storageBefore, storageAfter: storageAfter };
     }
     /**
      * "Alle öffnen" (Stufe 2, Ticket #76): ruft runPackTestOpen() wiederholt
@@ -9830,7 +10053,7 @@
      * beobachtbar, und die bereits verteilten Packs bleiben in der
      * Zieh-Liste sichtbar statt in einem unbehandelten Reject zu verschwinden.
      */
-    async function runPackOpenAll(groupId, requestedCount, onProgress) {
+    async function runPackOpenAll(groupId, requestedCount, onProgress, mode) {
         const initialGroup = (STATE.packGroups || []).find(function (g) { return String(g.id) === String(groupId); });
         const available = initialGroup ? initialGroup.count : 0;
         const total = Math.max(0, Math.min(requestedCount == null ? available : requestedCount, available));
@@ -9852,7 +10075,7 @@
             for (let i = 0; i < total; i++) {
                 currentPack = i + 1;
                 if (onProgress) onProgress(i + 1, total, 'öffne Pack ' + (i + 1) + ' von ' + total + '...');
-                const res = await runPackTestOpen(groupId);
+                const res = await runPackTestOpen(groupId, mode);
                 if (!res.ok) return stopWith(res.reason);
                 opened++;
                 Array.prototype.push.apply(drawn, res.drawn);
@@ -9876,7 +10099,8 @@
             reportError('Pack-Alle-Öffnen: Abbruch bei Pack ' + currentPack, e);
             return stopWith('Unerwarteter Fehler bei Pack ' + currentPack + ': ' + (e && e.message || e) + '.');
         }
-        const message = opened + ' von ' + total + ' Pack(s) geöffnet und verteilt.';
+        const message = opened + ' von ' + total + ' Pack(s) geöffnet und ' +
+            (mode === 'verwerten' ? 'verwertet' : 'verteilt') + '.';
         mergePackScan({ lastAllRun: { requested: requestedCount, total: total, opened: opened, ok: true, reason: null } });
         return { ok: true, opened: opened, total: total, message: message, drawn: drawn };
     }
@@ -9905,17 +10129,26 @@
         const plannedTotal = Math.max(0, Math.min(requestedCount == null ? available : requestedCount, available));
         if (plannedTotal < 1) { toast('Keine Packs dieses Typs zum Öffnen verfügbar.', 'error'); return; }
         const packLabel = group ? packLabelOf(group) : ('Pack ' + groupId);
-        if (!window.confirm(
-            packLabel + ': ' + plannedTotal + ' Pack(s) werden nacheinander geöffnet.\n\n' +
-            'Stoppt beim ersten Fehler; bereits geöffnete Packs sind dann schon verteilt. Fortfahren?'
-        )) return;
+        const mode = packMode();
+        // Die Rueckfrage muss den MODUS nennen. Verwerten ist unumkehrbar und
+        // war im Panel eine Segment-Wahl - wer sie nicht bemerkt hat, soll sie
+        // hier lesen.
+        const frage = (mode === 'verwerten')
+            ? (packLabel + ': ' + plannedTotal + ' Pack(s) werden nacheinander geöffnet ' +
+               'und die normalen Karten VERWERTET (unwiderruflich weg).\n\n' +
+               'Special-Karten stoppen den Lauf, BEVOR etwas verwertet wird - dann ' +
+               'entscheidest du im Spiel selbst. Unverkäufliche Karten werden nicht ' +
+               'verwertet, sondern einsortiert (SBC-Material).\n\nFortfahren?')
+            : (packLabel + ': ' + plannedTotal + ' Pack(s) werden nacheinander geöffnet.\n\n' +
+               'Stoppt beim ersten Fehler; bereits geöffnete Packs sind dann schon verteilt. Fortfahren?');
+        if (!window.confirm(frage)) return;
         STATE.packOpenBusy = true;
         setPackButtonsDisabled(true);
         setPackStatus('öffne ' + plannedTotal + ' Pack(s)...');
         try {
             const res = await runPackOpenAll(groupId, requestedCount, function (cur, cnt, step) {
                 showProgress(cur, cnt, step, '', 'Pack');
-            });
+            }, mode);
             renderPackDrawList(res.drawn, res.message);
             if (!res.ok) {
                 finishProgress(res.message, false);

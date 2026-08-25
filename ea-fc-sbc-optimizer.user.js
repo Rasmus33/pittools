@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.90.0
+// @version      4.91.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.90.0';
+    const VERSION = '4.91.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -1513,7 +1513,18 @@
         if (setId == null) return null;
         let json = null;
         try { json = await apiGet('sbs/setId/' + setId + '/challenges'); }
-        catch (e) { warn('Frische Challenge holen fehlgeschlagen:', e && e.message); return null; }
+        catch (e) {
+            // WICHTIG: hier ist die ABFRAGE gescheitert, nicht die Suche. Vorher
+            // gab es in diesem Fall nur ein null und KEINEN Diagnose-Eintrag -
+            // im Report stand dann `staleRecover: null`, und "konnte nicht
+            // nachsehen" war von "nichts gefunden" nicht zu unterscheiden.
+            // Live (Report v4.89.0) war es ein HTTP 429, weil das Tageslimit
+            // ueberschritten war; die Meldung schob es auf die Challenge.
+            warn('Frische Challenge holen fehlgeschlagen:', e && e.message);
+            STATE.diag.staleRecover = { setId: setId, oldId: oldId,
+                lookupFailed: String((e && e.message) || e).slice(0, 120) };
+            return null;
+        }
         STATE.diag.scanStats = STATE.diag.scanStats || {};
         const nodes = collectChallengeNodes(json, STATE.diag.scanStats);
         STATE.diag.staleRecover = { setId: setId, oldId: oldId, nodes: nodes.length,
@@ -4429,7 +4440,8 @@
      * ist fehlgeschlagen, Zaehler unbekannt) faellt konservativ auf denselben
      * Rat wie >=1 Kandidaten zurueck.
      */
-    function staleInstanceMessage(msg, candidateCount, batchProgress, nodeState, quotaNote, throttleTxt) {
+    function staleInstanceMessage(msg, candidateCount, batchProgress, nodeState, quotaNote,
+                                 throttleTxt, lookupFailed) {
         // ZUERST der Zustand UNSERER Instanz. Live (v4.72.0-Report, setId 1356)
         // war candidateCount 0 - aber nicht, weil EA die SBC nicht mehr anbot,
         // sondern weil die EINE Challenge im Set genau unsere war und noch
@@ -4438,6 +4450,22 @@
         // war damit schlicht falsch. Ein 404/475 auf eine Challenge, die EA
         // noch als offen fuehrt, hat eine ANDERE Ursache.
         const ns = nodeState || null;
+        // Der Hinweis (Drosselung/Kontingent) gehoert in JEDE Meldung - bis
+        // v4.90.0 stand er nur im ersten Zweig, und genau der griff live nicht.
+        const q = (throttleTxt || quotaNote || '');
+        // ABFRAGE gescheitert ist etwas anderes als NICHTS GEFUNDEN. Live
+        // (Report v4.89.0): GET .../challenges -> HTTP 429, weil das Tageslimit
+        // ueberschritten war. Die alte Meldung behauptete, die Instanz sei
+        // veraltet - dabei konnten wir gar nicht nachsehen.
+        if (lookupFailed) {
+            return 'Das Eintragen wurde abgelehnt (' + msg + '), und die Abfrage der ' +
+                'aktuellen SBC-Instanz hat EA ebenfalls abgewiesen (' + lookupFailed +
+                '). Es ist also NICHT gesagt, dass die Instanz verbraucht ist - wir ' +
+                'konnten es nur nicht pruefen.' + q +
+                (batchProgress
+                    ? ' — ' + batchProgress.done + ' von ' + batchProgress.total + ' geschafft.'
+                    : '');
+        }
         const stillOpen = ns && ns.status != null &&
             !/COMPLETE|CLOSED|EXPIRED/i.test(String(ns.status));
         if (stillOpen) {
@@ -4449,7 +4477,6 @@
             // Liegt eine Drosselung vor, ist SIE die Erklaerung - nicht der
             // Zustand der Challenge. Live: 9x "Failed to fetch" + 503 + 512,
             // danach 475.
-            const q = (throttleTxt || quotaNote || '');
             return 'EA kennt diese Challenge noch (Status ' + ns.status +
                 (ns.repeatable ? ', wiederholbar' : '') + '), das Eintragen wurde aber mit ' +
                 msg.replace(/^.*?((?:404|475)).*$/, '$1') + ' abgelehnt. Das ist NICHT ' +
@@ -4460,7 +4487,7 @@
                     : '.');
         }
         if (candidateCount === 0) {
-            return 'Keine weitere Wiederholung verfügbar (Limit erreicht oder abgelaufen)' +
+            return 'Keine weitere Wiederholung verfügbar (Limit erreicht oder abgelaufen)' + q +
                 (batchProgress
                     ? ' — ' + batchProgress.done + ' von ' + batchProgress.total + ' geschafft.'
                     : '.');
@@ -4468,7 +4495,7 @@
         return 'Die SBC-Instanz ist veraltet (Status aus ' + msg + ') und ' +
             'liess sich nicht eindeutig ersetzen. Wiederholbare SBCs bekommen pro ' +
             'Durchlauf eine neue ID - bitte die SBC im Spiel einmal schliessen und ' +
-            'neu öffnen, dann erneut optimieren.';
+            'neu öffnen, dann erneut optimieren.' + q;
     }
     // Server-Messung fuer das SBC-Kontingent - absichtlich nur an DREI Stellen:
     // "Spieler laden" (Knopf), der automatische Pool-Ladevorgang beim App-Start
@@ -4563,7 +4590,8 @@
                 ? STATE.diag.staleRecover : null;
             const candidateCount = sr ? sr.candidateCount : null;
             throw new Error(staleInstanceMessage(msg, candidateCount, batchProgress,
-                sr ? sr.nodeState : null, quotaHint(), throttleNote()));
+                sr ? sr.nodeState : null, quotaHint(), throttleNote(),
+                sr ? sr.lookupFailed : null));
         }
         // 403 heisst NICHT "veraltet", sondern "EA nimmt das so nicht an" -
         // meist eine Vorgabe, die der Solver nicht abdeckt (live: reqDump mit
@@ -7691,8 +7719,27 @@
         const plan = STATE.batch;
         if (!plan || !plan.planned) { toast('Erst "Teams planen" ausführen.', 'error'); return; }
         const n = plan.planned;
+        // KONTINGENT VOR dem Start nennen. Live (Report v4.89.0) lief ein Batch
+        // in 475/404, weil das TAGESLIMIT schon ueberschritten war (326 von
+        // 300) - das stand im Zaehler, aber niemand hat gefragt. Der Batch wird
+        // nicht blockiert (Rasmus hat ihn bewusst freigegeben), aber die Zahl
+        // gehoert vor die Entscheidung, nicht hinter den Fehlschlag.
+        let quotaWarn = '';
+        try {
+            const u = quotaUsage();
+            const overDay = u && u.day && u.day.used >= QUOTA_DAY_LIMIT;
+            const overHour = u && u.hour && u.hour.used >= QUOTA_HOUR_LIMIT;
+            if (overDay || overHour) {
+                quotaWarn = '\n\nACHTUNG: EAs Limit ist nach unserer Zählung schon ' +
+                    'erreicht (' + (u.hour.exact ? '' : 'mind. ') + u.hour.used + '/' +
+                    QUOTA_HOUR_LIMIT + ' in dieser Stunde, ' +
+                    (u.day.exact ? '' : 'mind. ') + u.day.used + '/' + QUOTA_DAY_LIMIT +
+                    ' heute). EA weist Abgaben dann ab (475/404) - der Batch bricht ' +
+                    'wahrscheinlich mitten drin ab.';
+            }
+        } catch (e) {}
         if (!window.confirm(n + ' SBC(s) werden eingetragen UND endgültig abgegeben.\n\n' +
-                'Die verbauten Karten sind danach weg. Fortfahren?')) return;
+                'Die verbauten Karten sind danach weg. Fortfahren?' + quotaWarn)) return;
         ui.batchRun.disabled = true;
         ui.batchPlan.disabled = true;
         ui.run.disabled = true;

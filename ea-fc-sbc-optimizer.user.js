@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.81.0
+// @version      4.82.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.81.0';
+    const VERSION = '4.82.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -1391,7 +1391,13 @@
                      QUOTA_DAY_LIMIT + ' heute' : '') + '.';
     }
     function quotaText(u) {
-        if (!u || u.total == null) return null;
+        // NICHT an u.total haengen (war so bis v4.81.0 und war falsch): total
+        // kommt aus dem Server-Stand. Scheitert die Server-Messung - etwa weil
+        // die Notbremse nach einem 429 greift -, bleibt total null, WAEHREND
+        // die eigenen bestaetigten Abgaben laengst gezaehlt sind. Das Panel
+        // sagte dann "noch keine Messung", obwohl es 5 zaehlte: genau der
+        // Befund, den der Zaehler-Umbau abstellen sollte.
+        if (!u || (u.total == null && !u.hour && !u.day)) return null;
         function part(name, w, limit) {
             if (!w) return name + ': –';
             return name + ': ' + (w.exact ? '' : 'mind. ') + w.used + '/' + limit;

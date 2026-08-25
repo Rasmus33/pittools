@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.93.0
+// @version      4.95.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.93.0';
+    const VERSION = '4.95.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -161,6 +161,7 @@
             utasUnclassified: 0,     // /ut/game/-URLs, die classifyUrl() nicht zuordnen konnte (LEARNINGS 38)
             lastUnclassifiedPaths: [], // 5er-Ring der zugehoerigen Pfade (IDs maskiert)
             popupDismissCount: 0,    // wie oft dismissRewardPopup() seit App-Start wirklich etwas geschlossen hat (analog batchStuckCount, LEARNINGS §27)
+            queueScan: null,         // SBC-Reihe: die Challenges des offenen Sets (loadQueueList)
             packScan: null           // Pack-Opener (Ticket #69/#76): myPacks/lastRun/lastAllRun/runsCount/storageCounts/missingGlobals/errorForm, siehe mergePackScan() (LEARNINGS §46)
         }
     };
@@ -1632,6 +1633,161 @@
             }
         } catch (e) { reportError('ensureSetChallenges(' + reason + ')', e); }
         return false;
+    }
+    // ======================================================================
+    //  SBC-REIHE: die Challenges EINES Sets als Liste
+    // ======================================================================
+    // Rasmus' Beispiel ist ein Set mit drei Challenges (89-/90-/91-Rated
+    // Squad). EA liefert sie in EINER Antwort - .../sbs/setId/<id>/challenges,
+    // dieselbe, aus der die Vorgaben-Erkennung ohnehin schon liest. Hier wird
+    // sie nur pro Challenge ausgewertet statt nur fuer die offene.
+    /**
+     * Ist der Name brauchbar? EA liefert manchmal Lokalisierungs-Schluessel
+     * ("*GLOBAL.…") statt Text - die sollen NICHT als Bezeichnung durchgehen,
+     * sonst steht in der Auswahl Kauderwelsch statt "89-Rated Squad".
+     */
+    function challengeNodeName(node, target) {
+        const raw = node && (node.name || node.challengeName);
+        const txt = (typeof raw === 'string') ? raw.replace(/\s+/g, ' ').trim() : '';
+        if (txt && txt.charAt(0) !== '*' && txt.indexOf('GLOBAL.') !== 0) return txt;
+        return (target != null) ? ('Ziel-OVR ' + target) : 'SBC';
+    }
+    /** Gilt die Challenge laut EA als erledigt/zu? */
+    function challengeNodeDone(st) {
+        return !!(st && st.status != null && /COMPLETE|CLOSED|EXPIRED/i.test(String(st.status)));
+    }
+    /**
+     * Aus einer Set-Challenges-Antwort die Liste der Challenges bauen.
+     * Reine Funktion (nur collectChallengeNodes/deepScanChallenge) - deshalb
+     * ohne DOM und ohne Netz testbar.
+     * Doppelte challengeIds werden zusammengefasst: EAs Antwort haengt
+     * denselben Knoten je nach Set mehrfach in den Baum, und eine SBC zweimal
+     * in der Auswahl waere schlimmer als ein fehlender Eintrag.
+     */
+    function buildChallengeList(json, statsOut) {
+        const out = [];
+        if (!json) return out;
+        const nodes = collectChallengeNodes(json, statsOut || null);
+        const seen = {};
+        for (const n of nodes) {
+            const id = n.challengeId;
+            if (id == null || seen[String(id)]) continue;
+            let scan = null;
+            try { scan = deepScanChallenge(n, 60000); } catch (e) { continue; }
+            if (!scan) continue;
+            seen[String(id)] = true;
+            const st = extractNodeState(n);
+            out.push({
+                id: id,
+                name: challengeNodeName(n, scan.target),
+                target: scan.target,
+                slots: scan.slots,
+                done: challengeNodeDone(st),
+                state: st,
+                scan: scan
+            });
+        }
+        // Sortierung wie im Spiel: nach Ziel-OVR aufsteigend (89, 90, 91),
+        // Challenges ohne Ziel danach, innerhalb gleicher Stufe nach Id.
+        out.sort(function (a, b) {
+            const ta = (a.target == null) ? 1e9 : a.target;
+            const tb = (b.target == null) ? 1e9 : b.target;
+            if (ta !== tb) return ta - tb;
+            return Number(a.id) - Number(b.id);
+        });
+        return out;
+    }
+    /**
+     * Die Vorgaben EINER Challenge in eine Solver-Konfiguration gießen.
+     * Basis ist die Panel-Konfiguration (Min-Rating, Kosten, Schutz-Modus …);
+     * ueberschrieben wird nur, was CHALLENGE-spezifisch ist. Rein, damit die
+     * Zuordnung nicht still verrutscht - sie ist der Kern der Reihe: jede
+     * Challenge hat ihr EIGENES Ziel.
+     */
+    function cfgForChallenge(baseCfg, step) {
+        const scan = (step && step.scan) || {};
+        return Object.assign({}, baseCfg, {
+            targetOVR: (step && step.target != null) ? step.target : null,
+            slots: (step && step.slots) || 11,
+            rarityConstraints: scan.rarity || [],
+            qualityConstraints: scan.quality || [],
+            rareConstraints: scan.rare || [],
+            playerLevelConstraints: scan.playerLevel || []
+        });
+    }
+    /**
+     * Die ausgewaehlten Challenges der Reihe nach planen. Jede Runde rechnet
+     * auf dem Pool OHNE die Karten der vorigen Runden - genau wie der Batch,
+     * sonst wuerde dieselbe Karte zweimal verplant.
+     * Bricht NICHT ab, wenn eine Challenge nicht loesbar ist: sie wird
+     * uebersprungen und benannt. "Zwei von drei geplant" ist brauchbar, ein
+     * leerer Plan wegen der dritten nicht.
+     */
+    function beginQueue(pool, baseCfg) {
+        return { rounds: [], skipped: [], avail: (pool || []).slice(), baseCfg: baseCfg };
+    }
+    /**
+     * EINE Challenge planen und die verbauten Karten aus dem Restpool nehmen.
+     * Der Einzelschritt ist eigen, weil die UI zwischen zwei Challenges an den
+     * Browser zurueckgeben MUSS - eine durchgehende Schleife ueber mehrere
+     * Solver-Laeufe friert die Seite ein (dieselbe Ursache wie beim
+     * Team-Planen, v4.86.0).
+     */
+    function queueRound(st, step, solveFn) {
+        const solve = solveFn || SolverCore.solve;
+        const cfg = cfgForChallenge(st.baseCfg, step);
+        let r = null;
+        try { r = solve(st.avail, cfg); }
+        catch (e) { r = { ok: false, reason: String((e && e.message) || e) }; }
+        if (!r || !r.ok) {
+            st.skipped.push({ step: step, reason: (r && r.reason) || 'unbekannt' });
+            return null;
+        }
+        r.challengeId = step.id;
+        r.challengeName = step.name;
+        r.target = step.target;
+        r.slots = cfg.slots;
+        // Die Konfiguration DIESER Runde am Ergebnis festhalten: der Plan-Check
+        // prueft Vorgaben pro Runde, und in der Reihe sind sie verschieden.
+        r.cfg = cfg;
+        st.rounds.push(r);
+        const used = {};
+        for (const p of r.players || []) used[String(p.id)] = true;
+        st.avail = st.avail.filter(function (p) { return !used[String(p.id)]; });
+        return r;
+    }
+    function finishQueue(st) {
+        return { rounds: st.rounds, planned: st.rounds.length, skipped: st.skipped };
+    }
+    /**
+     * Alles auf einmal - dieselbe Logik wie der UI-Weg, nur ohne Pausen.
+     * Bricht NICHT ab, wenn eine Challenge nicht loesbar ist: sie wird
+     * uebersprungen und benannt. "Zwei von drei geplant" ist brauchbar, ein
+     * leerer Plan wegen der dritten nicht.
+     */
+    function planChallengeQueue(steps, pool, baseCfg, solveFn) {
+        const st = beginQueue(pool, baseCfg);
+        for (const step of steps || []) queueRound(st, step, solveFn);
+        return finishQueue(st);
+    }
+    /**
+     * Passt die OFFENE SBC zu der Runde, die jetzt eingetragen werden soll?
+     * Batch und Reihe haben verschiedene Anker:
+     *   Batch: das SET plus die Vorgaben - jede Wiederholung hat eine neue
+     *          challengeId (LEARNINGS 9), sie taugt dort nicht zum Vergleich.
+     *   Reihe: die challengeId SELBST - hier ist sie stabil, und sie ist der
+     *          einzige Beweis, dass die richtige der drei Challenges offen ist.
+     * Zusaetzlich immer Ziel-OVR und Slots: ein Fehlgriff in der Liste kostet
+     * so einen Abbruch statt ein Team in der falschen SBC.
+     */
+    function matchesPlannedRound(plan, i, sbcState) {
+        const sbc = sbcState || STATE.sbc;
+        if (!plan || plan.mode !== 'reihe') return matchesPlannedSbc(plan, sbc);
+        const r = (plan.rounds || [])[i];
+        if (!r) return false;
+        if (String(sbc.challengeId) !== String(r.challengeId)) return false;
+        if (String(sbc.targetOVR || '') !== String(r.target || '')) return false;
+        return Number(sbc.formationSlots || 0) === Number(r.slots || 0);
     }
     function parseSbcChallenge(json, url) {
         const u = String(url);
@@ -4870,6 +5026,31 @@
         }
         #sbc-opt-fab.sbc-opt-hidden { display: none; }
         #sbc-opt-packsection.sbc-opt-hidden { display: none; }
+        #sbc-opt-queuesection.sbc-opt-hidden { display: none; }
+        /* SBC-REIHE: eine Zeile pro Challenge des Sets, zum Anhaken. */
+        .sbc-opt-queuerow {
+            display:flex; align-items:center; gap:9px; cursor:pointer;
+            padding:7px 9px; margin-bottom:4px; border-radius:7px;
+            background:#0b1219; border:1px solid #1f2b3a;
+        }
+        .sbc-opt-queuerow:hover { border-color:#2f4a68; }
+        .sbc-opt-queuerow input { width:auto; flex:0 0 auto; margin:0; }
+        /* Das Ziel-OVR ist die Zahl, nach der Rasmus die SBC sucht - sie steht
+           deshalb als Plakette vorn, wie im Spiel. */
+        .sbc-opt-queuerow .ovr {
+            flex:0 0 auto; min-width:30px; text-align:center;
+            background:#1d2a38; border-radius:5px; padding:2px 5px;
+            font-weight:700; font-size:12px; color:#00e0b8;
+        }
+        .sbc-opt-queuerow .nm {
+            flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
+            white-space:nowrap; font-size:12px; color:#e6edf3;
+        }
+        .sbc-opt-queuerow .st { flex:0 0 auto; font-size:11px; color:#7d93ab; }
+        /* Erledigte Challenges bleiben SICHTBAR (sonst waere unklar, warum die
+           Liste kuerzer ist als im Spiel), aber gedaempft und nicht angehakt. */
+        .sbc-opt-queuerow.done { opacity:.5; }
+        .sbc-opt-queuerow.done .ovr { color:#7d93ab; }
         /* Button in der SBC-Aktionsleiste (.sbc-button-container - dort stehen
            "Use Squad Builder" / "Clear Squad"). Die Klassen eines echten
            Nachbar-Buttons werden zur Laufzeit kopiert, hier nur das Nötige
@@ -4903,7 +5084,9 @@
             width:18px; height:18px; border-radius:50%;
             vertical-align:-4px; margin-right:6px;
         }
-        .sbc-opt-body { padding: 14px 16px; }
+        /* Guertel zum Hosentraeger oben: was trotzdem zu breit wird, wird
+           abgeschnitten statt die ganze Seite seitlich scrollen zu lassen. */
+        .sbc-opt-body { padding: 14px 16px; overflow-x: hidden; }
         #sbc-opt-advanced { margin: 4px 0 10px; }
         /* Gemeinsame Aufklapp-Optik fuer "Erweiterte Einstellungen" UND die
            Batch-Team-Details (Ticket #73) - eine Stelle statt zweier
@@ -4932,12 +5115,41 @@
         .sbc-opt-dim { color:#7d93ab; }
         .sbc-opt-row { margin-bottom:12px; }
         .sbc-opt-row label { display:block; margin-bottom:4px; color:#9db2c8; font-size:12px; }
-        .sbc-opt-row input[type=number], .sbc-opt-row input[type=text], .sbc-opt-row select {
+        /* Feld-Optik fuer ALLE Felder im Panel. Vorher hing die Regel an
+           .sbc-opt-row - das Pack-Dropdown steht in einem .sbc-opt-inline und
+           blieb deshalb ein natives weisses Select (Rasmus: "ultra haesslich").
+           Ein Selektor statt zweier, die synchron zu halten waeren. */
+        #sbc-opt-panel input[type=number], #sbc-opt-panel input[type=text],
+        #sbc-opt-panel select {
             width:100%; background:#0b1219; color:#e6edf3;
             border:1px solid #24405f; border-radius:6px; padding:7px 9px; font-size:13px;
+            font-family:inherit; box-sizing:border-box;
         }
+        #sbc-opt-panel input:focus, #sbc-opt-panel select:focus {
+            outline:none; border-color:#00e0b8;
+        }
+        /* Ein <select> ist nur bis auf den Aufklapp-Pfeil stylebar - der wird
+           deshalb abgeschaltet und selbst gezeichnet. color-scheme:dark
+           faerbt die aufgeklappte Liste mit: ohne das zeichnet Android sie
+           weiss, egal was hier steht. Backticks sind in diesem Block tabu -
+           das CSS steckt selbst in einem Template-Literal. */
+        #sbc-opt-panel select {
+            -webkit-appearance:none; -moz-appearance:none; appearance:none;
+            color-scheme: dark; cursor:pointer;
+            padding-right:28px; text-overflow:ellipsis;
+            background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0h10L5 6z' fill='%2300e0b8'/%3E%3C/svg%3E");
+            background-repeat:no-repeat;
+            background-position:right 10px center;
+        }
+        #sbc-opt-panel select option { background:#0b1219; color:#e6edf3; }
         .sbc-opt-inline { display:flex; align-items:center; gap:8px; }
         .sbc-opt-inline input[type=number] { flex:1; }
+        /* WARUM min-width:0: ein Flex-Kind hat min-width:auto und kann
+           deshalb nicht unter seine INHALTS-Breite schrumpfen. Bei einem
+           <select> ist das die Breite der laengsten Option - lange Pack-Namen
+           machten das Panel breiter als seine 342px, und Rasmus musste
+           seitlich scrollen. */
+        .sbc-opt-inline > * { min-width:0; }
         .sbc-opt-toggle { display:flex; align-items:center; gap:8px; cursor:pointer; }
         .sbc-opt-toggle input { width:auto; }
         .sbc-opt-group-title {
@@ -4987,6 +5199,9 @@
         .sbc-opt-btn:disabled { opacity:.5; cursor:not-allowed; }
         .sbc-opt-batch { margin-top:12px; padding-top:10px; border-top:1px solid #1f2b3a; }
         #sbc-opt-batch-preview:empty { display:none; }
+        /* Der Vorschau-Kasten ist die ganze Zeit im Markup, aber solange kein
+           Plan existiert, waere er nur eine leere Trennlinie. */
+        #sbc-opt-planresult.sbc-opt-hidden { display:none; }
         #sbc-opt-batch-preview, #sbc-opt-batch-detail-body {
             background:#131e2b; border:1px solid #1f2b3a; border-radius:8px;
             padding:8px 10px; margin-top:8px; font-size:12px; line-height:1.5;
@@ -5008,17 +5223,43 @@
                            padding:6px 12px; font-size:13px; font-weight:600;
                            cursor:pointer; vertical-align:middle; }
         .sbc-opt-tilebtn:disabled { opacity:.5; cursor:not-allowed; }
-        .sbc-opt-chips { display:flex; gap:4px; margin:-4px 0 8px; align-items:center;
-                         flex-wrap:wrap; }
-        .sbc-opt-chip { background:#1d2a38; color:#cfe0f0; border:1px solid #2f4256;
-                        border-radius:10px; padding:2px 9px; font-size:12px;
-                        cursor:pointer; line-height:18px; }
-        .sbc-opt-chip:hover { border-color:#4a6d92; }
-        .sbc-opt-chip.on { background:#2b6cb0; border-color:#3d8ad6; color:#fff;
-                           font-weight:600; }
-        .sbc-opt-chip.edit { opacity:.6; }
-        .sbc-opt-chipedit { display:none; gap:4px; margin:-4px 0 8px; }
-        .sbc-opt-chipedit input { width:120px; }
+        /* SEGMENT-SCHALTER (Rasmus: "das kann man optisch schoener loesen").
+           Eine Leiste, die Werte teilen sich die Breite gleichmaessig, der
+           aktive ist gefuellt. Die Trefferflaeche ist 34px hoch - am Handy war
+           die alte Chip-Zeile mit 24px an der Grenze. */
+        .sbc-opt-chips {
+            display:flex; gap:3px; margin:0 0 10px; align-items:stretch;
+            background:#0b1219; border:1px solid #24405f;
+            border-radius:9px; padding:3px;
+        }
+        /* Leer (noch nicht gerendert) soll die Leiste nicht als leerer Kasten
+           herumstehen. */
+        .sbc-opt-chips:empty { display:none; }
+        .sbc-opt-chip {
+            flex:1 1 0; min-width:0; background:transparent; color:#9db2c8;
+            border:none; border-radius:6px; padding:0 6px; min-height:34px;
+            font-size:13px; font-weight:600; font-family:inherit;
+            cursor:pointer; line-height:34px; text-align:center;
+            transition:background .12s ease, color .12s ease;
+        }
+        .sbc-opt-chip:hover { background:#16283a; color:#e6edf3; }
+        .sbc-opt-chip.on { background:#2b6cb0; color:#fff; }
+        .sbc-opt-chip.on:hover { background:#3179c4; }
+        /* ✎ ist der Notausgang, nicht die Hauptsache: schmal und gedaempft,
+           aber am Ende DERSELBEN Leiste - nicht als vierter Wert. */
+        .sbc-opt-chip.edit {
+            flex:0 0 34px; opacity:.5; font-size:12px;
+            border-left:1px solid #1c2c3e; border-radius:0 6px 6px 0;
+        }
+        .sbc-opt-chip.edit:hover { opacity:1; background:#16283a; }
+        .sbc-opt-chipedit { display:none; gap:6px; margin:0 0 10px; }
+        .sbc-opt-chipedit input { flex:1; }
+        .sbc-opt-chipedit .sbc-opt-btn { margin:0; width:auto; flex:0 0 auto; padding:7px 14px; }
+        /* Beschriftung ueber dem Schalter: eigene Zeile, damit sie nicht
+           neben einem Feld auf zwei Zeilen umbricht. */
+        .sbc-opt-chiplabel {
+            display:block; margin:0 0 6px; color:#9db2c8; font-size:12px;
+        }
         .sbc-opt-batch-cards { margin:4px 0 2px; }
         .sbc-opt-batch-card {
             font-size:11px; color:#cfe0f2; padding:1px 0;
@@ -5128,14 +5369,17 @@
                     <div class="sbc-opt-debug" id="sbc-opt-debug">API: – · SID: – · Services: –</div>
                 </div>
                 <button class="sbc-opt-btn ghost" id="sbc-opt-load">Spieler laden</button>
-                <div class="sbc-opt-row">
-                    <label>Min. Rating pro Spieler</label>
-                    <input type="number" id="sbc-opt-minrating" value="75" min="1" max="99">
-                </div>
-                <div class="sbc-opt-chips" id="sbc-opt-minrating-chips"></div>
-                <div class="sbc-opt-chipedit sbc-opt-inline" id="sbc-opt-minrating-edit">
-                    <input type="text" id="sbc-opt-minrating-editval" placeholder="75, 85">
-                    <button class="sbc-opt-btn ghost" id="sbc-opt-minrating-editok">OK</button>
+                <div class="sbc-opt-row" style="margin-bottom:0;">
+                    <label class="sbc-opt-chiplabel">Min. Rating pro Spieler</label>
+                    <div class="sbc-opt-chips" id="sbc-opt-minrating-chips"></div>
+                    <div class="sbc-opt-chipedit sbc-opt-inline" id="sbc-opt-minrating-edit">
+                        <input type="text" id="sbc-opt-minrating-editval" placeholder="75, 85">
+                        <button class="sbc-opt-btn ghost" id="sbc-opt-minrating-editok">OK</button>
+                    </div>
+                    <!-- Das Zahlenfeld steht ZULETZT: es ist der Notausgang und
+                         normalerweise versteckt (chipFieldVisible, v4.93.0). -->
+                    <input type="number" id="sbc-opt-minrating" value="75" min="1" max="99"
+                           style="margin-bottom:12px;">
                 </div>
                 <details id="sbc-opt-advanced" class="sbc-opt-details-toggle">
                     <summary>Erweiterte Einstellungen</summary>
@@ -5270,23 +5514,42 @@
                 </details>
                 <button class="sbc-opt-btn primary" id="sbc-opt-run">Optimieren + Eintragen</button>
                 <div class="sbc-opt-result" id="sbc-opt-result"></div>
+                <!-- SBC-REIHE: verschiedene Challenges EINES Sets nacheinander.
+                     Nur sichtbar, wenn das offene Set mehr als eine Challenge
+                     hat (syncQueueSection()). Vorschau, Plan-Check und die
+                     Freigabe sind dieselben wie beim Batch - derselbe Plan,
+                     nur mode:'reihe'. -->
+                <div class="sbc-opt-batch sbc-opt-hidden" id="sbc-opt-queuesection">
+                    <div class="sbc-opt-inline" style="margin-bottom:7px;">
+                        <label class="sbc-opt-chiplabel" style="margin:0;flex:1;">SBCs in diesem Set</label>
+                        <button class="sbc-opt-btn ghost" id="sbc-opt-queue-refresh"
+                                title="Liste neu laden"
+                                style="margin:0;padding:4px 9px;width:auto;flex:0 0 auto;">↻</button>
+                    </div>
+                    <div id="sbc-opt-queue-list"></div>
+                    <button class="sbc-opt-btn plan" id="sbc-opt-queue-plan">Angehakte planen (Vorschau)</button>
+                </div>
                 <!-- BATCH: dieselbe SBC mehrfach. Zwei Schritte - erst planen und
                      ansehen, dann EINE Freigabe für den ganzen Lauf. -->
                 <div class="sbc-opt-batch">
-                    <div class="sbc-opt-inline" style="margin-bottom:8px;">
-                        <label style="margin:0;flex:1;">SBC mehrfach abschließen</label>
-                        <input type="number" id="sbc-opt-batch-count" value="5" min="1" max="10"
-                               style="width:64px;">
-                    </div>
+                    <label class="sbc-opt-chiplabel">SBC mehrfach abschließen</label>
                     <div class="sbc-opt-chips" id="sbc-opt-batch-chips"></div>
                     <div class="sbc-opt-chipedit sbc-opt-inline" id="sbc-opt-batch-edit">
                         <input type="text" id="sbc-opt-batch-editval" placeholder="3, 5, 10">
                         <button class="sbc-opt-btn ghost" id="sbc-opt-batch-editok">OK</button>
                     </div>
+                    <!-- Zahlenfeld zuletzt und normalerweise versteckt, s.o. -->
+                    <input type="number" id="sbc-opt-batch-count" value="5" min="1" max="10"
+                           style="margin-bottom:10px;">
                     <button class="sbc-opt-btn plan" id="sbc-opt-batch-plan">Teams planen (Vorschau)</button>
-                    <!-- Ticket #73: Zusammenfassung (Confidence + Klartext-Abweichungen)
-                         zuerst, direkt darunter die Freigabe, Kartendetails erst
-                         aufgeklappt - Rasmus scrollte vorher jedes Team einzeln durch. -->
+                </div>
+                <!-- VORSCHAU + FREIGABE fuer BEIDE Plan-Sorten (Batch und
+                     SBC-Reihe). Steht bewusst UNTER beiden Abschnitten: die
+                     Vorschau gehoert hinter den Knopf, der sie erzeugt hat.
+                     Ticket #73: Zusammenfassung (Confidence + Klartext-
+                     Abweichungen) zuerst, direkt darunter die Freigabe,
+                     Kartendetails erst aufgeklappt. -->
+                <div class="sbc-opt-batch sbc-opt-hidden" id="sbc-opt-planresult">
                     <div id="sbc-opt-batch-preview"></div>
                     <button class="sbc-opt-btn danger" id="sbc-opt-batch-run" style="display:none;">
                         Alle eintragen + abgeben
@@ -5300,19 +5563,20 @@
                      sichtbar (syncPackSection()) - Pack-Oeffnen ist unumkehrbar,
                      "Alle oeffnen" stoppt deshalb beim ERSTEN Fehler jeder Art. -->
                 <div class="sbc-opt-batch sbc-opt-hidden" id="sbc-opt-packsection">
-                    <div class="sbc-opt-inline" style="margin-bottom:8px;">
-                        <label style="margin:0;flex:1;">Pack-Opener (Store)</label>
-                    </div>
+                    <div class="sbc-opt-group-title" style="margin-top:0;">Pack-Opener (Store)</div>
                     <div class="sbc-opt-inline" style="margin-bottom:8px;">
                         <select id="sbc-opt-pack-type" style="flex:1;">
                             <option value="">– Aktualisieren drücken –</option>
                         </select>
-                        <button class="sbc-opt-btn ghost" id="sbc-opt-pack-refresh" style="margin:0;padding:6px 10px;">↻</button>
+                        <button class="sbc-opt-btn ghost" id="sbc-opt-pack-refresh"
+                                title="Pack-Liste neu laden"
+                                style="margin:0;padding:6px 10px;width:auto;flex:0 0 auto;">↻</button>
                     </div>
                     <button class="sbc-opt-btn danger" id="sbc-opt-pack-test">Test: 1 Pack öffnen</button>
-                    <div class="sbc-opt-inline" style="margin-top:8px;margin-bottom:8px;">
-                        <label style="margin:0;flex:1;">Alle öffnen – Anzahl (leer = alle)</label>
-                        <input type="number" id="sbc-opt-pack-count" min="1" style="width:64px;" placeholder="alle">
+                    <div class="sbc-opt-compact" style="margin-top:10px;margin-bottom:2px;">
+                        <label>Anzahl (leer = alle)</label>
+                        <input type="number" id="sbc-opt-pack-count" min="1"
+                               style="width:72px;flex:0 0 auto;" placeholder="alle">
                     </div>
                     <button class="sbc-opt-btn danger" id="sbc-opt-pack-all">Alle öffnen</button>
                     <div id="sbc-opt-pack-result"></div>
@@ -5384,6 +5648,11 @@
             batchDetails: panel.querySelector('#sbc-opt-batch-details'),
             batchDetailSummary: panel.querySelector('#sbc-opt-batch-detail-summary'),
             batchDetailBody: panel.querySelector('#sbc-opt-batch-detail-body'),
+            planResult: panel.querySelector('#sbc-opt-planresult'),
+            queueSection: panel.querySelector('#sbc-opt-queuesection'),
+            queueList: panel.querySelector('#sbc-opt-queue-list'),
+            queueRefresh: panel.querySelector('#sbc-opt-queue-refresh'),
+            queuePlan: panel.querySelector('#sbc-opt-queue-plan'),
             packSection: panel.querySelector('#sbc-opt-packsection'),
             packType: panel.querySelector('#sbc-opt-pack-type'),
             packRefresh: panel.querySelector('#sbc-opt-pack-refresh'),
@@ -5427,6 +5696,11 @@
         });
         ui.batchPlan.addEventListener('click', onBatchPlanClick);
         ui.batchRun.addEventListener('click', onBatchRunClick);
+        ui.queueRefresh.addEventListener('click', function () {
+            queueTriedSet = null;
+            loadQueueList(true);
+        });
+        ui.queuePlan.addEventListener('click', onQueuePlanClick);
         ui.packRefresh.addEventListener('click', onPackRefreshClick);
         ui.packTest.addEventListener('click', onPackTestClick);
         ui.packAll.addEventListener('click', onPackAllClick);
@@ -6149,6 +6423,10 @@
             // (lastAllRun) - beantwortet die vier offenen Mechanik-Fragen aus
             // docs/roadmap/vision/features/pack-opener.md (LEARNINGS §46).
             packScan: STATE.diag.packScan || null,
+            // SBC-Reihe: welche Challenges des Sets hat das Script gesehen,
+            // mit Ziel-OVR, Slots und EA-Status. Ohne das laesst sich ein
+            // Bericht "er hat die falsche genommen" nicht nachvollziehen.
+            queueScan: STATE.diag.queueScan || null,
             // Welches Team hat der Solver zuletzt geliefert (id/assetId/rating/
             // storage)? Bei HTTP 460 ist hier direkt zu sehen, ob eine Karte
             // oder ein Spieler doppelt drin war.
@@ -7110,6 +7388,67 @@
                  status: repEnd.status, steps: steps };
     }
     /**
+     * EINE bestimmte Challenge des offenen Sets aufmachen (SBC-Reihe).
+     * Anders als openNextInstance() geht das NICHT ueber den Hub: das Set ist
+     * schon offen, es fehlt nur die richtige Zeile. Ist gerade eine andere
+     * Challenge offen, wird zuerst zurueck in die Liste navigiert.
+     *
+     * Erfolg heisst: die Challenge mit GENAU dieser challengeId ist offen und
+     * ihr Squad ist nicht nachweislich belegt. Ein voller Squad ist kein
+     * Erfolg - dann steht dort ein Team, das niemand abgegeben hat, und darauf
+     * noch eines zu legen waere der schlechteste Ausgang.
+     */
+    async function openChallengeFromList(step) {
+        const steps = [];
+        const t0 = Date.now();
+        let clicked = 0, backs = 0;
+        for (let i = 0; i < 60; i++) {          // 60 x 300ms = max ~18s
+            dismissRewardPopup();
+            syncSbcWithOpenChallenge();
+            const ctrl = findSbcController();
+            if (ctrl && String(STATE.sbc.challengeId) === String(step.id)) {
+                const sq = ctrl._squad || (ctrl.getSquad && ctrl.getSquad());
+                let empty = null;
+                try { if (sq && typeof sq.isSquadEmpty === 'function') empty = sq.isSquadEmpty(); }
+                catch (e) {}
+                if (empty === false) {
+                    steps.push({ ms: Date.now() - t0, why: 'richtige Challenge, aber ' +
+                        'das Squad ist belegt', challengeId: STATE.sbc.challengeId });
+                    return { ok: false, occupied: true, steps: steps };
+                }
+                steps.push({ ms: Date.now() - t0, done: true, clicked: clicked, backs: backs });
+                return { ok: true, steps: steps };
+            }
+            if (ctrl) {
+                // Eine ANDERE Challenge ist offen - zurueck in die Liste. Der
+                // erste Versuch sofort (nach dem Abgeben stehen wir immer in
+                // der gerade fertigen), danach im Takt von shouldTryBack.
+                if (i === 0 || shouldTryBack(i)) {
+                    const b = clickBackButton();
+                    backs++;
+                    steps.push({ ms: Date.now() - t0, back: b });
+                    if (b.ok) { await batchWait(900); continue; }
+                }
+            } else if (!clicked || i === 15 || i === 35) {
+                // In der Challenge-Liste: liegt ein Dialog oben, ignoriert EA
+                // den Tap (live belegt beim Kachel-Klick) - erst aufraeumen.
+                const pop = popupState();
+                if (pop.overlays || (pop.shield && pop.shield.up)) {
+                    dismissRewardPopup();
+                    steps.push({ ms: Date.now() - t0, popupClosed: pop });
+                    await batchWait(500);
+                }
+                const r = clickChallengeRow(step);
+                steps.push({ ms: Date.now() - t0, chRow: r });
+                if (r.ok) { clicked++; await batchWait(600); continue; }
+            }
+            await batchWait(300);
+        }
+        steps.push({ ms: Date.now() - t0, popup: popupState(),
+                     why: 'Zeitueberschreitung', openId: STATE.sbc.challengeId });
+        return { ok: false, steps: steps };
+    }
+    /**
      * Im HUB die SBC wieder aufmachen - der Weg, den Rasmus von Hand geht.
      * Nach dem Abgeben steht die App im SBC-Hub, und
      * services.SBC.loadChallenge() laedt nur Daten ohne die Ansicht zu
@@ -7300,8 +7639,39 @@
                  want: want, hitTitle: titleOf(hit).text, titleSource: hitSource, tap: tap,
                  tapInner: inner ? (STATE.diag.lastTap || null) : null };
     }
-    /** Challenge-Zeile in der geoeffneten Set-Ansicht anklicken. */
-    function clickChallengeRow() {
+    /**
+     * Welche der sichtbaren Challenge-Zeilen ist die gesuchte? Reine
+     * Text-Auswertung (die Zeilen-TEXTE kommen herein, nicht die Elemente),
+     * damit die Zuordnung ohne DOM testbar ist - sie entscheidet, in welche
+     * SBC ein Team wandert.
+     * Reihenfolge der Versuche: exakter Name, Name enthalten, dann das
+     * Ziel-OVR als eigenstaendige Zahl. Liefert den Index oder -1.
+     */
+    function pickChallengeRowIndex(texts, want) {
+        if (!want) return (texts && texts.length) ? 0 : -1;
+        const norm = (x) => String(x || '').toLowerCase().replace(/\s+/g, ' ').trim();
+        const list = (texts || []).map(norm);
+        const name = norm(want.name);
+        if (name) {
+            for (let i = 0; i < list.length; i++) { if (list[i] === name) return i; }
+            for (let i = 0; i < list.length; i++) { if (list[i].indexOf(name) > -1) return i; }
+        }
+        if (want.target != null) {
+            // Als EIGENSTAENDIGE Zahl - sonst trifft "9" in "90-Rated Squad"
+            // und "91" waere nicht mehr unterscheidbar.
+            const re = new RegExp('(^|[^0-9])' + String(want.target) + '([^0-9]|$)');
+            for (let i = 0; i < list.length; i++) { if (re.test(list[i])) return i; }
+        }
+        return -1;
+    }
+    /**
+     * Challenge-Zeile in der geoeffneten Set-Ansicht anklicken.
+     * OHNE Argument: die erste Zeile - genau das Verhalten, das der Batch seit
+     * v4.23.0 benutzt, unveraendert.
+     * MIT `want` ({ name, target }): die passende Zeile - das braucht die
+     * SBC-Reihe, die gezielt die 89er/90er/91er ansteuert.
+     */
+    function clickChallengeRow(want) {
         let rows = visibleAll('.ut-sbc-challenge-table-row-view');
         if (!rows.length) rows = visibleAll('.ut-sbc-challenge-tile-view');
         if (!rows.length) rows = visibleAll('.ut-sbc-challenges-view--challenges > *');
@@ -7313,8 +7683,21 @@
                 detailsView: document.querySelectorAll('.ut-sbc-challenge-details-view').length
             } };
         }
-        // Die erste Zeile ist die noch offene Wiederholung.
-        return { ok: clickLike(rows[0]), why: rows.length + ' Zeile(n), erste geklickt' };
+        if (!want) {
+            // Die erste Zeile ist die noch offene Wiederholung.
+            return { ok: clickLike(rows[0]), why: rows.length + ' Zeile(n), erste geklickt' };
+        }
+        const texts = rows.map(function (r) {
+            return String((r && r.textContent) || '').replace(/\s+/g, ' ').trim();
+        });
+        const idx = pickChallengeRowIndex(texts, want);
+        if (idx < 0) {
+            return { ok: false, why: 'gesuchte Challenge-Zeile nicht gefunden',
+                     want: (want.name || '') + '/' + want.target,
+                     texts: texts.slice(0, 8).map(function (t) { return t.slice(0, 50); }) };
+        }
+        return { ok: clickLike(rows[idx]), why: 'Zeile ' + (idx + 1) + ' von ' +
+                 rows.length + ' geklickt', hit: texts[idx].slice(0, 60) };
     }
     // Eigene, pur testbare Bedingung statt inline in openNextInstance - der
     // v4.36.0-Live-Vorfall (App blieb im Squad-View haengen) war bisher nur per
@@ -7378,10 +7761,15 @@
         } catch (e) {}
         return { repeatable: null, status: '' };
     }
-    /** Passt die offene SBC zu dem, wofuer geplant wurde? (Vorgaben, nicht ID) */
-    function matchesPlannedSbc(plan) {
-        if (String(STATE.sbc.targetOVR || '') !== String(plan.targetOVR || '')) return false;
-        if (Number(STATE.sbc.formationSlots || 0) !== Number(plan.slots || 0)) return false;
+    /**
+     * Passt die offene SBC zu dem, wofuer geplant wurde? (Vorgaben, nicht ID)
+     * `sbcState` ist optional und dient dem Test: ohne Argument gilt der echte
+     * Zustand, genau wie bisher an allen bestehenden Aufrufstellen.
+     */
+    function matchesPlannedSbc(plan, sbcState) {
+        const sbc = sbcState || STATE.sbc;
+        if (String(sbc.targetOVR || '') !== String(plan.targetOVR || '')) return false;
+        if (Number(sbc.formationSlots || 0) !== Number(plan.slots || 0)) return false;
         return true;
     }
     // Schutz gegen eine bereits abgegebene Instanz - mit Daily-Ausnahme.
@@ -7532,6 +7920,28 @@
             if (ok) { passed++; return; }
             lines.push({ level: level, text: text });
         }
+        // Die Grenzwerte EINER Runde. Beim Batch ist es fuer alle Runden
+        // dieselbe Konfiguration; in der SBC-REIHE hat jede Runde ihre eigene
+        // (Ziel-OVR und Vorgaben unterscheiden sich pro Challenge) und bringt
+        // sie als r.cfg mit. Ohne r.cfg bleibt alles wie vorher - der Batch
+        // laeuft durch denselben Code wie bisher.
+        function limitsOf(c) {
+            const rcs = (c.applyRarity === false) ? [] : (c.rarityConstraints || []);
+            const qcs = (c.applyRarity === false) ? [] : (c.qualityConstraints || []);
+            const req83 = rcs
+                .filter(rc => Number(rc.groupId) === 83 ||
+                    (rc.groupId == null && Array.isArray(rc.ids) && rc.ids.map(Number).indexOf(3) > -1))
+                .reduce((sum, rc) => sum + (rc.count || 1), 0);
+            const low = qcs.some(q => Number(q.quality) === 1 || Number(q.quality) === 2);
+            return {
+                required83: req83,
+                rarityMode: c.rarityMode || 'vereinTotw',
+                effectiveMinRating: low ? 0 : (c.minRating || 0),
+                maxOvershoot: c.maxOvershoot || 0,
+                rarityPickId: c.rarityPickId
+            };
+        }
+        const baseLimits = limitsOf(cfg);
         const rarityConstraints = (cfg.applyRarity === false) ? [] : (cfg.rarityConstraints || []);
         // Vorgaben zaehlen wie der Solver sie erfuellt (Nacht-Review 16.08.):
         // matchesRarity() bedient Gruppe 83 auch ueber den ids-Zweig
@@ -7552,18 +7962,21 @@
         // TOTW aus dem VEREIN - seit v4.83.0 die einzige hart geschuetzte
         // Sorte (EA hat die Gruppe entwertet, siehe CLAUDE.md "Rarity-Staffel").
         const isTotwClub = p => Number(p.rareflag) === 3 && !p.isStorage;
-        const rarityMode = cfg.rarityMode || 'vereinTotw';
         const qualityConstraints = (cfg.applyRarity === false) ? [] : (cfg.qualityConstraints || []);
         // Deckt sich mit dem qualityLow-Zweig im Solver (Bronze/Silber
         // ignorieren Min-Rating komplett, Gold nicht) - hier nur, um
         // festzustellen, ob die Pruefung ueberhaupt greifen soll.
         const qualityLow = qualityConstraints.some(c => Number(c.quality) === 1 || Number(c.quality) === 2);
-        const effectiveMinRating = qualityLow ? 0 : (cfg.minRating || 0);
-        const maxOvershoot = cfg.maxOvershoot || 0;
         const seenIds = new Set();
         let dupeCard = null;
         (plan.rounds || []).forEach(function (r, i) {
             const teamNo = i + 1;
+            // Pro Runde: die eigene Konfiguration, falls sie eine hat.
+            const L = r.cfg ? limitsOf(r.cfg) : baseLimits;
+            const required83 = L.required83;
+            const rarityMode = L.rarityMode;
+            const effectiveMinRating = L.effectiveMinRating;
+            const maxOvershoot = L.maxOvershoot;
             const waste = r.waste || 0;
             runCheck('error', waste <= maxOvershoot + 1e-9,
                 'Team ' + teamNo + ': Rating-Überschuss ' + waste.toFixed(2) + ' über dem erlaubten Fenster ' +
@@ -7586,9 +7999,9 @@
             // Plan aus. Deshalb ein sichtbarer Hinweis - direkt in lines statt
             // ueber runCheck(), damit der feste Pruefungs-Nenner
             // (LEARNINGS 48) unveraendert bleibt.
-            const pickedExtra = (required83 === 0 && cfg.rarityPickId != null &&
-                cfg.rarityPickId !== '' &&
-                r.players.some(p => String(p.id) === String(cfg.rarityPickId) && counted(p))) ? 1 : 0;
+            const pickedExtra = (required83 === 0 && L.rarityPickId != null &&
+                L.rarityPickId !== '' &&
+                r.players.some(p => String(p.id) === String(L.rarityPickId) && counted(p))) ? 1 : 0;
             const explainedByPick = pickedExtra > 0 && nCounted === required83 + pickedExtra;
             // 'gruppe83' verlangt GENAU die Anzahl (alte Regel). Sonst gilt
             // HOECHSTENS die geforderte Anzahl Vereins-TOTW: weniger ist immer
@@ -7661,17 +8074,24 @@
             ? ' · <span style="color:#9db2c8;">Storage <b>' + src.storage +
               '</b> / Verein <b>' + src.club + '</b></span>'
             : '';
-        let html = '<div class="sbc-opt-batch-round"><b>' + plan.planned + ' Team(s) geplant</b> · Confidence <b>' +
+        const noun = (plan.mode === 'reihe') ? ' SBC(s) geplant' : ' Team(s) geplant';
+        let html = '<div class="sbc-opt-batch-round"><b>' + plan.planned + noun + '</b> · Confidence <b>' +
             pc.score + '%</b>' + srcInfo + (parts.length ? ' — ' + parts.join(' + ') : '') + '</div>';
         for (const l of pc.lines) {
             html += '<div class="sbc-opt-batch-round ' + (l.level === 'error' ? 'sbc-opt-batch-bad' : 'sbc-opt-batch-warn') + '">' +
                 (l.level === 'error' ? '✗ ' : '⚠ ') + escapeHtml(l.text) + '</div>';
+        }
+        for (const sk of plan.skipped || []) {
+            html += '<div class="sbc-opt-batch-round sbc-opt-batch-warn">⚠ "' +
+                escapeHtml((sk.step && sk.step.name) || '?') + '" übersprungen: ' +
+                escapeHtml(String(sk.reason)) + '</div>';
         }
         if (plan.stoppedReason) {
             html += '<div class="sbc-opt-batch-round sbc-opt-batch-bad">Nur ' + plan.planned +
                 ' von ' + plan.requested + ' möglich: ' + escapeHtml(plan.stoppedReason) + '</div>';
         }
         box.innerHTML = html;
+        if (ui.planResult) ui.planResult.classList.remove('sbc-opt-hidden');
         ui.batchRun.style.display = plan.planned ? 'block' : 'none';
         ui.batchRun.disabled = false;
         ui.batchRun.textContent = 'Alle ' + plan.planned + ' eintragen + abgeben';
@@ -7681,7 +8101,11 @@
                 const nStore = r.players.filter(p => p.isStorage).length;
                 const nUntr = r.players.filter(p => p.untradeable).length;
                 const nProt = r.players.filter(p => p.groups && p.groups.indexOf(83) > -1).length;
-                detailHtml += '<div class="sbc-opt-batch-round"><b>Team ' + (i + 1) + ':</b> OVR ' +
+                // In der SBC-Reihe ist jede Runde eine ANDERE SBC - dann sagt
+                // ihr Name etwas, die Nummer nicht.
+                const label = r.challengeName
+                    ? escapeHtml(r.challengeName) : ('Team ' + (i + 1));
+                detailHtml += '<div class="sbc-opt-batch-round"><b>' + label + ':</b> OVR ' +
                     r.ovr + ' (' + r.ovrExact.toFixed(2) + ')' +
                     '<br><span style="color:#9db2c8;">Storage ' + nStore +
                     ' · unverkäuflich ' + nUntr +
@@ -7743,6 +8167,9 @@
         let confirmGap = 900;
         const plan = STATE.batch;
         if (!plan || !plan.planned) { toast('Erst "Teams planen" ausführen.', 'error'); return; }
+        // Zwei Plan-Sorten, EIN Lauf: 'reihe' arbeitet verschiedene Challenges
+        // eines Sets ab, alles andere (Standard) dieselbe SBC mehrfach.
+        const isQueue = plan.mode === 'reihe';
         const n = plan.planned;
         // KONTINGENT VOR dem Start nennen. Live (Report v4.89.0) lief ein Batch
         // in 475/404, weil das TAGESLIMIT schon ueberschritten war (326 von
@@ -7768,7 +8195,16 @@
                     'Wert von EA - erfahrungsgemäß geht danach oft noch etwas.';
             }
         } catch (e) {}
-        if (!window.confirm(n + ' SBC(s) werden eingetragen UND endgültig abgegeben.\n\n' +
+        // In der Reihe sind es verschiedene SBCs - dann werden sie benannt.
+        // "3 SBCs" sagt nichts darueber, WELCHE drei.
+        const whatText = isQueue
+            ? (n + ' SBC(s) dieses Sets werden nacheinander eingetragen UND endgültig ' +
+               'abgegeben:\n\n' + plan.rounds.map(function (r, k) {
+                   return (k + 1) + '. ' + (r.challengeName || ('Challenge ' + r.challengeId)) +
+                          ' (OVR ' + r.ovr + ')';
+               }).join('\n') + '\n\n')
+            : (n + ' SBC(s) werden eingetragen UND endgültig abgegeben.\n\n');
+        if (!window.confirm(whatText +
                 'Die verbauten Karten sind danach weg. Fortfahren?' + quotaWarn)) return;
         ui.batchRun.disabled = true;
         ui.batchPlan.disabled = true;
@@ -7784,16 +8220,38 @@
                 if (missing.length) {
                     throw new Error(tag + ': ' + missing.length + ' Karte(n) nicht mehr im Pool.');
                 }
+                // SBC-REIHE: jede Runde ist eine ANDERE Challenge desselben Sets -
+                // also wird sie hier aufgemacht, auch die erste. Der Batch
+                // dagegen arbeitet in der schon offenen SBC weiter und oeffnet
+                // die naechste Wiederholung erst am Ende der Runde (unten).
+                if (isQueue) {
+                    showProgress(i + 1, n, 'öffne ' + (round.challengeName || 'SBC') + '...',
+                        (doneLog.length ? doneLog.length + ' fertig' : ''));
+                    setStatus(tag + ': öffne ' + (round.challengeName || 'SBC') + '...');
+                    const opened = await openChallengeFromList(round);
+                    recordBatchStep(STATE.diag, i + 1, opened);
+                    if (!opened.ok) {
+                        throw new Error(tag + ': "' + (round.challengeName || round.challengeId) +
+                            '" liess sich nicht öffnen' +
+                            (opened.occupied ? ' - dort steht schon ein Team im Squad. Bitte im ' +
+                                'Spiel nachsehen und es leeren oder abgeben.'
+                                             : ' (Diagnose schicken: batchSteps).'));
+                    }
+                }
                 showProgress(i + 1, n, 'prüfe SBC...', (doneLog.length ? doneLog.length + ' fertig' : ''));
                 setStatus(tag + ': prüfe Challenge...');
                 syncSbcWithOpenChallenge();
                 if (!findSbcController() || !findLiveChallenge()) {
                     throw new Error(tag + ': keine offene SBC-Ansicht.');
                 }
-                if (!matchesPlannedSbc(plan)) {
+                if (!matchesPlannedRound(plan, i)) {
                     throw new Error(tag + ': die offene SBC passt nicht zum Plan ' +
-                        '(Ziel ' + STATE.sbc.targetOVR + '/' + STATE.sbc.formationSlots + ' statt ' +
-                        plan.targetOVR + '/' + plan.slots + '). Nichts eingetragen.');
+                        '(Ziel ' + STATE.sbc.targetOVR + '/' + STATE.sbc.formationSlots +
+                        ', Challenge ' + STATE.sbc.challengeId + ' statt ' +
+                        (isQueue ? (round.target + '/' + round.slots + ', Challenge ' +
+                                    round.challengeId)
+                                 : (plan.targetOVR + '/' + plan.slots)) +
+                        '). Nichts eingetragen.');
                 }
                 // Die JETZT offene Instanz merken - sie ist nach dem Abgeben
                 // verbraucht und darf beim Suchen der neuen nicht wieder kommen.
@@ -7928,7 +8386,7 @@
                 done++;
                 doneLog.push('Team ' + (i + 1) + ': OVR ' + round.ovr + ' abgegeben');
                 log('[Batch] Team ' + (i + 1) + '/' + n + ' abgegeben (OVR ' + round.ovr + ').');
-                if (i + 1 < n) {
+                if (i + 1 < n && !isQueue) {
                     showProgress(i + 2, n, 'öffne die nächste SBC...', (doneLog.length ? doneLog.length + ' fertig' : ''));
                     setStatus(tag + ': öffne die nächste Runde...');
                     const next = await openNextInstance(plan);
@@ -7962,6 +8420,11 @@
             // Zahl damit exakt statt Untergrenze. Bewusst hier und nicht pro
             // Runde - siehe LEARNINGS 7.
             quotaMeasureQuiet();
+            // Die Reihen-Liste ist nach dem Lauf veraltet: die gerade
+            // abgegebenen Challenges standen weiter als offen da. Ein Reihen-
+            // Lauf ist selten und bewusst ausgeloest - dafuer ist ein Request
+            // in Ordnung.
+            if (isQueue) { queueTriedSet = null; loadQueueList(true); }
             let html = doneLog.length
                 ? '<div class="sbc-opt-batch-round">' + doneLog.map(escapeHtml).join('<br>') + '</div>' : '';
             if (stopped) {
@@ -7976,6 +8439,7 @@
                 toast(done + ' von ' + n + ' SBCs eingetragen und abgegeben.', 'ok');
             }
             ui.batchPreview.innerHTML = html;
+            if (ui.planResult && !html) ui.planResult.classList.add('sbc-opt-hidden');
         }
     }
     // ---- Helfer, die auch die Diagnose nutzt -------------------------------
@@ -8078,6 +8542,216 @@
      * Das ist gleichzeitig der VERLAESSLICHSTE Hinweis darauf, dass wir in der
      * Pack-Ansicht sind: der Controller-Name half nicht (siehe inStoreView).
      */
+    // ======================================================================
+    //  SBC-REIHE: Auswahl, Liste, Planung
+    // ======================================================================
+    // Zustand: die zuletzt gelesene Liste und welche Haken gesetzt sind. Die
+    // Haken ueberleben ein Neu-Rendern (der Abschnitt baut sich neu auf, sooft
+    // die Liste kommt) - sonst waere jedes ↻ ein Zuruecksetzen der Auswahl.
+    let queueItems = [];
+    let queueChecked = {};
+    let queueLoadedSet = null;
+    let queueLoading = false;
+    // Fuer welches Set wurde das Laden schon EINMAL versucht? Ohne diesen
+    // Merker wuerde ein Fehlversuch alle 500ms wiederholt - genau die Sorte
+    // Dauerfeuer, die live schon einmal Rate-Limit-401er ausgeloest hat
+    // (LEARNINGS 7/30). Das ↻ bleibt der Weg, es erneut zu versuchen.
+    let queueTriedSet = null;
+    /**
+     * Welche Challenges sind angehakt - in der Reihenfolge der Liste?
+     * Rein (Liste + Haken kommen herein), damit die Zuordnung testbar ist:
+     * sie entscheidet, welche SBCs abgegeben werden.
+     */
+    function queueSelection(items, checked) {
+        const out = [];
+        for (const it of items || []) {
+            if (!it || it.done) continue;                 // erledigte nie
+            if (!checked[String(it.id)]) continue;
+            out.push(it);
+        }
+        return out;
+    }
+    /** Kurzer Zustandstext einer Challenge fuer die Liste. */
+    function queueRowStatus(it) {
+        if (!it) return '';
+        if (it.done) return 'erledigt';
+        if (it.target == null) return 'kein Ziel-OVR';
+        return (it.slots || 11) + ' Slots';
+    }
+    function renderQueueList() {
+        const box = ui.queueList;
+        if (!box) return;
+        box.innerHTML = '';
+        if (!queueItems.length) {
+            box.innerHTML = '<div class="sbc-opt-debug">' +
+                (queueLoading ? 'lade die SBCs dieses Sets...'
+                              : 'keine Liste geladen - ↻ drücken.') + '</div>';
+            return;
+        }
+        for (const it of queueItems) {
+            const row = document.createElement('label');
+            row.className = 'sbc-opt-queuerow' + (it.done ? ' done' : '');
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.disabled = !!it.done;
+            cb.checked = !it.done && !!queueChecked[String(it.id)];
+            cb.addEventListener('change', function () {
+                queueChecked[String(it.id)] = cb.checked;
+            });
+            const ovr = document.createElement('span');
+            ovr.className = 'ovr';
+            ovr.textContent = (it.target != null) ? String(it.target) : '–';
+            const nm = document.createElement('span');
+            nm.className = 'nm';
+            nm.textContent = it.name;
+            nm.title = it.name + ' (Challenge ' + it.id + ')';
+            const st = document.createElement('span');
+            st.className = 'st';
+            st.textContent = queueRowStatus(it);
+            row.appendChild(cb); row.appendChild(ovr);
+            row.appendChild(nm); row.appendChild(st);
+            box.appendChild(row);
+        }
+    }
+    /**
+     * Die Challenges des offenen Sets holen. Aus dem Cache, wenn er da ist -
+     * die Antwort liegt nach dem Oeffnen einer SBC ohnehin vor. `force` (das ↻)
+     * holt sie neu.
+     */
+    async function loadQueueList(force) {
+        const sid = STATE.sbc.setId;
+        if (sid == null) { toast('Kein Set erkannt - bitte eine SBC öffnen.', 'error'); return; }
+        if (queueLoading) return;
+        queueLoading = true;
+        renderQueueList();
+        try {
+            let json = (STATE.setChallengesBySet || {})[sid];
+            if (force || !json) {
+                json = await apiGet((STATE.sbc.apiPrefix || 'sbs') + '/setId/' + sid + '/challenges');
+                if (json) {
+                    if (typeof cacheSetChallenges === 'function') cacheSetChallenges(sid, json);
+                    else STATE.setChallengesBySet[sid] = json;
+                    STATE.lastSetChallenges = json;
+                }
+            }
+            STATE.diag.scanStats = STATE.diag.scanStats || {};
+            const items = buildChallengeList(json, STATE.diag.scanStats);
+            queueItems = items;
+            queueLoadedSet = sid;
+            // Vorbelegung: alles Offene angehakt - Rasmus' Beispiel war "die
+            // 89er, 90er und 91er", also der Normalfall "alle". Abwaehlen ist
+            // weniger Arbeit als dreimal anwaehlen. Was der Nutzer schon von
+            // Hand umgestellt hat, bleibt so.
+            for (const it of items) {
+                const k = String(it.id);
+                if (!(k in queueChecked)) queueChecked[k] = !it.done && it.target != null;
+            }
+            STATE.diag.queueScan = { setId: sid, count: items.length,
+                items: items.slice(0, 12).map(function (it) {
+                    return { id: it.id, name: it.name, target: it.target,
+                             slots: it.slots, done: it.done, status: it.state.status };
+                }) };
+            log('SBC-Reihe: ' + items.length + ' Challenge(s) in Set ' + sid);
+        } catch (e) {
+            reportError('SBC-Liste laden fehlgeschlagen', e);
+            toast('SBC-Liste laden fehlgeschlagen: ' + (e && e.message), 'error');
+        } finally {
+            queueLoading = false;
+            renderQueueList();
+            syncQueueSection();
+        }
+    }
+    /**
+     * Sichtbarkeit: der Abschnitt gehoert in die SBC-Ansicht und nur dann,
+     * wenn das Set ueberhaupt mehr als eine Challenge hat - bei einer einzigen
+     * ist "Optimieren + Eintragen" der richtige Knopf.
+     * Beim Wechsel in ein anderes Set wird die Liste EINMAL nachgeladen (aus
+     * dem Cache, ohne Request, wenn er da ist) - kein Nachladen im Takt, siehe
+     * LEARNINGS 7.
+     */
+    function syncQueueSection() {
+        if (!ui.queueSection) return;
+        const sid = STATE.sbc.setId;
+        if (sid != null && queueLoadedSet !== sid && queueTriedSet !== sid &&
+            !queueLoading && inSbcView() && !throttledNow()) {
+            queueTriedSet = sid;
+            queueItems = [];
+            queueChecked = {};
+            // Kein await: die Sichtbarkeits-Pruefung laeuft im Takt und darf
+            // nicht darauf warten. loadQueueList() rendert selbst nach.
+            loadQueueList(false);
+        }
+        const show = inSbcView() && queueLoadedSet === sid && queueItems.length > 1;
+        ui.queueSection.classList.toggle('sbc-opt-hidden', !show);
+    }
+    /**
+     * Die angehakten SBCs planen. Schrittweise, mit Rueckgabe an den Browser
+     * zwischen den Challenges - ein Solver-Lauf pro Challenge, und die Seite
+     * darf dabei nicht einfrieren.
+     */
+    async function onQueuePlanClick() {
+        const chosen = queueSelection(queueItems, queueChecked);
+        if (!chosen.length) { toast('Keine SBC angehakt.', 'error'); return; }
+        if (!STATE.pool.length) { toast('Pool leer. Bitte zuerst "Spieler laden".', 'error'); return; }
+        if (STATE.loadIncomplete) {
+            toast('ACHTUNG: Der Pool war beim Planen unvollständig geladen (' + STATE.pool.length +
+                ' Karten) - der Plan kann auf fehlenden Karten beruhen.', 'warn');
+        }
+        ui.queuePlan.disabled = true;
+        ui.batchPlan.disabled = true;
+        setStatus('plane ' + chosen.length + ' SBC(s)...');
+        try {
+            const tim = { total: 0, rounds: [] };
+            const tAll = Date.now();
+            const baseCfg = readConfig();
+            const st = beginQueue(STATE.pool, baseCfg);
+            for (let i = 0; i < chosen.length; i++) {
+                showProgress(i + 1, chosen.length,
+                    'plane ' + chosen[i].name + '...',
+                    (st.rounds.length ? st.rounds.length + ' fertig' : ''));
+                await sleep(0);          // VOR dem Rechnen - sonst kein Frame
+                const tr = Date.now();
+                queueRound(st, chosen[i]);
+                tim.rounds.push(Date.now() - tr);
+            }
+            const plan = finishQueue(st);
+            plan.mode = 'reihe';
+            plan.cfg = baseCfg;
+            plan.setId = STATE.sbc.setId;
+            plan.poolLoadIncomplete = STATE.loadIncomplete;
+            // In der Reihe traegt JEDE Runde ihr eigenes Ziel; die Plan-Felder
+            // targetOVR/slots bleiben leer, damit niemand sie versehentlich als
+            // gemeinsame Vorgabe liest.
+            plan.targetOVR = null;
+            plan.slots = null;
+            plan.usedChallengeIds = [];
+            plan.setName = (function () {
+                try {
+                    const c = findSbcController();
+                    const se = c && (c._set || c.set);
+                    return (se && (se.name || se.setName)) || null;
+                } catch (e) { return null; }
+            })();
+            STATE.batch = plan;
+            renderBatchPreview(plan);
+            tim.total = Date.now() - tAll;
+            STATE.diag.batchPlanTiming = tim;
+            try { STATE.diag.solverProfile = SolverCore.lastProfiles(); } catch (e) {}
+            // Uebersprungene benennen - sonst waere unklar, warum aus drei
+            // Haken zwei Teams geworden sind.
+            for (const sk of plan.skipped || []) {
+                toast('"' + sk.step.name + '" übersprungen: ' + sk.reason, 'warn');
+            }
+            finishProgress(plan.planned + ' von ' + chosen.length + ' SBC(s) geplant', true);
+            setStatus(plan.planned + ' von ' + chosen.length + ' SBC(s) geplant');
+        } catch (e) {
+            toast('Planung fehlgeschlagen: ' + e.message, 'error');
+            reportError('SBC-Reihe planen fehlgeschlagen', e);
+        } finally {
+            ui.queuePlan.disabled = false;
+            ui.batchPlan.disabled = false;
+        }
+    }
     function packOpenButtons() {
         const out = [];
         try {
@@ -9175,7 +9849,9 @@
         // Menüpunkt in der EA-Leiste: häufiger als der 2s-Watchdog, damit er
         // beim View-Wechsel praktisch sofort steht. Kostet nur zwei
         // DOM-Lookups - deutlich billiger als ein Observer über die ganze App.
-        setInterval(function () { try { syncLauncher(); syncPackSection(); } catch (e) {} }, 500);
+        setInterval(function () {
+            try { syncLauncher(); syncPackSection(); syncQueueSection(); } catch (e) {}
+        }, 500);
         // App-Services erscheinen erst nach dem App-Start.
         setInterval(installServicesHooks, 1000);
         // AUTO-LOAD: den Pool EINMAL im Hintergrund laden, sobald die Session

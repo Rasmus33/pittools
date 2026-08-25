@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.97.0
+// @version      4.98.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.97.0';
+    const VERSION = '4.98.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -5027,12 +5027,63 @@
     // fehlschlagen koennen.
     const ICON_URI = 'data:image/png;base64,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';
     function injectStyles() {
+        // ------------------------------------------------------------------
+        //  DESIGN-TOKENS
+        // ------------------------------------------------------------------
+        // Warum auf :root und nicht am Panel: unsere Elemente sind ueber die
+        // ganze Seite verteilt - der FAB, das Fortschritts-Fenster, die Toasts
+        // und der Knopf an EAs Pack-Kachel stehen NICHT im Panel. Ein
+        // gemeinsamer Ort ist die einzige Variante, die fuer alle gilt. Das
+        // --pt--Praefix schliesst eine Kollision mit EAs Variablen aus, und
+        // Variablen wirken nur, wo sie benutzt werden - EAs Oberflaeche
+        // aendert sich dadurch nicht.
         const css = `
+        :root {
+            /* Marke */
+            --pt-accent:#00e0b8;      /* Akzent: Zahlen, Titel, Fokus */
+            --pt-accent-2:#0077ff;    /* zweiter Marken-Ton, nur Verlaeufe */
+            --pt-on-accent:#001018;   /* Text AUF dem Akzent */
+            /* Bedeutungen */
+            --pt-sel:#2b6cb0;         /* AUSGEWAEHLT (Segment, Kachel-Knopf) */
+            --pt-sel-hi:#3179c4;
+            --pt-plan:#6b46c1;        /* Planen (hebt sich von Diagnose ab) */
+            --pt-plan-hi:#7b53d8;
+            --pt-danger:#c0392b;      /* unumkehrbar: abgeben, verwerten */
+            --pt-danger-hi:#d4452f;
+            --pt-warn:#ffcf4d;
+            --pt-warn-2:#ffb454;
+            --pt-bad:#ff6b6b;
+            --pt-bad-2:#ff5470;
+            /* Flaechen, von dunkel nach hell */
+            --pt-sunken:#0b1219;      /* Eingabefeld, Vertiefung */
+            --pt-bg:#0f1620;          /* Panel */
+            --pt-surface:#131e2b;     /* Kasten IM Panel */
+            --pt-raised:#1c2938;      /* Knopf "ghost" */
+            --pt-hover:#16283a;       /* Zeile/Segment unter dem Finger */
+            /* Linien */
+            --pt-line:#1f2b3a;        /* Trennlinie, Kasten-Rahmen */
+            --pt-line-2:#24405f;      /* Feld-Rahmen (deutlicher) */
+            --pt-line-3:#2f4a68;      /* Rahmen unter dem Finger */
+            /* Text, drei Rollen statt vier zufaelliger Grautoene */
+            --pt-text:#e6edf3;
+            --pt-muted:#9db2c8;       /* Beschriftungen */
+            --pt-faint:#8299b0;       /* Nebeninfos (war #7d93ab: zu dunkel) */
+            /* Masse */
+            --pt-r-s:6px;             /* klein: Feld, Chip, Plakette */
+            --pt-r-m:8px;             /* mittel: Kasten, Knopf */
+            --pt-r-l:14px;            /* gross: Panel, Fenster */
+            --pt-tap:40px;            /* Trefferflaeche einer Hauptaktion */
+            --pt-shadow:0 8px 40px rgba(0,0,0,.6);
+            --pt-font:'Segoe UI', Roboto, system-ui, sans-serif;
+        }
+        /* ------------------------------------------------------------------
+           EINSTIEG: FAB und der Knopf in EAs Aktionsleiste
+           ------------------------------------------------------------------ */
         #sbc-opt-fab {
             position: fixed; right: 22px; bottom: 22px; z-index: 999999;
             width: 56px; height: 56px; border-radius: 50%;
-            background: linear-gradient(135deg,#00e0b8,#0077ff);
-            color: #001018; font-size: 26px; border: none; cursor: grab;
+            background: linear-gradient(135deg,var(--pt-accent),var(--pt-accent-2));
+            color: var(--pt-on-accent); font-size: 26px; border: none; cursor: grab;
             box-shadow: 0 4px 18px rgba(0,0,0,.5); display: flex;
             align-items: center; justify-content: center;
             transition: transform .15s ease; padding: 0; overflow: hidden;
@@ -5040,6 +5091,7 @@
             touch-action: none;
         }
         #sbc-opt-fab:hover { transform: scale(1.08); }
+        #sbc-opt-fab:active { transform: scale(.96); }
         #sbc-opt-fab.sbc-opt-dragging { cursor: grabbing; transform: scale(1.12); opacity: .9; }
         #sbc-opt-fab img {
             width: 38px; height: 38px; border-radius: 50%;
@@ -5048,30 +5100,6 @@
         #sbc-opt-fab.sbc-opt-hidden { display: none; }
         #sbc-opt-packsection.sbc-opt-hidden { display: none; }
         #sbc-opt-queuesection.sbc-opt-hidden { display: none; }
-        /* SBC-REIHE: eine Zeile pro Challenge des Sets, zum Anhaken. */
-        .sbc-opt-queuerow {
-            display:flex; align-items:center; gap:9px; cursor:pointer;
-            padding:7px 9px; margin-bottom:4px; border-radius:7px;
-            background:#0b1219; border:1px solid #1f2b3a;
-        }
-        .sbc-opt-queuerow:hover { border-color:#2f4a68; }
-        .sbc-opt-queuerow input { width:auto; flex:0 0 auto; margin:0; }
-        /* Das Ziel-OVR ist die Zahl, nach der Rasmus die SBC sucht - sie steht
-           deshalb als Plakette vorn, wie im Spiel. */
-        .sbc-opt-queuerow .ovr {
-            flex:0 0 auto; min-width:30px; text-align:center;
-            background:#1d2a38; border-radius:5px; padding:2px 5px;
-            font-weight:700; font-size:12px; color:#00e0b8;
-        }
-        .sbc-opt-queuerow .nm {
-            flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
-            white-space:nowrap; font-size:12px; color:#e6edf3;
-        }
-        .sbc-opt-queuerow .st { flex:0 0 auto; font-size:11px; color:#7d93ab; }
-        /* Erledigte Challenges bleiben SICHTBAR (sonst waere unklar, warum die
-           Liste kuerzer ist als im Spiel), aber gedaempft und nicht angehakt. */
-        .sbc-opt-queuerow.done { opacity:.5; }
-        .sbc-opt-queuerow.done .ovr { color:#7d93ab; }
         /* Button in der SBC-Aktionsleiste (.sbc-button-container - dort stehen
            "Use Squad Builder" / "Clear Squad"). Die Klassen eines echten
            Nachbar-Buttons werden zur Laufzeit kopiert, hier nur das Nötige
@@ -5084,27 +5112,56 @@
             width: 1.4em; height: 1.4em; border-radius: 50%;
             display: block; flex: 0 0 auto;
         }
-        #pittools-sbc-btn.pittools-active { outline: 2px solid #00e0b8; }
+        #pittools-sbc-btn.pittools-active { outline: 2px solid var(--pt-accent); }
+        /* ------------------------------------------------------------------
+           PANEL
+           ------------------------------------------------------------------ */
         #sbc-opt-panel {
             position: fixed; right: 22px; bottom: 90px; z-index: 999999;
-            width: 340px; max-height: 78vh; overflow-y: auto;
-            background: #0f1620; color: #e6edf3; border: 1px solid #1f2b3a;
-            border-radius: 14px; box-shadow: 0 8px 40px rgba(0,0,0,.6);
-            font-family: 'Segoe UI', Roboto, sans-serif; font-size: 13px;
+            /* Feste 340px liefen auf schmalen Schirmen aus dem Bild. */
+            width: min(340px, calc(100vw - 24px));
+            max-height: 78vh; overflow-y: auto; overscroll-behavior: contain;
+            background: var(--pt-bg); color: var(--pt-text);
+            border: 1px solid var(--pt-line);
+            border-radius: var(--pt-r-l); box-shadow: var(--pt-shadow);
+            font-family: var(--pt-font); font-size: 13px;
             display: none; padding: 0;
+            /* Ohne das zeichnet Android eine helle Scrollbar in ein dunkles
+               Panel. */
+            scrollbar-width: thin;
+            scrollbar-color: var(--pt-line-2) transparent;
+        }
+        #sbc-opt-panel::-webkit-scrollbar { width: 10px; }
+        #sbc-opt-panel::-webkit-scrollbar-track { background: transparent; }
+        #sbc-opt-panel::-webkit-scrollbar-thumb {
+            background: var(--pt-line-2); border-radius: 6px;
+            border: 3px solid var(--pt-bg);
         }
         #sbc-opt-panel.open { display: block; }
         .sbc-opt-header {
-            background: linear-gradient(135deg,#00e0b8,#0077ff);
-            color:#001018; font-weight:700; font-size:15px;
-            padding:12px 16px; border-radius:14px 14px 0 0;
+            background: linear-gradient(135deg,var(--pt-accent),var(--pt-accent-2));
+            color:var(--pt-on-accent); font-weight:700; font-size:15px;
+            padding:12px 16px; border-radius:var(--pt-r-l) var(--pt-r-l) 0 0;
             display:flex; justify-content:space-between; align-items:center;
             cursor:move; user-select:none; touch-action:none;
+            /* Klebt beim Scrollen oben - der Zuklapp-Knopf und der Ziehgriff
+               bleiben erreichbar, auch wenn das Panel lang geworden ist. */
+            position: sticky; top: 0; z-index: 2;
         }
         .sbc-opt-header img.sbc-opt-logo {
             width:18px; height:18px; border-radius:50%;
             vertical-align:-4px; margin-right:6px;
         }
+        #sbc-opt-close {
+            /* Vorher ein nackter Text von ~12px. Ein Zuklapp-Knopf ist die
+               Aktion, die man am Handy am haeufigsten trifft (oder verfehlt). */
+            width:26px; height:26px; border-radius:50%;
+            display:flex; align-items:center; justify-content:center;
+            font-size:15px; line-height:1; flex:0 0 auto;
+            transition: background .12s ease;
+        }
+        #sbc-opt-close:hover { background: rgba(0,0,0,.18); }
+        #sbc-opt-close:active { background: rgba(0,0,0,.3); }
         /* Guertel zum Hosentraeger oben: was trotzdem zu breit wird, wird
            abgeschnitten statt die ganze Seite seitlich scrollen zu lassen. */
         .sbc-opt-body { padding: 14px 16px; overflow-x: hidden; }
@@ -5113,41 +5170,57 @@
            Batch-Team-Details (Ticket #73) - eine Stelle statt zweier
            synchron zu haltender Kopien. */
         .sbc-opt-details-toggle summary {
-            cursor: pointer; color: #9db2c8; font-weight: 600;
-            padding: 8px 10px; background: #131e2b; border: 1px solid #1f2b3a;
-            border-radius: 8px; user-select: none; list-style: none;
+            cursor: pointer; color: var(--pt-muted); font-weight: 600;
+            padding: 10px 12px; background: var(--pt-surface);
+            border: 1px solid var(--pt-line);
+            border-radius: var(--pt-r-m); user-select: none; list-style: none;
+            transition: background .12s ease, border-color .12s ease;
+        }
+        .sbc-opt-details-toggle summary:hover {
+            background: var(--pt-hover); border-color: var(--pt-line-3);
         }
         .sbc-opt-details-toggle summary::-webkit-details-marker { display: none; }
-        .sbc-opt-details-toggle summary::before { content: '▸ '; color: #00e0b8; }
+        .sbc-opt-details-toggle summary::before { content: '▸ '; color: var(--pt-accent); }
         .sbc-opt-details-toggle[open] summary::before { content: '▾ '; }
         .sbc-opt-details-toggle[open] summary { margin-bottom: 10px; }
         .sbc-opt-info {
-            background:#131e2b; border:1px solid #1f2b3a; border-radius:8px;
-            padding:8px 10px; margin-bottom:12px; line-height:1.6;
+            background:var(--pt-surface); border:1px solid var(--pt-line);
+            border-radius:var(--pt-r-m);
+            padding:10px 12px; margin-bottom:12px; line-height:1.6;
         }
-        .sbc-opt-info b { color:#00e0b8; }
-        #sbc-opt-availability { font-size:12px; margin-top:4px; color:#9db2c8; }
+        .sbc-opt-info b { color:var(--pt-accent); }
+        #sbc-opt-availability { font-size:12px; margin-top:4px; color:var(--pt-muted); }
         /* Gleiche Warnfarbe wie .sbc-opt-warn/Toast-Warnungen - kein neues
            Farbschema fuer "verfuegbar < gefordert". */
-        #sbc-opt-availability .low { color:#ffcf4d; font-weight:700; }
-        .sbc-opt-debug { color:#7d93ab; font-size:11px; margin-top:4px; }
+        #sbc-opt-availability .low { color:var(--pt-warn); font-weight:700; }
+        .sbc-opt-debug { color:var(--pt-faint); font-size:11px; margin-top:4px; }
         /* Seltenheit in der Zieh-Liste: dieselbe gedaempfte Farbe wie die
            uebrigen Nebeninfos, damit Name + Rating fuehrend bleiben. */
-        .sbc-opt-dim { color:#7d93ab; }
+        .sbc-opt-dim { color:var(--pt-faint); }
+        /* Rollen-Klassen statt Farben im Markup: sonst waeren die Tokens
+           nur die halbe Wahrheit - sieben inline-Farben standen weiter im
+           HTML, drei davon in dem zu dunklen Grauton. */
+        .sbc-opt-muted { color:var(--pt-muted); }
+        /* ------------------------------------------------------------------
+           FELDER
+           ------------------------------------------------------------------ */
         .sbc-opt-row { margin-bottom:12px; }
-        .sbc-opt-row label { display:block; margin-bottom:4px; color:#9db2c8; font-size:12px; }
+        .sbc-opt-row label { display:block; margin-bottom:4px; color:var(--pt-muted); font-size:12px; }
         /* Feld-Optik fuer ALLE Felder im Panel. Vorher hing die Regel an
            .sbc-opt-row - das Pack-Dropdown steht in einem .sbc-opt-inline und
            blieb deshalb ein natives weisses Select (Rasmus: "ultra haesslich").
            Ein Selektor statt zweier, die synchron zu halten waeren. */
         #sbc-opt-panel input[type=number], #sbc-opt-panel input[type=text],
         #sbc-opt-panel select {
-            width:100%; background:#0b1219; color:#e6edf3;
-            border:1px solid #24405f; border-radius:6px; padding:7px 9px; font-size:13px;
+            width:100%; background:var(--pt-sunken); color:var(--pt-text);
+            border:1px solid var(--pt-line-2); border-radius:var(--pt-r-s);
+            padding:8px 10px; font-size:13px;
             font-family:inherit; box-sizing:border-box;
+            transition: border-color .12s ease, box-shadow .12s ease;
         }
         #sbc-opt-panel input:focus, #sbc-opt-panel select:focus {
-            outline:none; border-color:#00e0b8;
+            outline:none; border-color:var(--pt-accent);
+            box-shadow: 0 0 0 3px rgba(0,224,184,.16);
         }
         /* Ein <select> ist nur bis auf den Aufklapp-Pfeil stylebar - der wird
            deshalb abgeschaltet und selbst gezeichnet. color-scheme:dark
@@ -5162,7 +5235,12 @@
             background-repeat:no-repeat;
             background-position:right 10px center;
         }
-        #sbc-opt-panel select option { background:#0b1219; color:#e6edf3; }
+        #sbc-opt-panel select option { background:var(--pt-sunken); color:var(--pt-text); }
+        /* Anhaken: die Browser-Voreinstellung ist ~13px und am Handy zu klein. */
+        #sbc-opt-panel input[type=checkbox] {
+            width:18px; height:18px; flex:0 0 auto; cursor:pointer;
+            accent-color: var(--pt-accent);
+        }
         .sbc-opt-inline { display:flex; align-items:center; gap:8px; }
         .sbc-opt-inline input[type=number] { flex:1; }
         /* WARUM min-width:0: ein Flex-Kind hat min-width:auto und kann
@@ -5174,175 +5252,272 @@
         .sbc-opt-toggle { display:flex; align-items:center; gap:8px; cursor:pointer; }
         .sbc-opt-toggle input { width:auto; }
         .sbc-opt-group-title {
-            color:#00e0b8; font-size:11px; font-weight:700; text-transform:uppercase;
-            letter-spacing:.03em; margin:14px 0 6px;
+            color:var(--pt-accent); font-size:11px; font-weight:700; text-transform:uppercase;
+            letter-spacing:.04em; margin:16px 0 8px;
         }
         .sbc-opt-group-title:first-of-type { margin-top:0; }
         .sbc-opt-compact { display:flex; align-items:center; gap:8px; }
         .sbc-opt-compact label { flex:1; margin-bottom:0; }
         .sbc-opt-compact select { width:auto; min-width:110px; }
+        /* ------------------------------------------------------------------
+           KNOEPFE
+           ------------------------------------------------------------------ */
         .sbc-opt-btn {
-            width:100%; border:none; border-radius:8px; padding:10px;
-            font-weight:700; font-size:13px; cursor:pointer; margin-top:6px;
+            width:100%; border:none; border-radius:var(--pt-r-m);
+            /* min-height statt nur padding: 40px ist die Groesse, die am Handy
+               zuverlaessig zu treffen ist. Vorher waren es ~37px. */
+            min-height:var(--pt-tap); padding:10px 12px;
+            font-weight:700; font-size:13px; font-family:inherit;
+            cursor:pointer; margin-top:8px;
+            transition: filter .12s ease, transform .06s ease;
         }
-        .sbc-opt-btn.primary { background:#00e0b8; color:#001018; }
-        .sbc-opt-btn.blue { background:#0077ff; color:#fff; }
-        .sbc-opt-btn.ghost { background:#1c2938; color:#cfe0f2; }
+        /* DRUCK-FEEDBACK. Am Handy gibt es kein :hover - ohne :active hat ein
+           Tap ueberhaupt keine Rueckmeldung, und man tippt zweimal. */
+        .sbc-opt-btn:hover:not(:disabled) { filter: brightness(1.1); }
+        .sbc-opt-btn:active:not(:disabled) { transform: translateY(1px); filter: brightness(.94); }
+        .sbc-opt-btn.primary { background:var(--pt-accent); color:var(--pt-on-accent); }
+        .sbc-opt-btn.blue { background:var(--pt-accent-2); color:#fff; }
+        .sbc-opt-btn.ghost {
+            background:var(--pt-raised); color:#cfe0f2;
+            box-shadow: inset 0 0 0 1px var(--pt-line);
+        }
         /* "Teams planen" hebt sich von "Diagnose" ab (Rasmus): der
            Diagnose-Knopf ist ghost, beide standen vorher gleich da. */
-        .sbc-opt-btn.plan { background:#6b46c1; color:#f2edff; }
-        /* Fortschritt während des Batch-Laufs: mittig über allem, damit man
-           nicht im Panel nach dem Status suchen muss. */
+        .sbc-opt-btn.plan { background:var(--pt-plan); color:#f2edff; }
+        /* Rot: gibt SBCs endgültig ab, das ist nicht rückholbar. */
+        .sbc-opt-btn.danger { background:var(--pt-danger); color:#fff; }
+        .sbc-opt-btn:disabled { opacity:.5; cursor:not-allowed; }
+        /* Fokus NUR bei Tastatur (:focus-visible) - ein Ring nach jedem
+           Fingertipp waere Laerm. */
+        #sbc-opt-panel :focus-visible, #sbc-opt-fab:focus-visible {
+            outline: 2px solid var(--pt-accent); outline-offset: 2px;
+        }
+        /* ------------------------------------------------------------------
+           SBC-REIHE: eine Zeile pro Challenge des Sets, zum Anhaken
+           ------------------------------------------------------------------ */
+        .sbc-opt-queuerow {
+            display:flex; align-items:center; gap:10px; cursor:pointer;
+            padding:9px 10px; margin-bottom:5px; border-radius:var(--pt-r-s);
+            background:var(--pt-sunken); border:1px solid var(--pt-line);
+            transition: background .12s ease, border-color .12s ease;
+        }
+        .sbc-opt-queuerow:hover { border-color:var(--pt-line-3); background:var(--pt-hover); }
+        .sbc-opt-queuerow input { width:auto; flex:0 0 auto; margin:0; }
+        /* Das Ziel-OVR ist die Zahl, nach der Rasmus die SBC sucht - sie steht
+           deshalb als Plakette vorn, wie im Spiel. */
+        .sbc-opt-queuerow .ovr {
+            flex:0 0 auto; min-width:32px; text-align:center;
+            background:var(--pt-raised); border-radius:var(--pt-r-s); padding:3px 6px;
+            font-weight:700; font-size:12px; color:var(--pt-accent);
+        }
+        .sbc-opt-queuerow .nm {
+            flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
+            white-space:nowrap; font-size:12px; color:var(--pt-text);
+        }
+        .sbc-opt-queuerow .st { flex:0 0 auto; font-size:11px; color:var(--pt-faint); }
+        /* Erledigte Challenges bleiben SICHTBAR (sonst waere unklar, warum die
+           Liste kuerzer ist als im Spiel), aber gedaempft und nicht angehakt. */
+        .sbc-opt-queuerow.done { opacity:.5; cursor:default; }
+        .sbc-opt-queuerow.done:hover { border-color:var(--pt-line); background:var(--pt-sunken); }
+        .sbc-opt-queuerow.done .ovr { color:var(--pt-faint); }
+        /* ------------------------------------------------------------------
+           FORTSCHRITT
+           ------------------------------------------------------------------ */
+        /* Mittig über allem, damit man nicht im Panel nach dem Status suchen
+           muss. */
         #sbc-opt-progress {
             position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%);
             z-index: 1000000; display: none;
-            background: #0f1620; color: #e6edf3; border: 1px solid #24405f;
-            border-radius: 14px; box-shadow: 0 10px 50px rgba(0,0,0,.7);
-            padding: 18px 22px; min-width: 300px; text-align: center;
-            font-family: 'Segoe UI', Roboto, sans-serif;
+            background: var(--pt-bg); color: var(--pt-text);
+            border: 1px solid var(--pt-line-2);
+            border-radius: var(--pt-r-l); box-shadow: 0 10px 50px rgba(0,0,0,.7);
+            padding: 18px 22px; min-width: 300px; max-width: calc(100vw - 32px);
+            text-align: center; font-family: var(--pt-font);
         }
         #sbc-opt-progress.open { display: block; }
         #sbc-opt-progress .p-title {
-            font-size: 17px; font-weight: 700; color: #00e0b8; margin-bottom: 2px;
+            font-size: 17px; font-weight: 700; color: var(--pt-accent); margin-bottom: 2px;
         }
-        #sbc-opt-progress .p-step { font-size: 13px; color: #9db2c8; margin-bottom: 12px; }
+        #sbc-opt-progress .p-step { font-size: 13px; color: var(--pt-muted); margin-bottom: 12px; }
         #sbc-opt-progress .p-bar {
-            height: 8px; background: #1c2938; border-radius: 5px; overflow: hidden;
+            height: 8px; background: var(--pt-raised); border-radius: 5px; overflow: hidden;
         }
         #sbc-opt-progress .p-fill {
             height: 100%; width: 0%; border-radius: 5px;
-            background: linear-gradient(90deg,#00e0b8,#0077ff);
+            background: linear-gradient(90deg,var(--pt-accent),var(--pt-accent-2));
             transition: width .3s ease;
         }
-        #sbc-opt-progress .p-done { font-size: 12px; color: #7d93ab; margin-top: 10px; }
-        /* Rot: gibt SBCs endgültig ab, das ist nicht rückholbar. */
-        .sbc-opt-btn.danger { background:#c0392b; color:#fff; }
-        .sbc-opt-btn:disabled { opacity:.5; cursor:not-allowed; }
-        .sbc-opt-batch { margin-top:12px; padding-top:10px; border-top:1px solid #1f2b3a; }
+        #sbc-opt-progress .p-done { font-size: 12px; color: var(--pt-faint); margin-top: 10px; }
+        /* ------------------------------------------------------------------
+           BATCH / REIHE: Abschnitte, Vorschau, Team-Details
+           ------------------------------------------------------------------ */
+        .sbc-opt-batch { margin-top:14px; padding-top:12px; border-top:1px solid var(--pt-line); }
         #sbc-opt-batch-preview:empty { display:none; }
         /* Der Vorschau-Kasten ist die ganze Zeit im Markup, aber solange kein
            Plan existiert, waere er nur eine leere Trennlinie. */
         #sbc-opt-planresult.sbc-opt-hidden { display:none; }
         #sbc-opt-batch-preview, #sbc-opt-batch-detail-body {
-            background:#131e2b; border:1px solid #1f2b3a; border-radius:8px;
-            padding:8px 10px; margin-top:8px; font-size:12px; line-height:1.5;
-            max-height:340px; overflow-y:auto;
+            background:var(--pt-surface); border:1px solid var(--pt-line);
+            border-radius:var(--pt-r-m);
+            padding:10px 12px; margin-top:8px; font-size:12px; line-height:1.5;
+            max-height:340px; overflow-y:auto; overscroll-behavior: contain;
+            scrollbar-width: thin; scrollbar-color: var(--pt-line-2) transparent;
         }
         #sbc-opt-batch-details { margin-top:8px; }
-        .sbc-opt-batch-round { padding:3px 0; border-bottom:1px solid #1b2735; }
+        .sbc-opt-batch-round { padding:4px 0; border-bottom:1px solid #1b2735; }
         .sbc-opt-batch-round:last-child { border-bottom:none; }
-        .sbc-opt-batch-round b { color:#00e0b8; }
-        .sbc-opt-batch-warn { color:#ffb454; }
-        .sbc-opt-batch-bad { color:#ff6b6b; }
-        /* Schnellwahl: kleine Knoepfe unter dem Feld. Bewusst flach und
-           schmal - sie sollen Tipparbeit sparen, nicht Platz kosten. */
+        .sbc-opt-batch-round b { color:var(--pt-accent); }
+        .sbc-opt-batch-warn { color:var(--pt-warn-2); }
+        .sbc-opt-batch-bad { color:var(--pt-bad); }
         /* Knopf an EAs Pack-Kachel. Bewusst erkennbar ANDERS als EAs eigene
            Knoepfe (unsere Akzentfarbe), damit niemand ihn mit "Open"
            verwechselt - er oeffnet ALLE Packs des Typs. */
-        .sbc-opt-tilebtn { margin-left:8px; background:#2b6cb0; color:#fff;
-                           border:1px solid #3d8ad6; border-radius:6px;
-                           padding:6px 12px; font-size:13px; font-weight:600;
-                           cursor:pointer; vertical-align:middle; }
+        .sbc-opt-tilebtn {
+            margin-left:8px; background:var(--pt-sel); color:#fff;
+            border:1px solid #3d8ad6; border-radius:var(--pt-r-s);
+            padding:8px 14px; font-size:13px; font-weight:600;
+            font-family:var(--pt-font);
+            cursor:pointer; vertical-align:middle;
+            transition: filter .12s ease, transform .06s ease;
+        }
+        .sbc-opt-tilebtn:hover:not(:disabled) { filter: brightness(1.12); }
+        .sbc-opt-tilebtn:active:not(:disabled) { transform: translateY(1px); }
         .sbc-opt-tilebtn:disabled { opacity:.5; cursor:not-allowed; }
-        /* SEGMENT-SCHALTER (Rasmus: "das kann man optisch schoener loesen").
-           Eine Leiste, die Werte teilen sich die Breite gleichmaessig, der
-           aktive ist gefuellt. Die Trefferflaeche ist 34px hoch - am Handy war
-           die alte Chip-Zeile mit 24px an der Grenze. */
+        /* ------------------------------------------------------------------
+           SEGMENT-SCHALTER
+           ------------------------------------------------------------------ */
+        /* (Rasmus: "das kann man optisch schoener loesen".) Eine Leiste, die
+           Werte teilen sich die Breite gleichmaessig, der aktive ist gefuellt.
+           34px hoch - am Handy war die alte Chip-Zeile mit 24px an der Grenze;
+           40 wie bei den Hauptknoepfen waere hier zu wuchtig, weil drei
+           nebeneinander stehen. */
         .sbc-opt-chips {
             display:flex; gap:3px; margin:0 0 10px; align-items:stretch;
-            background:#0b1219; border:1px solid #24405f;
+            background:var(--pt-sunken); border:1px solid var(--pt-line-2);
             border-radius:9px; padding:3px;
         }
         /* Leer (noch nicht gerendert) soll die Leiste nicht als leerer Kasten
            herumstehen. */
         .sbc-opt-chips:empty { display:none; }
         .sbc-opt-chip {
-            flex:1 1 0; min-width:0; background:transparent; color:#9db2c8;
-            border:none; border-radius:6px; padding:0 6px; min-height:34px;
+            flex:1 1 0; min-width:0; background:transparent; color:var(--pt-muted);
+            border:none; border-radius:var(--pt-r-s); padding:0 6px; min-height:34px;
             font-size:13px; font-weight:600; font-family:inherit;
             cursor:pointer; line-height:34px; text-align:center;
             transition:background .12s ease, color .12s ease;
         }
-        .sbc-opt-chip:hover { background:#16283a; color:#e6edf3; }
-        .sbc-opt-chip.on { background:#2b6cb0; color:#fff; }
-        .sbc-opt-chip.on:hover { background:#3179c4; }
+        .sbc-opt-chip:hover { background:var(--pt-hover); color:var(--pt-text); }
+        .sbc-opt-chip:active { transform: translateY(1px); }
+        .sbc-opt-chip.on { background:var(--pt-sel); color:#fff; }
+        .sbc-opt-chip.on:hover { background:var(--pt-sel-hi); }
         /* ✎ ist der Notausgang, nicht die Hauptsache: schmal und gedaempft,
            aber am Ende DERSELBEN Leiste - nicht als vierter Wert. */
         .sbc-opt-chip.edit {
             flex:0 0 34px; opacity:.5; font-size:12px;
-            border-left:1px solid #1c2c3e; border-radius:0 6px 6px 0;
+            border-left:1px solid #1c2c3e; border-radius:0 var(--pt-r-s) var(--pt-r-s) 0;
         }
-        .sbc-opt-chip.edit:hover { opacity:1; background:#16283a; }
+        .sbc-opt-chip.edit:hover { opacity:1; background:var(--pt-hover); }
         .sbc-opt-chipedit { display:none; gap:6px; margin:0 0 10px; }
         .sbc-opt-chipedit input { flex:1; }
-        .sbc-opt-chipedit .sbc-opt-btn { margin:0; width:auto; flex:0 0 auto; padding:7px 14px; }
+        .sbc-opt-chipedit .sbc-opt-btn {
+            margin:0; width:auto; flex:0 0 auto; padding:8px 14px; min-height:38px;
+        }
         /* Beschriftung ueber dem Schalter: eigene Zeile, damit sie nicht
            neben einem Feld auf zwei Zeilen umbricht. */
         .sbc-opt-chiplabel {
-            display:block; margin:0 0 6px; color:#9db2c8; font-size:12px;
+            display:block; margin:0 0 6px; color:var(--pt-muted); font-size:12px;
         }
+        /* ------------------------------------------------------------------
+           KARTEN-LISTEN
+           ------------------------------------------------------------------ */
         .sbc-opt-batch-cards { margin:4px 0 2px; }
         .sbc-opt-batch-card {
-            font-size:11px; color:#cfe0f2; padding:1px 0;
+            font-size:11px; color:#cfe0f2; padding:2px 0;
             white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
         }
         .sbc-opt-batch-card .r {
-            display:inline-block; min-width:22px; font-weight:700; color:#e6edf3;
+            display:inline-block; min-width:22px; font-weight:700; color:var(--pt-text);
         }
-        .sbc-opt-batch-card .src { color:#7d93ab; }
-        .sbc-opt-batch-card .rar { color:#9db2c8; }
-        .sbc-opt-batch-card .untr { color:#6f8aa6; font-style:italic; }
-        .sbc-opt-batch-card.prot .rar { color:#ffb454; font-weight:700; }
+        .sbc-opt-batch-card .src { color:var(--pt-faint); }
+        .sbc-opt-batch-card .rar { color:var(--pt-muted); }
+        .sbc-opt-batch-card .untr { color:var(--pt-faint); font-style:italic; }
+        .sbc-opt-batch-card.prot .rar { color:var(--pt-warn-2); font-weight:700; }
         .sbc-opt-result {
-            margin-top:12px; background:#0b1219; border:1px solid #1f2b3a;
-            border-radius:8px; padding:10px; display:none;
+            margin-top:12px; background:var(--pt-sunken); border:1px solid var(--pt-line);
+            border-radius:var(--pt-r-m); padding:10px; display:none;
         }
         .sbc-opt-result.show { display:block; }
         .sbc-opt-player {
             display:flex; justify-content:space-between; align-items:center;
-            padding:4px 2px; border-bottom:1px solid #16212e;
+            padding:5px 2px; border-bottom:1px solid #16212e;
         }
         .sbc-opt-player:last-child { border-bottom:none; }
         .sbc-opt-badge {
-            background:#00e0b8; color:#001018; font-weight:700;
-            border-radius:5px; padding:1px 7px; font-size:12px; min-width:26px; text-align:center;
+            background:var(--pt-accent); color:var(--pt-on-accent); font-weight:700;
+            border-radius:5px; padding:2px 8px; font-size:12px; min-width:26px; text-align:center;
         }
-        .sbc-opt-badge.special { background:#ffcf4d; }
-        .sbc-opt-badge.storage { outline:2px solid #0077ff; }
+        .sbc-opt-badge.special { background:var(--pt-warn); }
+        .sbc-opt-badge.storage { outline:2px solid var(--pt-accent-2); }
         .sbc-opt-summary { margin:10px 0 4px; font-size:14px; }
-        .sbc-opt-summary b { color:#00e0b8; }
-        .sbc-opt-warn { color:#ffcf4d; font-size:12px; margin-top:6px; }
+        .sbc-opt-summary b { color:var(--pt-accent); }
+        .sbc-opt-warn { color:var(--pt-warn); font-size:12px; margin-top:6px; }
+        /* ------------------------------------------------------------------
+           RATING-KOSTEN-TABELLE
+           ------------------------------------------------------------------ */
         .sbc-opt-bandhead, .sbc-opt-bandrow {
             display:grid; grid-template-columns: 16px 1fr 1fr 1fr 26px; gap:4px;
             align-items:center; margin-bottom:4px;
         }
-        .sbc-opt-bandhead span { color:#7d93ab; font-size:11px; }
+        .sbc-opt-bandhead span { color:var(--pt-faint); font-size:11px; }
         .sbc-opt-bandrow input {
-            width:100%; background:#0b1219; color:#e6edf3;
-            border:1px solid #24405f; border-radius:6px; padding:4px 6px; font-size:12px;
+            width:100%; background:var(--pt-sunken); color:var(--pt-text);
+            border:1px solid var(--pt-line-2); border-radius:var(--pt-r-s);
+            padding:6px; font-size:12px;
         }
         .sbc-opt-bandrow button {
-            background:#1c2938; color:#ff5470; border:none; border-radius:6px;
-            cursor:pointer; padding:4px 0; font-size:12px;
+            background:var(--pt-raised); color:var(--pt-bad-2); border:none;
+            border-radius:var(--pt-r-s);
+            cursor:pointer; padding:6px 0; font-size:12px; font-family:inherit;
         }
+        .sbc-opt-bandrow button:hover { background:#25384c; }
         .sbc-opt-bandrow .sbc-opt-draghandle {
-            color:#7d93ab; cursor:grab; user-select:none; text-align:center;
+            color:var(--pt-faint); cursor:grab; user-select:none; text-align:center;
             font-size:13px; line-height:1;
         }
-        .sbc-opt-bandrow.sbc-opt-dragover { outline:2px dashed #00e0b8; border-radius:6px; }
-        .sbc-opt-bandrow.sbc-opt-bandinvalid { outline:2px solid #ff5470; border-radius:6px; }
+        .sbc-opt-bandrow.sbc-opt-dragover { outline:2px dashed var(--pt-accent); border-radius:var(--pt-r-s); }
+        .sbc-opt-bandrow.sbc-opt-bandinvalid { outline:2px solid var(--pt-bad-2); border-radius:var(--pt-r-s); }
+        /* ------------------------------------------------------------------
+           TOASTS
+           ------------------------------------------------------------------ */
         #sbc-opt-toast-wrap {
             position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%);
             z-index: 1000000; display:flex; flex-direction:column; gap:8px; align-items:center;
+            /* Durchklickbar: der Streifen liegt vor EAs Oberflaeche, und ein
+               Toast darf keinen Tap abfangen. */
+            pointer-events: none;
         }
         .sbc-opt-toast {
-            background:#131e2b; color:#e6edf3; border:1px solid #24405f;
-            border-left:4px solid #00e0b8; padding:10px 16px; border-radius:8px;
-            font-family:'Segoe UI',sans-serif; font-size:13px; box-shadow:0 4px 20px rgba(0,0,0,.5);
-            max-width:80vw;
+            background:var(--pt-surface); color:var(--pt-text); border:1px solid var(--pt-line-2);
+            border-left:4px solid var(--pt-accent); padding:11px 16px; border-radius:var(--pt-r-m);
+            font-family:var(--pt-font); font-size:13px; box-shadow:0 4px 20px rgba(0,0,0,.5);
+            max-width:min(80vw, 460px); line-height:1.45;
         }
-        .sbc-opt-toast.error { border-left-color:#ff5470; }
-        .sbc-opt-toast.warn { border-left-color:#ffcf4d; }
+        .sbc-opt-toast.error { border-left-color:var(--pt-bad-2); }
+        .sbc-opt-toast.warn { border-left-color:var(--pt-warn); }
+        /* ------------------------------------------------------------------
+           RUHE-EINSTELLUNG DES GERAETS RESPEKTIEREN
+           ------------------------------------------------------------------ */
+        @media (prefers-reduced-motion: reduce) {
+            #sbc-opt-fab, .sbc-opt-btn, .sbc-opt-chip, .sbc-opt-queuerow,
+            .sbc-opt-tilebtn, #sbc-opt-progress .p-fill,
+            #sbc-opt-panel input, #sbc-opt-panel select,
+            .sbc-opt-details-toggle summary, #sbc-opt-close {
+                transition: none;
+            }
+            #sbc-opt-fab:hover, #sbc-opt-fab:active,
+            .sbc-opt-btn:active:not(:disabled), .sbc-opt-chip:active,
+            .sbc-opt-tilebtn:active:not(:disabled) { transform: none; }
+        }
         `;
         const style = document.createElement('style');
         style.textContent = css;
@@ -5412,7 +5587,7 @@
                     </label>
                     <div class="sbc-opt-inline" style="margin-top:6px;">
                         <input type="number" id="sbc-opt-maxrating" value="85" min="1" max="99" title="Max. Rating">
-                        <span style="color:#9db2c8;">OVR</span>
+                        <span class="sbc-opt-muted">OVR</span>
                     </div>
                 </div>
                 <div class="sbc-opt-row">
@@ -5443,9 +5618,9 @@
                     <label>Gold-SBCs ohne Ziel-OVR: höchstes Rating für Rare / für Common
                         (Rare darüber bleibt für Rating-SBCs)</label>
                     <div class="sbc-opt-inline">
-                        <span style="font-size:11px;color:#7d93ab;">Rare bis</span>
+                        <span class="sbc-opt-dim" style="font-size:11px;">Rare bis</span>
                         <input type="number" id="sbc-opt-maxrare" value="77" min="0" max="99">
-                        <span style="font-size:11px;color:#7d93ab;">Common bis</span>
+                        <span class="sbc-opt-dim" style="font-size:11px;">Common bis</span>
                         <input type="number" id="sbc-opt-maxcommon" value="77" min="0" max="99">
                     </div>
                 </div>
@@ -7040,12 +7215,12 @@
         const wasteTxt = (typeof res.waste === 'number')
             ? ((res.waste >= 0 ? '+' : '') + res.waste.toFixed(2)) : '–';
         html += '<div class="sbc-opt-summary">Team-OVR: <b>' + res.ovr + '</b>' +
-                (res.ovrExact != null ? ' <span style="color:#9db2c8;">(' + res.ovrExact.toFixed(2) + ')</span>' : '') +
+                (res.ovrExact != null ? ' <span class="sbc-opt-muted">(' + res.ovrExact.toFixed(2) + ')</span>' : '') +
                 (res.target ? ' / Ziel ' + res.target : '') +
                 ' &nbsp; Überschuss: <b>' + wasteTxt + '</b>' +
                 (nStorage ? ' &nbsp; Storage: <b>' + nStorage + '</b>' : '') + '</div>';
         if (res.poolInfo) {
-            html += '<div style="color:#7d93ab;font-size:11px;">Pool nach Filtern: ' + res.poolInfo.count +
+            html += '<div class="sbc-opt-dim" style="font-size:11px;">Pool nach Filtern: ' + res.poolInfo.count +
                     ' Karten (' + res.poolInfo.min + '–' + res.poolInfo.max + ')</div>';
         }
         for (const w of (res.warnings || [])) html += '<div class="sbc-opt-warn">⚠ ' + escapeHtml(w) + '</div>';
@@ -8216,7 +8391,7 @@
         // Detail steht es ohnehin schon je Runde.
         const src = countPlanSources(plan);
         const srcInfo = src.total
-            ? ' · <span style="color:#9db2c8;">Storage <b>' + src.storage +
+            ? ' · <span class="sbc-opt-muted">Storage <b>' + src.storage +
               '</b> / Verein <b>' + src.club + '</b></span>'
             : '';
         const noun = (plan.mode === 'reihe') ? ' SBC(s) geplant' : ' Team(s) geplant';
@@ -8273,7 +8448,7 @@
                     ? escapeHtml(r.challengeName) : ('Team ' + (i + 1));
                 detailHtml += '<div class="sbc-opt-batch-round"><b>' + label + ':</b> OVR ' +
                     r.ovr + ' (' + r.ovrExact.toFixed(2) + ')' +
-                    '<br><span style="color:#9db2c8;">Storage ' + nStore +
+                    '<br><span class="sbc-opt-muted">Storage ' + nStore +
                     ' · unverkäuflich ' + nUntr +
                     (nProt ? ' · <span class="sbc-opt-batch-warn">geschützt ' + nProt + '</span>' : '') +
                     '</span><div class="sbc-opt-batch-cards">';

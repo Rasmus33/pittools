@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.79.0
+// @version      4.80.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.79.0';
+    const VERSION = '4.80.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -828,15 +828,102 @@
     // zur aeltesten Probe innerhalb des Fensters. Fehlt eine Probe von VOR dem
     // Fenster, ist das Ergebnis eine UNTERGRENZE - und wird auch so benannt,
     // nicht als exakte Zahl verkauft.
-    const QUOTA_KEY = 'sbcOptQuotaSamples';
+    // ======================================================================
+    //  SCRIPT-STARTS: wie oft entsteht der JS-Kontext neu?
+    // ======================================================================
+    // Befund Mike: "der Pool wird jedes Mal neu geladen, wenn ich eine SBC
+    // starte". Der Auto-Load kann das nicht sein - er laeuft pro Kontext genau
+    // einmal (STATE.autoLoadTried). Also ist das DOKUMENT neu, und damit ist
+    // alles weg: Pool, Session-Interception, erkannte Vorgaben.
+    // localStorage ueberlebt den Wechsel - hier landet deshalb jeder Start.
+    const RUNS_KEY = 'sbcOptScriptRuns';
+    /**
+     * Wie ist dieses Dokument entstanden?
+     *   'back_forward' - Verlaufs-Navigation (in der App: web.goBack())
+     *   'reload'       - echtes Neuladen
+     *   'navigate'     - neuer Aufruf (z.B. loadUrl nach einem App-Neustart)
+     * Unterscheidet damit die App-Ursachen voneinander, statt sie zu raten.
+     */
+    function navigationKind() {
+        try {
+            const e = performance.getEntriesByType('navigation');
+            if (e && e.length && e[0].type) return String(e[0].type);
+        } catch (err) {}
+        try {
+            // Aeltere WebViews: nur der Zahlen-Code (0=navigate,1=reload,2=back_forward).
+            const t = performance.navigation && performance.navigation.type;
+            if (t === 1) return 'reload';
+            if (t === 2) return 'back_forward';
+            if (t === 0) return 'navigate';
+        } catch (err) {}
+        return null;
+    }
+    function loadScriptRuns() {
+        try {
+            const raw = localStorage.getItem(RUNS_KEY);
+            const arr = raw ? JSON.parse(raw) : [];
+            return Array.isArray(arr) ? arr.filter(x => x && x.t) : [];
+        } catch (e) { return []; }
+    }
+    /** Einen Start festhalten. Rein beobachtend - aendert kein Verhalten. */
+    function noteScriptRun() {
+        try {
+            const arr = loadScriptRuns();
+            arr.push({ t: Date.now(), nav: navigationKind(), v: VERSION });
+            // 12 reichen: es geht um "wie oft in den letzten Minuten", nicht
+            // um eine Historie.
+            const keep = arr.slice(-12);
+            localStorage.setItem(RUNS_KEY, JSON.stringify(keep));
+            if (keep.length > 1) {
+                const prev = keep[keep.length - 2];
+                log('Script-Start #' + keep.length + ' (' + (navigationKind() || '?') +
+                    '), letzter Start vor ' +
+                    Math.round((Date.now() - prev.t) / 1000) + 's.');
+            }
+            return keep;
+        } catch (e) { return []; }
+    }
+    const QUOTA_KEY = 'sbcOptQuotaEvents';
+    const QUOTA_LEGACY_KEY = 'sbcOptQuotaSamples';
+    const QUOTA_SETS_KEY = 'sbcOptQuotaSets';
     const QUOTA_HOUR_LIMIT = 90;
     const QUOTA_DAY_LIMIT = 300;
+    /**
+     * Der Zaehler fuehrt EREIGNISSE, nicht Summen: { t, inc, src, prevT }.
+     * Warum nicht Summen (war bis v4.79.0 so und zaehlte falsch): SBC-Sets
+     * rotieren. Die Differenz zweier Gesamtsummen aus verschiedenen Stunden
+     * mischt "abgeschlossen" mit "Set ist aus der Liste verschwunden" - eine
+     * 5x gemachte SBC, die danach wegfaellt, senkt die Summe sogar.
+     * src: 'local'  = eigene, von EAs Zaehler bestaetigte Abgabe (exakt)
+     *      'server' = Zuwachs anderer Geraete, aus einem Set-Vergleich
+     */
     function quotaLoadSamples() {
         try {
             const raw = localStorage.getItem(QUOTA_KEY);
+            if (raw) {
+                const arr = JSON.parse(raw);
+                return Array.isArray(arr)
+                    ? arr.filter(x => x && x.t && typeof x.inc === 'number') : [];
+            }
+        } catch (e) { return []; }
+        // Einmalige Uebernahme des alten Summen-Formats: aus aufeinander
+        // folgenden Summen die (nicht-negativen) Zuwaechse bilden. Lieber
+        // uebernehmen als wegwerfen - die Zahlen sind bis 36h alt.
+        try {
+            const raw = localStorage.getItem(QUOTA_LEGACY_KEY);
             if (!raw) return [];
-            const arr = JSON.parse(raw);
-            return Array.isArray(arr) ? arr.filter(x => x && x.t && x.total != null) : [];
+            const old = JSON.parse(raw);
+            if (!Array.isArray(old)) return [];
+            const out = [];
+            let prev = null;
+            for (const x of old) {
+                if (!x || !x.t || x.total == null) continue;
+                if (prev != null) {
+                    out.push({ t: x.t, inc: Math.max(0, x.total - prev), src: 'server', prevT: null });
+                }
+                prev = x.total;
+            }
+            return out.filter(x => x.inc > 0);
         } catch (e) { return []; }
     }
     function quotaSaveSamples(arr) {
@@ -846,9 +933,36 @@
         try { localStorage.setItem(QUOTA_KEY, JSON.stringify(keep)); } catch (e) {}
         return keep;
     }
-    /** Summe aller timesCompleted aus einer sbs/sets-Antwort. */
+    /** Ein Ereignis ablegen. inc <= 0 wird ignoriert (kein Rauschen im Log). */
+    function quotaAddEvent(inc, src, prevT) {
+        const n = Number(inc);
+        if (!isFinite(n) || n <= 0) return null;
+        const arr = quotaLoadSamples();
+        arr.push({ t: Date.now(), inc: n, src: src || 'local',
+                   prevT: (prevT != null ? prevT : null) });
+        quotaSaveSamples(arr);
+        STATE.diag.quota = quotaUsage();
+        return n;
+    }
+    /** Letzter Set-Stand vom Server: { t, sets: { setId: timesCompleted } }. */
+    function quotaLoadSets() {
+        try {
+            const raw = localStorage.getItem(QUOTA_SETS_KEY);
+            if (!raw) return null;
+            const o = JSON.parse(raw);
+            return (o && o.t && o.sets && typeof o.sets === 'object') ? o : null;
+        } catch (e) { return null; }
+    }
+    function quotaSaveSets(sets) {
+        try {
+            localStorage.setItem(QUOTA_SETS_KEY,
+                JSON.stringify({ t: Date.now(), sets: sets }));
+        } catch (e) {}
+    }
+    /** timesCompleted PRO SET aus einer sbs/sets-Antwort. */
     function sumTimesCompleted(json) {
         let sum = 0, sets = 0;
+        const bySet = {};
         const seen = new Set();
         const queue = [{ o: json, d: 0 }];
         let visited = 0;
@@ -861,72 +975,91 @@
             // Ein Set-Knoten: hat setId UND timesCompleted. Challenge-Knoten
             // tragen dieselbe Zahl NICHT (sonst wuerde doppelt gezaehlt).
             if (o.setId != null && typeof o.timesCompleted === 'number') {
-                sum += o.timesCompleted;
-                sets++;
+                // Pro setId nur EINMAL - dieselbe Set-Id kann in einer Antwort
+                // mehrfach auftauchen (Hub + Kategorie), und ein Doppeleintrag
+                // wuerde die Zahl verdoppeln.
+                const k = String(o.setId);
+                if (!Object.prototype.hasOwnProperty.call(bySet, k)) {
+                    bySet[k] = o.timesCompleted;
+                    sum += o.timesCompleted;
+                    sets++;
+                }
             }
             const kids = Array.isArray(o) ? o : Object.keys(o).map(k => {
                 try { return o[k]; } catch (e) { return null; }
             });
             for (const c of kids) if (c && typeof c === 'object') queue.push({ o: c, d: d + 1 });
         }
-        return { sum: sum, sets: sets };
+        return { sum: sum, sets: sets, bySet: bySet };
     }
-    /** Aktuellen Stand holen und als Stichprobe ablegen. */
-    async function quotaSample() {
-        let json = null;
-        try { json = await apiGet('sbs/sets'); }
-        catch (e) { return null; }
-        const r = sumTimesCompleted(json);
-        if (!r.sets) return null;
-        const arr = quotaLoadSamples();
-        arr.push({ t: Date.now(), total: r.sum });
-        quotaSaveSamples(arr);
-        STATE.diag.quota = quotaUsage();
-        return r.sum;
+    /**
+     * Zuwachs zwischen zwei Set-Staenden: PRO SET, und nur positive Deltas.
+     * Sets, die im neuen Stand fehlen, zaehlen 0 (abgelaufen/aus der Liste) -
+     * sonst schlaegt eine Rotation als "negativer Verbrauch" durch.
+     * Neu aufgetauchte Sets zaehlen ebenfalls 0: ihr timesCompleted kann aus
+     * beliebig alter Zeit stammen.
+     */
+    function quotaSetsDelta(prevSets, nowSets) {
+        let inc = 0;
+        for (const k in nowSets) {
+            if (!Object.prototype.hasOwnProperty.call(nowSets, k)) continue;
+            if (!Object.prototype.hasOwnProperty.call(prevSets, k)) continue;
+            const d = Number(nowSets[k]) - Number(prevSets[k]);
+            if (d > 0) inc += d;
+        }
+        return inc;
+    }
+    function sumOfSets(sets) {
+        let sum = 0;
+        for (const k in sets) {
+            if (Object.prototype.hasOwnProperty.call(sets, k)) sum += Number(sets[k]) || 0;
+        }
+        return sum;
     }
     /**
      * Verbrauch im laufenden Stundenfenster (voller Stunde, wie EA es zaehlt)
-     * und seit Mitternacht. exact=false heisst: die aelteste Probe liegt INNERHALB
-     * des Fensters, die Zahl ist also eine Untergrenze.
+     * und seit Mitternacht: Summe der Ereignisse im Fenster.
+     * exact=false heisst Untergrenze - entweder weil ein Server-Delta ueber die
+     * Fenstergrenze reicht, oder weil seit der letzten eigenen Abgabe keine
+     * Server-Messung lief (dann sind fremde Geraete unbekannt).
      */
     function quotaUsage(nowMs) {
         const now = nowMs != null ? nowMs : Date.now();
         const arr = quotaLoadSamples();
-        if (!arr.length) return { total: null, hour: null, day: null, samples: 0 };
-        const latest = arr[arr.length - 1];
+        const snap = quotaLoadSets();
+        if (!arr.length && !snap) {
+            return { total: null, hour: null, day: null, samples: 0 };
+        }
         const d = new Date(now);
         const hourStart = new Date(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours()).getTime();
         const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+        const lastEventT = arr.length ? arr[arr.length - 1].t : 0;
         function since(boundary) {
-            // Letzte Probe VOR der Grenze ist die exakte Basis.
-            let base = null, exact = false;
-            for (const x of arr) {
-                if (x.t <= boundary) { base = x; exact = true; }
+            let used = 0;
+            let exact = true;
+            for (const e of arr) {
+                if (e.t <= boundary) continue;
+                used += e.inc;
+                // Vergleichspunkt vor der Grenze (oder unbekannt): das Delta
+                // kann Aktivitaet aus dem vorigen Fenster mitzaehlen.
+                if (e.src === 'server' && (e.prevT == null || e.prevT < boundary)) exact = false;
             }
-            if (!base) {
-                // Nur Proben INNERHALB des Fensters: aelteste als Basis, das
-                // Ergebnis ist dann eine Untergrenze.
-                base = arr.find(x => x.t > boundary) || null;
-                exact = false;
-            }
-            if (!base) return null;
-            return { used: Math.max(0, latest.total - base.total), exact: exact, since: base.t };
+            // Fremdgeraete werden nur bei einer Server-Messung sichtbar. Ist
+            // seit dem letzten Ereignis keine gelaufen, ist das eine Untergrenze.
+            if (!snap || snap.t < lastEventT) exact = false;
+            return { used: used, exact: exact, since: boundary };
         }
         return {
-            total: latest.total,
-            stamp: latest.t,
+            total: snap ? sumOfSets(snap.sets) : null,
+            stamp: snap ? snap.t : null,
             samples: arr.length,
+            lastEvent: arr.length ? arr[arr.length - 1] : null,
             hour: since(hourStart),
             day: since(dayStart),
             hourLimit: QUOTA_HOUR_LIMIT,
             dayLimit: QUOTA_DAY_LIMIT
         };
     }
-    /**
-     * Nur die Summe holen, ohne Panel-Kram - fuer die Abgabe-Bestaetigung.
-     * Die Probe wird trotzdem abgelegt (haelt den Kontingent-Zaehler frisch).
-     * Liefert null, wenn EA nicht antwortet: dann wird NICHTS behauptet.
-     */
     // NOTBREMSE. Lehnt EA einen Kontingent-Request ab (429 = zu viele
     // Requests, dazu 426/512/521), wird fuer den Rest der Sitzung nicht mehr
     // gemessen. Live hat genau das 23 Fehlversuche in Folge produziert und
@@ -943,21 +1076,34 @@
         return null;
     }
     /**
-     * Gesamtstand ueber ALLE Sets. Schwerer Request - nur fuer die Panel-Anzeige
-     * beim Laden, NIE im Batch-Takt.
+     * Server-Messung ueber ALLE Sets. Schwerer Request - nur beim Laden und
+     * EINMAL am Batch-Ende, NIE im Batch-Takt (LEARNINGS 7).
+     * Der Zuwachs gegenueber dem letzten Stand wird um das bereinigt, was wir
+     * selbst schon gezaehlt haben; uebrig bleiben die anderen Geraete.
      */
-    async function quotaTotalNow() {
+    async function quotaMeasure() {
         if (quotaDisabled) return null;
-        try {
-            const json = await apiGet('sbs/sets');
-            const r = sumTimesCompleted(json);
-            if (!r.sets) return null;
-            const arr = quotaLoadSamples();
-            arr.push({ t: Date.now(), total: r.sum });
-            quotaSaveSamples(arr);
-            STATE.diag.quota = quotaUsage();
-            return r.sum;
-        } catch (e) { return quotaNoteFailure(e); }
+        let json = null;
+        try { json = await apiGet('sbs/sets'); }
+        catch (e) { return quotaNoteFailure(e); }
+        const r = sumTimesCompleted(json);
+        if (!r.sets) return null;
+        const prev = quotaLoadSets();
+        if (prev) {
+            const raw = quotaSetsDelta(prev.sets, r.bySet);
+            // Was wir seit dem letzten Stand selbst gezaehlt haben, steckt in
+            // dieser Zahl schon drin - sonst wuerde jede eigene Abgabe doppelt
+            // zaehlen (einmal lokal, einmal ueber den Server).
+            let own = 0;
+            for (const e of quotaLoadSamples()) {
+                if (e.src === 'local' && e.t > prev.t) own += e.inc;
+            }
+            const other = Math.max(0, raw - own);
+            if (other > 0) quotaAddEvent(other, 'server', prev.t);
+        }
+        quotaSaveSets(r.bySet);
+        STATE.diag.quota = quotaUsage();
+        return r.sum;
     }
     /**
      * timesCompleted NUR fuer ein Set - der leichte Weg, und genau die Zahl,
@@ -3709,11 +3855,13 @@
             'Durchlauf eine neue ID - bitte die SBC im Spiel einmal schliessen und ' +
             'neu öffnen, dann erneut optimieren.';
     }
-    // Stichprobe fuer das SBC-Kontingent - absichtlich NUR an zwei Stellen
-    // (Spieler laden, nach dem Eintragen), damit kein zusaetzlicher Request-Takt
-    // entsteht (LEARNINGS 7: Rate-Limits sind hier real).
-    async function quotaSampleQuiet() {
-        try { await quotaSample(); } catch (e) {}
+    // Server-Messung fuer das SBC-Kontingent - absichtlich nur an DREI Stellen:
+    // "Spieler laden" (Knopf), der automatische Pool-Ladevorgang beim App-Start
+    // und EINMAL am Batch-Ende. NIE pro Batch-Runde: das war der Rate-Limit-
+    // Ausfall (LEARNINGS 7). Die eigenen Abgaben brauchen ohnehin keinen extra
+    // Request - sie werden im Batch-Takt schon gelesen und dort abgelegt.
+    async function quotaMeasureQuiet() {
+        try { await quotaMeasure(); } catch (e) {}
         try {
             if (ui.quota) {
                 const qt = quotaText(quotaUsage());
@@ -5317,9 +5465,19 @@
             clubLoad: STATE.diag.clubLoad || null,
             // SBC-Kontingent: Summe der serverseitigen timesCompleted plus
             // Verbrauch im Stunden-/Tagesfenster (siehe quotaUsage).
-            // Frisch rechnen, aber den von quotaSample() gesetzten Stand
+            // Frisch rechnen, aber den von quotaMeasure() gesetzten Stand
             // bevorzugen (dort ist die Messung gerade gelaufen).
             quota: STATE.diag.quota || quotaUsage(),
+            // Die letzten Kontingent-Ereignisse mit Quelle: 'local' ist eine
+            // eigene, von EAs Zaehler bestaetigte Abgabe, 'server' ist der
+            // Zuwachs anderer Geraete. Daran ist sofort zu sehen, OB gezaehlt
+            // wird - der eigentliche Befund war "der Zaehler bewegt sich nicht".
+            quotaEvents: quotaLoadSamples().slice(-12),
+            // Wie oft ist der JS-Kontext neu entstanden, und WIE? Mehrere
+            // Starts kurz hintereinander erklaeren einen Pool, der "jedes Mal
+            // neu laedt" - und 'nav' sagt, welcher Weg dahin gefuehrt hat.
+            scriptRuns: loadScriptRuns(),
+            navigation: navigationKind(),
             // Wie oft musste nach 404/475 die Session erneuert werden?
             staleSessionRetry: STATE.diag.staleSessionRetry || 0,
             // Drosselung durch EA - erklaert 475/404 beim Eintragen.
@@ -5678,6 +5836,9 @@
             renderAnchorOptions();
             setStatus('Pool bereit (' + STATE.pool.length + ')');
             toast('Spieler automatisch geladen: ' + STATE.pool.length + ' Karten.', '');
+            // Kontingent-Basis setzen. Ohne das stand der Zaehler auf einem
+            // Geraet, das nur den Auto-Load benutzt, dauerhaft still.
+            quotaMeasureQuiet();
         } catch (e) {
             warn('Auto-Load fehlgeschlagen:', e.message);
             setStatus('Auto-Load fehlgeschlagen - bitte "Spieler laden" drücken');
@@ -5719,7 +5880,7 @@
             // nirgends sonst: der Request ueber ALLE Sets ist schwer, und im
             // Batch-Takt hat er live 429er ausgeloest (LEARNINGS 7). Einmal
             // pro "Spieler laden" reicht fuer "wie viele SBCs heute".
-            quotaSampleQuiet();
+            quotaMeasureQuiet();
         } catch (e) {
             if (!STATE.pool.length) { STATE.poolById = backupById; STATE.pool = backupPool; }
             setStatus('Fehler beim Laden');
@@ -6872,6 +7033,10 @@
                 STATE.diag.submitCounterChecks = (STATE.diag.submitCounterChecks || []).concat([{
                     round: i + 1, before: cntBefore, after: cntAfter, confirmed: confirmed
                 }]).slice(-6);
+                // Die Zahl ist da - sie wurde fuer die Bestaetigung ohnehin
+                // gelesen. Bis v4.79.0 wurde sie weggeworfen, und deshalb
+                // bewegte sich der Kontingent-Zaehler bei einem Batch nicht.
+                if (confirmed === true) quotaAddEvent(cntAfter - cntBefore, 'local');
                 if (confirmed === false) {
                     throw new Error('Abgabe von Team ' + (i + 1) + ' wurde von EA nicht ' +
                         'bestätigt (Zähler unverändert bei ' + cntAfter + ') - ' + done +
@@ -6911,6 +7076,11 @@
             ui.batchRun.style.display = 'none';
             if (ui.batchDetails) ui.batchDetails.style.display = 'none';
             STATE.batch = null;   // Plan verbraucht - kein zweites Abgeben
+            // EINE Server-Messung am Ende: bringt die Abgaben der anderen
+            // Geraete mit rein (Mike am Handy, Rasmus am Laptop) und macht die
+            // Zahl damit exakt statt Untergrenze. Bewusst hier und nicht pro
+            // Runde - siehe LEARNINGS 7.
+            quotaMeasureQuiet();
             let html = doneLog.length
                 ? '<div class="sbc-opt-batch-round">' + doneLog.map(escapeHtml).join('<br>') + '</div>' : '';
             if (stopped) {
@@ -8062,6 +8232,7 @@
     }
     function boot() {
         if (document.getElementById('sbc-opt-fab')) return;
+        noteScriptRun();
         injectStyles();
         buildPanel();
         installLauncherDelegation();

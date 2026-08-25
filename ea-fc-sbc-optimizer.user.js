@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.85.0
+// @version      4.86.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.85.0';
+    const VERSION = '4.86.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -3242,7 +3242,7 @@
             // expDims: durchgereicht an buildDp()'s "exp"-Parameter (siehe
             // dessen Docblock) - seit v4.62.0 an allen vier Call-Sites null.
             function searchTeam(reservedArr, availArr, expDims, sharedBandCache, vMinFloor,
-                                availSortedAsc) {
+                                availSortedAsc, halfCtx) {
                 const kLocal = N - reservedArr.length;
                 // Beim echten (finalen) Aufruf ist das bereits vorher geprueft
                 // (":avail.length < k" weiter oben); ein Trial-Aufruf aus
@@ -3293,11 +3293,35 @@
                         const highP = availArr.filter(p => p.rating >= rBoost);
                         const sMaxLow = Math.min(kLocal * Math.max(0, rBoost - 1), 1300);
                         const sMaxHigh = Math.min(kLocal * 99, 1300);
-                        band = {
-                            rBoost: rBoost,
-                            dpLow: buildDp(lowP, kLocal, sMaxLow, costOf, expDims, cmp),
-                            dpHigh: buildDp(highP, kLocal, sMaxHigh, costOf, expDims, cmp)
-                        };
+                        // HALBIERTER CACHE (v4.86.0). Ein Versuch aus
+                        // reserveWindowAware() entfernt genau EINE Karte aus dem
+                        // Auffuell-Pool. Die liegt in genau EINER der beiden
+                        // Haelften (unter rBoost / ab rBoost) - die andere ist
+                        // ueber ALLE Versuche identisch und muss nur einmal
+                        // gebaut werden. Keine Approximation: dieselben
+                        // Karten-Listen, dieselben DPs, nur nicht mehrfach.
+                        // Gemessen (Report v4.85.0): 240 Baender pro Runde,
+                        // 6,4s - die Arbeit pro Versuch war schon vorher
+                        // identisch, nur 19x wiederholt.
+                        let dpLow = null, dpHigh = null;
+                        let lowKey = null, highKey = null;
+                        if (halfCtx) {
+                            const removedIsLow = halfCtx.removedRating != null &&
+                                                 halfCtx.removedRating < rBoost;
+                            lowKey = rBoost + (removedIsLow ? ':' + halfCtx.removedId : ':-');
+                            highKey = rBoost + (removedIsLow ? ':-' : ':' + halfCtx.removedId);
+                            dpLow = halfCtx.lowCache.get(lowKey) || null;
+                            dpHigh = halfCtx.highCache.get(highKey) || null;
+                        }
+                        if (!dpLow) {
+                            dpLow = buildDp(lowP, kLocal, sMaxLow, costOf, expDims, cmp);
+                            if (halfCtx) halfCtx.lowCache.set(lowKey, dpLow);
+                        }
+                        if (!dpHigh) {
+                            dpHigh = buildDp(highP, kLocal, sMaxHigh, costOf, expDims, cmp);
+                            if (halfCtx) halfCtx.highCache.set(highKey, dpHigh);
+                        }
+                        band = { rBoost: rBoost, dpLow: dpLow, dpHigh: dpHigh };
                         bandCache.set(rBoost, band);
                     }
                     return band;
@@ -3473,6 +3497,20 @@
                     const skip = new Set(comboCards.map(function (p) { return p.id; }));
                     return trialBaseAsc.filter(function (p) { return !skip.has(p.id); });
                 }
+                // Ueber BEIDE Durchlaeufe geteilt: dieselben (rBoost, Karte)-
+                // Paare kommen in Pass 2 erneut vor, und die unberuehrte
+                // DP-Haelfte gilt fuer alle Versuche.
+                const halfCaches = { lowCache: new Map(), highCache: new Map(),
+                                     removedId: null, removedRating: null };
+                function halfCtxFor(comboCards) {
+                    // Nur bei GENAU EINER entfernten Karte ist die Aufteilung
+                    // eindeutig. Bei mehreren (stillNeed > 1) wird wie bisher
+                    // pro Versuch gebaut - lieber langsam als falsch.
+                    if (comboCards.length !== 1) return null;
+                    halfCaches.removedId = comboCards[0].id;
+                    halfCaches.removedRating = comboCards[0].rating;
+                    return halfCaches;
+                }
                 // Schritt 5 (Lift-Plan): ERST alle Trials sammeln, DANN ueber
                 // ALLE hinweg das kleinste erreichte V (globalVmin) bestimmen -
                 // ein einzelner Trial darf NICHT vorschnell nur gegen den bis
@@ -3493,7 +3531,8 @@
                     for (const p of comboCards) reserve(p);
                     const trialAvail = trialAvailFor(comboCards);
                     const trialResult = searchTeam(reserved, trialAvail, null,
-                        canShareBandCache ? sharedBandCache : null, undefined, true);
+                        canShareBandCache ? sharedBandCache : null, undefined, true,
+                        halfCtxFor(comboCards));
                     for (const p of comboCards) {
                         used.delete(p.id);
                         if (p.assetId != null && p.assetId !== 0) usedAssets.delete(String(p.assetId));
@@ -3528,7 +3567,8 @@
                     for (const p of t.combo) reserve(p);
                     const trialAvail = trialAvailFor(t.combo);
                     const refined = searchTeam(reserved, trialAvail, null,
-                        canShareBandCache ? sharedBandCache : null, globalVmin, true);
+                        canShareBandCache ? sharedBandCache : null, globalVmin, true,
+                        halfCtxFor(t.combo));
                     for (const p of t.combo) {
                         used.delete(p.id);
                         if (p.assetId != null && p.assetId !== 0) usedAssets.delete(String(p.assetId));

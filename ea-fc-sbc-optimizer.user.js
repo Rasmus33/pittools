@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.89.0
+// @version      4.90.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.89.0';
+    const VERSION = '4.90.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -2822,6 +2822,10 @@
                 groups.get(p.rating).push(p);
             }
             const ratings = Array.from(groups.keys()).sort((a, b) => a - b);
+            // Kleinstes und groesstes Rating im DP - Grenzen der erreichbaren
+            // Summen (siehe Schleife unten).
+            const rMinDp = ratings.length ? ratings[0] : 0;
+            const rMaxDp = ratings.length ? ratings[ratings.length - 1] : 0;
             // Verbrauchsreihenfolge innerhalb eines Ratings: KOSTEN zuerst
             // (Rarity-Schutz & Band-Kosten wirken), Konsum-Präferenz
             // (Storage) als Tiebreak.
@@ -2850,8 +2854,19 @@
                 const next = spare.fill(Infinity);
                 const choice = new Uint8Array(size);
                 for (let j = 0; j <= kMax; j++) {
+                    // NUR ERREICHBARE SUMMEN (v4.90.0). j Karten haben immer
+                    // eine Summe zwischen j*kleinstes und j*groesstes Rating -
+                    // alles ausserhalb ist unerreichbar und stand vorher
+                    // trotzdem in der Schleife. Bei Ratings 75-98 und 11 Slots
+                    // sind das rund 1300 statt 11.000 Zustaende. Exakt: die
+                    // uebersprungenen Zellen bleiben Infinity, genau wie vorher,
+                    // und geschrieben wird ohnehin nur innerhalb dieser Grenzen
+                    // (s+q*r liegt fuer j+q Karten wieder im Band).
+                    const sLo = j * rMinDp;
+                    const sHi = Math.min(S - 1, j * rMaxDp);
+                    if (sLo > sHi) continue;
                     for (let e = 0; e < E; e++) {
-                        for (let s = 0; s < S; s++) {
+                        for (let s = sLo; s <= sHi; s++) {
                             const base = cur[idx(j, e, s)];
                             if (base === Infinity) continue;
                             for (let q = 0; q <= c; q++) {

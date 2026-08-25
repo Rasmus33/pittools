@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.91.0
+// @version      4.92.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.91.0';
+    const VERSION = '4.92.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -7730,12 +7730,17 @@
             const overDay = u && u.day && u.day.used >= QUOTA_DAY_LIMIT;
             const overHour = u && u.hour && u.hour.used >= QUOTA_HOUR_LIMIT;
             if (overDay || overHour) {
-                quotaWarn = '\n\nACHTUNG: EAs Limit ist nach unserer Zählung schon ' +
-                    'erreicht (' + (u.hour.exact ? '' : 'mind. ') + u.hour.used + '/' +
-                    QUOTA_HOUR_LIMIT + ' in dieser Stunde, ' +
+                // ZAHLEN, keine Vorhersage. Rasmus hat live 339 Abgaben an einem
+                // Tag gemacht und danach OHNE Pause weiter abgegeben - EA setzt
+                // das Tageslimit also nicht so hart durch, wie die Zahl
+                // nahelegt. Die Version davor hat daraus "der Batch bricht
+                // wahrscheinlich ab" gemacht; das war falsch.
+                quotaWarn = '\n\nHinweis: nach UNSERER Zählung liegst du bei ' +
+                    (u.hour.exact ? '' : 'mind. ') + u.hour.used + '/' + QUOTA_HOUR_LIMIT +
+                    ' in dieser Stunde und ' +
                     (u.day.exact ? '' : 'mind. ') + u.day.used + '/' + QUOTA_DAY_LIMIT +
-                    ' heute). EA weist Abgaben dann ab (475/404) - der Batch bricht ' +
-                    'wahrscheinlich mitten drin ab.';
+                    ' heute. Das ist eine Untergrenze aus unserer eigenen Messung, kein ' +
+                    'Wert von EA - erfahrungsgemäß geht danach oft noch etwas.';
             }
         } catch (e) {}
         if (!window.confirm(n + ' SBC(s) werden eingetragen UND endgültig abgegeben.\n\n' +
@@ -7816,10 +7821,28 @@
                 // (LEARNINGS 7/30), nicht wieder auf einen festen kleinen Wert
                 // setzen.
                 await sleep(confirmGap);
-                const cntAfter = await setTimesCompleted(STATE.sbc.setId);
+                let cntAfter = await setTimesCompleted(STATE.sbc.setId);
                 if (cntAfter == null && confirmLastFail === 'request') {
                     confirmGap = Math.min(5000, Math.round(confirmGap * 2));
                     warn('[Batch] Bestätigung abgewiesen - Takt auf ' + confirmGap + 'ms erhöht.');
+                }
+                // NACHLESEN, bevor "nicht bestaetigt" behauptet wird. Live
+                // (Report v4.90.0): Runde 1 und 2 gingen durch (966->967->968),
+                // Runde 3 las 968 - unveraendert - und der Batch brach ab. Dabei
+                // gab es KEINEN einzigen HTTP-Fehler und keine Drosselung: EAs
+                // Zaehler war nach 900ms nur noch nicht nachgezogen. Eine
+                // einzige Lesung ist also kein Beweis. Es wird NUR erneut
+                // gelesen, nie erneut abgegeben.
+                const baseNow = (cntBefore != null) ? cntBefore : lastKnownBefore;
+                let confirmRetries = 0;
+                while (baseNow != null && cntAfter != null && cntAfter <= baseNow &&
+                       confirmRetries < 2) {
+                    confirmRetries++;
+                    await sleep(confirmGap * (confirmRetries + 1));
+                    const again = await setTimesCompleted(STATE.sbc.setId);
+                    warn('[Batch] Zähler noch unverändert (' + cntAfter + ') - ' +
+                         confirmRetries + '. Nachlesen ergab ' + again + '.');
+                    if (again != null) cntAfter = again;
                 }
                 batchCountBase = (cntAfter != null) ? cntAfter : null;
                 if (cntAfter != null) lastKnownCount = cntAfter;
@@ -7834,7 +7857,9 @@
                     // Warum null? 'request' = Messung ausgefallen (kein
                     // Abbruchgrund), 'unreadable' = Antwort ohne Zahl.
                     nullReason: (confirmed === null ? confirmLastFail : null),
-                    basis: baseForCmp
+                    basis: baseForCmp,
+                    // Wie oft musste nachgelesen werden, bis die Zahl stand?
+                    retries: confirmRetries
                 }]).slice(-6);
                 // Die Zahl ist da - sie wurde fuer die Bestaetigung ohnehin
                 // gelesen. Bis v4.79.0 wurde sie weggeworfen, und deshalb
@@ -7869,7 +7894,8 @@
                 }
                 if (confirmed === false) {
                     throw new Error('Abgabe von Team ' + (i + 1) + ' wurde von EA nicht ' +
-                        'bestätigt (Zähler unverändert bei ' + cntAfter + ') - ' + done +
+                        'bestätigt (Zähler unverändert bei ' + cntAfter + ', ' +
+                        (confirmRetries + 1) + 'x gelesen) - ' + done +
                         ' von ' + n + ' fertig. Abgebrochen, bevor daraus eine Fehlerkette ' +
                         'wird: bitte die SBC im Spiel einmal schliessen, neu öffnen und ' +
                         'nachsehen, ob das Team noch drin steht.');

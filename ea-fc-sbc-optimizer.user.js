@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.2.1
+// @version      5.2.2
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.2.1';
+    const VERSION = '5.2.2';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -9498,12 +9498,14 @@
      * Abklingzeit (mehrfaches Rein/Raus soll EA nicht beschiessen, LEARNINGS 7),
      * und mit kurzer Verzoegerung - die Store-Ansicht baut sich noch auf.
      */
-    async function autoPackRefresh() {
+    async function autoPackRefresh(retry) {
         if (STATE.packOpenBusy) return;
         const now = Date.now();
-        if (now - lastAutoPackRefresh < 8000) return;
-        lastAutoPackRefresh = now;
-        await sleep(600);
+        // Der Nachversuch darf die Abklingzeit ueberspringen - er ist selbst
+        // schon durch sie hindurchgekommen. Sonst waere er ein no-op.
+        if (!retry && now - lastAutoPackRefresh < 8000) return;
+        if (!retry) lastAutoPackRefresh = now;
+        await sleep(retry ? 2500 : 600);
         if (!inStoreView() || STATE.packOpenBusy) return;
         // Schrittweise, damit im Report steht, WO es geknallt hat. Live kam nur
         // "Cannot read properties of undefined (reading 'toLowerCase')" ohne Ort -
@@ -9526,8 +9528,22 @@
             // Nicht toasten: der Nutzer hat nichts angeklickt, ein Fehler hier
             // darf ihn nicht anspringen. Der Refresh-Knopf bleibt der Weg von
             // Hand, und der Status sagt, was war.
-            setPackStatus('automatisches Laden fehlgeschlagen (' + step + '): ' + (e.message || e));
-            mergePackScan({ autoRefreshError: step + ': ' + String(e && e.message || e) });
+            mergePackScan({ autoRefreshError: step + ': ' + String(e && e.message || e),
+                            autoRefreshRetried: !!retry });
+            // EINEN Nachversuch. Der Wurf kommt live aus EAs getPacks() 600ms
+            // nach dem Betreten des Stores - dann stehen EAs eigene Store-Daten
+            // noch nicht (in unserem Code gibt es auf dem Pfad kein
+            // toLowerCase: nachgesehen in fetchMyPacks, groupMyPacks,
+            // packLabelOf, localizeEaKey, prettifyPackKey). Von Hand klappt es
+            // danach, also ist ein zweiter Anlauf die richtige Antwort. GENAU
+            // einer: eine Schleife gegen EAs Store waere schlimmer als der Knopf.
+            if (!retry) {
+                setPackStatus('Packs noch nicht bereit - zweiter Versuch...');
+                autoPackRefresh(true);
+            } else {
+                setPackStatus('automatisches Laden fehlgeschlagen (' + step + '): ' +
+                              (e.message || e) + ' - ↻ drücken.');
+            }
         }
     }
     /**
@@ -10235,6 +10251,10 @@
             // diese Zahl sah der Report aus wie "40 Knoepfe, 0 uebersprungen" -
             // ein Zustand, den es nicht geben kann.
             exhausted: 0,
+            // Und wie viele sind schon fertig? Das ist der NORMALFALL im
+            // 500ms-Takt. Ohne diese Zahl liest sich "added 0" wie ein
+            // Fehlschlag - mir selbst zweimal passiert.
+            alreadyDone: 0,
             hops: null,
             added: 0, skipped: 0, reason: null
         };
@@ -10253,7 +10273,7 @@
         try {
             for (let i = 0; i < btns.length; i++) {
                 const b = btns[i];
-                if (b.getAttribute(PACK_BTN_MARK) === '1') continue;
+                if (b.getAttribute(PACK_BTN_MARK) === '1') { scan.alreadyDone++; continue; }
                 // Fehlversuche zaehlen statt sofort aufzugeben: die Kachel kann
                 // ihren Namen spaeter nachliefern. Nach 5 Anlaeufen ist Ruhe.
                 const tries = parseInt(b.getAttribute(PACK_BTN_TRIES) || '0', 10);
@@ -10341,11 +10361,17 @@
             scan.reason = 'Fehler: ' + (e && e.message || e);
         }
         if (!scan.added && !scan.reason) {
-            scan.reason = scan.exhausted
-                ? ('kein Kachel-Titel passte (alle ' + scan.exhausted +
-                   ' Knoepfe haben ihre Anlaeufe verbraucht - titlesSeen zeigt, ' +
-                   'was in der Kachel steht)')
-                : 'kein Kachel-Titel passte zu einem Pack-Namen';
+            // Drei Faelle auseinanderhalten. "added 0" allein sagt nichts: im
+            // 500ms-Takt ist "schon alles eingebaut" der Normalfall, und genau
+            // den habe ich zweimal als Fehlschlag gelesen.
+            scan.reason = (scan.alreadyDone && !scan.skipped && !scan.exhausted)
+                ? ('nichts zu tun - alle ' + scan.alreadyDone +
+                   ' Knoepfe sind bereits eingebaut')
+                : (scan.exhausted
+                    ? ('kein Kachel-Titel passte (' + scan.exhausted +
+                       ' Knoepfe haben ihre Anlaeufe verbraucht - titlesSeen zeigt, ' +
+                       'was in der Kachel steht)')
+                    : 'kein Kachel-Titel passte zu einem Pack-Namen');
         }
         mergePackScan({ tileScan: scan });
     }

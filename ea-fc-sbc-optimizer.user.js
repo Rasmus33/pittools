@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.99.0
+// @version      5.0.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.99.0';
+    const VERSION = '5.0.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -161,6 +161,7 @@
             utasUnclassified: 0,     // /ut/game/-URLs, die classifyUrl() nicht zuordnen konnte (LEARNINGS 38)
             lastUnclassifiedPaths: [], // 5er-Ring der zugehoerigen Pfade (IDs maskiert)
             popupDismissCount: 0,    // wie oft dismissRewardPopup() seit App-Start wirklich etwas geschlossen hat (analog batchStuckCount, LEARNINGS §27)
+            lastAward: null,         // EAs Antwort auf die letzte Abgabe (grantedChallengeAwards)
             queueScan: null,         // SBC-Reihe: die Challenges des offenen Sets (loadQueueList)
             packScan: null           // Pack-Opener (Ticket #69/#76): myPacks/lastRun/lastAllRun/runsCount/storageCounts/missingGlobals/errorForm, siehe mergePackScan() (LEARNINGS §46)
         }
@@ -411,6 +412,42 @@
         cache[key] = json;
         while (order.length > 5) delete cache[order.shift()];
     }
+    /**
+     * EAs Antwort auf eine Abgabe festhalten. `grantedChallengeAwards` steht
+     * NUR in dieser Antwort - sie ist der Beweis, dass EA die Challenge
+     * angenommen hat, und zwar pro Challenge statt pro Set.
+     */
+    function noteChallengeAward(json, url) {
+        try {
+            let cid = json.challengeId;
+            if (cid == null && url) {
+                const m = String(url).match(/challenge\/(\d+)/i);
+                if (m) cid = parseInt(m[1], 10);
+            }
+            STATE.lastAward = {
+                challengeId: (cid != null) ? cid : null,
+                setId: (json.setId != null) ? json.setId : null,
+                at: Date.now(),
+                awards: (json.grantedChallengeAwards || []).length
+            };
+            STATE.diag.lastAward = STATE.lastAward;
+        } catch (e) { reportError('noteChallengeAward', e); }
+    }
+    /**
+     * Bestaetigt EAs Antwort die Abgabe DIESER Challenge? Rein, damit die
+     * Bedingung testbar ist - sie entscheidet, ob ein Reihen-Lauf weiterlaeuft
+     * oder abbricht.
+     * Verlangt drei Dinge: eine Belohnung (leere Liste zaehlt nicht), dieselbe
+     * challengeId (eine Antwort von vorher darf nicht die naechste Runde
+     * bestaetigen) und einen Zeitpunkt NACH dem Abgeben.
+     */
+    function awardConfirms(award, challengeId, sinceMs) {
+        if (!award || !(award.awards > 0)) return false;
+        if (challengeId != null && award.challengeId != null &&
+            String(award.challengeId) !== String(challengeId)) return false;
+        if (sinceMs != null && !(award.at >= sinceMs)) return false;
+        return true;
+    }
     function handleResponseBody(url, bodyText) {
         const kind = classifyUrl(url);
         if (!kind || !bodyText) return;
@@ -435,6 +472,15 @@
                 applyFromSetChallenges();
             } else if (kind === 'sbc-challenge' || kind === 'sbc-sets') {
                 STATE.lastChallengeRaw = json;
+                // ANTWORT AUF EINE ABGABE. EA schickt darin die zugeteilte
+                // Belohnung - der direkteste Beweis, dass die Abgabe
+                // angekommen ist. Live (Report v4.99.0) war das der einzige
+                // Beleg: der Set-Zaehler stand auf 0, weil das Set nicht
+                // wiederholbar ist, und der Batch hielt eine erfolgreiche
+                // Abgabe fuer gescheitert.
+                if (json && Array.isArray(json.grantedChallengeAwards)) {
+                    noteChallengeAward(json, url);
+                }
                 parseSbcChallenge(json, url);
             } else if (kind === 'club' || kind === 'unassigned') {
                 // Passiv mitlesen: was die App ohnehin lädt, wandert in den Pool.
@@ -1685,6 +1731,11 @@
                 // Navigation: der NAME ist keiner (Live: sechs Challenges
                 // heissen "91-Rated Squad").
                 priority: (typeof n.priority === 'number') ? n.priority : null,
+                // Wiederholbar? Entscheidet, ob EAs Set-Zaehler eine Abgabe
+                // ueberhaupt WIDERLEGEN kann: bei einem nicht wiederholbaren
+                // Set bleibt timesCompleted auf 0 (live: Icon-Set 1406,
+                // "Completed 0 times" bei 2 von 20 fertigen Challenges).
+                repeatable: (typeof n.repeatable === 'boolean') ? n.repeatable : null,
                 slots: scan.slots,
                 // Nur fuer die Diagnose: im Live-Report war slots durchweg
                 // null (EAs Challenge-Knoten hat kein slots-Feld, nur
@@ -1777,6 +1828,7 @@
         // Die Position in EAs Liste - der eigentliche Navigations-Anker.
         r.rowIndex = step.rowIndex;
         r.rowCount = step.rowCount;
+        r.repeatable = step.repeatable;
         // Die Konfiguration DIESER Runde am Ergebnis festhalten: der Plan-Check
         // prueft Vorgaben pro Runde, und in der Reihe sind sie verschieden.
         r.cfg = cfg;
@@ -6655,6 +6707,9 @@
             // (lastAllRun) - beantwortet die vier offenen Mechanik-Fragen aus
             // docs/roadmap/vision/features/pack-opener.md (LEARNINGS §46).
             packScan: STATE.diag.packScan || null,
+            // EAs Antwort auf die letzte Abgabe. Ohne dieses Feld war der
+            // Beweis nur zufaellig im challengeResponseSample zu sehen.
+            lastAward: STATE.diag.lastAward || null,
             // SBC-Reihe: welche Challenges des Sets hat das Script gesehen,
             // mit Ziel-OVR, Slots und EA-Status. Ohne das laesst sich ein
             // Bericht "er hat die falsche genommen" nicht nachvollziehen.
@@ -7338,8 +7393,45 @@
         } catch (e) {}
         return st;
     }
+    // Der Knopf, mit dem der Belohnungs-Dialog seine Belohnung abholt.
+    // Rasmus: "ihm fehlt scheinbar der klick auf claim rewards dazwischen".
+    // Das ist KEIN geratener Klick in einen Dialog (LEARNINGS 35): die
+    // Belohnung ist zu diesem Zeitpunkt serverseitig schon zugeteilt
+    // (grantedChallengeAwards), und dieser Dialog hat genau diese eine Aktion.
+    // Gesucht wird nur bei EXAKTER Beschriftung.
+    const REWARD_CLAIM_LABELS = [
+        'claim rewards', 'claim reward',
+        'belohnungen abholen', 'belohnung abholen'
+    ];
+    /**
+     * Welcher der sichtbaren Knoepfe holt die Belohnung ab? Rein (nur
+     * Beschriftungen kommen herein), damit die Auswahl ohne DOM testbar ist.
+     */
+    function pickClaimButton(texts) {
+        const norm = (x) => String(x || '').toLowerCase().replace(/\s+/g, ' ').trim();
+        for (const want of REWARD_CLAIM_LABELS) {
+            for (let i = 0; i < (texts || []).length; i++) {
+                if (norm(texts[i]) === want) return i;
+            }
+        }
+        return -1;
+    }
+    function clickClaimRewards() {
+        try {
+            const els = visibleAll('button, .btn-standard');
+            const texts = els.map(function (el) {
+                return String((el && el.textContent) || '').replace(/\s+/g, ' ').trim();
+            });
+            const idx = pickClaimButton(texts);
+            if (idx < 0) return false;
+            return clickLike(els[idx]);
+        } catch (e) { return false; }
+    }
     function dismissRewardPopup() {
         let closed = false;
+        // ZUERST der Knopf des Dialogs selbst - er ist der Weg, den Rasmus von
+        // Hand geht, und zuverlaessiger als ein Schliessen von aussen.
+        try { if (clickClaimRewards()) closed = true; } catch (e) {}
         try {
             const shield = window.gPopupClickShield;
             if (shield && typeof shield.closeActivePopup === 'function') {
@@ -8717,7 +8809,15 @@
                 // ging trotzdem verloren, weil dazwischen ein 429 lag.
                 if (cntBefore != null) lastKnownCount = cntBefore;
                 lastKnownBefore = lastKnownCount;
+                // Zeitpunkt VOR dem Abgeben: eine Belohnungs-Antwort von
+                // vorher darf diese Runde nicht bestaetigen.
+                const tSubmit = Date.now();
                 await submitChallengeToEa();
+                // EAs EIGENE ANTWORT auf die Abgabe. Live (Report v4.99.0) war
+                // sie der einzige Beleg: der Set-Zaehler stand auf 0, weil das
+                // Set nicht wiederholbar ist, und der Batch hielt eine
+                // erfolgreiche Abgabe fuer gescheitert.
+                let awardOk = awardConfirms(STATE.lastAward, STATE.sbc.challengeId, tSubmit);
                 // Luft lassen: 426/429/512 auf die Bestaetigung sind
                 // Rate-Limits, und sie kamen live unmittelbar nach dem Abgeben.
                 // Der Takt erhoeht sich nach jedem abgewiesenen
@@ -8725,6 +8825,10 @@
                 // (LEARNINGS 7/30), nicht wieder auf einen festen kleinen Wert
                 // setzen.
                 await sleep(confirmGap);
+                // Die Antwort kann waehrend der Pause eingetroffen sein.
+                if (!awardOk) {
+                    awardOk = awardConfirms(STATE.lastAward, STATE.sbc.challengeId, tSubmit);
+                }
                 let cntAfter = await setTimesCompleted(STATE.sbc.setId);
                 if (cntAfter == null && confirmLastFail === 'request') {
                     confirmGap = Math.min(5000, Math.round(confirmGap * 2));
@@ -8739,7 +8843,10 @@
                 // gelesen, nie erneut abgegeben.
                 const baseNow = (cntBefore != null) ? cntBefore : lastKnownBefore;
                 let confirmRetries = 0;
-                while (baseNow != null && cntAfter != null && cntAfter <= baseNow &&
+                // NICHT nachlesen, wenn EA schon geantwortet hat - das waeren
+                // zwei Requests und ~3s pro Runde fuer eine Frage, die bereits
+                // beantwortet ist.
+                while (!awardOk && baseNow != null && cntAfter != null && cntAfter <= baseNow &&
                        confirmRetries < 2) {
                     confirmRetries++;
                     await sleep(confirmGap * (confirmRetries + 1));
@@ -8754,13 +8861,28 @@
                 // Bestaetigung ueber zwei Runden hinweg als keine.
                 const baseForCmp = (cntBefore != null) ? cntBefore
                     : (cntAfter != null ? lastKnownBefore : null);
-                const confirmed = (baseForCmp != null && cntAfter != null)
+                const counterSays = (baseForCmp != null && cntAfter != null)
                     ? (cntAfter > baseForCmp) : null;
+                // Ein nicht wiederholbares Set zaehlt timesCompleted NICHT
+                // hoch - dort kann der Zaehler eine Abgabe nicht widerlegen.
+                // "Unveraendert" heisst dann "unbekannt", nicht
+                // "fehlgeschlagen": dieselbe Unterscheidung, die es fuer den
+                // Messausfall schon gibt.
+                const counterKannWiderlegen = (round.repeatable !== false);
+                const confirmed = awardOk ? true
+                    : ((counterSays === false && !counterKannWiderlegen) ? null : counterSays);
                 STATE.diag.submitCounterChecks = (STATE.diag.submitCounterChecks || []).concat([{
                     round: i + 1, before: cntBefore, after: cntAfter, confirmed: confirmed,
                     // Warum null? 'request' = Messung ausgefallen (kein
                     // Abbruchgrund), 'unreadable' = Antwort ohne Zahl.
-                    nullReason: (confirmed === null ? confirmLastFail : null),
+                    nullReason: (confirmed === null
+                        ? (confirmLastFail ||
+                           (counterSays === false ? 'set-nicht-wiederholbar' : null))
+                        : null),
+                    // Woran lag die Bestaetigung? award = EAs eigene Antwort.
+                    via: awardOk ? 'award' : (counterSays != null ? 'zaehler' : null),
+                    award: STATE.lastAward || null,
+                    repeatable: round.repeatable,
                     basis: baseForCmp,
                     // Wie oft musste nachgelesen werden, bis die Zahl stand?
                     retries: confirmRetries
@@ -8768,7 +8890,15 @@
                 // Die Zahl ist da - sie wurde fuer die Bestaetigung ohnehin
                 // gelesen. Bis v4.79.0 wurde sie weggeworfen, und deshalb
                 // bewegte sich der Kontingent-Zaehler bei einem Batch nicht.
-                if (confirmed === true) quotaAddEvent(cntAfter - cntBefore, 'local');
+                if (confirmed === true) {
+                    const delta = (cntAfter != null && cntBefore != null)
+                        ? (cntAfter - cntBefore) : 0;
+                    // Bei einem nicht wiederholbaren Set bewegt sich der
+                    // Zaehler nie - die Abgabe zaehlt aber trotzdem gegen EAs
+                    // Kontingent. Ohne diese 1 waere sie in der Messung
+                    // unsichtbar.
+                    quotaAddEvent(delta > 0 ? delta : 1, 'local');
+                }
                 // Keine Bestaetigung ist auch keine gute Nachricht. Live liefen
                 // sechs Runden mit confirmed:null durch und endeten in 475/404 -
                 // die einzige echte Wache war abgeschaltet. Eine EINZELNE
@@ -8799,7 +8929,8 @@
                 if (confirmed === false) {
                     throw new Error('Abgabe von Team ' + (i + 1) + ' wurde von EA nicht ' +
                         'bestätigt (Zähler unverändert bei ' + cntAfter + ', ' +
-                        (confirmRetries + 1) + 'x gelesen) - ' + done +
+                        (confirmRetries + 1) + 'x gelesen, und keine ' +
+                        'Belohnungs-Antwort) - ' + done +
                         ' von ' + n + ' fertig. Abgebrochen, bevor daraus eine Fehlerkette ' +
                         'wird: bitte die SBC im Spiel einmal schliessen, neu öffnen und ' +
                         'nachsehen, ob das Team noch drin steht.');
@@ -9074,6 +9205,7 @@
                 items: items.slice(0, 30).map(function (it) {
                     return { id: it.id, name: it.name, target: it.target,
                              prio: it.priority, row: it.rowIndex,
+                             rep: it.repeatable,
                              slots: it.slots, formation: it.formation,
                              done: it.done, status: it.state.status };
                 }) };

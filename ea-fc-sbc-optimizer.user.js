@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.4.0
+// @version      5.5.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.4.0';
+    const VERSION = '5.5.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -7816,7 +7816,7 @@
                     // im Squad landet. Rein additiv: der Knopf wird nur nach
                     // einem erfolgreichen Zeilen-Klick und nur bei exakter
                     // Beschriftung gedrueckt.
-                    const s2b = clickChallengeEnterButton();
+                    const s2b = clickChallengeEnterButton(lastChallengeRowEl);
                     steps.push({ ms: Date.now() - t0, enter: s2b });
                     if (s2b.ok) await batchWait(700);
                 }
@@ -7916,7 +7916,7 @@
                 // ZWEITER Schritt, der bis v4.95.0 fehlte: die Zeile WAEHLT
                 // nur aus, betreten wird ueber den Knopf ("Go to Challenge" /
                 // "Start Challenge").
-                const e = clickChallengeEnterButton();
+                const e = clickChallengeEnterButton(lastChallengeRowEl);
                 steps.push({ ms: Date.now() - t0, enter: e });
                 phase = 'warten';
                 if (e.ok) { entered++; enteredAt = i; await batchWait(900); continue; }
@@ -8192,7 +8192,12 @@
      * MIT `want` ({ name, target }): die passende Zeile - das braucht die
      * SBC-Reihe, die gezielt die 89er/90er/91er ansteuert.
      */
+    // Die zuletzt GEWAEHLTE Zeile. Bewusst ein Modul-Merker statt eines
+    // Feldes im Rueckgabe-Objekt: die Rueckgaben landen als JSON in der
+    // Diagnose, ein DOM-Element darin wuerde die Serialisierung sprengen.
+    let lastChallengeRowEl = null;
     function clickChallengeRow(want) {
+        lastChallengeRowEl = null;
         let rows = visibleAll('.ut-sbc-challenge-table-row-view');
         if (!rows.length) rows = visibleAll('.ut-sbc-challenge-tile-view');
         if (!rows.length) rows = visibleAll('.ut-sbc-challenges-view--challenges > *');
@@ -8206,6 +8211,7 @@
         }
         if (!want) {
             // Die erste Zeile ist die noch offene Wiederholung.
+            lastChallengeRowEl = rows[0];
             return { ok: clickLike(rows[0]), why: rows.length + ' Zeile(n), erste geklickt' };
         }
         const texts = rows.map(function (r) {
@@ -8230,6 +8236,7 @@
                      rows: texts.length,
                      texts: texts.slice(0, 8).map(function (t) { return t.slice(0, 50); }) };
         }
+        lastChallengeRowEl = rows[idx];
         return { ok: clickLike(rows[idx]), why: 'Zeile ' + (idx + 1) + ' von ' +
                  rows.length + ' geklickt', hit: texts[idx].slice(0, 60) };
     }
@@ -8260,8 +8267,38 @@
         }
         return -1;
     }
-    /** Den Eintritts-Knopf der Set-Ansicht klicken. */
-    function clickChallengeEnterButton() {
+    /**
+     * Der Eintritts-Knopf INNERHALB einer Zeile (schmale Ansicht am Handy):
+     * dort gibt es keinen aeusseren "Go to Challenge" (Mikes Log: seen enthielt
+     * nur unsere eigenen Panel-Knoepfe), der "Start Challenge"-Knopf steckt in
+     * jeder Zeile. Rein (Text + Eltern-Text kommen herein), damit die Auswahl
+     * testbar ist. Exakte Beschriftung; genommen wird die AEUSSERSTE Huelle
+     * des Textes - Knopf und innerer span tragen denselben Text, und geklickt
+     * werden soll der Knopf (dieselbe Regel wie beim Pack-Open-Knopf).
+     */
+    function pickInRowEnterIndex(infos) {
+        const norm = (x) => String(x || '').toLowerCase().replace(/\s+/g, ' ').trim();
+        for (const want of CHALLENGE_ENTER_LABELS) {
+            for (let i = 0; i < (infos || []).length; i++) {
+                if (!infos[i] || norm(infos[i].text) !== want) continue;
+                // Innere Ebene? Der Eltern-Text ist dann ebenfalls exakt das
+                // Label - die aeussere Huelle kommt in DOM-Reihenfolge zuerst.
+                if (infos[i].parentText != null && norm(infos[i].parentText) === want) continue;
+                return i;
+            }
+        }
+        return -1;
+    }
+    /**
+     * Den Eintritts-Knopf klicken. Zwei Ansichten, zwei Wege:
+     *  - Split-View (Desktop): der Knopf steht AUSSERHALB der Zeilen rechts.
+     *  - Schmale Ansicht (Handy): es gibt aussen KEINEN - der Knopf steckt in
+     *    der Zeile selbst, und der Zeilen-Tap allein navigiert nicht (Mikes
+     *    Log: openId blieb die alte Challenge, rowClicks 5, enterClicks 0).
+     * `rowEl` ist die zuvor GEWAEHLTE Zeile - nur dort wird gesucht, nie in
+     * allen. Der Fallback ist auf dem Desktop unerreichbar (aussen gewinnt).
+     */
+    function clickChallengeEnterButton(rowEl) {
         let rows = [];
         try {
             rows = Array.prototype.slice.call(document.querySelectorAll(
@@ -8282,7 +8319,30 @@
         });
         const idx = pickEnterButton(info);
         if (idx < 0) {
+            // SCHMALE ANSICHT: in der gewaehlten Zeile nachsehen.
+            if (rowEl) {
+                let cand = [];
+                try {
+                    cand = Array.prototype.slice.call(
+                        rowEl.querySelectorAll('button, .btn-standard, div, span'));
+                } catch (e) {}
+                const infos2 = cand.map(function (el) {
+                    return {
+                        text: String((el && el.textContent) || '').replace(/\s+/g, ' ').trim(),
+                        parentText: (el && el.parentElement)
+                            ? String(el.parentElement.textContent || '').replace(/\s+/g, ' ').trim()
+                            : null
+                    };
+                });
+                const j = pickInRowEnterIndex(infos2);
+                if (j >= 0) {
+                    return { ok: clickLike(cand[j]),
+                             why: 'Eintritts-Knopf IN der Zeile geklickt (schmale Ansicht)',
+                             label: infos2[j].text.slice(0, 40) };
+                }
+            }
             return { ok: false, why: 'kein Eintritts-Knopf gefunden',
+                     inRowTried: !!rowEl,
                      seen: info.filter(function (x) { return !x.inRow; })
                                .slice(0, 8)
                                .map(function (x) { return x.text.slice(0, 30); }) };
@@ -9611,6 +9671,16 @@
         if (!retry) lastAutoPackRefresh = now;
         await sleep(retry ? 2500 : 600);
         if (!inStoreView() || STATE.packOpenBusy) return;
+        // OHNE services gibt es nichts zu holen - und auf der LOGIN-SEITE
+        // faellt inStoreView() bei leerer Controller-Kette auf true zurueck
+        // (Mikes Log: "Pack-Enumeration: fehlende Globals" bei jedem
+        // Login-Navigate). Ein Fehlversuch samt reportError pro Login ist
+        // reines Rauschen in lastErrors. Leise aussteigen; das Betreten des
+        // echten Stores loest ueber die Flanke einen neuen Versuch aus.
+        if (!servicesAvailable()) {
+            mergePackScan({ autoRefreshSkipped: 'services fehlen (Login-Seite?)' });
+            return;
+        }
         // Schrittweise, damit im Report steht, WO es geknallt hat. Live kam nur
         // "Cannot read properties of undefined (reading 'toLowerCase')" ohne Ort -
         // damit war nicht entscheidbar, ob der Fehler bei uns oder in EAs

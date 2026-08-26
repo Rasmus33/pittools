@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      4.98.0
+// @version      4.99.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '4.98.0';
+    const VERSION = '4.99.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -1681,6 +1681,10 @@
                 id: id,
                 name: challengeNodeName(n, scan.target),
                 target: scan.target,
+                // EAs eigene Ordnungszahl. Sie ist der Anker fuer die
+                // Navigation: der NAME ist keiner (Live: sechs Challenges
+                // heissen "91-Rated Squad").
+                priority: (typeof n.priority === 'number') ? n.priority : null,
                 slots: scan.slots,
                 // Nur fuer die Diagnose: im Live-Report war slots durchweg
                 // null (EAs Challenge-Knoten hat kein slots-Feld, nur
@@ -1692,14 +1696,32 @@
                 scan: scan
             });
         }
-        // Sortierung wie im Spiel: nach Ziel-OVR aufsteigend (89, 90, 91),
-        // Challenges ohne Ziel danach, innerhalb gleicher Stufe nach Id.
+        // Reihenfolge wie im SPIEL: EAs eigene `priority`. Vorher habe ich
+        // nach Ziel-OVR sortiert - bei drei Challenges (89/90/91) dasselbe
+        // Ergebnis, bei zwanzig aber eine andere Liste als die, die Rasmus vor
+        // sich hat. Und nur EAs Reihenfolge taugt als Positions-Anker.
+        // Ohne priority (nicht jede Antwort fuehrt es) bleibt die alte Regel
+        // als Rueckfall: Ziel-OVR, dann Id - damit die Liste nie in der
+        // zufaelligen Reihenfolge des Objekt-Durchlaufs steht.
         out.sort(function (a, b) {
+            const pa = (a.priority == null) ? null : a.priority;
+            const pb = (b.priority == null) ? null : b.priority;
+            if (pa != null && pb != null && pa !== pb) return pa - pb;
+            if (pa != null && pb == null) return -1;
+            if (pa == null && pb != null) return 1;
             const ta = (a.target == null) ? 1e9 : a.target;
             const tb = (b.target == null) ? 1e9 : b.target;
             if (ta !== tb) return ta - tb;
             return Number(a.id) - Number(b.id);
         });
+        // ERST JETZT die Position: sie muss die Reihenfolge widerspiegeln, in
+        // der die Zeilen im Spiel stehen. rowCount reist mit, damit der
+        // Aufrufer pruefen kann, ob die sichtbare Liste ueberhaupt komplett
+        // ist - eine Position in einer gefilterten Liste waere falsch.
+        for (let i = 0; i < out.length; i++) {
+            out[i].rowIndex = i;
+            out[i].rowCount = out.length;
+        }
         return out;
     }
     /**
@@ -1752,6 +1774,9 @@
         r.challengeName = step.name;
         r.target = step.target;
         r.slots = cfg.slots;
+        // Die Position in EAs Liste - der eigentliche Navigations-Anker.
+        r.rowIndex = step.rowIndex;
+        r.rowCount = step.rowCount;
         // Die Konfiguration DIESER Runde am Ergebnis festhalten: der Plan-Check
         // prueft Vorgaben pro Runde, und in der Reihe sind sie verschieden.
         r.cfg = cfg;
@@ -1788,7 +1813,9 @@
             id: round.challengeId,
             name: round.challengeName,
             target: round.target,
-            slots: round.slots
+            slots: round.slots,
+            rowIndex: round.rowIndex,
+            rowCount: round.rowCount
         };
     }
     /**
@@ -7705,10 +7732,17 @@
             }
             await batchWait(300);
         }
+        // WAS ist am Ende offen? Live stand hier eine andere Challenge desselben
+        // Sets - und die Meldung sagte nur "liess sich nicht oeffnen". Der
+        // Unterschied zwischen "nichts ging auf" und "die falsche ging auf" ist
+        // der ganze Befund.
+        const openId = STATE.sbc.challengeId;
+        const falsche = (openId != null && String(openId) !== String(step.id));
         steps.push({ ms: Date.now() - t0, popup: popupState(),
-                     why: 'Zeitueberschreitung', openId: STATE.sbc.challengeId,
+                     why: 'Zeitueberschreitung', openId: openId, wantId: step.id,
+                     wrongChallenge: falsche,
                      phase: phase, rowClicks: clicked, enterClicks: entered });
-        return { ok: false, steps: steps };
+        return { ok: false, wrongChallenge: falsche, openId: openId, steps: steps };
     }
     /**
      * Im HUB die SBC wieder aufmachen - der Weg, den Rasmus von Hand geht.
@@ -7914,15 +7948,42 @@
         const norm = (x) => String(x || '').toLowerCase().replace(/\s+/g, ' ').trim();
         const list = (texts || []).map(norm);
         const name = norm(want.name);
-        if (name) {
-            for (let i = 0; i < list.length; i++) { if (list[i] === name) return i; }
-            for (let i = 0; i < list.length; i++) { if (list[i].indexOf(name) > -1) return i; }
+        // Als EIGENSTAENDIGE Zahl - sonst trifft "9" in "90-Rated Squad" und
+        // "91" waere nicht mehr unterscheidbar.
+        const targetRe = (want.target != null)
+            ? new RegExp('(^|[^0-9])' + String(want.target) + '([^0-9]|$)') : null;
+        function plausibel(txt) {
+            if (name && txt.indexOf(name) > -1) return true;
+            if (targetRe && targetRe.test(txt)) return true;
+            return false;
         }
-        if (want.target != null) {
-            // Als EIGENSTAENDIGE Zahl - sonst trifft "9" in "90-Rated Squad"
-            // und "91" waere nicht mehr unterscheidbar.
-            const re = new RegExp('(^|[^0-9])' + String(want.target) + '([^0-9]|$)');
-            for (let i = 0; i < list.length; i++) { if (re.test(list[i])) return i; }
+        // 1. DIE POSITION. Sie ist die einzige eindeutige Kennung: live hiessen
+        //    SECHS Challenges eines Sets "91-Rated Squad", und der Name traf
+        //    damit immer die erste davon.
+        //    Nur wenn die sichtbare Liste vollstaendig ist (gleich viele Zeilen
+        //    wie Challenges) und der Text an der Stelle passt.
+        if (typeof want.rowIndex === 'number' && want.rowIndex >= 0 &&
+            want.rowIndex < list.length &&
+            (want.rowCount == null || want.rowCount === list.length) &&
+            (!name && !targetRe ? true : plausibel(list[want.rowIndex]))) {
+            return want.rowIndex;
+        }
+        // 2. Der NAME - aber nur, wenn er EINDEUTIG ist. "Nimm die erste von
+        //    sechs" ist genau der Fehler, der hier behoben wird.
+        if (name) {
+            const exakt = [];
+            for (let i = 0; i < list.length; i++) { if (list[i] === name) exakt.push(i); }
+            if (exakt.length === 1) return exakt[0];
+            const teil = [];
+            for (let i = 0; i < list.length; i++) { if (list[i].indexOf(name) > -1) teil.push(i); }
+            if (teil.length === 1) return teil[0];
+            if (teil.length > 1) return -1;   // mehrdeutig: lieber abbrechen
+        }
+        // 3. Das Ziel-OVR, ebenfalls nur eindeutig.
+        if (targetRe) {
+            const hits = [];
+            for (let i = 0; i < list.length; i++) { if (targetRe.test(list[i])) hits.push(i); }
+            if (hits.length === 1) return hits[0];
         }
         return -1;
     }
@@ -7954,8 +8015,21 @@
         });
         const idx = pickChallengeRowIndex(texts, want);
         if (idx < 0) {
-            return { ok: false, why: 'gesuchte Challenge-Zeile nicht gefunden',
-                     want: (want.name || '') + '/' + want.target,
+            // Mehrdeutig ODER nicht gefunden - beides unterscheiden, sonst
+            // sucht man beim naechsten Report am falschen Ende.
+            const nm = String(want.name || '').toLowerCase();
+            const mehrfach = nm ? texts.filter(function (t) {
+                return String(t).toLowerCase().indexOf(nm) > -1;
+            }).length : 0;
+            return { ok: false,
+                     why: (mehrfach > 1)
+                        ? ('Name "' + want.name + '" kommt ' + mehrfach + 'x vor und die ' +
+                           'Position passt nicht (' + texts.length + ' Zeilen, erwartet ' +
+                           want.rowCount + ')')
+                        : 'gesuchte Challenge-Zeile nicht gefunden',
+                     want: (want.name || '') + '/' + want.target +
+                           ' @' + want.rowIndex + '/' + want.rowCount,
+                     rows: texts.length,
                      texts: texts.slice(0, 8).map(function (t) { return t.slice(0, 50); }) };
         }
         return { ok: clickLike(rows[idx]), why: 'Zeile ' + (idx + 1) + ' von ' +
@@ -8574,9 +8648,15 @@
                     if (!opened.ok) {
                         throw new Error(tag + ': "' + (round.challengeName || round.challengeId) +
                             '" liess sich nicht öffnen' +
-                            (opened.occupied ? ' - dort steht schon ein Team im Squad. Bitte im ' +
-                                'Spiel nachsehen und es leeren oder abgeben.'
-                                             : ' (Diagnose schicken: batchSteps).'));
+                            (opened.occupied
+                                ? ' - dort steht schon ein Team im Squad. Bitte im ' +
+                                  'Spiel nachsehen und es leeren oder abgeben.'
+                                : (opened.wrongChallenge
+                                    ? ' - aufgegangen ist Challenge ' + opened.openId +
+                                      ' statt ' + round.challengeId + '. In diesem Set gibt es ' +
+                                      'mehrere Challenges mit demselben Namen; bitte die ' +
+                                      'Liste mit ↻ neu laden und erneut planen.'
+                                    : ' (Diagnose schicken: batchSteps).')));
                     }
                 }
                 showProgress(i + 1, n, 'prüfe SBC...', (doneLog.length ? doneLog.length + ' fertig' : ''));
@@ -8988,8 +9068,12 @@
                 if (!(k in queueChecked)) queueChecked[k] = !it.done && it.target != null;
             }
             STATE.diag.queueScan = { setId: sid, count: items.length,
-                items: items.slice(0, 12).map(function (it) {
+                // 30 statt 12: das Live-Set hatte ZWANZIG Challenges, und im
+                // Report standen zwoelf - genau die Information fehlte
+                // (mehrere gleiche Namen), um den Fehler zu sehen.
+                items: items.slice(0, 30).map(function (it) {
                     return { id: it.id, name: it.name, target: it.target,
+                             prio: it.priority, row: it.rowIndex,
                              slots: it.slots, formation: it.formation,
                              done: it.done, status: it.state.status };
                 }) };
@@ -9836,6 +9920,11 @@
             }),
             packGroups: (STATE.packGroups || []).length,
             titlesSeen: [],
+            // Wie viele Knoepfe haben ihre fuenf Anlaeufe verbraucht? Ohne
+            // diese Zahl sah der Report aus wie "40 Knoepfe, 0 uebersprungen" -
+            // ein Zustand, den es nicht geben kann.
+            exhausted: 0,
+            hops: null,
             added: 0, skipped: 0, reason: null
         };
         if (!btns.length) {
@@ -9857,9 +9946,29 @@
                 // Fehlversuche zaehlen statt sofort aufzugeben: die Kachel kann
                 // ihren Namen spaeter nachliefern. Nach 5 Anlaeufen ist Ruhe.
                 const tries = parseInt(b.getAttribute(PACK_BTN_TRIES) || '0', 10);
-                if (tries >= 5) continue;
+                if (tries >= 5) {
+                    // Der Deckel bleibt (kein Dauerfeuer im 500ms-Takt), aber er
+                    // darf nicht die BEOBACHTUNG mitdeckeln: fuer die ersten
+                    // drei erschoepften Knoepfe werden die Titel weiter
+                    // gesammelt. Nur lesend, kein Klick, kein Request.
+                    scan.exhausted++;
+                    if (scan.exhausted <= 3) {
+                        let pb = b.parentElement, ph = 0;
+                        while (pb && ph++ < 8) {
+                            for (const c of packTileTitleCandidates(pb)) {
+                                if (scan.titlesSeen.length < 12 &&
+                                    scan.titlesSeen.indexOf(c) < 0) scan.titlesSeen.push(c);
+                            }
+                            pb = pb.parentElement;
+                        }
+                    }
+                    continue;
+                }
+                // Acht Ebenen statt sechs: die verbreiterte Knopf-Erkennung
+                // (v4.96.0) findet teils tiefere Elemente (live: span.text), und
+                // von dort sind es mehr Schritte bis zur Kachel.
                 let box = b.parentElement, group = null, hops = 0, seen = [];
-                while (box && hops++ < 6) {
+                while (box && hops++ < 8) {
                     const cands = packTileTitleCandidates(box);
                     for (const c of cands) {
                         if (seen.length < 6 && seen.indexOf(c) < 0) seen.push(c);
@@ -9892,6 +10001,9 @@
                     b.parentElement.insertBefore(own, b.nextSibling);
                     b.setAttribute(PACK_BTN_MARK, '1');   // NUR bei Erfolg endgueltig
                     scan.added++;
+                    // Wie weit war es bis zur Kachel? Sagt beim naechsten
+                    // EA-Umbau, ob der Deckel von 8 noch reicht.
+                    if (scan.hops == null || hops > scan.hops) scan.hops = hops;
                 } catch (e) {
                     b.setAttribute(PACK_BTN_TRIES, String(tries + 1));
                     scan.skipped++;
@@ -9901,7 +10013,11 @@
             scan.reason = 'Fehler: ' + (e && e.message || e);
         }
         if (!scan.added && !scan.reason) {
-            scan.reason = 'kein Kachel-Titel passte zu einem Pack-Namen';
+            scan.reason = scan.exhausted
+                ? ('kein Kachel-Titel passte (alle ' + scan.exhausted +
+                   ' Knoepfe haben ihre Anlaeufe verbraucht - titlesSeen zeigt, ' +
+                   'was in der Kachel steht)')
+                : 'kein Kachel-Titel passte zu einem Pack-Namen';
         }
         mergePackScan({ tileScan: scan });
     }

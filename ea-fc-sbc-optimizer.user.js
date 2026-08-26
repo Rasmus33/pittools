@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.5.0
+// @version      5.6.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.5.0';
+    const VERSION = '5.6.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -6087,8 +6087,9 @@
             queueTriedSet = null;
             queueLoadError = null;
             // VON HAND: hier hat Rasmus gefragt und erwartet eine Antwort -
-            // ein Fehlschlag wird also laut gemeldet.
-            loadQueueList(true, false);
+            // ein Fehlschlag wird also laut gemeldet. Geholt wird das Set,
+            // das er ANSIEHT, nicht das zuletzt erkannte.
+            loadQueueList(true, false, detectViewedSetId());
         });
         ui.queuePlan.addEventListener('click', onQueuePlanClick);
         renderPackMode();
@@ -9152,9 +9153,12 @@
             // HTTP 521. Zwei Requests im selben Tick nach zwei Schreibvorgaengen
             // sind genau das Muster aus LEARNINGS 7/30.
             if (isQueue) {
+                // Das Set DES PLANS neu holen - nicht das gerade angesehene:
+                // waehrend der 4s kann Rasmus schon woanders sein.
+                const reloadSid = plan.setId;
                 setTimeout(function () {
                     queueTriedSet = null;
-                    loadQueueList(true, true);
+                    loadQueueList(true, true, reloadSid);
                 }, 4000);
             }
             let html = doneLog.length
@@ -9292,6 +9296,76 @@
     // Letzter Fehlschlag eines LEISEN Neuladens - er steht in der Liste und in
     // der Diagnose, aber nicht in lastErrors.
     let queueLoadError = null;
+    // Gebaute Challenge-Listen pro Set. buildChallengeList (deepScan pro
+    // Challenge) ist zu teuer fuer den 500ms-Takt - neu gebaut wird nur, wenn
+    // die Antwort im Cache eine ANDERE ist (Objekt-Identitaet).
+    const queueBuiltBySet = {};
+    function builtChallengeListFor(sid) {
+        const json = (STATE.setChallengesBySet || {})[sid];
+        if (!json) return null;
+        const hit = queueBuiltBySet[sid];
+        if (hit && hit.json === json) return hit.items;
+        STATE.diag.scanStats = STATE.diag.scanStats || {};
+        const items = buildChallengeList(json, STATE.diag.scanStats);
+        queueBuiltBySet[sid] = { json: json, items: items };
+        return items;
+    }
+    /**
+     * Passen die sichtbaren Zeilen-Texte zu einer Challenge-Liste? Rein, denn
+     * diese Zuordnung entscheidet, WELCHES Set die Reihe anzeigt.
+     * Verlangt: gleiche Anzahl, und der Name der i-ten Challenge steckt im
+     * Text der i-ten Zeile - bei mindestens 70% (EA lokalisiert manche Namen,
+     * ein einzelner Ausreisser darf die Zuordnung nicht kippen; unter 70%
+     * ist es ein anderes Set).
+     */
+    function rowsMatchItems(texts, items) {
+        if (!texts || !items) return false;
+        if (items.length < 2 || texts.length !== items.length) return false;
+        let hits = 0;
+        for (let i = 0; i < items.length; i++) {
+            const nm = String(items[i].name || '').toLowerCase().replace(/\s+/g, ' ').trim();
+            if (nm && String(texts[i] || '').toLowerCase().indexOf(nm) > -1) hits++;
+        }
+        return hits >= Math.max(2, Math.ceil(items.length * 0.7));
+    }
+    /** Die sichtbaren Challenge-Zeilen als Texte - dieselben Selektoren wie
+     *  clickChallengeRow, eine Quelle. */
+    function visibleChallengeRowTexts() {
+        let rows = visibleAll('.ut-sbc-challenge-table-row-view');
+        if (!rows.length) rows = visibleAll('.ut-sbc-challenge-tile-view');
+        return rows.map(function (r) {
+            return String((r && r.textContent) || '').replace(/\s+/g, ' ').trim();
+        });
+    }
+    /**
+     * WELCHES Set sieht Rasmus gerade an? STATE.sbc.setId reicht nicht: es
+     * wird aus Netzwerk-Antworten und der offenen Challenge gespeist - rendert
+     * EA eine Set-Liste aus dem eigenen Speicher (kein Request, keine offene
+     * Challenge), bleibt es beim VORIGEN Set haengen. Live: Marcelo-Set auf
+     * dem Schirm, queueScan zeigte das 10x-85+-Set von vorhin, die Reihe
+     * blieb versteckt.
+     * Erkannt wird ueber die sichtbaren Zeilen gegen die gecachten Listen -
+     * NUR bei eindeutigem Treffer; sonst gilt wie bisher STATE.sbc.setId.
+     */
+    function detectViewedSetId() {
+        try {
+            const texts = visibleChallengeRowTexts();
+            if (texts.length >= 2) {
+                // Stabilitaet zuerst: passt das bereits geladene Set, bleibt es.
+                if (queueLoadedSet != null &&
+                    rowsMatchItems(texts, builtChallengeListFor(queueLoadedSet))) {
+                    return queueLoadedSet;
+                }
+                const matches = [];
+                for (const k in (STATE.setChallengesBySet || {})) {
+                    if (String(k) === String(queueLoadedSet)) continue;
+                    if (rowsMatchItems(texts, builtChallengeListFor(k))) matches.push(k);
+                }
+                if (matches.length === 1) return matches[0];
+            }
+        } catch (e) {}
+        return STATE.sbc.setId;
+    }
     /**
      * Welche Challenges sind angehakt - in der Reihenfolge der Liste?
      * Rein (Liste + Haken kommen herein), damit die Zuordnung testbar ist:
@@ -9406,8 +9480,10 @@
      * die Antwort liegt nach dem Oeffnen einer SBC ohnehin vor. `force` (das ↻)
      * holt sie neu.
      */
-    async function loadQueueList(force, quiet) {
-        const sid = STATE.sbc.setId;
+    async function loadQueueList(force, quiet, sidArg) {
+        // Das Set kommt vom Aufrufer (Sichtbarkeits-Takt: das ANGESEHENE Set;
+        // Lauf-Ende: das Set des Plans). Ohne Angabe wie bisher der Zustand.
+        const sid = (sidArg != null) ? sidArg : STATE.sbc.setId;
         if (sid == null) {
             if (!quiet) toast('Kein Set erkannt - bitte eine SBC öffnen.', 'error');
             return;
@@ -9480,8 +9556,10 @@
      */
     function syncQueueSection() {
         if (!ui.queueSection) return;
-        const sid = STATE.sbc.setId;
-        if (sid != null && queueLoadedSet !== sid && queueTriedSet !== sid &&
+        const sid = detectViewedSetId();
+        // String-Vergleiche: die Cache-Schluessel sind Strings, EAs Ids Zahlen.
+        if (sid != null && String(queueLoadedSet) !== String(sid) &&
+            String(queueTriedSet) !== String(sid) &&
             !queueLoading && inSbcView() && !throttledNow()) {
             queueTriedSet = sid;
             queueItems = [];
@@ -9489,9 +9567,10 @@
             // Kein await: die Sichtbarkeits-Pruefung laeuft im Takt und darf
             // nicht darauf warten. loadQueueList() rendert selbst nach.
             // LEISE: niemand hat danach gefragt.
-            loadQueueList(false, true);
+            loadQueueList(false, true, sid);
         }
-        const show = inSbcView() && queueLoadedSet === sid && queueItems.length > 1;
+        const show = inSbcView() && sid != null &&
+            String(queueLoadedSet) === String(sid) && queueItems.length > 1;
         ui.queueSection.classList.toggle('sbc-opt-hidden', !show);
     }
     /**
@@ -9546,7 +9625,10 @@
             const plan = finishQueue(st);
             plan.mode = 'reihe';
             plan.cfg = baseCfg;
-            plan.setId = STATE.sbc.setId;
+            // Das Set der LISTE: STATE.sbc.setId kann beim vorigen Set haengen
+            // (kein Netzwerk-Request beim Wechsel) - geplant wurde aus
+            // queueItems, also gehoert deren Set an den Plan.
+            plan.setId = (queueLoadedSet != null) ? queueLoadedSet : STATE.sbc.setId;
             plan.poolLoadIncomplete = STATE.loadIncomplete;
             // In der Reihe traegt JEDE Runde ihr eigenes Ziel; die Plan-Felder
             // targetOVR/slots bleiben leer, damit niemand sie versehentlich als

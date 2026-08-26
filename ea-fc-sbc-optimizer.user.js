@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.2.2
+// @version      5.3.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.2.2';
+    const VERSION = '5.3.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -5138,13 +5138,16 @@
             --pt-bg:#0f1620;          /* Panel */
             --pt-surface:#131e2b;     /* Kasten IM Panel */
             --pt-raised:#1c2938;      /* Knopf "ghost" */
+            --pt-raised-hi:#25384c;   /* raised unter dem Finger */
             --pt-hover:#16283a;       /* Zeile/Segment unter dem Finger */
             /* Linien */
             --pt-line:#1f2b3a;        /* Trennlinie, Kasten-Rahmen */
+            --pt-line-soft:#1b2735;   /* leiseste Linie: Zeilen IN einem Kasten */
             --pt-line-2:#24405f;      /* Feld-Rahmen (deutlicher) */
             --pt-line-3:#2f4a68;      /* Rahmen unter dem Finger */
             /* Text, drei Rollen statt vier zufaelliger Grautoene */
             --pt-text:#e6edf3;
+            --pt-text-2:#cfe0f2;      /* Sekundaertext auf Knoepfen/Karten */
             --pt-muted:#9db2c8;       /* Beschriftungen */
             --pt-faint:#8299b0;       /* Nebeninfos (war #7d93ab: zu dunkel) */
             /* Masse */
@@ -5233,8 +5236,10 @@
         }
         #sbc-opt-close {
             /* Vorher ein nackter Text von ~12px. Ein Zuklapp-Knopf ist die
-               Aktion, die man am Handy am haeufigsten trifft (oder verfehlt). */
-            width:26px; height:26px; border-radius:50%;
+               Aktion, die man am Handy am haeufigsten trifft (oder verfehlt).
+               34px Flaeche; der negative Rand haelt die Kopfzeile auf ihrer
+               bisherigen Hoehe - nur die TREFFERflaeche waechst. */
+            width:34px; height:34px; margin:-5px -7px -5px 0; border-radius:50%;
             display:flex; align-items:center; justify-content:center;
             font-size:15px; line-height:1; flex:0 0 auto;
             transition: background .12s ease;
@@ -5315,6 +5320,16 @@
             background-position:right 10px center;
         }
         #sbc-opt-panel select option { background:var(--pt-sunken); color:var(--pt-text); }
+        /* Die Hoch/Runter-Spinner in den Zahlenfeldern sind seit der
+           Schnellwahl (v4.93.0) nur Rauschen - die Felder sind der Notausgang,
+           getippt wird auf die Chips. GETRENNTE Regeln: ein unbekannter
+           Selektor in einer Liste verwirft die GANZE Regel, die
+           ::-webkit-Pseudos wuerden die Firefox-Regel also mit begraben. */
+        #sbc-opt-panel input[type=number]::-webkit-outer-spin-button,
+        #sbc-opt-panel input[type=number]::-webkit-inner-spin-button {
+            -webkit-appearance:none; margin:0;
+        }
+        #sbc-opt-panel input[type=number] { -moz-appearance:textfield; }
         /* Anhaken: die Browser-Voreinstellung ist ~13px und am Handy zu klein. */
         #sbc-opt-panel input[type=checkbox] {
             width:18px; height:18px; flex:0 0 auto; cursor:pointer;
@@ -5328,6 +5343,11 @@
            machten das Panel breiter als seine 342px, und Rasmus musste
            seitlich scrollen. */
         .sbc-opt-inline > * { min-width:0; }
+        /* Die beiden Nachlade-Knoepfe (↻) waren laut Live-Report 29 bzw. 31px
+           breit - unter jeder Trefferflaechen-Empfehlung, und einer davon ist
+           der Notausgang, wenn das automatische Laden scheitert. Das
+           inline-gesetzte width:auto blockiert min-width nicht. */
+        #sbc-opt-queue-refresh, #sbc-opt-pack-refresh { min-width:44px; }
         .sbc-opt-toggle { display:flex; align-items:center; gap:8px; cursor:pointer; }
         .sbc-opt-toggle input { width:auto; }
         .sbc-opt-group-title {
@@ -5357,7 +5377,7 @@
         .sbc-opt-btn.primary { background:var(--pt-accent); color:var(--pt-on-accent); }
         .sbc-opt-btn.blue { background:var(--pt-accent-2); color:#fff; }
         .sbc-opt-btn.ghost {
-            background:var(--pt-raised); color:#cfe0f2;
+            background:var(--pt-raised); color:var(--pt-text-2);
             box-shadow: inset 0 0 0 1px var(--pt-line);
         }
         /* "Teams planen" hebt sich von "Diagnose" ab (Rasmus): der
@@ -5368,7 +5388,8 @@
         .sbc-opt-btn:disabled { opacity:.5; cursor:not-allowed; }
         /* Fokus NUR bei Tastatur (:focus-visible) - ein Ring nach jedem
            Fingertipp waere Laerm. */
-        #sbc-opt-panel :focus-visible, #sbc-opt-fab:focus-visible {
+        #sbc-opt-panel :focus-visible, #sbc-opt-fab:focus-visible,
+        .sbc-opt-tilebtn:focus-visible {
             outline: 2px solid var(--pt-accent); outline-offset: 2px;
         }
         /* ------------------------------------------------------------------
@@ -5443,7 +5464,7 @@
             scrollbar-width: thin; scrollbar-color: var(--pt-line-2) transparent;
         }
         #sbc-opt-batch-details { margin-top:8px; }
-        .sbc-opt-batch-round { padding:4px 0; border-bottom:1px solid #1b2735; }
+        .sbc-opt-batch-round { padding:4px 0; border-bottom:1px solid var(--pt-line-soft); }
         .sbc-opt-batch-round:last-child { border-bottom:none; }
         .sbc-opt-batch-round b { color:var(--pt-accent); }
         .sbc-opt-batch-warn { color:var(--pt-warn-2); }
@@ -5512,8 +5533,10 @@
         /* ✎ ist der Notausgang, nicht die Hauptsache: schmal und gedaempft,
            aber am Ende DERSELBEN Leiste - nicht als vierter Wert. */
         .sbc-opt-chip.edit {
-            flex:0 0 34px; opacity:.5; font-size:12px;
-            border-left:1px solid #1c2c3e; border-radius:0 var(--pt-r-s) var(--pt-r-s) 0;
+            /* .65 statt .5: am Handy gibt es kein Hover, das den Knopf
+               aufhellt - mit .5 war der Notausgang kaum zu finden. */
+            flex:0 0 34px; opacity:.65; font-size:12px;
+            border-left:1px solid var(--pt-line-soft); border-radius:0 var(--pt-r-s) var(--pt-r-s) 0;
         }
         .sbc-opt-chip.edit:hover { opacity:1; background:var(--pt-hover); }
         .sbc-opt-chipedit { display:none; gap:6px; margin:0 0 10px; }
@@ -5531,7 +5554,7 @@
            ------------------------------------------------------------------ */
         .sbc-opt-batch-cards { margin:4px 0 2px; }
         .sbc-opt-batch-card {
-            font-size:11px; color:#cfe0f2; padding:2px 0;
+            font-size:11px; color:var(--pt-text-2); padding:2px 0;
             white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
         }
         .sbc-opt-batch-card .r {
@@ -5542,13 +5565,15 @@
         .sbc-opt-batch-card .untr { color:var(--pt-faint); font-style:italic; }
         .sbc-opt-batch-card.prot .rar { color:var(--pt-warn-2); font-weight:700; }
         .sbc-opt-result {
-            margin-top:12px; background:var(--pt-sunken); border:1px solid var(--pt-line);
+            /* surface wie die Batch-Vorschau: gleiche Rolle (Ergebnis-Kasten),
+               gleiche Flaeche. sunken ist fuer EINGABEN reserviert. */
+            margin-top:12px; background:var(--pt-surface); border:1px solid var(--pt-line);
             border-radius:var(--pt-r-m); padding:10px; display:none;
         }
         .sbc-opt-result.show { display:block; }
         .sbc-opt-player {
             display:flex; justify-content:space-between; align-items:center;
-            padding:5px 2px; border-bottom:1px solid #16212e;
+            padding:5px 2px; border-bottom:1px solid var(--pt-line-soft);
         }
         .sbc-opt-player:last-child { border-bottom:none; }
         .sbc-opt-badge {
@@ -5578,7 +5603,7 @@
             border-radius:var(--pt-r-s);
             cursor:pointer; padding:6px 0; font-size:12px; font-family:inherit;
         }
-        .sbc-opt-bandrow button:hover { background:#25384c; }
+        .sbc-opt-bandrow button:hover { background:var(--pt-raised-hi); }
         .sbc-opt-bandrow .sbc-opt-draghandle {
             color:var(--pt-faint); cursor:grab; user-select:none; text-align:center;
             font-size:13px; line-height:1;
@@ -5622,6 +5647,20 @@
         style.textContent = css;
         (document.head || document.documentElement).appendChild(style);
     }
+    /**
+     * Wie lange steht ein Toast? Vorher: 3,8s fuer ALLES - auch fuer einen
+     * Fehlertext mit 150 Zeichen Deutsch. Fehler sind aber genau die
+     * Meldungen, die gelesen werden muessen (die Batch-Vorschau haelt ihren
+     * Zustand ueberhaupt nur fest, WEIL der Toast so schnell weg ist).
+     * Jetzt: Grunddauer nach Typ, plus Lesezeit nach Laenge (~45ms/Zeichen
+     * entspricht gemuetlichen 200 Woertern/Minute), Deckel bei 15s.
+     * Reine Funktion - die Zahl ist sonst nirgends nachpruefbar.
+     */
+    function toastDuration(msg, type) {
+        const len = String(msg == null ? '' : msg).length;
+        const base = (type === 'error') ? 7000 : (type === 'warn') ? 5000 : 3800;
+        return Math.min(15000, Math.max(base, 1500 + len * 45));
+    }
     function toast(msg, type) {
         let wrap = document.getElementById('sbc-opt-toast-wrap');
         if (!wrap) {
@@ -5633,8 +5672,9 @@
         t.className = 'sbc-opt-toast ' + (type || '');
         t.textContent = msg;
         wrap.appendChild(t);
-        setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity .4s'; }, 3800);
-        setTimeout(() => { try { wrap.removeChild(t); } catch (e) {} }, 4300);
+        const ms = toastDuration(msg, type);
+        setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity .4s'; }, ms);
+        setTimeout(() => { try { wrap.removeChild(t); } catch (e) {} }, ms + 500);
     }
     function buildPanel() {
         const fab = document.createElement('button');
@@ -5816,7 +5856,10 @@
                      nur mode:'reihe'. -->
                 <div class="sbc-opt-batch sbc-opt-hidden" id="sbc-opt-queuesection">
                     <div class="sbc-opt-inline" style="margin-bottom:7px;">
-                        <label class="sbc-opt-chiplabel" style="margin:0;flex:1;">SBCs in diesem Set</label>
+                        <!-- Modul-Titel wie "Pack-Opener (Store)" - vorher stand
+                             hier ein graues Feld-Label neben einem
+                             Grossbuchstaben-Akzent-Titel derselben Ebene. -->
+                        <div class="sbc-opt-group-title" style="margin:0;flex:1;">SBCs in diesem Set</div>
                         <button class="sbc-opt-btn ghost" id="sbc-opt-queue-refresh"
                                 title="Liste neu laden"
                                 style="margin:0;padding:4px 9px;width:auto;flex:0 0 auto;">↻</button>

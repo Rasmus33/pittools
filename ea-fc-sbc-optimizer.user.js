@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.2.0
+// @version      5.2.1
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.2.0';
+    const VERSION = '5.2.1';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -9778,7 +9778,11 @@
             assetId: safeGet(o, 'assetId'),
             ratingRaw: safeGet(o, 'rating'),
             rareflagRaw: safeGet(o, 'rareflag'),
-            itemTypeRaw: safeGet(o, 'itemType')
+            itemTypeRaw: safeGet(o, 'itemType'),
+            // Traegt das Item wirklich einen Schnellverkaufswert? Ohne diese
+            // Zahl waere "0 Coins" nicht von "Feld nicht gelesen" zu
+            // unterscheiden.
+            discardValueRaw: safeGet(o, 'discardValue')
         };
     }
     /**
@@ -10619,6 +10623,12 @@
                     name: d ? d.name : 'Misc/Währung',
                     rating: d ? d.rating : null,
                     rarity: d ? d.rarity : null,
+                    // EAs Schnellverkaufswert. HIER, nicht nur in
+                    // decidePackDiscard().rows: die Bilanz und die Anzeige
+                    // lesen DIESE Liste. Live (Report v5.2.0) waren 12 Karten
+                    // abgestossen und die Bilanz nannte 0 Coins - der Wert war
+                    // in der falschen Liste.
+                    coins: d ? d.discardValue : null,
                     isDuplicateRaw: isDupRaw,
                     target: misc ? 'redeem'
                         : (wantDiscard && discardPlan.toDiscard.indexOf(it) > -1 ? 'abgestoßen'

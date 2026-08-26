@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.0.0
+// @version      5.1.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.0.0';
+    const VERSION = '5.1.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -5452,14 +5452,23 @@
            Knoepfe (unsere Akzentfarbe), damit niemand ihn mit "Open"
            verwechselt - er oeffnet ALLE Packs des Typs. */
         .sbc-opt-tilebtn {
-            margin-left:8px; background:var(--pt-sel); color:#fff;
-            border:1px solid #3d8ad6; border-radius:var(--pt-r-s);
-            padding:8px 14px; font-size:13px; font-weight:600;
-            font-family:var(--pt-font);
-            cursor:pointer; vertical-align:middle;
-            transition: filter .12s ease, transform .06s ease;
+            /* EIGENE ZEILE unter EAs Open-Knopf, rechtsbuendig (margin-left:auto),
+               klein und gedaempft. Rasmus: "der standardfall ist immer noch,
+               dass ich einfach nur einzeln oeffnen will ... mit ein bisschen
+               margin, damit man nicht aus versehen drauf klickt". Der Abstand
+               ist Absicht, nicht Kosmetik: der Knopf oeffnet ALLE Packs eines
+               Typs. */
+            display:block; margin:10px 0 2px auto; width:auto;
+            background:transparent; color:#8fc3f0;
+            border:1px solid #2f5878; border-radius:var(--pt-r-s);
+            padding:4px 9px; font-size:11px; font-weight:600;
+            font-family:var(--pt-font); line-height:1.3;
+            cursor:pointer; opacity:.75;
+            transition: opacity .12s ease, background .12s ease, transform .06s ease;
         }
-        .sbc-opt-tilebtn:hover:not(:disabled) { filter: brightness(1.12); }
+        .sbc-opt-tilebtn:hover:not(:disabled) {
+            opacity:1; background:var(--pt-sel); color:#fff; border-color:#3d8ad6;
+        }
         .sbc-opt-tilebtn:active:not(:disabled) { transform: translateY(1px); }
         .sbc-opt-tilebtn:disabled { opacity:.5; cursor:not-allowed; }
         /* ------------------------------------------------------------------
@@ -5982,7 +5991,10 @@
         ui.batchRun.addEventListener('click', onBatchRunClick);
         ui.queueRefresh.addEventListener('click', function () {
             queueTriedSet = null;
-            loadQueueList(true);
+            queueLoadError = null;
+            // VON HAND: hier hat Rasmus gefragt und erwartet eine Antwort -
+            // ein Fehlschlag wird also laut gemeldet.
+            loadQueueList(true, false);
         });
         ui.queuePlan.addEventListener('click', onQueuePlanClick);
         renderPackMode();
@@ -8891,6 +8903,12 @@
                 // gelesen. Bis v4.79.0 wurde sie weggeworfen, und deshalb
                 // bewegte sich der Kontingent-Zaehler bei einem Batch nicht.
                 if (confirmed === true) {
+                    // Die Liste sofort und OHNE Request nachtragen: wir wissen,
+                    // welche Challenge durch ist.
+                    if (isQueue && markQueueChallengeDone(queueItems, queueChecked,
+                            round.challengeId)) {
+                        try { renderQueueList(); } catch (e) {}
+                    }
                     const delta = (cntAfter != null && cntBefore != null)
                         ? (cntAfter - cntBefore) : 0;
                     // Bei einem nicht wiederholbaren Set bewegt sich der
@@ -8972,11 +8990,19 @@
             // Zahl damit exakt statt Untergrenze. Bewusst hier und nicht pro
             // Runde - siehe LEARNINGS 7.
             quotaMeasureQuiet();
-            // Die Reihen-Liste ist nach dem Lauf veraltet: die gerade
-            // abgegebenen Challenges standen weiter als offen da. Ein Reihen-
-            // Lauf ist selten und bewusst ausgeloest - dafuer ist ein Request
-            // in Ordnung.
-            if (isQueue) { queueTriedSet = null; loadQueueList(true); }
+            // Die Reihen-Liste ist waehrend des Laufs schon lokal nachgetragen
+            // worden (markQueueChallengeDone) - dieses Neuladen holt nur noch,
+            // was EA sonst noch geaendert hat.
+            // MIT ABSTAND und LEISE: live kam es 33ms nach der letzten Abgabe
+            // und direkt hinter der Kontingent-Messung, und EA antwortete mit
+            // HTTP 521. Zwei Requests im selben Tick nach zwei Schreibvorgaengen
+            // sind genau das Muster aus LEARNINGS 7/30.
+            if (isQueue) {
+                setTimeout(function () {
+                    queueTriedSet = null;
+                    loadQueueList(true, true);
+                }, 4000);
+            }
             let html = doneLog.length
                 ? '<div class="sbc-opt-batch-round">' + doneLog.map(escapeHtml).join('<br>') + '</div>' : '';
             if (stopped) {
@@ -9109,6 +9135,9 @@
     // Dauerfeuer, die live schon einmal Rate-Limit-401er ausgeloest hat
     // (LEARNINGS 7/30). Das ↻ bleibt der Weg, es erneut zu versuchen.
     let queueTriedSet = null;
+    // Letzter Fehlschlag eines LEISEN Neuladens - er steht in der Liste und in
+    // der Diagnose, aber nicht in lastErrors.
+    let queueLoadError = null;
     /**
      * Welche Challenges sind angehakt - in der Reihenfolge der Liste?
      * Rein (Liste + Haken kommen herein), damit die Zuordnung testbar ist:
@@ -9122,6 +9151,29 @@
             out.push(it);
         }
         return out;
+    }
+    /**
+     * Eine gerade abgegebene Challenge in der Liste als erledigt eintragen.
+     * Rein (Liste und Haken kommen herein), damit es testbar ist.
+     * WARUM lokal: wir WISSEN, welche Challenge bestaetigt wurde - EA dafuer
+     * noch einmal zu fragen ist ein Request, der scheitern kann (live: HTTP 521
+     * 33ms nach der letzten Abgabe, und danach standen die beiden gerade
+     * fertigen Challenges weiter als "NOT_STARTED" in der Liste).
+     * Der Haken wird mitentfernt: eine erledigte Challenge darf beim naechsten
+     * Planen nicht wieder mitkommen.
+     */
+    function markQueueChallengeDone(items, checked, challengeId) {
+        if (challengeId == null) return false;
+        let hit = false;
+        for (const it of items || []) {
+            if (!it || String(it.id) !== String(challengeId)) continue;
+            it.done = true;
+            it.state = it.state || {};
+            it.state.status = 'COMPLETED';
+            if (checked) checked[String(it.id)] = false;
+            hit = true;
+        }
+        return hit;
     }
     /** Kurzer Zustandstext einer Challenge fuer die Liste. */
     function queueRowStatus(it) {
@@ -9137,7 +9189,10 @@
         if (!queueItems.length) {
             box.innerHTML = '<div class="sbc-opt-debug">' +
                 (queueLoading ? 'lade die SBCs dieses Sets...'
-                              : 'keine Liste geladen - ↻ drücken.') + '</div>';
+                    : (queueLoadError
+                        ? 'Liste konnte nicht geladen werden (' +
+                          escapeHtml(queueLoadError.slice(0, 60)) + ') - ↻ drücken.'
+                        : 'keine Liste geladen - ↻ drücken.')) + '</div>';
             return;
         }
         for (const it of queueItems) {
@@ -9164,15 +9219,27 @@
             row.appendChild(nm); row.appendChild(st);
             box.appendChild(row);
         }
+        if (queueLoadError) {
+            // Die Liste steht (ggf. lokal nachgetragen), aber das letzte
+            // Nachladen kam nicht durch - das gehoert daneben, nicht in einen
+            // Fehler-Toast.
+            const hint = document.createElement('div');
+            hint.className = 'sbc-opt-debug';
+            hint.textContent = 'Stand evtl. nicht aktuell (Nachladen kam nicht durch) - ↻';
+            box.appendChild(hint);
+        }
     }
     /**
      * Die Challenges des offenen Sets holen. Aus dem Cache, wenn er da ist -
      * die Antwort liegt nach dem Oeffnen einer SBC ohnehin vor. `force` (das ↻)
      * holt sie neu.
      */
-    async function loadQueueList(force) {
+    async function loadQueueList(force, quiet) {
         const sid = STATE.sbc.setId;
-        if (sid == null) { toast('Kein Set erkannt - bitte eine SBC öffnen.', 'error'); return; }
+        if (sid == null) {
+            if (!quiet) toast('Kein Set erkannt - bitte eine SBC öffnen.', 'error');
+            return;
+        }
         if (queueLoading) return;
         queueLoading = true;
         renderQueueList();
@@ -9190,6 +9257,7 @@
             const items = buildChallengeList(json, STATE.diag.scanStats);
             queueItems = items;
             queueLoadedSet = sid;
+            queueLoadError = null;
             // Vorbelegung: alles Offene angehakt - Rasmus' Beispiel war "die
             // 89er, 90er und 91er", also der Normalfall "alle". Abwaehlen ist
             // weniger Arbeit als dreimal anwaehlen. Was der Nutzer schon von
@@ -9199,6 +9267,7 @@
                 if (!(k in queueChecked)) queueChecked[k] = !it.done && it.target != null;
             }
             STATE.diag.queueScan = { setId: sid, count: items.length,
+                loadError: queueLoadError,
                 // 30 statt 12: das Live-Set hatte ZWANZIG Challenges, und im
                 // Report standen zwoelf - genau die Information fehlte
                 // (mehrere gleiche Namen), um den Fehler zu sehen.
@@ -9211,8 +9280,18 @@
                 }) };
             log('SBC-Reihe: ' + items.length + ' Challenge(s) in Set ' + sid);
         } catch (e) {
-            reportError('SBC-Liste laden fehlgeschlagen', e);
-            toast('SBC-Liste laden fehlgeschlagen: ' + (e && e.message), 'error');
+            const msg = String((e && e.message) || e);
+            if (quiet) {
+                // LEISE: ein Neuladen aus Bequemlichkeit ist kein Fehler des
+                // Laufs. Es gehoert nicht in lastErrors (das ist die Liste, auf
+                // die bei einem Bericht zuerst geschaut wird) und darf nach
+                // einem erfolgreichen Lauf keinen roten Toast erzeugen.
+                warn('SBC-Liste automatisch nachladen fehlgeschlagen:', msg);
+                queueLoadError = msg;
+            } else {
+                reportError('SBC-Liste laden fehlgeschlagen', e);
+                toast('SBC-Liste laden fehlgeschlagen: ' + msg, 'error');
+            }
         } finally {
             queueLoading = false;
             renderQueueList();
@@ -9237,7 +9316,8 @@
             queueChecked = {};
             // Kein await: die Sichtbarkeits-Pruefung laeuft im Takt und darf
             // nicht darauf warten. loadQueueList() rendert selbst nach.
-            loadQueueList(false);
+            // LEISE: niemand hat danach gefragt.
+            loadQueueList(false, true);
         }
         const show = inSbcView() && queueLoadedSet === sid && queueItems.length > 1;
         ui.queueSection.classList.toggle('sbc-opt-hidden', !show);
@@ -10130,7 +10210,13 @@
                     openAllForPack(String(group.id));
                 });
                 try {
-                    b.parentElement.insertBefore(own, b.nextSibling);
+                    // In die KACHEL, nicht neben den Open-Text: `box` ist das
+                    // Element, dessen Titel zum Pack-Namen passt. Vorher wurde
+                    // als Geschwister des Textes eingehaengt - und der steckt
+                    // bei EA in einem div INNERHALB des Knopfes
+                    // (live: div.pack-actions). Der Knopf lag damit ueber dem
+                    // normalen Open-Knopf.
+                    box.appendChild(own);
                     b.setAttribute(PACK_BTN_MARK, '1');   // NUR bei Erfolg endgueltig
                     scan.added++;
                     // Wie weit war es bis zur Kachel? Sagt beim naechsten

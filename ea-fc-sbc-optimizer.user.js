@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.1.0
+// @version      5.2.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.1.0';
+    const VERSION = '5.2.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -5451,6 +5451,11 @@
         /* Knopf an EAs Pack-Kachel. Bewusst erkennbar ANDERS als EAs eigene
            Knoepfe (unsere Akzentfarbe), damit niemand ihn mit "Open"
            verwechselt - er oeffnet ALLE Packs des Typs. */
+        /* Zwei Knoepfe in einer Reihe, rechtsbuendig unter EAs Open-Knopf. */
+        .sbc-opt-tilebtn-row {
+            display:flex; justify-content:flex-end; gap:6px;
+            margin:10px 0 2px; flex-wrap:wrap;
+        }
         .sbc-opt-tilebtn {
             /* EIGENE ZEILE unter EAs Open-Knopf, rechtsbuendig (margin-left:auto),
                klein und gedaempft. Rasmus: "der standardfall ist immer noch,
@@ -5458,7 +5463,7 @@
                margin, damit man nicht aus versehen drauf klickt". Der Abstand
                ist Absicht, nicht Kosmetik: der Knopf oeffnet ALLE Packs eines
                Typs. */
-            display:block; margin:10px 0 2px auto; width:auto;
+            display:block; margin:0; width:auto;
             background:transparent; color:#8fc3f0;
             border:1px solid #2f5878; border-radius:var(--pt-r-s);
             padding:4px 9px; font-size:11px; font-weight:600;
@@ -5468,6 +5473,12 @@
         }
         .sbc-opt-tilebtn:hover:not(:disabled) {
             opacity:1; background:var(--pt-sel); color:#fff; border-color:#3d8ad6;
+        }
+        /* ABSTOSSEN ist unumkehrbar - der Knopf sieht anders aus als der
+           harmlose daneben, damit man sie nicht verwechselt. */
+        .sbc-opt-tilebtn.danger { color:#f0a19a; border-color:#7a3a33; }
+        .sbc-opt-tilebtn.danger:hover:not(:disabled) {
+            background:var(--pt-danger); color:#fff; border-color:#d4452f;
         }
         .sbc-opt-tilebtn:active:not(:disabled) { transform: translateY(1px); }
         .sbc-opt-tilebtn:disabled { opacity:.5; cursor:not-allowed; }
@@ -9726,6 +9737,15 @@
             groups: Array.isArray(groups) ? groups : null,
             untradeable: !!safeGet(it, 'untradeable'),
             itemId: safeGet(it, 'id'),
+            // EAs Schnellverkaufswert - keine Schaetzung, sondern die Zahl, die
+            // beim Abstossen gutgeschrieben wird. untradableDiscardValue
+            // spielt keine Rolle: unverkaeufliche Karten werden nicht
+            // abgestossen.
+            discardValue: (function () {
+                const v = safeGet(it, 'discardValue');
+                const n = parseInt(v, 10);
+                return isFinite(n) ? n : null;
+            })(),
             rarity: rarityLabelOf(rareflag, groups),
             nameResolved: !!name,
             readError: errs.length ? errs[0] : null
@@ -9797,7 +9817,7 @@
         return { toClub: toClub, toStorage: toStorage, toMisc: toMisc, leftover: leftover, storageCountAfterPlanned: storageUsed };
     }
     // ======================================================================
-    //  VERWERTEN (Quicksell): erst alles pruefen, dann handeln
+    //  ABSTOSSEN (EAs Schnellverkauf): erst alles pruefen, dann handeln
     // ======================================================================
     // EAs Methodenname fuer "Karte verwerten" ist nicht dokumentiert, und
     // raten ist bei einer unumkehrbaren Aktion die schlechteste Idee. Deshalb:
@@ -9813,12 +9833,12 @@
     const PACK_MODE_KEY = 'sbcOptPackMode';
     function packMode() {
         try {
-            return localStorage.getItem(PACK_MODE_KEY) === 'verwerten'
-                ? 'verwerten' : 'einsortieren';
+            return localStorage.getItem(PACK_MODE_KEY) === 'abstossen'
+                ? 'abstossen' : 'einsortieren';
         } catch (e) { return 'einsortieren'; }
     }
     function setPackMode(m) {
-        try { localStorage.setItem(PACK_MODE_KEY, m === 'verwerten' ? 'verwerten' : 'einsortieren'); }
+        try { localStorage.setItem(PACK_MODE_KEY, m === 'abstossen' ? 'abstossen' : 'einsortieren'); }
         catch (e) { reportError('Pack-Modus speichern fehlgeschlagen', e); }
     }
     function resolveDiscardFn(itemService) {
@@ -9911,7 +9931,8 @@
                 continue;
             }
             toDiscard.push(it);
-            rows.push({ target: 'verwertet', name: name, rating: d.rating, rarity: d.rarity });
+            rows.push({ target: 'abgestoßen', name: name, rating: d.rating,
+                        rarity: d.rarity, coins: d.discardValue });
         }
         return { toDiscard: toDiscard, toKeep: toKeep, toMisc: toMisc,
                  stoppers: stoppers, rows: rows };
@@ -9922,7 +9943,7 @@
             return st.name + (st.rating != null ? ' (' + st.rating + ')' : '') + ' - ' + st.why;
         });
         const rest = Math.max(0, (stoppers || []).length - list.length);
-        return 'nichts verwertet: ' + list.join(', ') +
+        return 'nichts abgestoßen: ' + list.join(', ') +
             (rest ? ' und ' + rest + ' weitere' : '') +
             '. Die Karten liegen unassigned - bitte im Spiel selbst entscheiden.';
     }
@@ -9980,11 +10001,13 @@
     const PACK_MODES = [
         { id: 'einsortieren', label: 'Einsortieren',
           button: 'Alle öffnen',
+          tile: 'Verein',
           hint: 'Neue Karten in den Verein, Duplikate in den Storage.' },
-        { id: 'verwerten', label: 'Verwerten',
-          button: 'Alle öffnen + verwerten',
-          hint: 'Normale Karten werden VERWERTET (unwiderruflich). Special-Karten ' +
-                'stoppen den Lauf, unverkäufliche werden einsortiert.' }
+        { id: 'abstossen', label: 'Abstoßen',
+          button: 'Alle öffnen + abstoßen',
+          tile: 'abstoßen',
+          hint: 'Normale Karten werden ABGESTOSSEN (unwiderruflich, gibt Coins). ' +
+                'Special-Karten stoppen den Lauf, unverkäufliche werden einsortiert.' }
     ];
     function packModeSpec(id) {
         for (const m of PACK_MODES) { if (m.id === id) return m; }
@@ -10034,6 +10057,54 @@
         if (!ui.packResult) return;
         ui.packResult.innerHTML = '<div class="sbc-opt-batch-round">' + escapeHtml(text) + '</div>';
     }
+    /**
+     * Bilanz eines Abstoss-Laufs. Reine Funktion: Karten rein, Zahlen raus -
+     * damit die Coins-Summe testbar ist und nicht still falsch werden kann.
+     * Gruppiert nach Seltenheit UND Rating, weil Rasmus genau danach gefragt
+     * hat ("welche spieler mit welchen rarities und welchen ratings").
+     */
+    function summarizeDiscarded(drawn) {
+        const rows = (drawn || []).filter(function (d) {
+            return d && d.target === 'abgestoßen';
+        });
+        let coins = 0, unbekannt = 0;
+        const byKey = {};
+        for (const d of rows) {
+            // Number(null) ist 0 - eine Karte OHNE lesbaren Wert waere damit
+            // als "0 Coins" durchgegangen statt als unbekannt. Dieselbe Falle
+            // wie bei der rareflag-Pruefung; hier zum dritten Mal, deshalb
+            // ausdruecklich: erst auf null pruefen, dann rechnen.
+            const c = (d.coins == null) ? NaN : Number(d.coins);
+            if (isFinite(c) && c >= 0) coins += c; else unbekannt++;
+            const key = (d.rarity || '?') + ' ' + (d.rating != null ? d.rating : '?');
+            if (!byKey[key]) {
+                byKey[key] = { rarity: d.rarity || '?', rating: (d.rating != null ? d.rating : null),
+                               count: 0, coins: 0 };
+            }
+            byKey[key].count++;
+            if (isFinite(c) && c >= 0) byKey[key].coins += c;
+            // (kein else: eine Gruppe zaehlt die Karte, auch wenn ihr Wert
+            //  fehlt - die Zahl oben nennt, wie viele das waren)
+        }
+        const groups = Object.keys(byKey).map(function (k) { return byKey[k]; });
+        // Absteigend nach Rating, dann nach Anzahl - so steht oben, was wehtut.
+        groups.sort(function (a, b) {
+            const ra = (a.rating == null) ? -1 : a.rating;
+            const rb = (b.rating == null) ? -1 : b.rating;
+            if (ra !== rb) return rb - ra;
+            return b.count - a.count;
+        });
+        return { count: rows.length, coins: coins, unknownCoins: unbekannt, groups: groups };
+    }
+    /** Zahlen mit Tausenderpunkt - 3480 Coins liest sich als 3.480. */
+    function coinsText(n) {
+        // null/leer wird NICHT zu 0: Number(null) ist 0, und "0 Coins" waere
+        // eine Behauptung, wo nichts bekannt ist.
+        if (n == null || n === '') return '?';
+        const v = Number(n);
+        if (!isFinite(v)) return '?';
+        return String(Math.round(v)).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+    }
     function renderPackDrawList(drawn, headerText) {
         if (!ui.packResult) return;
         const sorted = drawn.slice().sort(function (a, b) { return (b.rating || 0) - (a.rating || 0); });
@@ -10047,13 +10118,37 @@
                     escapeHtml(d.name || ('Item ' + (d.id != null ? d.id : '?'))) +
                     (d.rarity ? ' <span class="sbc-opt-dim">' + escapeHtml(d.rarity) + '</span>' : '') +
                     (d.isDuplicateRaw ? ' <span class="sbc-opt-batch-warn">[Duplikat]</span>' : '') +
-                    ' → ' + escapeHtml(d.target || (d.error ? 'Fehler: ' + d.error : 'unbekannt')) + '</div>';
+                    ' → ' + escapeHtml(d.target || (d.error ? 'Fehler: ' + d.error : 'unbekannt')) +
+                    // Coins pro abgestoßener Karte - die Summe steht oben, hier
+                    // ist nachvollziehbar, woher sie kommt.
+                    (d.target === 'abgestoßen' && d.coins != null
+                        ? ' <span class="sbc-opt-dim">+' + coinsText(d.coins) + '</span>' : '') +
+                    '</div>';
         }
         if (!html) html = '<div class="sbc-opt-batch-round">Keine Karten gezogen.</div>';
         // Statuszeile als KOPF ueber der Liste statt per setPackStatus()
         // hinterher: beide schreiben dasselbe innerHTML, die Liste war sonst
         // fuer genau einen Frame sichtbar (Nacht-Review 16.08.) - und sie ist
         // der einzige Beleg dafuer, was ein unumkehrbarer Lauf gezogen hat.
+        // BILANZ des Abstossens - Rasmus: "am ende eine uebersicht wie viele
+        // coins gemacht wurden und welche spieler mit welchen rarities und
+        // welchen ratings abgestossen wurde".
+        const bil = summarizeDiscarded(drawn);
+        if (bil.count) {
+            let kopf = '<div class="sbc-opt-batch-round"><b>Abgestoßen: ' + bil.count +
+                ' Karte(n) · ' + coinsText(bil.coins) + ' Coins</b>' +
+                (bil.unknownCoins
+                    ? ' <span class="sbc-opt-batch-warn">(' + bil.unknownCoins +
+                      ' ohne lesbaren Wert)</span>' : '') + '</div>';
+            for (const g of bil.groups) {
+                kopf += '<div class="sbc-opt-batch-round">' +
+                    (g.rating != null ? '<b>' + g.rating + '</b> ' : '') +
+                    escapeHtml(g.rarity) +
+                    ' <span class="sbc-opt-dim">' + g.count + 'x · ' +
+                    coinsText(g.coins) + ' Coins</span></div>';
+            }
+            html = kopf + html;
+        }
         if (headerText) {
             html = '<div class="sbc-opt-batch-round"><b>' + escapeHtml(headerText) + '</b></div>' + html;
         }
@@ -10200,15 +10295,26 @@
                     }
                     continue;
                 }
-                const own = document.createElement('button');
-                own.type = 'button';
-                own.className = 'sbc-opt-tilebtn';
-                own.textContent = 'Alle ' + group.count + ' öffnen';
+                // ZWEI Knoepfe: was passiert, steht am Pack statt in einem
+                // Modus-Schalter woanders. Der Abstossen-Knopf ist rot getoent -
+                // die Verwechslung der beiden waere der teuerste Fehlgriff im
+                // ganzen Script.
+                const own = document.createElement('div');
+                own.className = 'sbc-opt-tilebtn-row';
                 own.setAttribute('data-sbc-opt-pack', String(group.id));
-                own.addEventListener('click', function (ev) {
-                    try { ev.stopPropagation(); ev.preventDefault(); } catch (e) {}
-                    openAllForPack(String(group.id));
-                });
+                for (const spec of PACK_MODES) {
+                    const b2 = document.createElement('button');
+                    b2.type = 'button';
+                    b2.className = 'sbc-opt-tilebtn' +
+                        (spec.id === 'abstossen' ? ' danger' : '');
+                    b2.textContent = 'Alle ' + group.count + ' (' + spec.tile + ')';
+                    b2.title = spec.hint;
+                    b2.addEventListener('click', function (ev) {
+                        try { ev.stopPropagation(); ev.preventDefault(); } catch (e) {}
+                        openAllForPack(String(group.id), null, spec.id);
+                    });
+                    own.appendChild(b2);
+                }
                 try {
                     // In die KACHEL, nicht neben den Open-Text: `box` ist das
                     // Element, dessen Titel zum Pack-Namen passt. Vorher wurde
@@ -10338,22 +10444,22 @@
         }
         mergePackScan({ storageCountBefore: storageBefore });
         // ---------------------------------------------------------------
-        //  VERWERTEN: erst die GANZE Liste beurteilen, dann handeln
+        //  ABSTOSSEN: erst die GANZE Liste beurteilen, dann handeln
         // ---------------------------------------------------------------
-        const wantDiscard = (mode === 'verwerten');
+        const wantDiscard = (mode === 'abstossen');
         let discardPlan = null;
         if (wantDiscard) {
             if (!g.discard) {
                 mergePackScan({ errorForm: { step: 'discard',
                     message: 'keine Verwerf-Methode gefunden', itemMethods: g.itemMethods } });
-                return { ok: false, reason: 'EA-Methode zum Verwerten nicht gefunden - ' +
+                return { ok: false, reason: 'EA-Methode zum Abstoßen nicht gefunden - ' +
                     'bitte Diagnose schicken (packScan.errorForm.itemMethods). Die Karten ' +
                     'dieses Packs liegen unassigned.' };
             }
             const locks = {};
             try {
                 for (const id of readPaletoolsLocks()) locks[String(id)] = true;
-            } catch (e) { reportError('Verwerten: Schloss-Liste nicht lesbar', e); }
+            } catch (e) { reportError('Abstoßen: Schloss-Liste nicht lesbar', e); }
             discardPlan = decidePackDiscard(items, {
                 describe: function (it) {
                     return describePackItem(it, { normalize: normalizePlayer, repoItem: g.repoItem });
@@ -10443,20 +10549,20 @@
                 let dResp;
                 try { dResp = await obsPromise(g.discard.fn([it])); }
                 catch (e) {
-                    reportError('Verwerten: ' + g.discard.name + '() fehlgeschlagen', e);
+                    reportError('Abstoßen: ' + g.discard.name + '() fehlgeschlagen', e);
                     mergePackScan({ errorForm: { step: 'discard', via: g.discard.name,
                         message: String(e && e.message || e), done: discardedCount } });
-                    return { ok: false, reason: 'Verwerten fehlgeschlagen nach ' +
+                    return { ok: false, reason: 'Abstoßen fehlgeschlagen nach ' +
                         discardedCount + ' Karte(n): ' + (e.message || e) +
                         ' Der Rest liegt unassigned.' };
                 }
                 if (!responseOk(dResp)) {
-                    reportError('Verwerten: ' + g.discard.name + '() abgelehnt',
+                    reportError('Abstoßen: ' + g.discard.name + '() abgelehnt',
                         new Error('Status ' + (dResp && dResp.status)));
                     mergePackScan({ errorForm: { step: 'discard', via: g.discard.name,
                         status: dResp && dResp.status, done: discardedCount,
                         keys: dResp ? Object.keys(dResp) : [] } });
-                    return { ok: false, reason: 'Verwerten abgelehnt (Status ' +
+                    return { ok: false, reason: 'Abstoßen abgelehnt (Status ' +
                         (dResp && dResp.status) + ') nach ' + discardedCount +
                         ' Karte(n). Der Rest liegt unassigned.' };
                 }
@@ -10515,7 +10621,7 @@
                     rarity: d ? d.rarity : null,
                     isDuplicateRaw: isDupRaw,
                     target: misc ? 'redeem'
-                        : (wantDiscard && discardPlan.toDiscard.indexOf(it) > -1 ? 'verwertet'
+                        : (wantDiscard && discardPlan.toDiscard.indexOf(it) > -1 ? 'abgestoßen'
                         : (decision.toStorage.indexOf(it) > -1 ? 'Storage'
                         : (decision.leftover.indexOf(it) > -1 ? 'liegen geblieben (Storage voll)'
                         : 'Verein')))
@@ -10609,7 +10715,7 @@
             return stopWith('Unerwarteter Fehler bei Pack ' + currentPack + ': ' + (e && e.message || e) + '.');
         }
         const message = opened + ' von ' + total + ' Pack(s) geöffnet und ' +
-            (mode === 'verwerten' ? 'verwertet' : 'verteilt') + '.';
+            (mode === 'verwerten' ? 'abgestoßen' : 'verteilt') + '.';
         mergePackScan({ lastAllRun: { requested: requestedCount, total: total, opened: opened, ok: true, reason: null } });
         return { ok: true, opened: opened, total: total, message: message, drawn: drawn };
     }
@@ -10631,23 +10737,26 @@
      * auseinanderlaufen, und dieser hier ist unumkehrbar.
      * requestedCount == null heisst "alle vorhandenen".
      */
-    async function openAllForPack(groupId, requestedCount) {
+    async function openAllForPack(groupId, requestedCount, modeArg) {
         if (STATE.packOpenBusy) return;
         const group = (STATE.packGroups || []).find(function (g) { return String(g.id) === String(groupId); });
         const available = group ? group.count : 0;
         const plannedTotal = Math.max(0, Math.min(requestedCount == null ? available : requestedCount, available));
         if (plannedTotal < 1) { toast('Keine Packs dieses Typs zum Öffnen verfügbar.', 'error'); return; }
         const packLabel = group ? packLabelOf(group) : ('Pack ' + groupId);
-        const mode = packMode();
+        // Der Kachel-Knopf sagt seinen Modus selbst; der Panel-Knopf nimmt den
+        // Schalter. So steht am Pack, was passiert, ohne dass irgendwo anders
+        // eine Einstellung mitgelesen werden muss.
+        const mode = modeArg || packMode();
         // Die Rueckfrage muss den MODUS nennen. Verwerten ist unumkehrbar und
         // war im Panel eine Segment-Wahl - wer sie nicht bemerkt hat, soll sie
         // hier lesen.
         const frage = (mode === 'verwerten')
             ? (packLabel + ': ' + plannedTotal + ' Pack(s) werden nacheinander geöffnet ' +
-               'und die normalen Karten VERWERTET (unwiderruflich weg).\n\n' +
-               'Special-Karten stoppen den Lauf, BEVOR etwas verwertet wird - dann ' +
+               'und die normalen Karten ABGESTOSSEN (unwiderruflich weg, gibt Coins).\n\n' +
+               'Special-Karten stoppen den Lauf, BEVOR etwas abgestoßen wird - dann ' +
                'entscheidest du im Spiel selbst. Unverkäufliche Karten werden nicht ' +
-               'verwertet, sondern einsortiert (SBC-Material).\n\nFortfahren?')
+               'abgestoßen, sondern einsortiert (SBC-Material).\n\nFortfahren?')
             : (packLabel + ': ' + plannedTotal + ' Pack(s) werden nacheinander geöffnet.\n\n' +
                'Stoppt beim ersten Fehler; bereits geöffnete Packs sind dann schon verteilt. Fortfahren?');
         if (!window.confirm(frage)) return;
@@ -10672,7 +10781,7 @@
                 // Kachel-Knoepfe neu aufbauen: die Anzahl hat sich geaendert,
                 // ein Knopf mit alter Zahl waere irrefuehrend.
                 try {
-                    const stale = document.querySelectorAll('.sbc-opt-tilebtn');
+                    const stale = document.querySelectorAll('.sbc-opt-tilebtn-row');
                     for (let k = 0; k < stale.length; k++) {
                         const b = stale[k];
                         if (b.parentElement) b.parentElement.removeChild(b);
@@ -10710,6 +10819,14 @@
         try {
             const own = document.querySelectorAll('.sbc-opt-tilebtn');
             for (let i = 0; i < own.length; i++) own[i].disabled = !!off;
+        } catch (e) {}
+        // Die Reihe selbst gedaempft, damit auch sichtbar ist, dass gerade
+        // nichts geht.
+        try {
+            const rows = document.querySelectorAll('.sbc-opt-tilebtn-row');
+            for (let i = 0; i < rows.length; i++) {
+                rows[i].style.opacity = off ? '.5' : '';
+            }
         } catch (e) {}
     }
     // ========================================================================

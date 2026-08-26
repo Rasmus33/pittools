@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.3.0
+// @version      5.4.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.3.0';
+    const VERSION = '5.4.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -5219,7 +5219,13 @@
             background: var(--pt-line-2); border-radius: 6px;
             border: 3px solid var(--pt-bg);
         }
-        #sbc-opt-panel.open { display: block; }
+        #sbc-opt-panel.open { display: block; animation: pt-pop .16s ease; }
+        /* Dezentes Einblenden statt Aufpoppen: Deckkraft plus 6px Hub aus der
+           Richtung des FABs. Unter prefers-reduced-motion abgeschaltet. */
+        @keyframes pt-pop {
+            from { opacity: 0; transform: translateY(6px); }
+            to   { opacity: 1; transform: none; }
+        }
         .sbc-opt-header {
             background: linear-gradient(135deg,var(--pt-accent),var(--pt-accent-2));
             color:var(--pt-on-accent); font-weight:700; font-size:15px;
@@ -5463,6 +5469,18 @@
             max-height:340px; overflow-y:auto; overscroll-behavior: contain;
             scrollbar-width: thin; scrollbar-color: var(--pt-line-2) transparent;
         }
+        /* Chromium ignoriert scrollbar-width (Firefox-Eigenschaft) - ohne
+           die webkit-Regeln zeichnet es in die Kaesten seine Standard-Leiste,
+           waehrend das Panel drumherum die dunkle schmale hat. */
+        #sbc-opt-batch-preview::-webkit-scrollbar,
+        #sbc-opt-batch-detail-body::-webkit-scrollbar { width: 10px; }
+        #sbc-opt-batch-preview::-webkit-scrollbar-track,
+        #sbc-opt-batch-detail-body::-webkit-scrollbar-track { background: transparent; }
+        #sbc-opt-batch-preview::-webkit-scrollbar-thumb,
+        #sbc-opt-batch-detail-body::-webkit-scrollbar-thumb {
+            background: var(--pt-line-2); border-radius: 6px;
+            border: 3px solid var(--pt-surface);
+        }
         #sbc-opt-batch-details { margin-top:8px; }
         .sbc-opt-batch-round { padding:4px 0; border-bottom:1px solid var(--pt-line-soft); }
         .sbc-opt-batch-round:last-child { border-bottom:none; }
@@ -5589,7 +5607,10 @@
            RATING-KOSTEN-TABELLE
            ------------------------------------------------------------------ */
         .sbc-opt-bandhead, .sbc-opt-bandrow {
-            display:grid; grid-template-columns: 16px 1fr 1fr 1fr 26px; gap:4px;
+            /* Loesch-Spalte 32 statt 26px: dieselbe Klasse Befund wie die
+               29px-Nachlade-Knoepfe (v5.3.0), nur hinter "Erweiterte
+               Einstellungen" versteckt. */
+            display:grid; grid-template-columns: 16px 1fr 1fr 1fr 32px; gap:4px;
             align-items:center; margin-bottom:4px;
         }
         .sbc-opt-bandhead span { color:var(--pt-faint); font-size:11px; }
@@ -5601,7 +5622,7 @@
         .sbc-opt-bandrow button {
             background:var(--pt-raised); color:var(--pt-bad-2); border:none;
             border-radius:var(--pt-r-s);
-            cursor:pointer; padding:6px 0; font-size:12px; font-family:inherit;
+            cursor:pointer; padding:8px 0; font-size:12px; font-family:inherit;
         }
         .sbc-opt-bandrow button:hover { background:var(--pt-raised-hi); }
         .sbc-opt-bandrow .sbc-opt-draghandle {
@@ -5632,6 +5653,7 @@
            RUHE-EINSTELLUNG DES GERAETS RESPEKTIEREN
            ------------------------------------------------------------------ */
         @media (prefers-reduced-motion: reduce) {
+            #sbc-opt-panel.open { animation: none; }
             #sbc-opt-fab, .sbc-opt-btn, .sbc-opt-chip, .sbc-opt-queuerow,
             .sbc-opt-tilebtn, #sbc-opt-progress .p-fill,
             #sbc-opt-panel input, #sbc-opt-panel select,
@@ -5661,6 +5683,20 @@
         const base = (type === 'error') ? 7000 : (type === 'warn') ? 5000 : 3800;
         return Math.min(15000, Math.max(base, 1500 + len * 45));
     }
+    /**
+     * Wie viele der sichtbaren Toasts muessen weichen, damit ein neuer Platz
+     * hat? Deckel 3: seit die Dauern nach Typ/Laenge skalieren (v5.3.0),
+     * stapeln sich Toasts real - die Reihe meldet uebersprungene Challenges
+     * als einzelne Warnungen, und drei lange verdecken die halbe Ansicht.
+     * Der AELTESTE fliegt: er hatte am meisten Lesezeit.
+     * Rein (nur die Anzahl kommt herein), damit die Regel testbar ist.
+     */
+    function toastOverflow(visibleCount) {
+        const MAX = 3;
+        const n = Number(visibleCount);
+        if (!isFinite(n) || n < MAX) return 0;
+        return (n - MAX) + 1;
+    }
     function toast(msg, type) {
         let wrap = document.getElementById('sbc-opt-toast-wrap');
         if (!wrap) {
@@ -5668,6 +5704,10 @@
             wrap.id = 'sbc-opt-toast-wrap';
             document.body.appendChild(wrap);
         }
+        try {
+            let weg = toastOverflow(wrap.children.length);
+            while (weg-- > 0 && wrap.firstChild) wrap.removeChild(wrap.firstChild);
+        } catch (e) {}
         const t = document.createElement('div');
         t.className = 'sbc-opt-toast ' + (type || '');
         t.textContent = msg;
@@ -9236,9 +9276,26 @@
         if (it.target == null) return 'kein Ziel-OVR';
         return (it.slots || 11) + ' Slots';
     }
+    /**
+     * Beschriftung des Plan-Knopfs aus der Anzahl der Haken. Rein, weil die
+     * Beschriftung das VERSPRECHEN des Knopfs ist - dieselbe Sprache wie die
+     * Kachel-Knoepfe ("Alle 18 (Verein)"): die Zahl steht VOR dem Klick da.
+     */
+    function queuePlanLabel(n) {
+        if (!n) return 'Keine SBC angehakt';
+        return n + (n === 1 ? ' SBC planen (Vorschau)' : ' SBCs planen (Vorschau)');
+    }
+    function syncQueuePlanButton() {
+        if (!ui.queuePlan) return;
+        const n = queueSelection(queueItems, queueChecked).length;
+        ui.queuePlan.textContent = queuePlanLabel(n);
+        ui.queuePlan.disabled = (n === 0);
+    }
     function renderQueueList() {
         const box = ui.queueList;
         if (!box) return;
+        // Der Knopf haengt an der Auswahl - bei jedem Neuaufbau mitziehen.
+        syncQueuePlanButton();
         box.innerHTML = '';
         if (!queueItems.length) {
             box.innerHTML = '<div class="sbc-opt-debug">' +
@@ -9258,6 +9315,7 @@
             cb.checked = !it.done && !!queueChecked[String(it.id)];
             cb.addEventListener('change', function () {
                 queueChecked[String(it.id)] = cb.checked;
+                syncQueuePlanButton();
             });
             const ovr = document.createElement('span');
             ovr.className = 'ovr';
@@ -9459,8 +9517,11 @@
             toast('Planung fehlgeschlagen: ' + e.message, 'error');
             reportError('SBC-Reihe planen fehlgeschlagen', e);
         } finally {
-            ui.queuePlan.disabled = false;
             ui.batchPlan.disabled = false;
+            // Nicht pauschal wieder aktivieren: ob der Knopf geht, entscheidet
+            // die AUSWAHL (nach dem Lauf sind die Haken der abgegebenen
+            // Challenges weg - dann ist er zu Recht aus).
+            syncQueuePlanButton();
         }
     }
     /**

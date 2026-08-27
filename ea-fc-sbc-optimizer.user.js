@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.8.0
+// @version      5.8.1
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.8.0';
+    const VERSION = '5.8.1';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -8930,6 +8930,25 @@
         }
     }
     /**
+     * Die Stopp-Meldung um den HANDLUNGS-Hinweis anreichern, wenn die Ursache
+     * erkennbar ist. Live (v5.7.0): Runde 7 starb an EAs Session-Ablauf
+     * ({"reason":"expired session"}), die Meldung sagte aber nur
+     * "abgelehnt (Status 401)" - der brauchbare Hinweis stand nur tief in
+     * lastErrors. Ein 401 ist die haeufigste Nicht-Script-Ursache: die
+     * Session laeuft nach Stunden ab, und sie stirbt SOFORT, wenn dasselbe
+     * Konto woanders einloggt (geteiltes Konto, Handy). Rein und testbar.
+     */
+    function friendlyStopReason(msg) {
+        const m = String(msg == null ? '' : msg);
+        if (/\b401\b|expired session/i.test(m)) {
+            return m + ' — EAs SESSION IST ABGELAUFEN (passiert nach einigen ' +
+                'Stunden, oder sofort, wenn sich dasselbe Konto woanders ' +
+                'einloggt). Seite neu laden und einloggen, dann die restlichen ' +
+                'neu planen. Bereits bestätigte Abgaben sind sicher durch.';
+        }
+        return m;
+    }
+    /**
      * Arbeitet den Plan ab: eintragen -> abgeben -> naechste Instanz oeffnen.
      * Bricht bei jeder Unstimmigkeit ab - "2 von 5 fertig" ist besser als eine
      * falsch abgegebene SBC.
@@ -9243,7 +9262,7 @@
                 }
             }
         } catch (e) {
-            stopped = (e && e.message) || String(e);
+            stopped = friendlyStopReason((e && e.message) || String(e));
             warn('[Batch] gestoppt:', e);
             diagError('Batch gestoppt nach ' + done + '/' + n + ': ' + stopped);
         } finally {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.8.1
+// @version      5.9.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.8.1';
+    const VERSION = '5.9.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -7728,6 +7728,31 @@
      * Erkennung "passend": gleiche Vorgaben-Signatur wie beim Planen
      * (Ziel-OVR + Slots), NICHT die alte ID - die aendert sich ja gerade.
      */
+    /**
+     * Die App ihre HUB-Ansicht selbst neu bauen lassen. Live (27.08.): der Hub
+     * schluckte 18s lang jeden Kachel-Tap (touchHandled true, kein Popup, kein
+     * Shield, Top-Controller blieb UTSBCHubViewController) - der DOM-seitige
+     * Filter-Rerender aenderte nichts. refreshView ist die Methode, die der
+     * controllerScan am Hub-Controller kartiert hat; sie wird nur gerufen,
+     * wenn OBEN wirklich der Hub steht.
+     */
+    function hubRefreshView() {
+        try {
+            const chain = getControllerChain();
+            const top = chain.length ? chain[chain.length - 1] : null;
+            const name = (top && top.constructor && top.constructor.name) || '';
+            if (!/SBCHub/i.test(name)) {
+                return { ok: false, why: 'oben ist kein Hub: ' + (name || 'nichts') };
+            }
+            if (typeof top.refreshView !== 'function') {
+                return { ok: false, why: 'Hub hat kein refreshView' };
+            }
+            top.refreshView();
+            return { ok: true, why: 'Hub-Ansicht neu aufgebaut (refreshView)' };
+        } catch (e) {
+            return { ok: false, why: 'refreshView warf: ' + ((e && e.message) || e) };
+        }
+    }
     async function openNextInstance(plan) {
         const steps = [];
         // Bevor mehrfach auf eine Kachel getippt wird, die gar nicht mehr
@@ -7741,6 +7766,10 @@
             return { ok: false, exhausted: true, status: rep0.status, steps: steps };
         }
         const t0 = Date.now();
+        // Wieviel EA-Verkehr lief WAEHREND des Oeffnens? 0 nach 18s heisst:
+        // die App hat auf keinen Tap auch nur einen Request abgesetzt
+        // (Handler tot), sonst kam die Antwort nie an der Ansicht an.
+        const utasStart = (STATE.diag && STATE.diag.utasSeen) || 0;
         let clicked = false;
         // Alle 300ms nachsehen statt jede Sekunde, und den Set-Klick SOFORT
         // versuchen. Aus dem Live-Log: der Controller war 4s nach dem Klick da,
@@ -7792,6 +7821,17 @@
                 const b = clickBackButton();
                 steps.push({ ms: Date.now() - t0, back: b });
                 if (b.ok) { wentBack = true; await batchWait(900); continue; }
+            }
+            // Kachel-Taps kommen an, aber der Hub navigiert nicht? Live
+            // (27.08., batchSteps): 5 Taps in 18s, touchHandled true, kein
+            // Popup, kein Shield - und der Filter-Rerender bewegte auch
+            // nichts. Naechste Stufe: die App baut ihre Hub-Ansicht selbst
+            // neu (refreshView); danach fasst i===40 regulaer mit einem
+            // frischen Tap nach.
+            if (!ctrl && clicked && i === 30) {
+                const hr = hubRefreshView();
+                steps.push({ ms: Date.now() - t0, hubRefresh: hr });
+                if (hr.ok) await batchWait(900);
             }
             // Im Hub: Set-Kachel anklicken. Erster Versuch sofort, danach
             // gelegentlich nachfassen (die Kachelliste braucht manchmal einen
@@ -7860,6 +7900,10 @@
         }
         const repEnd = setLooksRepeatable(plan.setName || '');
         steps.push({ setState: repEnd, popup: popupState(),
+                     // 0 heisst: EA hat waehrend der GESAMTEN Versuche keinen
+                     // einzigen Request abgesetzt - die Taps wurden geschluckt,
+                     // nicht beantwortet.
+                     utasDelta: ((STATE.diag && STATE.diag.utasSeen) || 0) - utasStart,
                      why: 'Status der Kachel nach den Versuchen' });
         return { ok: false, exhausted: repEnd.repeatable === false,
                  status: repEnd.status, steps: steps };
@@ -8938,6 +8982,21 @@
      * Session laeuft nach Stunden ab, und sie stirbt SOFORT, wenn dasselbe
      * Konto woanders einloggt (geteiltes Konto, Handy). Rein und testbar.
      */
+    /**
+     * Kam beim Oeffnen mindestens ein Kachel-Tap nachweislich an? Reine
+     * Auswertung der openNextInstance-Schritte fuer die Stopp-Meldung: der
+     * Fall "Kachel getroffen, Hub reagiert nicht" (live 27.08., 5 Treffer,
+     * 18s, nichts passierte) soll beim Namen genannt werden statt nur
+     * "liess sich nicht oeffnen".
+     */
+    function tileTapsLanded(steps) {
+        if (!steps || !steps.length) return false;
+        for (const st of steps) {
+            if (st && st.setTile && st.setTile.ok) return true;
+            if (st && st.setTileAfterRerender && st.setTileAfterRerender.ok) return true;
+        }
+        return false;
+    }
     function friendlyStopReason(msg) {
         const m = String(msg == null ? '' : msg);
         if (/\b401\b|expired session/i.test(m)) {
@@ -9256,8 +9315,14 @@
                                 'mehr wiederholen' + (next.status ? ' (' + next.status + ')' : '') +
                                 ' - die bereits abgegebenen Runden sind aber durch.');
                         }
-                        throw new Error('Die nächste Runde liess sich nicht öffnen ' +
-                            '(Diagnose schicken: batchSteps).');
+                        throw new Error('Die nächste Runde liess sich nicht öffnen' +
+                            (tileTapsLanded(next.steps)
+                                ? ' - die Set-Kachel wurde getroffen, aber EAs Hub ' +
+                                  'hat nicht reagiert. Seite neu laden und die ' +
+                                  'restlichen Runden neu planen; die abgegebenen ' +
+                                  'sind durch.'
+                                : '') +
+                            ' (Diagnose schicken: batchSteps).');
                     }
                 }
             }

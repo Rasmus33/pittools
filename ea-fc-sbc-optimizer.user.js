@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.6.0
+// @version      5.7.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.6.0';
+    const VERSION = '5.7.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -7853,6 +7853,11 @@
                                           step: step ? Object.keys(step) : null }] };
         }
         const t0 = Date.now();
+        // Der Zustand VOR dem Lauf: nur eine AENDERUNG beweist, dass etwas
+        // aufgegangen ist. Live stand am Ende "aufgegangen ist 3935 statt
+        // 4100" - dabei war 3935 der haengengebliebene Zustand von vorher,
+        // aufgegangen war gar nichts.
+        const startId = STATE.sbc.challengeId;
         let clicked = 0, backs = 0, entered = 0, waited = 0;
         // Wann wurde zuletzt betreten? Direkt danach laedt die Ansicht, und die
         // challengeId kommt erst mit ihr. Ein Zurueck-Klick in diesem Fenster
@@ -7936,12 +7941,17 @@
         // Unterschied zwischen "nichts ging auf" und "die falsche ging auf" ist
         // der ganze Befund.
         const openId = STATE.sbc.challengeId;
-        const falsche = (openId != null && String(openId) !== String(step.id));
+        // Drei Ausgaenge, sauber getrennt:
+        //  - navigated=false: KEINE Challenge ging auf (Taps kamen nie an).
+        //  - wrongChallenge:  eine ANDERE ging auf (Id hat sich geaendert).
+        const navigated = String(openId) !== String(startId);
+        const falsche = navigated && openId != null && String(openId) !== String(step.id);
         steps.push({ ms: Date.now() - t0, popup: popupState(),
                      why: 'Zeitueberschreitung', openId: openId, wantId: step.id,
-                     wrongChallenge: falsche,
+                     startId: startId, navigated: navigated, wrongChallenge: falsche,
                      phase: phase, rowClicks: clicked, enterClicks: entered });
-        return { ok: false, wrongChallenge: falsche, openId: openId, steps: steps };
+        return { ok: false, wrongChallenge: falsche, navigated: navigated,
+                 openId: openId, steps: steps };
     }
     /**
      * Im HUB die SBC wieder aufmachen - der Weg, den Rasmus von Hand geht.
@@ -8193,6 +8203,45 @@
      * MIT `want` ({ name, target }): die passende Zeile - das braucht die
      * SBC-Reihe, die gezielt die 89er/90er/91er ansteuert.
      */
+    /** Kurzform des letzten Taps fuer die Schritt-Diagnose - lastTap selbst
+     *  ist zu gross, um an jedem Schritt zu haengen. */
+    function tapBrief() {
+        const t = STATE.diag.lastTap;
+        if (!t) return null;
+        return { handled: t.touchHandled, covered: t.covered, top: t.topAtPoint };
+    }
+    /** Struktur einer Zeile fuer die Diagnose: WO koennte EAs Tap-Handler
+     *  sitzen? Tag + Klasse der Zeile und ihrer ersten Kinder. */
+    function rowShapeOf(el) {
+        try {
+            const kid = function (k) {
+                return k ? String(k.tagName || '?').toLowerCase() + '.' +
+                           String(k.className || '').slice(0, 40) : null;
+            };
+            const kids = [];
+            for (let i = 0; i < el.children.length && i < 4; i++) kids.push(kid(el.children[i]));
+            return { self: kid(el), kids: kids };
+        } catch (e) { return null; }
+    }
+    /**
+     * Das innere Tap-Ziel einer Zeile: das erste ELEMENT-Kind mit Text.
+     * Rein (die Kinderliste kommt herein), damit die Wahl testbar ist.
+     * WARUM ueberhaupt: der Zeilen-Container schluckt den Tap, aber EAs
+     * Navigations-Handler sitzt an einem KIND - exakt der Befund, der bei der
+     * Set-Kachel den tapInner noetig machte (v4.23.0). Drei Handy-Laeufe
+     * scheiterten, weil die Zeile ihn nicht bekam.
+     */
+    function pickRowInnerTarget(children) {
+        let first = null;
+        for (let i = 0; i < (children || []).length; i++) {
+            const c = children[i];
+            if (!c) continue;
+            if (first == null) first = i;
+            const txt = String((c.textContent != null ? c.textContent : '')).trim();
+            if (txt.length > 0) return i;
+        }
+        return first == null ? -1 : first;
+    }
     // Die zuletzt GEWAEHLTE Zeile. Bewusst ein Modul-Merker statt eines
     // Feldes im Rueckgabe-Objekt: die Rueckgaben landen als JSON in der
     // Diagnose, ein DOM-Element darin wuerde die Serialisierung sprengen.
@@ -8210,10 +8259,30 @@
                 detailsView: document.querySelectorAll('.ut-sbc-challenge-details-view').length
             } };
         }
+        // Zeile UND ihr inneres Element antippen - dieselbe Zweiteilung wie
+        // bei der Set-Kachel: der Container schluckt den Tap, der Handler
+        // sitzt am Kind. Drei Handy-Laeufe (26.08.) trafen die Zeile fuenfmal
+        // "erfolgreich", und die Ansicht bewegte sich nie.
+        function tapRow(rowEl) {
+            const okOuter = clickLike(rowEl);
+            const tapOuter = tapBrief();
+            let okInner = null, tapInner = null;
+            try {
+                const j = pickRowInnerTarget(Array.prototype.slice.call(rowEl.children));
+                if (j >= 0) {
+                    okInner = clickLike(rowEl.children[j]);
+                    tapInner = tapBrief();
+                }
+            } catch (e) {}
+            return { ok: okOuter || okInner === true,
+                     tap: tapOuter, tapInner: tapInner };
+        }
         if (!want) {
             // Die erste Zeile ist die noch offene Wiederholung.
             lastChallengeRowEl = rows[0];
-            return { ok: clickLike(rows[0]), why: rows.length + ' Zeile(n), erste geklickt' };
+            const t0 = tapRow(rows[0]);
+            return { ok: t0.ok, why: rows.length + ' Zeile(n), erste geklickt',
+                     tap: t0.tap, tapInner: t0.tapInner };
         }
         const texts = rows.map(function (r) {
             return String((r && r.textContent) || '').replace(/\s+/g, ' ').trim();
@@ -8238,8 +8307,13 @@
                      texts: texts.slice(0, 8).map(function (t) { return t.slice(0, 50); }) };
         }
         lastChallengeRowEl = rows[idx];
-        return { ok: clickLike(rows[idx]), why: 'Zeile ' + (idx + 1) + ' von ' +
-                 rows.length + ' geklickt', hit: texts[idx].slice(0, 60) };
+        const t1 = tapRow(rows[idx]);
+        return { ok: t1.ok, why: 'Zeile ' + (idx + 1) + ' von ' +
+                 rows.length + ' geklickt', hit: texts[idx].slice(0, 60),
+                 tap: t1.tap, tapInner: t1.tapInner,
+                 // Einmal pro Ergebnis: die Struktur der Zeile - beim
+                 // naechsten Report ablesbar, welche Kinder es gibt.
+                 shape: rowShapeOf(rows[idx]) };
     }
     // Beschriftungen des Knopfes, der eine AUSGEWAEHLTE Challenge betritt.
     // EA wechselt sie je nach Zustand: "Start Challenge" bei einer noch nicht
@@ -8912,10 +8986,13 @@
                                   'Spiel nachsehen und es leeren oder abgeben.'
                                 : (opened.wrongChallenge
                                     ? ' - aufgegangen ist Challenge ' + opened.openId +
-                                      ' statt ' + round.challengeId + '. In diesem Set gibt es ' +
-                                      'mehrere Challenges mit demselben Namen; bitte die ' +
+                                      ' statt ' + round.challengeId + '. Bitte die ' +
                                       'Liste mit ↻ neu laden und erneut planen.'
-                                    : ' (Diagnose schicken: batchSteps).')));
+                                    : (opened.navigated === false
+                                        ? ' - die Taps auf die Zeile kamen bei EA nicht an ' +
+                                          '(es ging gar keine Challenge auf). Bitte die ' +
+                                          'Challenge einmal von Hand öffnen und Diagnose schicken.'
+                                        : ' (Diagnose schicken: batchSteps).'))));
                     }
                 }
                 showProgress(i + 1, n, 'prüfe SBC...', (doneLog.length ? doneLog.length + ' fertig' : ''));

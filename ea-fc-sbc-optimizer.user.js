@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.9.0
+// @version      5.10.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.9.0';
+    const VERSION = '5.10.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -141,7 +141,10 @@
             staleSessionRetry: 0,    // Session-Erneuerungen nach 404/475
             throttle: null,          // EA weist ab: Anzahl/letzte Meldung (429/503/512/Failed to fetch)
             confirmDisabled: null,   // Abgabe-Bestaetigung abgeschaltet (eigene Notbremse)
-            batchPlanTiming: null,   // Wo geht die Zeit beim Planen hin? (ms pro Phase)
+            batchPlanTiming: null,
+            // Vorlagen (v5.10.0): letzte Navigation und letztes Gate.
+            vorlagenNav: null,
+            vorlagenGate: null,   // Wo geht die Zeit beim Planen hin? (ms pro Phase)
             solverProfile: null,     // Solver-Innenleben: Stufen/Baender/Versuche pro Lauf
             poolCache: null,         // Pool-Cache: geschrieben? Groesse? Grund fuer Nein?
             poolCacheRead: null,     // Pool-Cache: benutzt? sonst WARUM nicht?
@@ -5442,6 +5445,90 @@
            ------------------------------------------------------------------ */
         /* Mittig über allem, damit man nicht im Panel nach dem Status suchen
            muss. */
+        /* ---- Vorlagen: eigene Vollbild-Oberflaeche (v5.10.0) ---- */
+        #sbc-opt-vorlagen {
+            position: fixed; inset: 0; z-index: 999999; display: none;
+            background: rgba(0,0,0,.62); overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+            font-family: var(--pt-font); font-size: 13px; color: var(--pt-text);
+        }
+        .sbc-opt-vl-box {
+            margin: 20px auto 40px; width: min(560px, calc(100vw - 20px));
+            background: var(--pt-bg); border: 1px solid var(--pt-line-2);
+            border-radius: var(--pt-r-l); box-shadow: var(--pt-shadow);
+            padding: 14px 14px 18px;
+        }
+        .sbc-opt-vl-head {
+            display: flex; justify-content: space-between; align-items: center;
+            font-size: 16px; font-weight: 700; color: var(--pt-accent);
+            margin-bottom: 10px;
+        }
+        .sbc-opt-vl-x {
+            background: none; border: none; color: var(--pt-muted);
+            font-size: 20px; min-width: 44px; min-height: 44px; cursor: pointer;
+            margin: -6px -10px -6px 0;
+        }
+        .sbc-opt-vl-x:active { color: var(--pt-text); }
+        .sbc-opt-vl-card {
+            background: var(--pt-surface); border: 1px solid var(--pt-line);
+            border-radius: var(--pt-r-m); padding: 10px 12px; margin-bottom: 10px;
+        }
+        .sbc-opt-vl-cardkopf {
+            display: flex; justify-content: space-between; align-items: center;
+            gap: 10px; font-size: 14px;
+        }
+        .sbc-opt-vl-cardkopf .sbc-opt-btn { width: auto; flex: 0 0 auto;
+            margin-top: 0; padding: 8px 16px; }
+        .sbc-opt-vl-sum { color: var(--pt-text-2); margin-top: 6px; }
+        .sbc-opt-vl-last { color: var(--pt-muted); margin-top: 4px; font-size: 12px; }
+        .sbc-opt-vl-tools { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+        .sbc-opt-vl-tools .sbc-opt-btn { width: auto; flex: 1 1 auto; }
+        .sbc-opt-vl-leer {
+            background: var(--pt-surface); border: 1px solid var(--pt-line);
+            border-radius: var(--pt-r-m); padding: 12px; color: var(--pt-text-2);
+            line-height: 1.5; margin-bottom: 10px;
+        }
+        .sbc-opt-vl-step {
+            background: var(--pt-surface); border: 1px solid var(--pt-line);
+            border-radius: var(--pt-r-m); padding: 10px 12px; margin: 10px 0;
+        }
+        .sbc-opt-vl-step label {
+            display: block; margin: 8px 0 4px; color: var(--pt-muted); font-size: 12px;
+        }
+        .sbc-opt-vl-steprow { display: flex; gap: 6px; align-items: center; }
+        .sbc-opt-vl-steprow select { flex: 1 1 auto; min-width: 0; }
+        .sbc-opt-vl-mini { width: 44px !important; flex: 0 0 auto !important;
+            margin-top: 0 !important; padding: 8px 0 !important; }
+        .sbc-opt-vl-input {
+            width: 100%; box-sizing: border-box; background: var(--pt-sunken);
+            color: var(--pt-text); border: 1px solid var(--pt-line-2);
+            border-radius: var(--pt-r-s); padding: 9px 10px; font-size: 13px;
+            font-family: inherit; min-height: var(--pt-tap);
+        }
+        .sbc-opt-vl-input:focus-visible {
+            outline: 2px solid var(--pt-accent); outline-offset: 1px;
+        }
+        .sbc-opt-vl-zahl { width: 110px; }
+        .sbc-opt-vl-profil { margin-top: 8px; color: var(--pt-text-2); }
+        .sbc-opt-vl-profil span { color: var(--pt-accent); }
+        .sbc-opt-vl-hint { color: var(--pt-muted); font-size: 12px;
+            line-height: 1.5; margin-top: 10px; }
+        .sbc-opt-vl-quota { color: var(--pt-muted); margin-bottom: 8px; }
+        .sbc-opt-vl-log {
+            padding: 7px 10px; border-radius: var(--pt-r-s);
+            background: var(--pt-surface); border: 1px solid var(--pt-line-soft);
+            margin-bottom: 6px; line-height: 1.45; overflow-wrap: break-word;
+        }
+        .sbc-opt-vl-log.kopf { border-color: var(--pt-line-2); font-weight: 700; }
+        .sbc-opt-vl-log.ok { color: var(--pt-accent); }
+        .sbc-opt-vl-log.warn { color: var(--pt-warn); }
+        .sbc-opt-vl-log.bad { color: var(--pt-bad); }
+        .sbc-opt-vl-pause {
+            border: 1px solid var(--pt-warn); border-radius: var(--pt-r-m);
+            padding: 10px 12px; margin-top: 8px; background: var(--pt-surface);
+        }
+        .sbc-opt-vl-pausekopf { font-weight: 700; margin-bottom: 8px;
+            color: var(--pt-warn); line-height: 1.4; }
         #sbc-opt-progress {
             position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%);
             z-index: 1000000; display: none;
@@ -5978,6 +6065,10 @@
                     <button class="sbc-opt-btn danger" id="sbc-opt-pack-all">Alle öffnen</button>
                     <div id="sbc-opt-pack-result"></div>
                 </div>
+                <!-- VORLAGEN (v5.10.0): gespeicherte Auto-Laeufe. Eigene
+                     Vollbild-Oberflaeche - die Schrittlisten samt Profilen
+                     passen nicht ins Seiten-Panel. -->
+                <button class="sbc-opt-btn ghost" id="sbc-opt-vorlagen-btn" style="margin-top:10px;">Vorlagen (Auto-Läufe) …</button>
                 <button class="sbc-opt-btn ghost" id="sbc-opt-diag" style="margin-top:10px;">Diagnose in Konsole schreiben</button>
             </div>
         `;
@@ -5990,6 +6081,10 @@
             '<div class="p-bar"><div class="p-fill"></div></div>' +
             '<div class="p-done"></div>';
         document.body.appendChild(prog);
+        // Vorlagen-Overlay: eigene Vollbild-Ebene ausserhalb des Panels.
+        const vlOverlay = document.createElement('div');
+        vlOverlay.id = 'sbc-opt-vorlagen';
+        document.body.appendChild(vlOverlay);
         ui = {
             progress: prog,
             progTitle: prog.querySelector('.p-title'),
@@ -6057,7 +6152,9 @@
             packModeHint: panel.querySelector('#sbc-opt-pack-modehint'),
             packCount: panel.querySelector('#sbc-opt-pack-count'),
             packAll: panel.querySelector('#sbc-opt-pack-all'),
-            packResult: panel.querySelector('#sbc-opt-pack-result')
+            packResult: panel.querySelector('#sbc-opt-pack-result'),
+            vorlagenBtn: panel.querySelector('#sbc-opt-vorlagen-btn'),
+            vorlagenOverlay: vlOverlay
         };
         panel.querySelector('#sbc-opt-close').addEventListener('click', () => panel.classList.remove('open'));
         makeDraggable(panel, panel.querySelector('.sbc-opt-header'), 'sbcOptPanelPos', {
@@ -6106,6 +6203,18 @@
         renderPackMode();
         ui.packRefresh.addEventListener('click', onPackRefreshClick);
         ui.packAll.addEventListener('click', onPackAllClick);
+        // Vorlagen: EIN delegierter Handler statt Bindungen pro Re-Render.
+        ui.vorlagenBtn.addEventListener('click', openVorlagen);
+        ui.vorlagenOverlay.addEventListener('click', function (ev) {
+            let el = ev.target;
+            while (el && el !== ui.vorlagenOverlay &&
+                   !(el.dataset && el.dataset.act)) el = el.parentElement;
+            if (el && el.dataset && el.dataset.act) onVorlagenAction(el.dataset.act);
+        });
+        // Eingaben sofort in den Entwurf uebernehmen - jedes Re-Render baut
+        // das Markup neu, ungesicherte Feldwerte waeren sonst weg.
+        ui.vorlagenOverlay.addEventListener('input', onVorlagenInput);
+        ui.vorlagenOverlay.addEventListener('change', onVorlagenInput);
         ui.rarityPickFilter.addEventListener('input', renderRarityPickOptions);
         // Zustand der "Erweiterte Einstellungen" merken
         const adv = panel.querySelector('#sbc-opt-advanced');
@@ -7082,6 +7191,14 @@
                 setChallengesCached: !!STATE.lastSetChallenges
             },
             poolSize: STATE.pool.length,
+            vorlagen: (function () {
+                try {
+                    return { gespeichert: vorlagenLoad().length,
+                             nav: STATE.diag.vorlagenNav || null,
+                             gate: STATE.diag.vorlagenGate || null,
+                             log: (vorlagenRun && vorlagenRun.log.slice(-12)) || null };
+                } catch (e) { return { error: String((e && e.message) || e) }; }
+            })(),
             // Woher stammt der Pool? Live war poolSize 8165 und trotzdem war
             // nichts geladen - clubLoad:null + poolCacheRead:null waren die
             // einzigen Indizien. Jetzt steht es direkt da.
@@ -7191,8 +7308,17 @@
             '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
         }[c]));
     }
-    function readConfig() {
-        return {
+    // Einstellungs-Schluessel, die ein VORLAGEN-Profil uebersteuern darf.
+    // Bewusst NICHT dabei: lockedIds (PaleTools-Sperren gelten immer frisch),
+    // targetOVR/slots/Vorgaben (kommen aus der offenen SBC), anchorId und
+    // rarityPickId (manuelle Einzelfall-Wahl, keine Voreinstellung).
+    const PROFILE_KEYS = ['minRating', 'maxOvershoot', 'applyRarity',
+        'specialOnlyFromStorage', 'maxRatingEnabled', 'maxRating',
+        'scarcityWeight', 'storageBonus', 'untradeableBonus', 'maxRareRating',
+        'maxCommonRating', 'rarityGuardCost', 'rarityMode', 'totwSoftCost',
+        'specialCost', 'ratingCostSpec'];
+    function readConfig(profil) {
+        const cfg = {
             targetOVR: STATE.sbc.targetOVR,
             slots: STATE.sbc.formationSlots || 11,
             minRating: parseInt(ui.minrating.value, 10) || 1,
@@ -7221,6 +7347,19 @@
             rareConstraints: STATE.sbc.rareConstraints || [],
             playerLevelConstraints: STATE.sbc.playerLevelConstraints || []
         };
+        if (profil) {
+            for (const k of PROFILE_KEYS) {
+                if (profil[k] !== undefined) cfg[k] = profil[k];
+            }
+        }
+        return cfg;
+    }
+    /** Schnappschuss der aktuellen Panel-Einstellungen als Vorlagen-Profil. */
+    function captureProfile() {
+        const cfg = readConfig();
+        const p = {};
+        for (const k of PROFILE_KEYS) p[k] = cfg[k];
+        return p;
     }
     // Hintergrund-Ladung beim App-Start (gleiche Mechanik wie der Button,
     // nur ohne Klick). Fehler sind still - der Button bleibt der Notausgang.
@@ -8595,6 +8734,54 @@
         }
         return false;
     }
+    /**
+     * Der Plan-Kern des Batch (wortgleich aus onBatchPlanClick gezogen,
+     * v5.10.0): `want` Runden derselben SBC mit der Konfiguration `cfg`
+     * planen. Vorlagen rufen ihn direkt - mit einem Profil-cfg statt der
+     * Panel-Werte. `tim` ist optional (Phasen-Messung des Panel-Wegs).
+     */
+    async function planBatchRounds(want, cfg, tim) {
+        const st = SolverCore.beginBatch(STATE.pool, cfg, want);
+        for (let i = 0; i < want; i++) {
+            showProgress(i + 1, want, 'plane Team ' + (i + 1) + ' von ' + want + '...',
+                (st.rounds.length ? st.rounds.length + ' fertig' : ''));
+            // VOR dem Rechnen warten: so kommt der Fortschritt wirklich
+            // auf den Schirm. Nach dem Rechnen waere der erste Frame nie
+            // gezeichnet worden.
+            await sleep(0);
+            const tr = Date.now();
+            const r = SolverCore.batchRound(st);
+            if (tim) tim.rounds.push(Date.now() - tr);
+            if (!r) break;
+        }
+        const plan = SolverCore.finishBatch(st);
+        // Fuer den Plan-Check (Ticket #73) am Plan festgehalten: derselbe
+        // Stand, mit dem geplant wurde - eine spaetere UI-Aenderung darf
+        // die Auswertung des schon fertigen Plans nicht verfaelschen.
+        plan.cfg = cfg;
+        // Anker ist das SET plus die Vorgaben - die challengeId aendert
+        // sich pro Wiederholung und taugt nicht als Vergleich.
+        plan.setId = STATE.sbc.setId;
+        // Fuer die Vorschau festgehalten (renderBatchPreview): der Toast
+        // oben ist nach ein paar Sekunden weg, die Freigabe kommt aber oft
+        // erst deutlich spaeter - der Zustand muss in der Vorschau stehen
+        // bleiben.
+        plan.poolLoadIncomplete = STATE.loadIncomplete;
+        plan.targetOVR = STATE.sbc.targetOVR;
+        plan.slots = STATE.sbc.formationSlots;
+        plan.usedChallengeIds = [];
+        // Set-NAME: damit die richtige Kachel im Hub wiedergefunden wird
+        // (der Controller haelt das Set als UTSBCSetEntity).
+        plan.setEntity = (function () {
+            try {
+                const c = findSbcController();
+                return (c && (c._set || c.set)) || null;
+            } catch (e) { return null; }
+        })();
+        plan.setName = (plan.setEntity &&
+            (plan.setEntity.name || plan.setEntity.setName)) || null;
+        return plan;
+    }
     async function onBatchPlanClick() {
         syncSbcWithOpenChallenge();
         if (!STATE.sbc.targetOVR && !(STATE.sbc.playerLevelConstraints || []).length &&
@@ -8637,45 +8824,7 @@
             tim.config = Date.now() - tp;
             // Runden EINZELN rechnen und zwischendurch an den Browser
             // zurueckgeben - sonst friert die Seite fuer die ganze Dauer ein.
-            const st = SolverCore.beginBatch(STATE.pool, cfg, want);
-            for (let i = 0; i < want; i++) {
-                showProgress(i + 1, want, 'plane Team ' + (i + 1) + ' von ' + want + '...',
-                    (st.rounds.length ? st.rounds.length + ' fertig' : ''));
-                // VOR dem Rechnen warten: so kommt der Fortschritt wirklich
-                // auf den Schirm. Nach dem Rechnen waere der erste Frame nie
-                // gezeichnet worden.
-                await sleep(0);
-                const tr = Date.now();
-                const r = SolverCore.batchRound(st);
-                tim.rounds.push(Date.now() - tr);
-                if (!r) break;
-            }
-            const plan = SolverCore.finishBatch(st);
-            // Fuer den Plan-Check (Ticket #73) am Plan festgehalten: derselbe
-            // Stand, mit dem geplant wurde - eine spaetere UI-Aenderung darf
-            // die Auswertung des schon fertigen Plans nicht verfaelschen.
-            plan.cfg = cfg;
-            // Anker ist das SET plus die Vorgaben - die challengeId aendert
-            // sich pro Wiederholung und taugt nicht als Vergleich.
-            plan.setId = STATE.sbc.setId;
-            // Fuer die Vorschau festgehalten (renderBatchPreview): der Toast
-            // oben ist nach ein paar Sekunden weg, die Freigabe kommt aber oft
-            // erst deutlich spaeter - der Zustand muss in der Vorschau stehen
-            // bleiben.
-            plan.poolLoadIncomplete = STATE.loadIncomplete;
-            plan.targetOVR = STATE.sbc.targetOVR;
-            plan.slots = STATE.sbc.formationSlots;
-            plan.usedChallengeIds = [];
-            // Set-NAME: damit die richtige Kachel im Hub wiedergefunden wird
-            // (der Controller haelt das Set als UTSBCSetEntity).
-            plan.setEntity = (function () {
-                try {
-                    const c = findSbcController();
-                    return (c && (c._set || c.set)) || null;
-                } catch (e) { return null; }
-            })();
-            plan.setName = (plan.setEntity &&
-                (plan.setEntity.name || plan.setEntity.setName)) || null;
+            const plan = await planBatchRounds(want, cfg, tim);
             STATE.batch = plan;
             tp = Date.now();
             renderBatchPreview(plan);
@@ -8721,10 +8870,13 @@
     function computeBatchPlanCheck(plan, cfg) {
         const lines = []; // { level: 'error'|'hint', text }
         let passed = 0, total = 0;
-        function runCheck(level, ok, text) {
+        function runCheck(level, ok, text, team) {
             total++;
             if (ok) { passed++; return; }
-            lines.push({ level: level, text: text });
+            // team (optional): welche Runde die Zeile ausgeloest hat -
+            // Grundlage fuer "So viele wie moeglich mit 100%" (Vorlagen).
+            lines.push(team != null ? { level: level, text: text, team: team }
+                                    : { level: level, text: text });
         }
         // Die Grenzwerte EINER Runde. Beim Batch ist es fuer alle Runden
         // dieselbe Konfiguration; in der SBC-REIHE hat jede Runde ihre eigene
@@ -8787,7 +8939,7 @@
             runCheck('error', waste <= maxOvershoot + 1e-9,
                 'Team ' + teamNo + ': Rating-Überschuss ' + waste.toFixed(2) + ' über dem erlaubten Fenster ' +
                 maxOvershoot.toFixed(2) + ' (exakt ' +
-                (r.ovrExact != null ? r.ovrExact.toFixed(2) : '?') + ').');
+                (r.ovrExact != null ? r.ovrExact.toFixed(2) : '?') + ').', teamNo);
             // WAS gezaehlt wird, haengt am Schutz-Modus - genau wie im Solver.
             // Bis v4.84.0 verlangte die Pruefung immer GENAU die geforderte
             // Anzahl Gruppe-83-Karten. Seit EA die Gruppe entwertet hat, sind
@@ -8820,18 +8972,18 @@
             runCheck('error', rarityOk,
                 'Team ' + teamNo + ': ' + nCounted + 'x ' + countedName +
                 (rarityMode === 'gruppe83' ? ' statt geforderter ' : ' - erlaubt sind höchstens ') +
-                required83 + '.');
+                required83 + '.', teamNo);
             if (explainedByPick) {
-                lines.push({ level: 'hint', text: 'Team ' + teamNo +
+                lines.push({ level: 'hint', team: teamNo, text: 'Team ' + teamNo +
                     ': 1x ' + countedName + ' stammt aus der manuellen Karten-Wahl (keine SBC-Vorgabe)' +
                     ' - Auswahl zuruecksetzen, falls unbeabsichtigt.' });
             }
             const belowMin = r.players.filter(p => p.rating < effectiveMinRating);
             runCheck('error', belowMin.length === 0,
                 'Team ' + teamNo + ': ' + belowMin.length + ' Karte(n) unter Min-Rating ' + effectiveMinRating +
-                ' (' + belowMin.map(p => p.rating).join(', ') + ').');
+                ' (' + belowMin.map(p => p.rating).join(', ') + ').', teamNo);
             const nStore = r.players.filter(p => p.isStorage).length;
-            runCheck('hint', nStore >= 1, 'Team ' + teamNo + ': keine Storage-Karte verbaut (nur Verein).');
+            runCheck('hint', nStore >= 1, 'Team ' + teamNo + ': keine Storage-Karte verbaut (nur Verein).', teamNo);
             for (const p of r.players) {
                 const key = String(p.id);
                 if (seenIds.has(key) && !dupeCard) dupeCard = p.name || ('#' + key);
@@ -8851,6 +9003,27 @@
         };
     }
     /**
+     * Der Teil-Plan aus GENAU den Runden, die keine Pruefzeile ausgeloest
+     * haben ("So viele wie moeglich mit 100% abschliessen", Vorlagen).
+     * Globale Zeilen (ohne team - z.B. Karte in mehreren Teams, Pool
+     * unvollstaendig) lassen sich nicht wegschneiden: dann gibt es keinen
+     * sauberen Teil (null). Der Aufrufer muss den Teil-Plan NEU pruefen -
+     * erst ein frischer 100%-Befund macht ihn abgabefaehig.
+     */
+    function trimPlanToClean(plan, pc) {
+        if (!plan || !plan.rounds || !pc || !pc.lines) return null;
+        if (!pc.lines.length) return null;                       // schon sauber
+        if (pc.lines.some(function (l) { return l.team == null; })) return null;
+        const bad = {};
+        for (const l of pc.lines) bad[l.team] = true;
+        const rounds = plan.rounds.filter(function (r, k) { return !bad[k + 1]; });
+        if (!rounds.length) return null;
+        const out = Object.assign({}, plan);
+        out.rounds = rounds;
+        out.planned = rounds.length;
+        return out;
+    }
+    /**
      * Karten-Herkunft ueber ALLE geplanten Runden. Reine Funktion, damit die
      * Zahl in der Kopfzeile testbar ist und nicht still falsch werden kann.
      * Alles, was nicht Storage ist, ist Verein - dieselbe Zweiteilung wie in
@@ -8864,6 +9037,737 @@
             }
         }
         return { storage: storage, club: club, total: storage + club };
+    }
+    // ---- Vorlagen: Ansichts-Zustand, Aktionen, Laeufer -------------------
+    let vorlagenView = { mode: 'liste', draft: null };
+    let vorlagenRun = null;   // { vorlage, log, pause, pauseResolve, cancel, fertig, quotaText }
+
+    /** Sichtbare Hub-Kacheln als Auswahlhilfe fuer den Set-Namen im Editor. */
+    function listHubSetTitles() {
+        const out = [];
+        try {
+            for (const e of visibleAll('.ut-sbc-set-tile-view')) {
+                const t = e.querySelector('.tileTitle, .tileHeader, h1');
+                const txt = ((t && t.textContent) || '').trim();
+                if (txt && out.indexOf(txt) < 0) out.push(txt);
+            }
+        } catch (e) {}
+        return out;
+    }
+    function renderVorlagen() {
+        if (!ui.vorlagenOverlay) return;
+        let inner;
+        if (vorlagenView.mode === 'editor' && vorlagenView.draft) {
+            inner = vorlagenEditorHtml(vorlagenView.draft, listHubSetTitles());
+        } else if (vorlagenView.mode === 'lauf' && vorlagenRun) {
+            inner = vorlagenLaufHtml(vorlagenRun);
+        } else {
+            inner = vorlagenListeHtml(vorlagenLoad());
+        }
+        ui.vorlagenOverlay.innerHTML = '<div class="sbc-opt-vl-box">' + inner + '</div>';
+    }
+    function openVorlagen() {
+        vorlagenView = (vorlagenRun && !vorlagenRun.fertig)
+            ? { mode: 'lauf', draft: null }
+            : { mode: 'liste', draft: null };
+        renderVorlagen();
+        ui.vorlagenOverlay.style.display = 'block';
+    }
+    function neuerVorlagenSchritt() {
+        // Profil sofort einfrieren: der haeufigste Fall ist "so wie es jetzt
+        // eingestellt ist" - und ein leeres Profil hiesse "Panel-Stand beim
+        // START des Laufs", was Wochen spaeter ein anderer sein kann.
+        return { type: 'batch', setName: '', count: 5, profil: captureProfile() };
+    }
+    function onVorlagenInput(ev) {
+        const t = ev.target;
+        if (!t || !vorlagenView.draft) return;
+        if (t.id === 'sbc-opt-vl-name') { vorlagenView.draft.name = t.value; return; }
+        const f = t.dataset && t.dataset.f;
+        if (!f) return;
+        const st = vorlagenView.draft.steps[parseInt(t.dataset.i, 10)];
+        if (!st) return;
+        if (f === 'count') st.count = parseInt(t.value, 10) || 1;
+        else if (f === 'type' || f === 'setName') st[f] = t.value;
+    }
+    function saveVorlagenDraft() {
+        const d = vorlagenView.draft;
+        if (!d) return;
+        if (!String(d.name || '').trim()) {
+            toast('Die Vorlage braucht einen Namen.', 'error');
+            return;
+        }
+        if (!d.steps.length) {
+            toast('Die Vorlage braucht mindestens einen Schritt.', 'error');
+            return;
+        }
+        // Explizit VOR der Bereinigung pruefen - vorlagenSanitize wuerde einen
+        // Schritt ohne Set-Namen still verwerfen, und "gespeichert" saehe
+        // anders aus als eingegeben.
+        if (d.steps.some(function (st) { return !String(st.setName || '').trim(); })) {
+            toast('Jeder Schritt braucht einen SBC-Set-Namen (Name der Hub-Kachel).', 'error');
+            return;
+        }
+        const items = vorlagenLoad();
+        const clean = vorlagenSanitize({ items: [Object.assign({}, d,
+            { id: d.id || ('vl' + Date.now()) })] });
+        if (!clean.length || !clean[0].steps.length) {
+            toast('Die Vorlage liess sich nicht speichern (Eingaben pruefen).', 'error');
+            return;
+        }
+        const idx = items.findIndex(function (v) { return v.id === clean[0].id; });
+        if (idx > -1) { clean[0].lastRun = items[idx].lastRun; items[idx] = clean[0]; }
+        else items.push(clean[0]);
+        vorlagenSave(items);
+        vorlagenView = { mode: 'liste', draft: null };
+        renderVorlagen();
+        toast('Vorlage gespeichert.', 'ok');
+    }
+    function onVorlagenAction(act) {
+        const p = act.indexOf(':');
+        const cmd = p < 0 ? act : act.slice(0, p);
+        const arg = p < 0 ? null : act.slice(p + 1);
+        const items = vorlagenLoad();
+        const idx = arg ? items.findIndex(function (v) { return v.id === arg; }) : -1;
+        switch (cmd) {
+        case 'vl-zu':
+            // Schliessen versteckt nur - ein laufender Lauf laeuft weiter und
+            // ist ueber den Panel-Knopf wieder erreichbar.
+            ui.vorlagenOverlay.style.display = 'none';
+            return;
+        case 'vl-liste':
+            if (vorlagenRun && vorlagenRun.fertig) vorlagenRun = null;
+            vorlagenView = { mode: 'liste', draft: null };
+            renderVorlagen();
+            return;
+        case 'vl-neu':
+            vorlagenView = { mode: 'editor',
+                draft: { id: null, name: '', steps: [neuerVorlagenSchritt()], lastRun: null } };
+            renderVorlagen();
+            return;
+        case 'vl-edit':
+            if (idx < 0) return;
+            vorlagenView = { mode: 'editor', draft: JSON.parse(JSON.stringify(items[idx])) };
+            renderVorlagen();
+            return;
+        case 'vl-copy':
+            if (idx < 0) return;
+            (function () {
+                const c = JSON.parse(JSON.stringify(items[idx]));
+                c.id = 'vl' + Date.now();
+                c.name = (c.name + ' (Kopie)').slice(0, 60);
+                c.lastRun = null;
+                items.push(c);
+                vorlagenSave(items);
+                renderVorlagen();
+            })();
+            return;
+        case 'vl-del':
+            if (idx < 0) return;
+            if (!window.confirm('Vorlage "' + items[idx].name + '" l\u00f6schen?')) return;
+            items.splice(idx, 1);
+            vorlagenSave(items);
+            renderVorlagen();
+            return;
+        case 'vl-step-add':
+            if (!vorlagenView.draft) return;
+            vorlagenView.draft.steps.push(neuerVorlagenSchritt());
+            renderVorlagen();
+            return;
+        case 'vl-step-del':
+            if (!vorlagenView.draft) return;
+            vorlagenView.draft.steps.splice(Number(arg), 1);
+            renderVorlagen();
+            return;
+        case 'vl-step-up':
+        case 'vl-step-down':
+            if (!vorlagenView.draft) return;
+            (function () {
+                const st = vorlagenView.draft.steps;
+                const i = Number(arg);
+                const j = cmd === 'vl-step-up' ? i - 1 : i + 1;
+                if (j < 0 || j >= st.length) return;
+                const t = st[i]; st[i] = st[j]; st[j] = t;
+                renderVorlagen();
+            })();
+            return;
+        case 'vl-step-profil':
+            if (!vorlagenView.draft) return;
+            (function () {
+                const st = vorlagenView.draft.steps[Number(arg)];
+                if (!st) return;
+                st.profil = captureProfile();
+                renderVorlagen();
+                toast('Profil aus den aktuellen Panel-Einstellungen \u00fcbernommen.', 'ok');
+            })();
+            return;
+        case 'vl-speichern': saveVorlagenDraft(); return;
+        case 'vl-start': if (idx > -1) startVorlage(items[idx]); return;
+        case 'vl-pause':
+            if (vorlagenRun && vorlagenRun.pauseResolve) {
+                const r = vorlagenRun.pauseResolve;
+                vorlagenRun.pauseResolve = null;
+                vorlagenRun.pause = null;
+                r(arg);
+            }
+            return;
+        case 'vl-abbruch':
+            if (vorlagenRun && !vorlagenRun.fertig && !vorlagenRun.cancel) {
+                vorlagenRun.cancel = true;
+                vorlagenLog('Stopp angefordert - nach dem laufenden Schritt ist Schluss.', 'warn');
+            }
+            return;
+        }
+    }
+
+    // ---- Laeufer ----------------------------------------------------------
+    function vorlagenLog(text, level) {
+        if (!vorlagenRun) return;
+        vorlagenRun.log.push({ html: escapeHtml(text), level: level || '' });
+        renderVorlagen();
+    }
+    /** Pause mit Knoepfen; loest mit der gewaehlten Aktion ('clean'|'all'|...) auf. */
+    function vorlagenFrage(html, buttons) {
+        return new Promise(function (resolve) {
+            vorlagenRun.pause = { html: html, buttons: buttons };
+            vorlagenRun.pauseResolve = resolve;
+            renderVorlagen();
+        });
+    }
+    async function startVorlage(v) {
+        if (vorlagenRun && !vorlagenRun.fertig) {
+            toast('Es l\u00e4uft schon eine Vorlage.', 'error');
+            return;
+        }
+        if (STATE.loading) {
+            toast('Der Pool l\u00e4dt gerade - bitte kurz warten.', 'error');
+            return;
+        }
+        const passiv = passivePoolWarning();
+        if (!STATE.pool.length || passiv) {
+            // HART statt Warnung: die Vorlage gibt ohne Rueckfrage ab - auf
+            // einem Pool ohne Storage waere jeder "100%"-Plan eine Luege.
+            toast(passiv || 'Pool leer. Bitte zuerst "Spieler laden".', 'error');
+            return;
+        }
+        let quotaText = '';
+        try {
+            const u = quotaUsage();
+            quotaText = 'Kontingent nach unserer Z\u00e4hlung: ' +
+                (u.hour.exact ? '' : 'mind. ') + u.hour.used + '/' + QUOTA_HOUR_LIMIT +
+                ' in dieser Stunde \u00b7 ' + (u.day.exact ? '' : 'mind. ') +
+                u.day.used + '/' + QUOTA_DAY_LIMIT + ' heute.';
+        } catch (e) {}
+        vorlagenRun = { vorlage: v, log: [], pause: null, pauseResolve: null,
+                        cancel: false, fertig: false, quotaText: quotaText };
+        vorlagenView = { mode: 'lauf', draft: null };
+        renderVorlagen();
+        let abgegeben = 0, gestoppt = null;
+        try {
+            for (let si = 0; si < v.steps.length; si++) {
+                if (vorlagenRun.cancel) { gestoppt = 'auf Wunsch gestoppt'; break; }
+                const st = v.steps[si];
+                vorlagenLog('Schritt ' + (si + 1) + '/' + v.steps.length + ': ' +
+                    (VORLAGEN_TYP_LABEL[st.type] || st.type) + ' \u201e' + st.setName +
+                    '\u201c \u00d7' + st.count, 'kopf');
+                const r = await runVorlagenStep(st);
+                abgegeben += r.done;
+                if (r.note) vorlagenLog(r.note, r.level || '');
+                if (r.stop) { gestoppt = r.stopReason || 'gestoppt'; break; }
+                if (si + 1 < v.steps.length) await batchWait(1500);
+            }
+        } catch (e) {
+            gestoppt = friendlyStopReason((e && e.message) || String(e));
+            reportError('Vorlagen-Lauf gestoppt', e);
+        }
+        vorlagenRun.fertig = true;
+        vorlagenRun.pause = null;
+        vorlagenRun.pauseResolve = null;
+        const fazit = abgegeben + ' SBC(s) abgegeben' + (gestoppt ? ' \u00b7 ' + gestoppt : '');
+        vorlagenLog('Fertig: ' + fazit, gestoppt ? 'warn' : 'ok');
+        const items = vorlagenLoad();
+        const idx = items.findIndex(function (x) { return x.id === v.id; });
+        if (idx > -1) {
+            items[idx].lastRun = { t: Date.now(), text: fazit };
+            vorlagenSave(items);
+        }
+        renderVorlagen();
+    }
+    /**
+     * EIN Schritt einer Vorlage: hinnavigieren -> frisch planen -> Gate ->
+     * abgeben (executePlan, derselbe live-bewiesene Lauf wie beim Batch).
+     * 'reihe' wiederholt das count-mal (jeder Durchlauf plant das Set neu).
+     */
+    async function runVorlagenStep(st) {
+        let doneTotal = 0;
+        const durchlaeufe = (st.type === 'reihe') ? st.count : 1;
+        for (let d = 0; d < durchlaeufe; d++) {
+            if (vorlagenRun.cancel) {
+                return { done: doneTotal, stop: true, stopReason: 'auf Wunsch gestoppt' };
+            }
+            if (d > 0) vorlagenLog('Durchlauf ' + (d + 1) + '/' + durchlaeufe + ' \u2026', '');
+            const nav = await openSetForVorlage(st);
+            STATE.diag.vorlagenNav = { setName: st.setName, ok: nav.ok,
+                mode: nav.mode || null, why: nav.why || null,
+                steps: (nav.steps || []).slice(-6) };
+            if (!nav.ok) {
+                const antwort = await vorlagenFrage(
+                    '<div class="sbc-opt-vl-pausekopf">\u26a0 \u201e' +
+                    escapeHtml(st.setName) + '\u201c lie\u00df sich nicht \u00f6ffnen: ' +
+                    escapeHtml(nav.why || '?') + '</div>',
+                    [{ act: 'skip', cls: 'ghost', label: 'Schritt \u00fcberspringen' },
+                     { act: 'stop', cls: 'ghost', label: 'Vorlage stoppen' }]);
+                if (antwort === 'stop') {
+                    return { done: doneTotal, stop: true,
+                             stopReason: '\u201e' + st.setName + '\u201c lie\u00df sich nicht \u00f6ffnen' };
+                }
+                return { done: doneTotal, level: 'warn',
+                         note: '\u201e' + st.setName + '\u201c \u00fcbersprungen (' + (nav.why || '?') + ')' };
+            }
+            let plan, want;
+            if (st.type === 'batch') {
+                syncSbcWithOpenChallenge();
+                want = st.count;
+                plan = await planBatchRounds(want, readConfig(st.profil));
+            } else {
+                await loadQueueList(true, true, nav.sid);
+                if (String(queueLoadedSet) !== String(nav.sid) || queueLoadError) {
+                    return { done: doneTotal, level: 'warn',
+                             note: 'Challenge-Liste lie\u00df sich nicht laden' +
+                                 (queueLoadError ? ' (' + queueLoadError + ')' : '') +
+                                 ' - Schritt \u00fcbersprungen.' };
+                }
+                const chosen = queueItems.filter(function (it) {
+                    return !it.done && it.target != null;
+                });
+                if (!chosen.length) {
+                    vorlagenLog('\u201e' + st.setName + '\u201c: nichts mehr offen.', '');
+                    break;
+                }
+                want = chosen.length;
+                plan = await planQueueRounds(chosen, readConfig(st.profil));
+            }
+            const gate = vorlagenGate(plan, want);
+            STATE.diag.vorlagenGate = { setName: st.setName, score: gate.pc.score,
+                planned: gate.planned, want: want, autoOk: gate.autoOk,
+                clean: gate.cleanPlan ? gate.cleanPlan.planned : null };
+            let toRun = null;
+            if (gate.autoOk) {
+                vorlagenLog(gate.planned + ' geplant \u00b7 Confidence 100% - wird abgegeben.', 'ok');
+                toRun = plan;
+            } else {
+                const antwort = await vorlagenFrage(
+                    vorlagenPauseHtml(st, gate) +
+                    (gate.planned
+                        ? '<details class="sbc-opt-details-toggle"><summary>Teams im Detail (' +
+                          gate.planned + ')</summary>' + buildPlanDetailHtml(plan) + '</details>'
+                        : ''),
+                    vorlagenPauseButtons(gate));
+                if (antwort === 'stop') {
+                    return { done: doneTotal, stop: true,
+                             stopReason: 'vor \u201e' + st.setName + '\u201c gestoppt (kein 100%-Plan)' };
+                }
+                if (antwort === 'skip') {
+                    return { done: doneTotal, level: 'warn',
+                             note: '\u201e' + st.setName + '\u201c \u00fcbersprungen (Confidence ' +
+                                 gate.pc.score + '%, ' + gate.planned + ' von ' + want + ' geplant)' };
+                }
+                toRun = (antwort === 'clean') ? gate.cleanPlan : plan;
+            }
+            if (!toRun || !toRun.planned) {
+                return { done: doneTotal, level: 'warn',
+                         note: '\u201e' + st.setName + '\u201c: kein Team planbar (Pool zu klein?).' };
+            }
+            STATE.batch = toRun;
+            const res = await executePlan(toRun);
+            doneTotal += res.done;
+            vorlagenLog('\u201e' + st.setName + '\u201c: ' + res.done + ' von ' + toRun.planned +
+                ' abgegeben' + (res.stopped ? ' \u00b7 ' + res.stopped : '') + '.',
+                res.stopped ? 'warn' : 'ok');
+            if (res.stopped) {
+                return { done: doneTotal, stop: true, stopReason: res.stopped };
+            }
+            if (d + 1 < durchlaeufe) await batchWait(1500);
+        }
+        return { done: doneTotal };
+    }
+    /**
+     * Vom aktuellen Zustand aus das Set einer Vorlage oeffnen. Erfolg heisst
+     * je nach Schritt-Typ: 'batch' -> eine Challenge des Sets ist offen, ihre
+     * Vorgaben sind geparst, ihr Squad ist leer; 'reihe' -> die Challenge-
+     * LISTE ist sichtbar und das Set eindeutig erkannt (oder eine Challenge
+     * direkt offen - Ein-Challenge-Sets springen durch). Baut auf denselben
+     * live-bewiesenen Bausteinen auf wie openNextInstance (Doppel-Tap-Kachel,
+     * Filter-Fallback, Zurueck-Navigation, Popup-Aufraeumen).
+     */
+    async function openSetForVorlage(step) {
+        const steps = [];
+        const t0 = Date.now();
+        let clicked = false, clickedTick = -1;
+        for (let i = 0; i < 50; i++) {          // 50 x 300ms = max ~15s
+            dismissRewardPopup();
+            syncSbcWithOpenChallenge();
+            const ctrl = findSbcController();
+            // Nach dem Klick 3 Takte Ruhe (~900ms): der Parser braucht einen
+            // Moment, und ein Controller aus der VORIGEN Ansicht darf nicht
+            // als Treffer durchgehen.
+            if (ctrl && clicked && (i - clickedTick) >= 3) {
+                const hatVorgaben = !!(STATE.sbc.targetOVR ||
+                    (STATE.sbc.playerLevelConstraints || []).length ||
+                    (STATE.sbc.rarityConstraints || []).length ||
+                    (STATE.sbc.qualityConstraints || []).length);
+                let empty = null;
+                try {
+                    const sq = ctrl._squad || (ctrl.getSquad && ctrl.getSquad());
+                    if (sq && typeof sq.isSquadEmpty === 'function') empty = sq.isSquadEmpty();
+                } catch (e) {}
+                if (step.type === 'batch' && hatVorgaben) {
+                    if (empty === false) {
+                        return { ok: false, occupied: true, steps: steps,
+                                 why: 'dort steht schon ein Team im Squad - bitte im Spiel leeren oder abgeben' };
+                    }
+                    return { ok: true, mode: 'squad', steps: steps };
+                }
+                if (step.type === 'reihe') {
+                    const sid = detectViewedSetId();
+                    return { ok: true, mode: 'squad', steps: steps,
+                             sid: (sid != null) ? sid : STATE.sbc.setId };
+                }
+            }
+            // Fremde offene Ansicht am Start? Zurueck Richtung Hub.
+            if (ctrl && !clicked && (i === 2 || i === 12)) {
+                const b = clickBackButton();
+                steps.push({ ms: Date.now() - t0, back: b });
+                if (b.ok) { await batchWait(900); continue; }
+            }
+            if (!ctrl && clicked) {
+                const rows = visibleChallengeRowTexts();
+                if (step.type === 'reihe' && rows.length) {
+                    const sid = detectViewedSetId();
+                    if (sid != null) return { ok: true, mode: 'liste', sid: sid, steps: steps };
+                    if (i > 20) {
+                        return { ok: false, steps: steps,
+                                 why: 'Challenge-Liste sichtbar, aber das Set ist nicht eindeutig erkennbar' };
+                    }
+                }
+                // Ein Mehrfach-Schritt auf einem Mehr-Challenge-Set landet in
+                // der Liste statt im Squad - ehrlich benennen statt Timeout.
+                if (step.type === 'batch' && rows.length > 1 && i >= 6) {
+                    return { ok: false, steps: steps,
+                             why: 'das Set hat mehrere Challenges - diesen Schritt als "Set komplett" einstellen' };
+                }
+            }
+            if (!ctrl && (!clicked || i === 20 || i === 40)) {
+                const pop = popupState();
+                if (pop.overlays || (pop.shield && pop.shield.up)) {
+                    dismissRewardPopup();
+                    await batchWait(500);
+                }
+                let s1 = clickSetTile({ setName: step.setName });
+                if (!s1.ok && (i === 3 || i === 20)) {
+                    const f = clickAllFilter();
+                    steps.push({ ms: Date.now() - t0, filter: f });
+                    if (f.ok) { await batchWait(900); s1 = clickSetTile({ setName: step.setName }); }
+                }
+                steps.push({ ms: Date.now() - t0, setTile: s1 });
+                if (s1.ok) { clicked = true; clickedTick = i; await batchWait(500); continue; }
+            }
+            await batchWait(300);
+        }
+        const rep = setLooksRepeatable(step.setName || '');
+        return { ok: false, steps: steps, status: rep.status,
+                 why: clicked
+                     ? (rep.repeatable === false
+                         ? 'EA l\u00e4sst das Set nicht mehr wiederholen (' + rep.status + ')'
+                         : 'Kachel getroffen, aber die Ansicht hat sich nicht ge\u00f6ffnet')
+                     : 'keine Hub-Kachel mit diesem Namen gefunden (im SBC-Hub starten)' };
+    }
+    // ===================== VORLAGEN (v5.10.0) ===========================
+    // Eine Vorlage = benannte Schrittliste: jeder Schritt traegt ein SBC-Set
+    // (Name der Hub-Kachel), eine Anzahl und ein eingefrorenes Einstellungs-
+    // Profil (PROFILE_KEYS). Der Lauf plant jeden Schritt FRISCH auf dem
+    // aktuellen Pool und gibt automatisch NUR ab, wenn der Plan vollstaendig
+    // ist und die Pruefung 100% ergibt - sonst pausiert er mit Vorschau
+    // (Rasmus: "nur wenn 100% confidence raus kommt sollte das automatisch
+    // passieren ... sonst warning ... ggf. mit detailseite").
+    const VORLAGEN_KEY = 'sbcOptVorlagen';
+    const VORLAGEN_MAX_COUNT = 20;   // Wiederholungen pro Schritt (Kappe)
+    const VORLAGEN_TYP_LABEL = { batch: 'Mehrfach', reihe: 'Set komplett' };
+    const RARITY_MODE_LABEL = { vereinTotw: 'Schutz Vereins-TOTW',
+                                gruppe83: 'Schutz Gruppe 83', aus: 'Schutz aus' };
+
+    /**
+     * Gespeicherte Vorlagen bereinigen - localStorage ist fremde Eingabe.
+     * Schritte ohne Set-Namen fliegen raus (der Editor verhindert das
+     * zusaetzlich VOR dem Speichern, damit nichts still verloren geht).
+     */
+    function vorlagenSanitize(raw) {
+        const out = [];
+        const items = (raw && Array.isArray(raw.items)) ? raw.items : [];
+        for (const it of items) {
+            if (!it || typeof it !== 'object') continue;
+            const name = String(it.name || '').trim().slice(0, 60);
+            if (!name) continue;
+            const steps = [];
+            for (const st of (Array.isArray(it.steps) ? it.steps : [])) {
+                if (!st || typeof st !== 'object') continue;
+                const setName = String(st.setName || '').trim().slice(0, 120);
+                if (!setName) continue;
+                let count = parseInt(st.count, 10);
+                if (!isFinite(count) || count < 1) count = 1;
+                if (count > VORLAGEN_MAX_COUNT) count = VORLAGEN_MAX_COUNT;
+                const profil = {};
+                if (st.profil && typeof st.profil === 'object') {
+                    for (const k of PROFILE_KEYS) {
+                        if (st.profil[k] !== undefined) profil[k] = st.profil[k];
+                    }
+                }
+                steps.push({ type: st.type === 'reihe' ? 'reihe' : 'batch',
+                             setName: setName, count: count, profil: profil });
+            }
+            out.push({ id: String(it.id || ('vl' + Date.now() + '_' + out.length)),
+                       name: name, steps: steps,
+                       lastRun: (it.lastRun && typeof it.lastRun === 'object')
+                           ? { t: Number(it.lastRun.t) || 0,
+                               text: String(it.lastRun.text || '').slice(0, 200) }
+                           : null });
+        }
+        return out;
+    }
+    function vorlagenLoad() {
+        try {
+            return vorlagenSanitize(JSON.parse(
+                localStorage.getItem(VORLAGEN_KEY) || 'null'));
+        } catch (e) { return []; }
+    }
+    function vorlagenSave(items) {
+        try { localStorage.setItem(VORLAGEN_KEY, JSON.stringify({ v: 1, items: items })); }
+        catch (e) { warn('Vorlagen speichern fehlgeschlagen:', e); }
+    }
+
+    /** Eine Zeile pro Vorlage: "10x 10x 85+ Upgrade · 1x 87x5 (Set komplett)". */
+    function vorlageSummary(v) {
+        if (!v.steps.length) return 'noch keine Schritte';
+        return v.steps.map(function (st) {
+            return st.count + '\u00d7 ' + st.setName +
+                (st.type === 'reihe' ? ' (Set komplett)' : '');
+        }).join(' \u00b7 ');
+    }
+    /** Kurzform des eingefrorenen Profils; leeres Profil = Panel-Stand. */
+    function profilSummary(p) {
+        if (!p || p.minRating === undefined) return 'Panel-Stand beim Start';
+        const teile = ['Min ' + p.minRating,
+            '\u00dcberschuss ' + Number(p.maxOvershoot || 0).toFixed(2)];
+        if (p.maxRatingEnabled) teile.push('Max ' + p.maxRating);
+        teile.push(RARITY_MODE_LABEL[p.rarityMode] || ('Schutz ' + p.rarityMode));
+        return teile.join(' \u00b7 ');
+    }
+
+    /**
+     * Das 100%-Gate der Vorlagen. Automatisch abgegeben wird NUR ein Plan,
+     * der (a) vollstaendig ist - alle gewollten Runden geplant, nichts
+     * uebersprungen - und (b) die Pruefung mit 100% besteht. Sonst pausiert
+     * der Lauf; cleanPlan ist dann - falls moeglich - der "So viele wie
+     * moeglich mit 100%"-Plan: bei sauberem Teil-Erfolg der Plan selbst
+     * (3 von 5 geplant, alle sauber), sonst der Schnitt aus den
+     * unbeanstandeten Runden, NEU geprueft statt nur geschnitten.
+     */
+    function vorlagenGate(plan, want) {
+        const pc = computeBatchPlanCheck(plan, plan.cfg || {});
+        const planned = (plan && plan.planned) || 0;
+        const skippedCount = ((plan && plan.skipped) || []).length;
+        const full = planned >= want && skippedCount === 0;
+        const autoOk = full && planned > 0 && pc.score === 100;
+        let cleanPlan = null, cleanIsAll = false;
+        if (!autoOk && planned > 0) {
+            if (pc.score === 100) {
+                cleanPlan = plan;
+                cleanIsAll = true;
+            } else {
+                const t = trimPlanToClean(plan, pc);
+                if (t && computeBatchPlanCheck(t, t.cfg || {}).score === 100) {
+                    cleanPlan = t;
+                }
+            }
+        }
+        return { pc: pc, planned: planned, want: want, full: full,
+                 skippedCount: skippedCount, autoOk: autoOk,
+                 cleanPlan: cleanPlan, cleanIsAll: cleanIsAll };
+    }
+    /** Die Pause-Knoepfe zum Gate - rein, damit die Faelle testbar sind. */
+    function vorlagenPauseButtons(gate) {
+        const buttons = [];
+        if (gate.cleanPlan) {
+            buttons.push({ act: 'clean', cls: 'primary',
+                label: (gate.cleanIsAll
+                    ? 'Die ' + gate.cleanPlan.planned + ' geplanten'
+                    : 'Nur die ' + gate.cleanPlan.planned + ' sauberen') +
+                    ' abgeben (100%)' });
+        }
+        if (gate.planned > 0 && !gate.cleanIsAll) {
+            buttons.push({ act: 'all', cls: 'danger',
+                label: 'Trotzdem alle ' + gate.planned +
+                    ' abgeben (Confidence ' + gate.pc.score + '%)' });
+        }
+        buttons.push({ act: 'skip', cls: 'ghost', label: 'Schritt \u00fcberspringen' });
+        buttons.push({ act: 'stop', cls: 'ghost', label: 'Vorlage stoppen' });
+        return buttons;
+    }
+
+    // ---- HTML-Builder (rein: Zustand rein, Markup raus) ------------------
+    function vorlagenHeaderHtml(titel) {
+        return '<div class="sbc-opt-vl-head"><span>' + escapeHtml(titel) +
+            '</span><button class="sbc-opt-vl-x" data-act="vl-zu" ' +
+            'title="Schlie\u00dfen">\u2715</button></div>';
+    }
+    function vorlagenListeHtml(items) {
+        let h = vorlagenHeaderHtml('Vorlagen');
+        if (!items.length) {
+            h += '<div class="sbc-opt-vl-leer">Noch keine Vorlagen. Eine Vorlage ' +
+                'ist eine gespeicherte Schrittliste (z.B. \u201e10\u00d7 10x 85+ ' +
+                'Upgrade\u201c), die auf Knopfdruck durchl\u00e4uft \u2013 ' +
+                'abgegeben wird automatisch nur bei 100% Confidence, sonst ' +
+                'h\u00e4lt der Lauf mit Vorschau an.</div>';
+        }
+        for (const v of items) {
+            h += '<div class="sbc-opt-vl-card">' +
+                '<div class="sbc-opt-vl-cardkopf"><b>' + escapeHtml(v.name) + '</b>' +
+                '<button class="sbc-opt-btn primary sbc-opt-vl-start" data-act="vl-start:' +
+                escapeHtml(v.id) + '">\u25b6 Start</button></div>' +
+                '<div class="sbc-opt-vl-sum">' + escapeHtml(vorlageSummary(v)) + '</div>' +
+                (v.lastRun && v.lastRun.text
+                    ? '<div class="sbc-opt-vl-last">zuletzt: ' +
+                      escapeHtml(v.lastRun.text) + '</div>' : '') +
+                '<div class="sbc-opt-vl-tools">' +
+                '<button class="sbc-opt-btn ghost" data-act="vl-edit:' + escapeHtml(v.id) + '">Bearbeiten</button>' +
+                '<button class="sbc-opt-btn ghost" data-act="vl-copy:' + escapeHtml(v.id) + '">Kopie</button>' +
+                '<button class="sbc-opt-btn ghost" data-act="vl-del:' + escapeHtml(v.id) + '">L\u00f6schen</button>' +
+                '</div></div>';
+        }
+        h += '<button class="sbc-opt-btn plan" data-act="vl-neu">+ Neue Vorlage</button>';
+        return h;
+    }
+    function vorlagenEditorHtml(draft, setTitles) {
+        let h = vorlagenHeaderHtml(draft.id ? 'Vorlage bearbeiten' : 'Neue Vorlage');
+        h += '<label class="sbc-opt-chiplabel">Name der Vorlage</label>' +
+            '<input type="text" id="sbc-opt-vl-name" class="sbc-opt-vl-input" value="' +
+            escapeHtml(draft.name) + '" placeholder="z.B. Abend-Grind">';
+        h += '<datalist id="sbc-opt-vl-sets">' +
+            (setTitles || []).map(function (t) {
+                return '<option value="' + escapeHtml(t) + '">';
+            }).join('') + '</datalist>';
+        draft.steps.forEach(function (st, i) {
+            h += '<div class="sbc-opt-vl-step">' +
+                '<div class="sbc-opt-vl-steprow"><b>' + (i + 1) + '.</b>' +
+                '<select class="sbc-opt-vl-input" data-f="type" data-i="' + i + '">' +
+                '<option value="batch"' + (st.type !== 'reihe' ? ' selected' : '') +
+                '>Mehrfach (eine SBC N\u00d7)</option>' +
+                '<option value="reihe"' + (st.type === 'reihe' ? ' selected' : '') +
+                '>Set komplett (alle Challenges)</option></select>' +
+                '<button class="sbc-opt-btn ghost sbc-opt-vl-mini" data-act="vl-step-up:' + i + '" title="nach oben">\u2191</button>' +
+                '<button class="sbc-opt-btn ghost sbc-opt-vl-mini" data-act="vl-step-down:' + i + '" title="nach unten">\u2193</button>' +
+                '<button class="sbc-opt-btn ghost sbc-opt-vl-mini" data-act="vl-step-del:' + i + '" title="Schritt entfernen">\u2715</button>' +
+                '</div>' +
+                '<label>SBC-Set (Name der Hub-Kachel)</label>' +
+                '<input type="text" class="sbc-opt-vl-input" list="sbc-opt-vl-sets" data-f="setName" data-i="' + i +
+                '" value="' + escapeHtml(st.setName) + '" placeholder="z.B. 10x 85+ Upgrade">' +
+                '<label>Anzahl' + (st.type === 'reihe' ? ' (Set-Durchl\u00e4ufe)' : ' (Wiederholungen)') + '</label>' +
+                '<input type="number" class="sbc-opt-vl-input sbc-opt-vl-zahl" min="1" max="' + VORLAGEN_MAX_COUNT +
+                '" data-f="count" data-i="' + i + '" value="' + st.count + '">' +
+                '<div class="sbc-opt-vl-profil">Profil: <span>' +
+                escapeHtml(profilSummary(st.profil)) + '</span></div>' +
+                '<button class="sbc-opt-btn ghost" data-act="vl-step-profil:' + i +
+                '">Aktuelle Panel-Einstellungen \u00fcbernehmen</button>' +
+                '</div>';
+        });
+        h += '<button class="sbc-opt-btn ghost" data-act="vl-step-add">+ Schritt</button>' +
+            '<div class="sbc-opt-vl-hint">Das Profil friert die Panel-Einstellungen ' +
+            '(Min-Rating, \u00dcberschuss, Rarity-Schutz \u2026) f\u00fcr diesen ' +
+            'Schritt ein \u2013 erst im Panel einstellen, dann \u00fcbernehmen.</div>' +
+            '<div class="sbc-opt-vl-tools">' +
+            '<button class="sbc-opt-btn primary" data-act="vl-speichern">Speichern</button>' +
+            '<button class="sbc-opt-btn ghost" data-act="vl-liste">Abbrechen</button></div>';
+        return h;
+    }
+    function vorlagenPauseHtml(step, gate) {
+        let h = '<div class="sbc-opt-vl-pausekopf">\u26a0 \u201e' +
+            escapeHtml(step.setName) + '\u201c: ' + gate.planned + ' von ' +
+            gate.want + ' geplant \u00b7 Confidence ' + gate.pc.score + '%</div>';
+        for (const l of gate.pc.lines) {
+            h += '<div class="sbc-opt-batch-round ' +
+                (l.level === 'error' ? 'sbc-opt-batch-bad' : 'sbc-opt-batch-warn') +
+                '">' + (l.level === 'error' ? '\u2717 ' : '\u26a0 ') +
+                escapeHtml(l.text) + '</div>';
+        }
+        if (gate.skippedCount) {
+            h += '<div class="sbc-opt-batch-round sbc-opt-batch-warn">\u26a0 ' +
+                gate.skippedCount + ' Runde(n) beim Planen \u00fcbersprungen ' +
+                '(Pool reicht nicht mehr).</div>';
+        }
+        return h;
+    }
+    function vorlagenLaufHtml(run) {
+        let h = vorlagenHeaderHtml('Vorlage: ' + run.vorlage.name);
+        if (run.quotaText) {
+            h += '<div class="sbc-opt-vl-quota">' + escapeHtml(run.quotaText) + '</div>';
+        }
+        for (const z of run.log) {
+            h += '<div class="sbc-opt-vl-log ' + (z.level || '') + '">' + z.html + '</div>';
+        }
+        if (run.pause) {
+            h += '<div class="sbc-opt-vl-pause">' + run.pause.html +
+                '<div class="sbc-opt-vl-tools">' +
+                run.pause.buttons.map(function (b) {
+                    return '<button class="sbc-opt-btn ' + b.cls +
+                        '" data-act="vl-pause:' + b.act + '">' +
+                        escapeHtml(b.label) + '</button>';
+                }).join('') + '</div></div>';
+        } else if (!run.fertig) {
+            h += '<div class="sbc-opt-vl-tools"><button class="sbc-opt-btn danger" ' +
+                'data-act="vl-abbruch">Nach dem laufenden Schritt stoppen</button></div>';
+        } else {
+            h += '<div class="sbc-opt-vl-tools"><button class="sbc-opt-btn primary" ' +
+                'data-act="vl-liste">Fertig \u2013 zur Liste</button></div>';
+        }
+        return h;
+    }
+    /**
+     * Kartendetails eines Plans als HTML - fuer die Panel-Vorschau UND die
+     * Vorlagen-Pause (wortgleich aus renderBatchPreview gezogen, v5.10.0):
+     * die Detailseite der Pause muss GENAU das zeigen, was auch die Vorschau
+     * beim Planen zeigt - Rasmus entscheidet auf dieser Basis.
+     */
+    function buildPlanDetailHtml(plan) {
+        let detailHtml = '';
+        plan.rounds.forEach(function (r, i) {
+            const nStore = r.players.filter(p => p.isStorage).length;
+            const nUntr = r.players.filter(p => p.untradeable).length;
+            const nProt = r.players.filter(p => p.groups && p.groups.indexOf(83) > -1).length;
+            // In der SBC-Reihe ist jede Runde eine ANDERE SBC - dann sagt
+            // ihr Name etwas, die Nummer nicht.
+            const label = r.challengeName
+                ? escapeHtml(r.challengeName) : ('Team ' + (i + 1));
+            detailHtml += '<div class="sbc-opt-batch-round"><b>' + label + ':</b> OVR ' +
+                r.ovr + ' (' + r.ovrExact.toFixed(2) + ')' +
+                '<br><span class="sbc-opt-muted">Storage ' + nStore +
+                ' · unverkäuflich ' + nUntr +
+                (nProt ? ' · <span class="sbc-opt-batch-warn">geschützt ' + nProt + '</span>' : '') +
+                '</span><div class="sbc-opt-batch-cards">';
+            for (const p of r.players.slice().sort((a, b) => b.rating - a.rating)) {
+                const prot = !!(p.groups && p.groups.indexOf(83) > -1);
+                detailHtml += '<div class="sbc-opt-batch-card' + (prot ? ' prot' : '') + '">' +
+                    '<span class="r">' + p.rating + '</span> ' + escapeHtml(displayName(p)) +
+                    ' <span class="src">' + (p.isStorage ? 'Storage' : 'Verein') + '</span>' +
+                    ' <span class="rar">' + escapeHtml(rarityLabel(p)) + '</span>' +
+                    (p.untradeable ? ' <span class="untr">unverkäuflich</span>' : '') + '</div>';
+            }
+            detailHtml += '</div>';
+            for (const w of (r.warnings || [])) {
+                detailHtml += '<span class="sbc-opt-batch-warn">⚠ ' + escapeHtml(w) + '</span><br>';
+            }
+            detailHtml += '</div>';
+        });
+        return detailHtml;
     }
     function renderBatchPreview(plan) {
         const box = ui.batchPreview;
@@ -8923,36 +9827,7 @@
         ui.batchRun.disabled = false;
         ui.batchRun.textContent = 'Alle ' + plan.planned + ' eintragen + abgeben';
         if (ui.batchDetails) {
-            let detailHtml = '';
-            plan.rounds.forEach(function (r, i) {
-                const nStore = r.players.filter(p => p.isStorage).length;
-                const nUntr = r.players.filter(p => p.untradeable).length;
-                const nProt = r.players.filter(p => p.groups && p.groups.indexOf(83) > -1).length;
-                // In der SBC-Reihe ist jede Runde eine ANDERE SBC - dann sagt
-                // ihr Name etwas, die Nummer nicht.
-                const label = r.challengeName
-                    ? escapeHtml(r.challengeName) : ('Team ' + (i + 1));
-                detailHtml += '<div class="sbc-opt-batch-round"><b>' + label + ':</b> OVR ' +
-                    r.ovr + ' (' + r.ovrExact.toFixed(2) + ')' +
-                    '<br><span class="sbc-opt-muted">Storage ' + nStore +
-                    ' · unverkäuflich ' + nUntr +
-                    (nProt ? ' · <span class="sbc-opt-batch-warn">geschützt ' + nProt + '</span>' : '') +
-                    '</span><div class="sbc-opt-batch-cards">';
-                for (const p of r.players.slice().sort((a, b) => b.rating - a.rating)) {
-                    const prot = !!(p.groups && p.groups.indexOf(83) > -1);
-                    detailHtml += '<div class="sbc-opt-batch-card' + (prot ? ' prot' : '') + '">' +
-                        '<span class="r">' + p.rating + '</span> ' + escapeHtml(displayName(p)) +
-                        ' <span class="src">' + (p.isStorage ? 'Storage' : 'Verein') + '</span>' +
-                        ' <span class="rar">' + escapeHtml(rarityLabel(p)) + '</span>' +
-                        (p.untradeable ? ' <span class="untr">unverkäuflich</span>' : '') + '</div>';
-                }
-                detailHtml += '</div>';
-                for (const w of (r.warnings || [])) {
-                    detailHtml += '<span class="sbc-opt-batch-warn">⚠ ' + escapeHtml(w) + '</span><br>';
-                }
-                detailHtml += '</div>';
-            });
-            ui.batchDetailBody.innerHTML = detailHtml;
+            ui.batchDetailBody.innerHTML = buildPlanDetailHtml(plan);
             ui.batchDetailSummary.textContent = 'Teams im Detail (' + plan.planned + ')';
             ui.batchDetails.style.display = plan.planned ? 'block' : 'none';
         }
@@ -9013,19 +9888,6 @@
      * falsch abgegebene SBC.
      */
     async function onBatchRunClick() {
-        // Stand von EAs timesCompleted fuer dieses Set. Wird pro Runde EINMAL
-        // gelesen und dient der naechsten Runde als Basis.
-        let batchCountBase = null;
-        // Runden hintereinander, die EA nicht bestaetigt hat.
-        let unconfirmedStreak = 0;
-        // Letzter WIRKLICH gelesener Zaehlerstand - und der Stand, der vor der
-        // laufenden Runde galt. Damit ueberlebt eine Bestaetigung auch eine
-        // Runde, in der die Messung ausgefallen ist.
-        let lastKnownCount = null;
-        let lastKnownBefore = null;
-        // Takt vor der Bestaetigung. Startet gross genug, dass EA nicht direkt
-        // abweist, und waechst bei Ablehnung selbst.
-        let confirmGap = 900;
         const plan = STATE.batch;
         if (!plan || !plan.planned) { toast('Erst "Teams planen" ausführen.', 'error'); return; }
         // Zwei Plan-Sorten, EIN Lauf: 'reihe' arbeitet verschiedene Challenges
@@ -9067,6 +9929,32 @@
             : (n + ' SBC(s) werden eingetragen UND endgültig abgegeben.\n\n');
         if (!window.confirm(whatText +
                 'Die verbauten Karten sind danach weg. Fortfahren?' + quotaWarn)) return;
+        await executePlan(plan);
+    }
+    /**
+     * Der LAUF hinter der Freigabe (wortgleich aus onBatchRunClick gezogen,
+     * v5.10.0): eintragen -> abgeben -> bestaetigen -> naechste Instanz, mit
+     * allen Wachen (Bestaetigungs-Kette, Abbruch bei Unstimmigkeit,
+     * Kontingent-Zaehlung). onBatchRunClick behaelt die window.confirm-
+     * Rueckfrage; Vorlagen rufen executePlan nach ihrem eigenen 100%-Gate.
+     * Gibt {done, planned, stopped} zurueck - der Panel-Weg ignoriert das.
+     */
+    async function executePlan(plan) {
+        // Stand von EAs timesCompleted fuer dieses Set. Wird pro Runde EINMAL
+        // gelesen und dient der naechsten Runde als Basis.
+        let batchCountBase = null;
+        // Runden hintereinander, die EA nicht bestaetigt hat.
+        let unconfirmedStreak = 0;
+        // Letzter WIRKLICH gelesener Zaehlerstand - und der Stand, der vor der
+        // laufenden Runde galt. Damit ueberlebt eine Bestaetigung auch eine
+        // Runde, in der die Messung ausgefallen ist.
+        let lastKnownCount = null;
+        let lastKnownBefore = null;
+        // Takt vor der Bestaetigung. Startet gross genug, dass EA nicht direkt
+        // abweist, und waechst bei Ablehnung selbst.
+        let confirmGap = 900;
+        const isQueue = plan.mode === 'reihe';
+        const n = plan.planned;
         ui.batchRun.disabled = true;
         ui.batchPlan.disabled = true;
         ui.run.disabled = true;
@@ -9373,6 +10261,7 @@
             ui.batchPreview.innerHTML = html;
             if (ui.planResult && !html) ui.planResult.classList.add('sbc-opt-hidden');
         }
+        return { done: done, planned: n, stopped: stopped };
     }
     // ---- Helfer, die auch die Diagnose nutzt -------------------------------
     // findLiveChallenge/findSbcController werden vom aktiven, automatischen
@@ -9805,6 +10694,45 @@
      * zwischen den Challenges - ein Solver-Lauf pro Challenge, und die Seite
      * darf dabei nicht einfrieren.
      */
+    /**
+     * Der Plan-Kern der SBC-Reihe (wortgleich aus onQueuePlanClick gezogen,
+     * v5.10.0): die gewaehlten Challenges `chosen` mit der Basis-Konfiguration
+     * `baseCfg` planen. Vorlagen rufen ihn direkt.
+     */
+    async function planQueueRounds(chosen, baseCfg, tim) {
+        const st = beginQueue(STATE.pool, baseCfg);
+        for (let i = 0; i < chosen.length; i++) {
+            showProgress(i + 1, chosen.length,
+                'plane ' + chosen[i].name + '...',
+                (st.rounds.length ? st.rounds.length + ' fertig' : ''));
+            await sleep(0);          // VOR dem Rechnen - sonst kein Frame
+            const tr = Date.now();
+            queueRound(st, chosen[i]);
+            if (tim) tim.rounds.push(Date.now() - tr);
+        }
+        const plan = finishQueue(st);
+        plan.mode = 'reihe';
+        plan.cfg = baseCfg;
+        // Das Set der LISTE: STATE.sbc.setId kann beim vorigen Set haengen
+        // (kein Netzwerk-Request beim Wechsel) - geplant wurde aus
+        // queueItems, also gehoert deren Set an den Plan.
+        plan.setId = (queueLoadedSet != null) ? queueLoadedSet : STATE.sbc.setId;
+        plan.poolLoadIncomplete = STATE.loadIncomplete;
+        // In der Reihe traegt JEDE Runde ihr eigenes Ziel; die Plan-Felder
+        // targetOVR/slots bleiben leer, damit niemand sie versehentlich als
+        // gemeinsame Vorgabe liest.
+        plan.targetOVR = null;
+        plan.slots = null;
+        plan.usedChallengeIds = [];
+        plan.setName = (function () {
+            try {
+                const c = findSbcController();
+                const se = c && (c._set || c.set);
+                return (se && (se.name || se.setName)) || null;
+            } catch (e) { return null; }
+        })();
+        return plan;
+    }
     async function onQueuePlanClick() {
         const chosen = queueSelection(queueItems, queueChecked);
         if (!chosen.length) { toast('Keine SBC angehakt.', 'error'); return; }
@@ -9824,37 +10752,7 @@
             const tim = { total: 0, rounds: [] };
             const tAll = Date.now();
             const baseCfg = readConfig();
-            const st = beginQueue(STATE.pool, baseCfg);
-            for (let i = 0; i < chosen.length; i++) {
-                showProgress(i + 1, chosen.length,
-                    'plane ' + chosen[i].name + '...',
-                    (st.rounds.length ? st.rounds.length + ' fertig' : ''));
-                await sleep(0);          // VOR dem Rechnen - sonst kein Frame
-                const tr = Date.now();
-                queueRound(st, chosen[i]);
-                tim.rounds.push(Date.now() - tr);
-            }
-            const plan = finishQueue(st);
-            plan.mode = 'reihe';
-            plan.cfg = baseCfg;
-            // Das Set der LISTE: STATE.sbc.setId kann beim vorigen Set haengen
-            // (kein Netzwerk-Request beim Wechsel) - geplant wurde aus
-            // queueItems, also gehoert deren Set an den Plan.
-            plan.setId = (queueLoadedSet != null) ? queueLoadedSet : STATE.sbc.setId;
-            plan.poolLoadIncomplete = STATE.loadIncomplete;
-            // In der Reihe traegt JEDE Runde ihr eigenes Ziel; die Plan-Felder
-            // targetOVR/slots bleiben leer, damit niemand sie versehentlich als
-            // gemeinsame Vorgabe liest.
-            plan.targetOVR = null;
-            plan.slots = null;
-            plan.usedChallengeIds = [];
-            plan.setName = (function () {
-                try {
-                    const c = findSbcController();
-                    const se = c && (c._set || c.set);
-                    return (se && (se.name || se.setName)) || null;
-                } catch (e) { return null; }
-            })();
+            const plan = await planQueueRounds(chosen, baseCfg, tim);
             STATE.batch = plan;
             renderBatchPreview(plan);
             tim.total = Date.now() - tAll;

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.7.0
+// @version      5.8.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.7.0';
+    const VERSION = '5.8.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -101,6 +101,13 @@
         pool: [],                    // Array-Sicht auf poolById
         lastResult: null,
         loading: false,
+        // Der Auto-Load laeuft EINMAL pro Sitzung (Doppelstart-Schutz - das
+        // war die eigentliche Aufgabe der alten pool.length-Wache).
+        autoLoadTried: false,
+        // Ein VOLLSTAENDIGER Lade-Durchlauf (Verein+Storage+Unassigned bzw.
+        // Cache+Kleinlisten) ist fertig. Ein passiv mitgelesener Pool setzt
+        // das nie - er hat keinen Storage.
+        poolFullLoadDone: false,
         servicesHooked: false,
         cancelLoad: false,
         locksSkipReported: false,    // schon einmal reportError() fuer einen uebersprungenen Lock-Key gemeldet? (verhindert Spam bei vielen korrupten Keys)
@@ -2759,6 +2766,10 @@
         mergeIntoPool(unassigned);
         mergeIntoPool(storage); // Storage zuletzt: Storage-Flag gewinnt beim Merge
         adoptClubHarvest();
+        // Vollstaendig heisst: der Durchlauf lief bis zum Ende. Die
+        // Unvollstaendig-Warnung (loadIncomplete) bleibt davon unberuehrt -
+        // sie meldet Luecken IM Durchlauf, das Flag meldet, DASS einer lief.
+        if (!STATE.cancelLoad) STATE.poolFullLoadDone = true;
         log('Pool geladen:', STATE.pool.length, 'Spieler (Storage:', storage.length,
             ', Unassigned:', unassigned.length, ')' + (STATE.cancelLoad ? ' [abgebrochen]' : ''));
         if (STATE.loadIncomplete || (!storage.length && !STATE.cancelLoad)) {
@@ -7071,6 +7082,14 @@
                 setChallengesCached: !!STATE.lastSetChallenges
             },
             poolSize: STATE.pool.length,
+            // Woher stammt der Pool? Live war poolSize 8165 und trotzdem war
+            // nichts geladen - clubLoad:null + poolCacheRead:null waren die
+            // einzigen Indizien. Jetzt steht es direkt da.
+            poolMeta: {
+                fullLoadDone: STATE.poolFullLoadDone,
+                autoLoadTried: STATE.autoLoadTried,
+                storageCards: STATE.pool.filter(function (p) { return p.isStorage; }).length
+            },
             // Verteilung der rareflags im Pool - zum Verifizieren der
             // Gold/Special-Klassifizierung
             // GEKUERZT (der Report muss kopierbar bleiben): das volle Histogramm
@@ -7206,7 +7225,17 @@
     // Hintergrund-Ladung beim App-Start (gleiche Mechanik wie der Button,
     // nur ohne Klick). Fehler sind still - der Button bleibt der Notausgang.
     async function autoLoadPool() {
-        if (STATE.loading || STATE.pool.length) return;
+        // NICHT ueber STATE.pool.length wachen: der Pool kann beim Start schon
+        // PASSIV gefuellt sein (PaleTools' SmartBuilder laedt den Verein, das
+        // Mitlesen sammelt ein - live 8165 Karten in den 2,5s Startverzoegerung).
+        // "Irgendwelche Karten da" hiess dann "fertig geladen", und Storage +
+        // Unassigned wurden NIE geholt: null Storage-Specials, der Solver
+        // griff regelkonform zur Vereins-TOTW. mergeIntoPool dedupliziert per
+        // Karten-Id - ueber einen passiv gefuellten Pool zu laden ist gefahrlos.
+        // Der EINMAL-Schutz (autoLoadTried) sitzt am Aufrufer im Boot-Takt -
+        // er setzt das Flag, BEVOR er hierher kommt. Ein zweites Gate darauf
+        // wuerde den Auto-Load komplett lahmlegen.
+        if (STATE.loading || STATE.poolFullLoadDone) return;
         STATE.loading = true;
         if (ui.load) ui.load.textContent = 'Abbrechen';
         setStatus('lade Spieler automatisch...');
@@ -7219,6 +7248,8 @@
             if (cache.used) {
                 setStatus('Verein aus Cache - lade Storage...');
                 await loadPoolSmallLists();
+                // Cache-Verein + frische Kleinlisten = vollstaendiger Pool.
+                STATE.poolFullLoadDone = true;
                 refreshSbcInfoUI();
                 renderAnchorOptions();
                 setStatus('Pool bereit (' + STATE.pool.length + ', Verein aus Cache)');
@@ -7341,6 +7372,8 @@
             toast('Pool leer. Bitte zuerst "Spieler laden".', 'error');
             return;
         }
+        const passivRun = passivePoolWarning();
+        if (passivRun) toast(passivRun, 'warn');
         // Scan abgeschnitten, aber ETWAS erkannt: weitermachen (kein Abbruch),
         // aber sichtbar machen, dass die Vorgaben unvollstaendig sein koennten.
         if (anyDeepScanTruncated()) {
@@ -8528,6 +8561,8 @@
         }
         const tooSmallBatch = poolTooSmallReason(STATE.sbc.formationSlots || 11);
         if (tooSmallBatch) { toast(tooSmallBatch, 'error'); return; }
+        const passivBatch = passivePoolWarning();
+        if (passivBatch) toast(passivBatch, 'warn');
         // Analog zur Warnung in onRunClick (:4509): der Batch darf trotzdem
         // planen und abgeben (Rasmus entscheidet bei der einen Freigabe,
         // CLAUDE.md "Batch darf abgeben") - nur informieren, nicht blockieren.
@@ -9668,6 +9703,20 @@
         return null;
     }
     /**
+     * Warnung (kein Abbruch), wenn der Pool nur PASSIV zusammengelesen ist:
+     * dann fehlen Storage und Unassigned, die Storage-Zahlen im Panel stehen
+     * auf 0, und der Solver greift bei Gruppe-83-Vorgaben regelkonform zur
+     * Vereins-TOTW - live passiert, ohne dass irgendetwas rot war.
+     */
+    function passivePoolWarning() {
+        if (STATE.poolFullLoadDone || !STATE.pool.length) return null;
+        const nStorage = STATE.pool.filter(function (p) { return p.isStorage; }).length;
+        return 'ACHTUNG: Der Pool (' + STATE.pool.length + ' Karten, davon ' + nStorage +
+            ' Storage) ist nur passiv mitgelesen - Storage/Unassigned fehlen ' +
+            'wahrscheinlich. Bitte "Spieler laden" drücken, sonst plant der ' +
+            'Solver ohne deine Storage-Specials.';
+    }
+    /**
      * Die angehakten SBCs planen. Schrittweise, mit Rueckgabe an den Browser
      * zwischen den Challenges - ein Solver-Lauf pro Challenge, und die Seite
      * darf dabei nicht einfrieren.
@@ -9678,6 +9727,8 @@
         const tooSmall = poolTooSmallReason(Math.max.apply(null,
             chosen.map(function (c) { return c.slots || 11; })));
         if (tooSmall) { toast(tooSmall, 'error'); return; }
+        const passiv = passivePoolWarning();
+        if (passiv) toast(passiv, 'warn');
         if (STATE.loadIncomplete) {
             toast('ACHTUNG: Der Pool war beim Planen unvollständig geladen (' + STATE.pool.length +
                 ' Karten) - der Plan kann auf fehlenden Karten beruhen.', 'warn');
@@ -11295,7 +11346,14 @@
         // "Spieler laden" ist nur noch für manuelle Aktualisierung nötig.
         setInterval(function () {
             try {
-                if (STATE.autoLoadTried || STATE.loading || STATE.pool.length) return;
+                // KEINE pool.length-Wache mehr: der Pool kann beim Start schon
+                // PASSIV gefuellt sein (PaleTools' SmartBuilder laedt den
+                // Verein, unser Mitlesen sammelt ein - live 8165 Karten). Der
+                // Takt hielt das fuer "fertig" und hat den Auto-Load NIE
+                // gestartet: kein Cache-Read, kein Storage, null
+                // Storage-Specials. Der Einmal-Schutz ist autoLoadTried, die
+                // Fertig-Auskunft ist poolFullLoadDone - beides explizit.
+                if (STATE.autoLoadTried || STATE.loading || STATE.poolFullLoadDone) return;
                 if (!sessionReady() || !ui.load) return;
                 STATE.autoLoadTried = true;
                 setTimeout(autoLoadPool, 2500); // App kurz ankommen lassen

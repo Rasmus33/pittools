@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.11.5
+// @version      5.11.6
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.11.5';
+    const VERSION = '5.11.6';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -11889,10 +11889,9 @@
                         (spec.id === 'abstossen' ? ' danger' : '');
                     b2.textContent = 'Alle ' + group.count + ' (' + spec.tile + ')';
                     b2.title = spec.hint;
-                    b2.addEventListener('click', function (ev) {
-                        try { ev.stopPropagation(); ev.preventDefault(); } catch (e) {}
-                        openAllForPack(String(group.id), null, spec.id);
-                    });
+                    wireTileTap(b2, (function (gid, mode) {
+                        return function () { openAllForPack(gid, null, mode); };
+                    })(String(group.id), spec.id));
                     own.appendChild(b2);
                 }
                 try {
@@ -11930,6 +11929,40 @@
                     : 'kein Kachel-Titel passte zu einem Pack-Namen');
         }
         mergePackScan({ tileScan: scan });
+    }
+    /**
+     * Klick UND Touch fuer Knoepfe, die IN EAs DOM haengen. Live (28.08.,
+     * Pixel): die Kachel-Knoepfe hoerten nur auf 'click' - EAs Touch-Schicht
+     * in der Store-Kachel schluckt den Tap (preventDefault), der Browser
+     * synthetisiert kein click, der Handler feuerte nie. Im eigenen Panel
+     * reicht click; hier braucht es touchend dazu. Wisch-Erkennung (>12px =
+     * Scrollen) und 700ms-Riegel gegen Doppel-Ausloesung, falls click und
+     * touchend BEIDE ankommen - Abstossen ist unumkehrbar.
+     */
+    function wireTileTap(btn, action) {
+        let letzter = 0;
+        let t0x = null, t0y = null;
+        function run(ev) {
+            try { ev.stopPropagation(); ev.preventDefault(); } catch (e) {}
+            const jetzt = Date.now();
+            if (jetzt - letzter < 700) return;
+            letzter = jetzt;
+            action();
+        }
+        btn.addEventListener('touchstart', function (ev) {
+            const t = ev.touches && ev.touches[0];
+            t0x = t ? t.clientX : null;
+            t0y = t ? t.clientY : null;
+        }, { passive: true });
+        btn.addEventListener('touchend', function (ev) {
+            const t = ev.changedTouches && ev.changedTouches[0];
+            if (t && t0x != null &&
+                (Math.abs(t.clientX - t0x) > 12 || Math.abs(t.clientY - t0y) > 12)) {
+                return;                              // das war Scrollen
+            }
+            run(ev);
+        });
+        btn.addEventListener('click', run);
     }
     async function onPackRefreshClick() {
         if (STATE.packOpenBusy) return;

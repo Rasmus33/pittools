@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.11.6
+// @version      5.11.7
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.11.6';
+    const VERSION = '5.11.7';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -10983,6 +10983,23 @@
         if (parentText != null && norm(parentText) === t) return false;
         return true;
     }
+    /**
+     * Steckt das Element in EAs Pack-DETAIL-Ansicht? Deren Fusskeil traegt
+     * einen eigenen "Open"-Span ("Open / Claim your Pack") - dekoriert man
+     * den, landet die Knopfreihe in der Detail-Ansicht und bleibt beim
+     * Schliessen als Geist stehen (Screenshot 28.08.: zwei "Alle 8"-Reihen
+     * ohne Pack am unteren Rand). Nur die KACHEL-Knoepfe bekommen Reihen.
+     */
+    function inPackDetailsView(el) {
+        let cur = el, hops = 0;
+        while (cur && hops++ < 12) {
+            if (String(cur.className || '').indexOf('ut-store-pack-details-view') > -1) {
+                return true;
+            }
+            cur = cur.parentElement;
+        }
+        return false;
+    }
     function packOpenButtons() {
         const out = [];
         try {
@@ -10996,6 +11013,7 @@
                 const el = els[i];
                 if (!isPackOpenLabel(el.textContent,
                         el.parentElement ? el.parentElement.textContent : null)) continue;
+                if (inPackDetailsView(el)) continue;
                 out.push(el);
             }
         } catch (e) {}
@@ -11790,6 +11808,16 @@
      * wenn EA neu rendert, kommt der Knopf von selbst wieder.
      */
     function injectPackTileButtons() {
+        // Geister aufraeumen: Reihen, die (aus aelteren Versionen) in
+        // einer Detail-Ansicht haengen, fliegen raus - bevor neue kommen.
+        try {
+            const rows = document.querySelectorAll('.sbc-opt-tilebtn-row');
+            for (let k = 0; k < rows.length; k++) {
+                if (inPackDetailsView(rows[k]) && rows[k].parentElement) {
+                    rows[k].parentElement.removeChild(rows[k]);
+                }
+            }
+        } catch (e) {}
         const btns = packOpenButtons();
         // Die Diagnose sagt in EINEM Blick, woran es haengt - vorher war
         // "kein Knopf da" nicht von "Titel nicht gelesen" zu unterscheiden.
@@ -11882,6 +11910,7 @@
                 const own = document.createElement('div');
                 own.className = 'sbc-opt-tilebtn-row';
                 own.setAttribute('data-sbc-opt-pack', String(group.id));
+                own.setAttribute('data-sbc-opt-tile', '1');
                 for (const spec of PACK_MODES) {
                     const b2 = document.createElement('button');
                     b2.type = 'button';
@@ -11987,6 +12016,32 @@
      * unumkehrbar, ein zweiter Versuch nach einem unklaren Fehler waere ein
      * zweites unkontrolliertes Risiko.
      */
+    /**
+     * Karten nach dem Oeffnen einsammeln - mit Wiederholung bei Drossel-
+     * Status. Live (28.08., Pixel): das Einsammeln bekam HTTP 503, weil der
+     * Pool-Auto-Load parallel lief; das Pack war da schon offen, der Abbruch
+     * liess die Karten nur unassigned liegen. Einsammeln ist ein LESE-Schritt
+     * und darf wiederholt werden (3 Versuche, 3s/6s Abstand). Eine LOGISCHE
+     * Ablehnung (4xx ausser 429) wird durch Warten nicht richtiger - kein
+     * Retry. Rueckgabe { resp, err }: err nur, wenn der letzte Versuch WARF.
+     */
+    async function collectUnassignedWithRetry(g) {
+        let itemsResp = null, collectErr = null;
+        for (let versuch = 0; versuch < 3; versuch++) {
+            if (versuch) {
+                setPackStatus('EA beschäftigt - Karten einsammeln, Versuch ' +
+                    (versuch + 1) + '/3 ...');
+                await sleep(versuch === 1 ? 3000 : 6000);
+            }
+            collectErr = null;
+            try { itemsResp = await obsPromise(g.item.requestUnassignedItems()); }
+            catch (e) { collectErr = e; itemsResp = null; continue; }
+            if (responseOk(itemsResp)) break;
+            const st = Number(itemsResp && itemsResp.status);
+            if (st !== 503 && st !== 512 && st !== 521 && st !== 429) break;
+        }
+        return { resp: itemsResp, err: collectErr };
+    }
     async function runPackTestOpen(groupId, mode) {
         const g = resolvePackGlobals();
         if (!g.ok) {
@@ -12028,12 +12083,12 @@
         mergePackScan({ runsCount: ((STATE.diag.packScan && STATE.diag.packScan.runsCount) || 0) + 1 });
         try { g.repoItem.setDirty(g.ItemPile.PURCHASED); }
         catch (e) { reportError('Pack-Testlauf: setDirty fehlgeschlagen', e); }
-        let itemsResp;
-        try { itemsResp = await obsPromise(g.item.requestUnassignedItems()); }
-        catch (e) {
-            reportError('Pack-Testlauf: requestUnassignedItems fehlgeschlagen', e);
-            mergePackScan({ errorForm: { step: 'collect', message: String(e && e.message || e) } });
-            return { ok: false, reason: 'Karten einsammeln fehlgeschlagen: ' + (e.message || e) + ' Karten bleiben unassigned.' };
+        const collect = await collectUnassignedWithRetry(g);
+        const itemsResp = collect.resp;
+        if (collect.err) {
+            reportError('Pack-Testlauf: requestUnassignedItems fehlgeschlagen', collect.err);
+            mergePackScan({ errorForm: { step: 'collect', message: String(collect.err && collect.err.message || collect.err) } });
+            return { ok: false, reason: 'Karten einsammeln fehlgeschlagen: ' + (collect.err.message || collect.err) + ' Karten bleiben unassigned.' };
         }
         // Ein AUFGELOESTES {success:false} ist kein Throw - ohne diesen Check
         // wuerde responseItems() auf dem abgelehnten Payload einfach [] liefern
@@ -12364,6 +12419,14 @@
      */
     async function openAllForPack(groupId, requestedCount, modeArg) {
         if (STATE.packOpenBusy) return;
+        // Nicht GEGEN den laufenden Pool-Load anrennen: zwei parallele
+        // Request-Stroeme provozieren EAs 503 (live 28.08.: Einsammeln bekam
+        // 503, waehrend der Club noch lud). Kurz warten, bis er durch ist.
+        if (STATE.loading) {
+            toast('Der Pool lädt gerade - der Pack-Lauf startet, sobald das Laden fertig ist.', 'warn');
+            setPackStatus('wartet auf den Pool-Load ...');
+            for (let w = 0; w < 120 && STATE.loading; w++) await sleep(1000);
+        }
         const group = (STATE.packGroups || []).find(function (g) { return String(g.id) === String(groupId); });
         const available = group ? group.count : 0;
         const plannedTotal = Math.max(0, Math.min(requestedCount == null ? available : requestedCount, available));

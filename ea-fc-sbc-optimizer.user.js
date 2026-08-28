@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.11.17
+// @version      5.11.18
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.11.17';
+    const VERSION = '5.11.18';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -9557,6 +9557,13 @@
         vorlagenRun.minimized = true;
         if (ui.vorlagenOverlay) ui.vorlagenOverlay.style.display = 'none';
         if (ui.vlTopbar) ui.vlTopbar.style.display = 'flex';
+        // Auch das PANEL weg: am Handy verdeckt es die Challenge-Zeilen,
+        // und EAs Zeilen-Navigation stirbt unter jeder Abdeckung (Log
+        // 28.08.: top:'#sbc-opt-status'). Gemerkt und am Lauf-Ende zurueck.
+        if (ui.panel && ui.panel.classList.contains('open')) {
+            vorlagenRun.panelWarOffen = true;
+            ui.panel.classList.remove('open');
+        }
     }
     function vorlagenRestore() {
         if (vorlagenRun) vorlagenRun.minimized = false;
@@ -9564,6 +9571,11 @@
         if (ui.vorlagenOverlay) {
             renderVorlagen();
             ui.vorlagenOverlay.style.display = 'block';
+        }
+        if (vorlagenRun && vorlagenRun.panelWarOffen && vorlagenRun.fertig &&
+            ui.panel) {
+            ui.panel.classList.add('open');
+            vorlagenRun.panelWarOffen = false;
         }
     }
     /**
@@ -10607,6 +10619,12 @@
      * Gibt {done, planned, stopped} zurueck - der Panel-Weg ignoriert das.
      */
     async function executePlan(plan) {
+        // Das offene Panel VERDECKT am Handy die Challenge-Zeilen - und EAs
+        // Zeilen-Navigation prueft die Koordinaten (Log 28.08.: covered:true,
+        // top:'#sbc-opt-status'; Kacheln ueberleben das, Zeilen nicht).
+        // Fuer die Dauer des Laufs zu, danach wieder wie vorher.
+        const panelWarOffen = !!(ui.panel && ui.panel.classList.contains('open'));
+        if (panelWarOffen) ui.panel.classList.remove('open');
         // Stand von EAs timesCompleted fuer dieses Set. Wird pro Runde EINMAL
         // gelesen und dient der naechsten Runde als Basis.
         let batchCountBase = null;
@@ -10935,6 +10953,11 @@
             }
             ui.batchPreview.innerHTML = html;
             if (ui.planResult && !html) ui.planResult.classList.add('sbc-opt-hidden');
+            // Panel wiederherstellen - ausser ein Vorlagen-Lauf ist noch
+            // aktiv (der stellt es an SEINEM Ende wieder her).
+            if (panelWarOffen && !(vorlagenRun && !vorlagenRun.fertig)) {
+                ui.panel.classList.add('open');
+            }
         }
         return { done: done, planned: n, stopped: stopped };
     }

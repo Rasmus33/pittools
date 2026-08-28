@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.10.0
+// @version      5.11.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.10.0';
+    const VERSION = '5.11.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -5529,9 +5529,26 @@
         }
         .sbc-opt-vl-pausekopf { font-weight: 700; margin-bottom: 8px;
             color: var(--pt-warn); line-height: 1.4; }
+        /* Minimierter Vorlagen-Lauf: schlanke Leiste OBEN, Spiel sichtbar. */
+        #sbc-opt-vl-topbar {
+            position: fixed; top: 8px; left: 50%; transform: translateX(-50%);
+            z-index: 999999; display: none; align-items: center; gap: 8px;
+            background: var(--pt-bg); border: 1px solid var(--pt-line-2);
+            border-radius: var(--pt-r-m); padding: 6px 8px 6px 12px;
+            max-width: calc(100vw - 12px); box-shadow: var(--pt-shadow);
+            font-family: var(--pt-font); font-size: 12px; color: var(--pt-text);
+        }
+        #sbc-opt-vl-topbar .t {
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            max-width: 52vw;
+        }
+        #sbc-opt-vl-topbar .sbc-opt-btn {
+            width: auto; flex: 0 0 auto; margin-top: 0;
+            padding: 6px 10px; min-height: 34px;
+        }
         #sbc-opt-progress {
             position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%);
-            z-index: 1000000; display: none;
+            z-index: 1000000; display: none; pointer-events: none;
             background: var(--pt-bg); color: var(--pt-text);
             border: 1px solid var(--pt-line-2);
             border-radius: var(--pt-r-l); box-shadow: 0 10px 50px rgba(0,0,0,.7);
@@ -5842,6 +5859,11 @@
                     <div class="sbc-opt-debug" id="sbc-opt-debug">API: – · SID: – · Services: –</div>
                 </div>
                 <button class="sbc-opt-btn ghost" id="sbc-opt-load">Spieler laden</button>
+                <!-- VORLAGEN (v5.10.0): gespeicherte Auto-Laeufe, eigene
+                     Vollbild-Oberflaeche. Prominent hier oben und BLAU
+                     (Rasmus: der Knopf war "unscheinbar ganz unten im
+                     niemandsland" und hob sich farblich nicht ab). -->
+                <button class="sbc-opt-btn blue" id="sbc-opt-vorlagen-btn">Vorlagen (Auto-Läufe) …</button>
                 <div class="sbc-opt-row" style="margin-bottom:0;">
                     <label class="sbc-opt-chiplabel">Min. Rating pro Spieler</label>
                     <div class="sbc-opt-chips" id="sbc-opt-minrating-chips"></div>
@@ -6065,10 +6087,6 @@
                     <button class="sbc-opt-btn danger" id="sbc-opt-pack-all">Alle öffnen</button>
                     <div id="sbc-opt-pack-result"></div>
                 </div>
-                <!-- VORLAGEN (v5.10.0): gespeicherte Auto-Laeufe. Eigene
-                     Vollbild-Oberflaeche - die Schrittlisten samt Profilen
-                     passen nicht ins Seiten-Panel. -->
-                <button class="sbc-opt-btn ghost" id="sbc-opt-vorlagen-btn" style="margin-top:10px;">Vorlagen (Auto-Läufe) …</button>
                 <button class="sbc-opt-btn ghost" id="sbc-opt-diag" style="margin-top:10px;">Diagnose in Konsole schreiben</button>
             </div>
         `;
@@ -6085,6 +6103,15 @@
         const vlOverlay = document.createElement('div');
         vlOverlay.id = 'sbc-opt-vorlagen';
         document.body.appendChild(vlOverlay);
+        // Schlanke Top-Leiste fuer den MINIMIERTEN Lauf: das Spiel bleibt
+        // sichtbar, oben stehen Fortschritt, Ansehen und Stopp (Rasmus:
+        // "das pittools overlay blockiert alles ... die Ausgabe nach oben").
+        const vlTopbar = document.createElement('div');
+        vlTopbar.id = 'sbc-opt-vl-topbar';
+        vlTopbar.innerHTML = '<span class="t"></span>' +
+            '<button class="sbc-opt-btn ghost" data-act="vl-zeigen">Ansehen</button>' +
+            '<button class="sbc-opt-btn danger" data-act="vl-abbruch">Stopp</button>';
+        document.body.appendChild(vlTopbar);
         ui = {
             progress: prog,
             progTitle: prog.querySelector('.p-title'),
@@ -6154,7 +6181,9 @@
             packAll: panel.querySelector('#sbc-opt-pack-all'),
             packResult: panel.querySelector('#sbc-opt-pack-result'),
             vorlagenBtn: panel.querySelector('#sbc-opt-vorlagen-btn'),
-            vorlagenOverlay: vlOverlay
+            vorlagenOverlay: vlOverlay,
+            vlTopbar: vlTopbar,
+            vlTopbarText: vlTopbar.querySelector('.t')
         };
         panel.querySelector('#sbc-opt-close').addEventListener('click', () => panel.classList.remove('open'));
         makeDraggable(panel, panel.querySelector('.sbc-opt-header'), 'sbcOptPanelPos', {
@@ -6215,6 +6244,12 @@
         // das Markup neu, ungesicherte Feldwerte waeren sonst weg.
         ui.vorlagenOverlay.addEventListener('input', onVorlagenInput);
         ui.vorlagenOverlay.addEventListener('change', onVorlagenInput);
+        ui.vlTopbar.addEventListener('click', function (ev) {
+            let el = ev.target;
+            while (el && el !== ui.vlTopbar &&
+                   !(el.dataset && el.dataset.act)) el = el.parentElement;
+            if (el && el.dataset && el.dataset.act) onVorlagenAction(el.dataset.act);
+        });
         ui.rarityPickFilter.addEventListener('input', renderRarityPickOptions);
         // Zustand der "Erweiterte Einstellungen" merken
         const adv = panel.querySelector('#sbc-opt-advanced');
@@ -7605,6 +7640,10 @@
     // titlePrefix generalisiert den Balken fuer den Pack-Opener-Loop (Ticket
     // #76) mit - Default 'SBC' haelt jeden bestehenden Aufrufer unveraendert.
     function showProgress(cur, total, step, doneText, titlePrefix) {
+        // Minimierter Vorlagen-Lauf: die Zeile gehoert nach OBEN in die
+        // Leiste, nicht in das zentrierte Popup mitten im Spiel.
+        if (vorlagenTopbarUpdate((titlePrefix || 'SBC') + ' ' + cur + ' von ' +
+                total + (step ? ' · ' + step : ''))) return;
         if (!ui.progress) return;
         ui.progress.classList.add('open');
         ui.progTitle.textContent = (titlePrefix || 'SBC') + ' ' + cur + ' von ' + total;
@@ -7614,6 +7653,7 @@
         ui.progDone.textContent = doneText || '';
     }
     function finishProgress(text, ok) {
+        if (vorlagenTopbarUpdate((ok ? 'Fertig: ' : 'Gestoppt: ') + (text || ''))) return;
         if (!ui.progress) return;
         ui.progTitle.textContent = ok ? 'Fertig' : 'Gestoppt';
         ui.progTitle.style.color = ok ? '#00e0b8' : '#ff6b6b';
@@ -7626,6 +7666,15 @@
                 ui.progTitle.style.color = '#00e0b8';
             }
         }, ok ? 2600 : 5000);
+    }
+    /**
+     * Fortschritts-Popup SOFORT schliessen. Noetig vor jeder Vorlagen-Pause:
+     * die Vorlagen-Pfade rufen showProgress ueber die Plan-Kerne, aber kein
+     * finishProgress - live stand "SBC 4 von 10" fuer immer ueber der
+     * Pause-Karte (Rasmus: "war in einem fehlerfall ewig da").
+     */
+    function hideProgress() {
+        if (ui.progress) ui.progress.classList.remove('open');
     }
     /** Belohnungs-Dialog wegräumen (EAs eigener Popup-Manager). */
     /**
@@ -8260,7 +8309,11 @@
             try {
                 const top = document.elementFromPoint(x, y);
                 if (top) {
-                    topCls = String(top.className || top.tagName || '').slice(0, 60);
+                    // Klasse, sonst id, sonst Tag: 'DIV' allein liess den
+                    // Verdecker im Log 27.08. anonym - mit id waere sofort
+                    // klar gewesen, dass es das eigene Overlay war.
+                    topCls = String(top.className ||
+                        (top.id ? '#' + top.id : '') || top.tagName || '').slice(0, 60);
                     covered = !(top === el || el.contains(top) || top.contains(el));
                 }
             } catch (e2) {}
@@ -9131,9 +9184,10 @@
         const idx = arg ? items.findIndex(function (v) { return v.id === arg; }) : -1;
         switch (cmd) {
         case 'vl-zu':
-            // Schliessen versteckt nur - ein laufender Lauf laeuft weiter und
-            // ist ueber den Panel-Knopf wieder erreichbar.
-            ui.vorlagenOverlay.style.display = 'none';
+            // Waehrend eines Laufs heisst Schliessen: minimieren (Top-Leiste
+            // bleibt) - sonst waere der Lauf unsichtbar und unstoppbar.
+            if (vorlagenRun && !vorlagenRun.fertig) vorlagenMinimize();
+            else ui.vorlagenOverlay.style.display = 'none';
             return;
         case 'vl-liste':
             if (vorlagenRun && vorlagenRun.fertig) vorlagenRun = null;
@@ -9208,12 +9262,19 @@
                 const r = vorlagenRun.pauseResolve;
                 vorlagenRun.pauseResolve = null;
                 vorlagenRun.pause = null;
+                // Weiter geht es minimiert - das Spiel soll sichtbar sein.
+                vorlagenMinimize();
                 r(arg);
             }
+            return;
+        case 'vl-zeigen':
+            // Aus der Top-Leiste in die volle Ansicht (Lauf laeuft weiter).
+            vorlagenRestore();
             return;
         case 'vl-abbruch':
             if (vorlagenRun && !vorlagenRun.fertig && !vorlagenRun.cancel) {
                 vorlagenRun.cancel = true;
+                // vorlagenLog aktualisiert auch die Top-Leiste.
                 vorlagenLog('Stopp angefordert - nach dem laufenden Schritt ist Schluss.', 'warn');
             }
             return;
@@ -9221,17 +9282,52 @@
     }
 
     // ---- Laeufer ----------------------------------------------------------
+    /**
+     * Minimierter Lauf: Overlay weg, Top-Leiste an - Rasmus will SEHEN, was
+     * die App macht. Nebeneffekt (Log 27.08.): das Vollbild-Overlay war das
+     * einzige beobachtete Element, das den Tap-Punkt der Challenge-Zeile
+     * verdeckte (covered:true, top:'DIV') - minimiert ist es auch kein
+     * Verdecker mehr.
+     */
+    function vorlagenMinimize() {
+        if (!vorlagenRun || vorlagenRun.fertig) return;
+        vorlagenRun.minimized = true;
+        if (ui.vorlagenOverlay) ui.vorlagenOverlay.style.display = 'none';
+        if (ui.vlTopbar) ui.vlTopbar.style.display = 'flex';
+    }
+    function vorlagenRestore() {
+        if (vorlagenRun) vorlagenRun.minimized = false;
+        if (ui.vlTopbar) ui.vlTopbar.style.display = 'none';
+        if (ui.vorlagenOverlay) {
+            renderVorlagen();
+            ui.vorlagenOverlay.style.display = 'block';
+        }
+    }
+    /**
+     * Fortschritt in die Top-Leiste statt in das zentrierte Popup - nur
+     * waehrend ein Lauf minimiert laeuft. true = uebernommen (das Popup
+     * bleibt zu), false = normaler Weg.
+     */
+    function vorlagenTopbarUpdate(text) {
+        if (!vorlagenRun || vorlagenRun.fertig || !vorlagenRun.minimized) return false;
+        if (ui.vlTopbarText) ui.vlTopbarText.textContent = String(text || '');
+        return true;
+    }
     function vorlagenLog(text, level) {
         if (!vorlagenRun) return;
         vorlagenRun.log.push({ html: escapeHtml(text), level: level || '' });
+        vorlagenTopbarUpdate(text);
         renderVorlagen();
     }
     /** Pause mit Knoepfen; loest mit der gewaehlten Aktion ('clean'|'all'|...) auf. */
     function vorlagenFrage(html, buttons) {
         return new Promise(function (resolve) {
+            // Eine Pause braucht die volle Ansicht: Fortschritts-Popup weg
+            // (sonst steht es fuer immer UEBER der Frage), Overlay zurueck.
+            hideProgress();
             vorlagenRun.pause = { html: html, buttons: buttons };
             vorlagenRun.pauseResolve = resolve;
-            renderVorlagen();
+            vorlagenRestore();
         });
     }
     async function startVorlage(v) {
@@ -9259,9 +9355,14 @@
                 u.day.used + '/' + QUOTA_DAY_LIMIT + ' heute.';
         } catch (e) {}
         vorlagenRun = { vorlage: v, log: [], pause: null, pauseResolve: null,
-                        cancel: false, fertig: false, quotaText: quotaText };
+                        cancel: false, fertig: false, minimized: false,
+                        quotaText: quotaText };
         vorlagenView = { mode: 'lauf', draft: null };
         renderVorlagen();
+        // Sofort minimieren: ab jetzt soll das SPIEL sichtbar sein, der
+        // Fortschritt laeuft oben in der Leiste mit.
+        vorlagenMinimize();
+        vorlagenTopbarUpdate('Vorlage „' + v.name + '“ läuft …');
         let abgegeben = 0, gestoppt = null;
         try {
             for (let si = 0; si < v.steps.length; si++) {
@@ -9283,6 +9384,8 @@
         vorlagenRun.fertig = true;
         vorlagenRun.pause = null;
         vorlagenRun.pauseResolve = null;
+        hideProgress();
+        vorlagenRestore();
         const fazit = abgegeben + ' SBC(s) abgegeben' + (gestoppt ? ' \u00b7 ' + gestoppt : '');
         vorlagenLog('Fertig: ' + fazit, gestoppt ? 'warn' : 'ok');
         const items = vorlagenLoad();
@@ -9329,6 +9432,7 @@
                 syncSbcWithOpenChallenge();
                 want = st.count;
                 plan = await planBatchRounds(want, readConfig(st.profil));
+                hideProgress();
             } else {
                 await loadQueueList(true, true, nav.sid);
                 if (String(queueLoadedSet) !== String(nav.sid) || queueLoadError) {
@@ -9346,6 +9450,7 @@
                 }
                 want = chosen.length;
                 plan = await planQueueRounds(chosen, readConfig(st.profil));
+                hideProgress();
             }
             const gate = vorlagenGate(plan, want);
             STATE.diag.vorlagenGate = { setName: st.setName, score: gate.pc.score,

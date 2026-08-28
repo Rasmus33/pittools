@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.11.1
+// @version      5.11.2
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.11.1';
+    const VERSION = '5.11.2';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -5849,6 +5849,13 @@
                 <span id="sbc-opt-close" style="cursor:pointer;">✕</span>
             </div>
             <div class="sbc-opt-body">
+                <!-- VORLAGEN: gespeicherte Auto-Laeufe, eigene Vollbild-
+                     Oberflaeche. GANZ oben und BLAU (Rasmus, 28.08.: "ganz
+                     oben waere sogar noch besser, also noch ueber ziel ovr
+                     ... einfach 'Vorlagen' reicht"). margin-top:0, damit der
+                     erste Knopf nicht an der Kopfzeile klebt-Abstand kommt
+                     sonst nur aus dem Button-Default. -->
+                <button class="sbc-opt-btn blue" id="sbc-opt-vorlagen-btn" style="margin-top:0;">Vorlagen …</button>
                 <div class="sbc-opt-info" id="sbc-opt-info">
                     Ziel-OVR: <b id="sbc-opt-target">–</b><br>
                     Vorgaben: <b id="sbc-opt-rarity">keine</b><br>
@@ -5859,11 +5866,6 @@
                     <div class="sbc-opt-debug" id="sbc-opt-debug">API: – · SID: – · Services: –</div>
                 </div>
                 <button class="sbc-opt-btn ghost" id="sbc-opt-load">Spieler laden</button>
-                <!-- VORLAGEN (v5.10.0): gespeicherte Auto-Laeufe, eigene
-                     Vollbild-Oberflaeche. Prominent hier oben und BLAU
-                     (Rasmus: der Knopf war "unscheinbar ganz unten im
-                     niemandsland" und hob sich farblich nicht ab). -->
-                <button class="sbc-opt-btn blue" id="sbc-opt-vorlagen-btn">Vorlagen (Auto-Läufe) …</button>
                 <div class="sbc-opt-row" style="margin-bottom:0;">
                     <label class="sbc-opt-chiplabel">Min. Rating pro Spieler</label>
                     <div class="sbc-opt-chips" id="sbc-opt-minrating-chips"></div>

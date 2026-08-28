@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.11.20
+// @version      5.11.21
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.11.20';
+    const VERSION = '5.11.21';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -8763,6 +8763,24 @@
             : '';
         const popStart = clickRequirementsPopupStart(wantName);
         if (popStart.ok) return popStart;
+        // BEWEIS-SAMMLUNG (28.08.): elementFromPoint sah ein
+        // 'ut-sbc-requirements-popup' am Tap-Punkt, der Selektor fand
+        // Millisekunden vorher NICHTS. Der naechste Report soll zeigen,
+        // welche Klassen wirklich im DOM stehen.
+        let popSuche = null;
+        try {
+            const alle = document.querySelectorAll(
+                '[class*="requirements"], [class*="popup"], [class*="details-view"]');
+            const klassen = [];
+            for (let i = 0; i < alle.length && klassen.length < 8; i++) {
+                const c = String(alle[i].className || alle[i].tagName || '').slice(0, 60);
+                if (klassen.indexOf(c) < 0) klassen.push(c);
+            }
+            popSuche = { warum: popStart.why, want: wantName.slice(0, 40),
+                         kandidaten: alle.length, klassen: klassen };
+        } catch (e) {
+            popSuche = { warum: popStart.why, fehler: String((e && e.message) || e) };
+        }
         let rows = [];
         try {
             rows = Array.prototype.slice.call(document.querySelectorAll(
@@ -8802,17 +8820,19 @@
                 if (j >= 0) {
                     return { ok: clickLike(cand[j]),
                              why: 'Eintritts-Knopf IN der Zeile geklickt (schmale Ansicht)',
-                             label: infos2[j].text.slice(0, 40) };
+                             label: infos2[j].text.slice(0, 40),
+                             popSuche: popSuche };
                 }
             }
             return { ok: false, why: 'kein Eintritts-Knopf gefunden',
                      inRowTried: !!rowEl,
+                     popSuche: popSuche,
                      seen: info.filter(function (x) { return !x.inRow; })
                                .slice(0, 8)
                                .map(function (x) { return x.text.slice(0, 30); }) };
         }
         return { ok: clickLike(els[idx]), why: 'Eintritts-Knopf geklickt',
-                 label: info[idx].text.slice(0, 40) };
+                 label: info[idx].text.slice(0, 40), popSuche: popSuche };
     }
     // Eigene, pur testbare Bedingung statt inline in openNextInstance - der
     // v4.36.0-Live-Vorfall (App blieb im Squad-View haengen) war bisher nur per

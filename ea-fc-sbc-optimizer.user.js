@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.11.14
+// @version      5.11.15
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.11.14';
+    const VERSION = '5.11.15';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -9179,7 +9179,10 @@
     function renderVorlagen() {
         if (!ui.vorlagenOverlay) return;
         let inner;
-        if (vorlagenView.mode === 'transfer') {
+        if (vorlagenView.mode === 'vorschlaege') {
+            inner = vorlagenVorschlaegeHtml(vorlagenView.items || [],
+                vorlagenView.genommen || []);
+        } else if (vorlagenView.mode === 'transfer') {
             inner = vorlagenTransferHtml(vorlagenView.richtung, vorlagenView.text);
         } else if (vorlagenView.mode === 'editor' && vorlagenView.draft) {
             inner = vorlagenEditorHtml(vorlagenView.draft, listHubSetTitles());
@@ -9361,6 +9364,39 @@
                 items[k].anzahl = n;
                 vorlagenSave(items);
                 renderVorlagen();
+            })();
+            return;
+        case 'vl-vorschlaege':
+            (function () {
+                toast('Lade Vorschl\u00e4ge \u2026', '');
+                _origFetch(VORSCHLAEGE_URL + '?_=' + Date.now(), { cache: 'no-store' })
+                    .then(function (resp) {
+                        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                        return resp.text();
+                    })
+                    .then(function (text) {
+                        const r = vorlagenImportParse(text);
+                        if (r.fehler) { toast('Vorschl\u00e4ge: ' + r.fehler, 'error'); return; }
+                        vorlagenView = { mode: 'vorschlaege', items: r.items,
+                                         genommen: [], draft: null };
+                        renderVorlagen();
+                    })
+                    .catch(function (e) {
+                        toast('Vorschl\u00e4ge laden fehlgeschlagen: ' +
+                            ((e && e.message) || e), 'error');
+                    });
+            })();
+            return;
+        case 'vl-uebernehmen':
+            (function () {
+                const i = Number(arg);
+                const quelle = (vorlagenView.items || [])[i];
+                if (!quelle || (vorlagenView.genommen || []).indexOf(i) > -1) return;
+                items.push(quelle);
+                vorlagenSave(items);
+                vorlagenView.genommen = (vorlagenView.genommen || []).concat([i]);
+                renderVorlagen();
+                toast('\u201e' + quelle.name + '\u201c \u00fcbernommen.', 'ok');
             })();
             return;
         case 'vl-export':
@@ -9912,6 +9948,9 @@
     // (Rasmus: "nur wenn 100% confidence raus kommt sollte das automatisch
     // passieren ... sonst warning ... ggf. mit detailseite").
     const VORLAGEN_KEY = 'sbcOptVorlagen';
+    // Vorschlaege liegen als zweite Datei im OEFFENTLICHEN Repo - derselbe
+    // Auslieferungsweg wie das Script (publish.sh kopiert sie mit).
+    const VORSCHLAEGE_URL = 'https://raw.githubusercontent.com/Rasmus33/pittools/main/vorlagen-vorschlaege.json';
     const VORLAGEN_MAX_COUNT = 20;   // Wiederholungen pro Schritt (Kappe)
     const VORLAGEN_TYP_LABEL = { batch: 'Mehrfach', reihe: 'Set komplett' };
     const RARITY_MODE_LABEL = { vereinTotw: 'Schutz Vereins-TOTW',
@@ -10151,7 +10190,28 @@
         h += '<button class="sbc-opt-btn plan" data-act="vl-neu">+ Neue Vorlage</button>';
         h += '<div class="sbc-opt-vl-tools">' +
             '<button class="sbc-opt-btn ghost" data-act="vl-export">Exportieren</button>' +
-            '<button class="sbc-opt-btn ghost" data-act="vl-import">Importieren</button></div>';
+            '<button class="sbc-opt-btn ghost" data-act="vl-import">Importieren</button>' +
+            '<button class="sbc-opt-btn ghost" data-act="vl-vorschlaege">Vorschl\u00e4ge laden</button></div>';
+        return h;
+    }
+    /** Vorschlaege aus dem oeffentlichen Repo - einzeln uebernehmbar. */
+    function vorlagenVorschlaegeHtml(items, genommen) {
+        let h = vorlagenHeaderHtml('Vorschl\u00e4ge');
+        if (!items.length) {
+            h += '<div class="sbc-opt-vl-leer">Keine Vorschl\u00e4ge gefunden.</div>';
+        }
+        items.forEach(function (v, i) {
+            const schon = genommen.indexOf(i) > -1;
+            h += '<div class="sbc-opt-vl-card">' +
+                '<div class="sbc-opt-vl-cardkopf"><b>' + escapeHtml(v.name) + '</b>' +
+                '<button class="sbc-opt-btn primary sbc-opt-vl-start" data-act="vl-uebernehmen:' + i + '"' +
+                (schon ? ' disabled' : '') + '>' +
+                (schon ? '\u2713 \u00fcbernommen' : '\u00dcbernehmen') + '</button></div>' +
+                '<div class="sbc-opt-vl-sum">' + escapeHtml(vorlageSummary(v)) + '</div>' +
+                '</div>';
+        });
+        h += '<div class="sbc-opt-vl-tools">' +
+            '<button class="sbc-opt-btn ghost" data-act="vl-liste">Zur\u00fcck</button></div>';
         return h;
     }
     /** Export-/Import-Ansicht: ein Textfeld mit JSON (PC <-> Handy). */

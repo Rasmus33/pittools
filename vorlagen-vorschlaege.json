@@ -1,0 +1,33 @@
+{
+  "v": 1,
+  "items": [
+    {
+      "name": "Täglicher 85er-Grind",
+      "steps": [
+        { "type": "batch", "setName": "10x 85+ Upgrade", "count": 10, "profil": {} }
+      ],
+      "anzahlChips": [5, 10, 20]
+    },
+    {
+      "name": "FUTTIES Picks",
+      "steps": [
+        { "type": "batch", "setName": "1 of 4 FUTTIES Player Pick", "count": 10, "profil": {} }
+      ],
+      "anzahlChips": [3, 5, 10]
+    },
+    {
+      "name": "87er komplett",
+      "steps": [
+        { "type": "reihe", "setName": "7x 87+ Upgrade", "count": 1, "profil": {} }
+      ],
+      "anzahlChips": [1, 2, 5]
+    },
+    {
+      "name": "Provisions",
+      "steps": [
+        { "type": "batch", "setName": "Repeatable FUTTIES Provisions Upgrade", "count": 5, "profil": {} }
+      ],
+      "anzahlChips": [3, 5, 10]
+    }
+  ]
+}

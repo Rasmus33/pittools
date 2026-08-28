@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.11.9
+// @version      5.11.10
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.11.9';
+    const VERSION = '5.11.10';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -6986,6 +6986,12 @@
             // (lastAllRun) - beantwortet die vier offenen Mechanik-Fragen aus
             // docs/roadmap/vision/features/pack-opener.md (LEARNINGS §46).
             packScan: STATE.diag.packScan || null,
+            // Jede vorhandene Kachel-Knopfreihe mit Heimat und Titel-Sicht -
+            // fuer den Geister-Fall (zwei Reparatur-Anlaeufe ueberlebt).
+            packRows: (function () {
+                try { return packRowsScan(); }
+                catch (e) { return { error: String((e && e.message) || e) }; }
+            })(),
             // EAs Antwort auf die letzte Abgabe. Ohne dieses Feld war der
             // Beweis nur zufaellig im challengeResponseSample zu sehen.
             lastAward: STATE.diag.lastAward || null,
@@ -11832,7 +11838,17 @@
                         if (hit) { g = hit; break; }
                     }
                 }
-                if (g && String(g.id) === String(wantId)) continue;
+                if (g && String(g.id) === String(wantId)) {
+                    // Gesund - aber stimmt die ANZAHL noch? Die Reihe wird
+                    // nur nach eigenen Pack-Laeufen neu gebaut; kommen Packs
+                    // per SBC-Belohnung dazu, steht sonst dauerhaft die alte
+                    // Zahl da (live: Geist mit "Alle 8", kein Pack hat 8).
+                    let text0 = '';
+                    try { text0 = String((row.children[0] || {}).textContent || ''); }
+                    catch (e2) {}
+                    if (text0.indexOf('Alle ' + g.count + ' ') > -1) continue;
+                    // veraltete Zahl -> neu bauen (faellt durch zum Abraeumen)
+                }
                 const home = row.parentElement;
                 if (!home) continue;
                 try {
@@ -11846,6 +11862,48 @@
                 home.removeChild(row);
             }
         } catch (e) {}
+    }
+    /**
+     * Bestandsaufnahme aller Knopfreihen fuer den Report: WO haengt jede
+     * Reihe (Eltern-Klassen-Kette), was sieht die Titel-Pruefung dort, und
+     * wo steht sie auf dem Schirm. Gebaut fuer den Geist unten rechts, der
+     * zwei Reparatur-Anlaeufe ueberlebt hat - die naechste Runde soll auf
+     * Beweisen stehen, nicht auf der dritten Vermutung.
+     */
+    function packRowsScan() {
+        const out = [];
+        try {
+            const rows = document.querySelectorAll('.sbc-opt-tilebtn-row');
+            for (let k = 0; k < rows.length && out.length < 10; k++) {
+                const row = rows[k];
+                const eintrag = {
+                    text: '', packId: row.getAttribute('data-sbc-opt-pack'),
+                    kette: [], titelKandidaten: [], rect: null
+                };
+                try { eintrag.text = String((row.children[0] || {}).textContent || '').slice(0, 40); }
+                catch (e) {}
+                try {
+                    let cur = row.parentElement, hops = 0;
+                    while (cur && hops++ < 6) {
+                        eintrag.kette.push(String(cur.className || cur.tagName || '?').slice(0, 60));
+                        cur = cur.parentElement;
+                    }
+                } catch (e) {}
+                try {
+                    if (row.parentElement) {
+                        eintrag.titelKandidaten =
+                            packTileTitleCandidates(row.parentElement).slice(0, 4);
+                    }
+                } catch (e) {}
+                try {
+                    const r = row.getBoundingClientRect();
+                    eintrag.rect = { l: Math.round(r.left), t: Math.round(r.top),
+                                     w: Math.round(r.width), h: Math.round(r.height) };
+                } catch (e) {}
+                out.push(eintrag);
+            }
+        } catch (e) {}
+        return out;
     }
     /**
      * Neben jeden "Open"-Knopf einen eigenen setzen. Laeuft aus dem 500ms-Takt,

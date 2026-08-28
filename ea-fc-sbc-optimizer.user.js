@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.11.8
+// @version      5.11.9
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.11.8';
+    const VERSION = '5.11.9';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -139,6 +139,7 @@
             lastSquadPutBody: null,  // letzter PUT-Body an den Squad (fuers 460-Debugging)
             staleRecover: null,      // Erholungsversuch bei veralteter challengeId
             staleSessionRetry: 0,    // Session-Erneuerungen nach 404/475
+            staleWaitRetry: 0,       // Geduld-Nachlagen (v5.11.9, EA verdaut noch)
             throttle: null,          // EA weist ab: Anzahl/letzte Meldung (429/503/512/Failed to fetch)
             confirmDisabled: null,   // Abgabe-Bestaetigung abgeschaltet (eigene Notbremse)
             batchPlanTiming: null,
@@ -4820,36 +4821,50 @@
         // Ansicht/der Cache noch auf der alten Instanz steht.
         const msg = String((lastErr && lastErr.message) || '');
         if (/\b(404|475)\b/.test(msg)) {
+            // Wie oft schon nachgelegt wurde (alte Aufrufer geben true).
+            const tries = (_retried === true) ? 1 : (Number(_retried) || 0);
             // ERHOLUNG statt Handarbeit: die verbrauchte Instanz gegen die
-            // frische desselben Sets tauschen und EINMAL neu versuchen. Der
-            // Tausch passiert nur, wenn GENAU EINE Challenge zur geplanten
-            // Signatur (Ziel-OVR + Slots) passt - sonst landet das Team in einer
+            // frische desselben Sets tauschen und neu versuchen. Der Tausch
+            // passiert nur, wenn GENAU EINE Challenge zur geplanten Signatur
+            // (Ziel-OVR + Slots) passt - sonst landet das Team in einer
             // fremden SBC, und das wäre schlimmer als ein Abbruch.
-            if (!_retried) {
+            if (tries < 3) {
                 const fresh = await resolveFreshChallengeId();
                 if (fresh != null) {
                     log('SBC-Instanz war veraltet - weiter mit frischer ID ' + fresh + '.');
                     setCurrentChallenge(fresh);
                     applyFromSetChallenges();
-                    return await submitToSbc(result, true, batchProgress);
+                    return await submitToSbc(result, tries + 1, batchProgress);
                 }
                 // Keine andere Instanz, aber unsere laeuft laut EA noch
-                // (status IN_PROGRESS)? Dann ist es genau der Fall, den ein
-                // APP-NEUSTART behebt - und der Neustart erneuert vor allem die
-                // Session. Also einmal die Session erneuern und nachlegen,
-                // statt Rasmus die App neu starten zu lassen.
+                // (status IN_PROGRESS)? Beim Daily-Set recycelt EA dieselbe
+                // Id - und braucht dafuer manchmal schlicht ZEIT (live
+                // 28.08.: erste Abgabe "ewig", Runde 2 bekam 404/475, der
+                // sofortige zweite Versuch wieder; Abbruch 1/10). Der
+                // empfohlene App-Neustart "hilft oft", weil er Zeit
+                // verbraucht. Also: Versuch 2 erneuert die Session (wie
+                // bisher), Versuch 3 und 4 WARTEN 5s bzw. 10s.
                 const sr0 = (STATE.diag.staleRecover &&
                              STATE.diag.staleRecover.setId === STATE.sbc.setId)
                     ? STATE.diag.staleRecover : null;
                 const ns0 = sr0 ? sr0.nodeState : null;
                 if (ns0 && ns0.status != null &&
                     !/COMPLETE|CLOSED|EXPIRED/i.test(String(ns0.status))) {
-                    log('Instanz laeuft laut EA noch (' + ns0.status +
-                        ') - Session erneuern und einmal nachlegen.');
-                    STATE.diag.staleSessionRetry = (STATE.diag.staleSessionRetry || 0) + 1;
-                    await nudgeSession();
+                    if (tries === 0) {
+                        log('Instanz laeuft laut EA noch (' + ns0.status +
+                            ') - Session erneuern und einmal nachlegen.');
+                        STATE.diag.staleSessionRetry = (STATE.diag.staleSessionRetry || 0) + 1;
+                        await nudgeSession();
+                    } else {
+                        const wartezeit = (tries === 1) ? 5000 : 10000;
+                        log('Instanz laut EA weiter ' + ns0.status + ' - ' +
+                            Math.round(wartezeit / 1000) + 's warten, dann Versuch ' +
+                            (tries + 2) + ' von 4.');
+                        STATE.diag.staleWaitRetry = (STATE.diag.staleWaitRetry || 0) + 1;
+                        await sleep(wartezeit);
+                    }
                     await refreshChallengeCache();
-                    return await submitToSbc(result, true, batchProgress);
+                    return await submitToSbc(result, tries + 1, batchProgress);
                 }
             }
             // setId-Abgleich, weil resolveFreshChallengeId() bei setId==null
@@ -7006,6 +7021,7 @@
             navigation: navigationKind(),
             // Wie oft musste nach 404/475 die Session erneuert werden?
             staleSessionRetry: STATE.diag.staleSessionRetry || 0,
+            staleWaitRetry: STATE.diag.staleWaitRetry || 0,
             // Drosselung durch EA - erklaert 475/404 beim Eintragen.
             throttle: STATE.diag.throttle || null,
             // Welche challengeId hat welcher Weg benutzt? Weicht app von state

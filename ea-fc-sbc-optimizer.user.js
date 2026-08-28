@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.11.7
+// @version      5.11.8
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.11.7';
+    const VERSION = '5.11.8';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -10983,23 +10983,6 @@
         if (parentText != null && norm(parentText) === t) return false;
         return true;
     }
-    /**
-     * Steckt das Element in EAs Pack-DETAIL-Ansicht? Deren Fusskeil traegt
-     * einen eigenen "Open"-Span ("Open / Claim your Pack") - dekoriert man
-     * den, landet die Knopfreihe in der Detail-Ansicht und bleibt beim
-     * Schliessen als Geist stehen (Screenshot 28.08.: zwei "Alle 8"-Reihen
-     * ohne Pack am unteren Rand). Nur die KACHEL-Knoepfe bekommen Reihen.
-     */
-    function inPackDetailsView(el) {
-        let cur = el, hops = 0;
-        while (cur && hops++ < 12) {
-            if (String(cur.className || '').indexOf('ut-store-pack-details-view') > -1) {
-                return true;
-            }
-            cur = cur.parentElement;
-        }
-        return false;
-    }
     function packOpenButtons() {
         const out = [];
         try {
@@ -11013,7 +10996,6 @@
                 const el = els[i];
                 if (!isPackOpenLabel(el.textContent,
                         el.parentElement ? el.parentElement.textContent : null)) continue;
-                if (inPackDetailsView(el)) continue;
                 out.push(el);
             }
         } catch (e) {}
@@ -11803,21 +11785,59 @@
         return exact || prefix || null;
     }
     /**
+     * Verwaiste/umgebundene Knopfreihen wegraeumen - per TITEL-Abgleich, bei
+     * jedem Injektor-Takt. Vorgeschichte: v5.11.7 filterte nach der Klasse
+     * 'ut-store-pack-details-view' und traf damit im Grid-Modus JEDE Karte -
+     * gar keine Knoepfe mehr (Screenshot 28.08.), der Geist blieb. Die
+     * Klasse sagt nichts; der Titel sagt alles:
+     * - Kachel-Titel passt zur gemerkten Pack-Id: gesund, bleibt.
+     * - Titel passt zu einem ANDEREN Pack: EA hat die Karte recycelt ->
+     *   Reihe weg, Markierungen weg, der naechste Takt baut frisch.
+     * - KEIN Titel passt (leere/versteckte Karte): Geist -> weg.
+     * Ohne Pack-Liste (packGroups leer) wird nichts entschieden - sonst
+     * floegen beim Start alle gesunden Reihen einmal raus.
+     */
+    function cleanStalePackRows() {
+        try {
+            if (!(STATE.packGroups || []).length) return;
+            const rows = document.querySelectorAll('.sbc-opt-tilebtn-row');
+            for (let k = 0; k < rows.length; k++) {
+                const row = rows[k];
+                const wantId = row.getAttribute('data-sbc-opt-pack');
+                // NUR der direkte Eltern-Kasten zaehlt: die Reihe wurde genau
+                // in das Element gehaengt, dessen Titel passte. Wer hier wie
+                // der Injektor hochklettert, findet an der Wurzel JEDEN Titel
+                // - und ein Geist saehe fuer immer gesund aus (Testfund).
+                let g = null;
+                if (row.parentElement) {
+                    const cands = packTileTitleCandidates(row.parentElement);
+                    for (const c of cands) {
+                        const hit = matchPackGroupByTitle(c);
+                        if (hit) { g = hit; break; }
+                    }
+                }
+                if (g && String(g.id) === String(wantId)) continue;
+                const home = row.parentElement;
+                if (!home) continue;
+                try {
+                    const marked = home.querySelectorAll(
+                        '[' + PACK_BTN_MARK + '],[' + PACK_BTN_TRIES + ']');
+                    for (let m = 0; m < marked.length; m++) {
+                        marked[m].removeAttribute(PACK_BTN_MARK);
+                        marked[m].removeAttribute(PACK_BTN_TRIES);
+                    }
+                } catch (e2) {}
+                home.removeChild(row);
+            }
+        } catch (e) {}
+    }
+    /**
      * Neben jeden "Open"-Knopf einen eigenen setzen. Laeuft aus dem 500ms-Takt,
      * ist also idempotent: schon markierte Knoepfe werden uebersprungen, und
      * wenn EA neu rendert, kommt der Knopf von selbst wieder.
      */
     function injectPackTileButtons() {
-        // Geister aufraeumen: Reihen, die (aus aelteren Versionen) in
-        // einer Detail-Ansicht haengen, fliegen raus - bevor neue kommen.
-        try {
-            const rows = document.querySelectorAll('.sbc-opt-tilebtn-row');
-            for (let k = 0; k < rows.length; k++) {
-                if (inPackDetailsView(rows[k]) && rows[k].parentElement) {
-                    rows[k].parentElement.removeChild(rows[k]);
-                }
-            }
-        } catch (e) {}
+        cleanStalePackRows();
         const btns = packOpenButtons();
         // Die Diagnose sagt in EINEM Blick, woran es haengt - vorher war
         // "kein Knopf da" nicht von "Titel nicht gelesen" zu unterscheiden.

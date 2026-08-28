@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.11.22
+// @version      5.11.23
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.11.22';
+    const VERSION = '5.11.23';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -8551,10 +8551,11 @@
     /**
      * Das innere Tap-Ziel einer Zeile: das erste ELEMENT-Kind mit Text.
      * Rein (die Kinderliste kommt herein), damit die Wahl testbar ist.
-     * WARUM ueberhaupt: der Zeilen-Container schluckt den Tap, aber EAs
-     * Navigations-Handler sitzt an einem KIND - exakt der Befund, der bei der
-     * Set-Kachel den tapInner noetig machte (v4.23.0). Drei Handy-Laeufe
-     * scheiterten, weil die Zeile ihn nicht bekam.
+     * GESCHICHTE: eingefuehrt (v5.7.0) unter der Annahme "Handler am Kind"
+     * wie bei der Set-Kachel. Die Handy-Ausfaelle hatten in Wahrheit andere
+     * Ursachen (Verdecker + Popup-Fluss, LEARNINGS v5.11.18-22); der
+     * Doppel-Tap bleibt als bewaehrter Gurt - bei der KACHEL ist "Handler
+     * am Kind" weiterhin live belegt (v4.23.0).
      */
     function pickRowInnerTarget(children) {
         let first = null;
@@ -8584,10 +8585,11 @@
                 detailsView: document.querySelectorAll('.ut-sbc-challenge-details-view').length
             } };
         }
-        // Zeile UND ihr inneres Element antippen - dieselbe Zweiteilung wie
-        // bei der Set-Kachel: der Container schluckt den Tap, der Handler
-        // sitzt am Kind. Drei Handy-Laeufe (26.08.) trafen die Zeile fuenfmal
-        // "erfolgreich", und die Ansicht bewegte sich nie.
+        // Zeile UND ihr inneres Element antippen (wie die Set-Kachel).
+        // GESCHICHTE: als Fix fuer die Handy-Ausfaelle vom 26.08. gebaut -
+        // die hatten aber andere Ursachen (Verdecker, Popup-Fluss; LEARNINGS
+        // v5.11.18-22). Der Doppel-Tap bleibt als Gurt: bei der Kachel ist
+        // "Handler am Kind" live belegt, und er kostet nichts.
         function tapRow(rowEl) {
             const okOuter = clickLike(rowEl);
             const tapOuter = tapBrief();
@@ -8808,7 +8810,11 @@
         });
         const idx = pickEnterButton(info);
         if (idx < 0) {
-            // SCHMALE ANSICHT: in der gewaehlten Zeile nachsehen.
+            // LETZTER Fallback (v5.5.0-Annahme "Knopf steckt IN der
+            // Zeile" - das Video vom 28.08. zeigt: das ist nur eine graue
+            // BESCHRIFTUNG, der echte Knopf ist der blaue im Anforderungs-
+            // Popup, siehe oben). Der Klick hierauf oeffnet schlimmstenfalls
+            // das Popup - das die naechste Runde dann korrekt benutzt.
             if (rowEl) {
                 let cand = [];
                 try {

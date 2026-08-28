@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.11.3
+// @version      5.11.4
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.11.3';
+    const VERSION = '5.11.4';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -9405,13 +9405,16 @@
      */
     async function runVorlagenStep(st) {
         let doneTotal = 0;
+        // Die Set-Id des vorigen Durchlaufs: ab Durchlauf 2 ist die offene
+        // Liste dieses Sets der direkte Einstieg (kein Hub-Umweg).
+        let knownSid = null;
         const durchlaeufe = (st.type === 'reihe') ? st.count : 1;
         for (let d = 0; d < durchlaeufe; d++) {
             if (vorlagenRun.cancel) {
                 return { done: doneTotal, stop: true, stopReason: 'auf Wunsch gestoppt' };
             }
             if (d > 0) vorlagenLog('Durchlauf ' + (d + 1) + '/' + durchlaeufe + ' \u2026', '');
-            const nav = await openSetForVorlage(st);
+            const nav = await openSetForVorlage(st, knownSid);
             STATE.diag.vorlagenNav = { setName: st.setName, ok: nav.ok,
                 mode: nav.mode || null, why: nav.why || null,
                 steps: (nav.steps || []).slice(-6) };
@@ -9429,6 +9432,7 @@
                 return { done: doneTotal, level: 'warn',
                          note: '\u201e' + st.setName + '\u201c \u00fcbersprungen (' + (nav.why || '?') + ')' };
             }
+            if (nav.sid != null) knownSid = nav.sid;
             let plan, want;
             if (st.type === 'batch') {
                 syncSbcWithOpenChallenge();
@@ -9521,14 +9525,35 @@
      * live-bewiesenen Bausteinen auf wie openNextInstance (Doppel-Tap-Kachel,
      * Filter-Fallback, Zurueck-Navigation, Popup-Aufraeumen).
      */
-    async function openSetForVorlage(step) {
+    async function openSetForVorlage(step, expectSid) {
         const steps = [];
         const t0 = Date.now();
         let clicked = false, clickedTick = -1;
         for (let i = 0; i < 50; i++) {          // 50 x 300ms = max ~15s
             dismissRewardPopup();
             syncSbcWithOpenChallenge();
+            // Schon am Ziel? Fuer 'reihe' mit BEKANNTER Set-Id (Durchlauf 2+)
+            // ist die offene Liste genau dieses Sets der Erfolg - ohne Umweg
+            // ueber den Hub. Live stand die App nach Durchlauf 1 in der
+            // Set-Liste, der Hub-Anlauf fand 15s lang "0 Kacheln" und gab auf.
+            if (step.type === 'reihe' && expectSid != null &&
+                visibleChallengeRowTexts().length) {
+                const sid0 = detectViewedSetId();
+                if (sid0 != null && String(sid0) === String(expectSid)) {
+                    return { ok: true, mode: 'liste', sid: sid0, steps: steps };
+                }
+            }
             const ctrl = findSbcController();
+            // Weder Hub (keine Kacheln) noch Squad (kein ctrl) - z.B. die
+            // Challenge-Liste eines (anderen) Sets: zurueck Richtung Hub,
+            // dort kennt der Kachel-Klick den Weg. Im Hub feuert das nie,
+            // dort SIND Kacheln sichtbar.
+            if (!ctrl && !clicked && (i === 3 || i === 13 || i === 25) &&
+                !visibleAll('.ut-sbc-set-tile-view').length) {
+                const b = clickBackButton();
+                steps.push({ ms: Date.now() - t0, back: b });
+                if (b.ok) { await batchWait(900); continue; }
+            }
             // Nach dem Klick 3 Takte Ruhe (~900ms): der Parser braucht einen
             // Moment, und ein Controller aus der VORIGEN Ansicht darf nicht
             // als Treffer durchgehen.

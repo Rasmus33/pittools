@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.11.12
+// @version      5.11.13
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.11.12';
+    const VERSION = '5.11.13';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -9369,6 +9369,37 @@
 
     // ---- Laeufer ----------------------------------------------------------
     /**
+     * Den offenen SBC-Squad leeren - ueber EAs EIGENEN "Clear Squad"-Knopf.
+     * NUR auf ausdruecklichen Nutzer-Wunsch (Vorlagen-Pause): ein stehendes
+     * Team wird niemandem weggeraeumt, der nicht zugestimmt hat. Die Karten
+     * gehen zurueck in den Verein. Wartet bis zu 6s auf den leeren Squad;
+     * bleibt er voll (z.B. weil EA einen Dialog dazwischenschiebt), wird das
+     * ehrlich gemeldet statt blind irgendwo zu bestaetigen.
+     */
+    async function clearOpenSquad() {
+        let btn = null;
+        try { btn = document.querySelector('#btn-clear-squad'); } catch (e) {}
+        if (!btn || btn.disabled) {
+            return { ok: false, why: 'kein Clear-Squad-Knopf in der Ansicht' };
+        }
+        try { clickLike(btn); } catch (e) {
+            return { ok: false, why: 'Klick fehlgeschlagen: ' + ((e && e.message) || e) };
+        }
+        for (let i = 0; i < 20; i++) {          // 20 x 300ms = max 6s
+            await batchWait(300);
+            try { dismissRewardPopup(); } catch (e) {}
+            try {
+                const ctrl = findSbcController();
+                const sq = ctrl && (ctrl._squad || (ctrl.getSquad && ctrl.getSquad()));
+                if (sq && typeof sq.isSquadEmpty === 'function' && sq.isSquadEmpty()) {
+                    return { ok: true };
+                }
+            } catch (e) {}
+        }
+        return { ok: false,
+                 why: 'Squad wurde nicht leer - bitte im Spiel leeren (evtl. fragt EA nach)' };
+    }
+    /**
      * Minimierter Lauf: Overlay weg, Top-Leiste an - Rasmus will SEHEN, was
      * die App macht. Nebeneffekt (Log 27.08.): das Vollbild-Overlay war das
      * einzige beobachtete Element, das den Tap-Punkt der Challenge-Zeile
@@ -9542,12 +9573,39 @@
                 mode: nav.mode || null, why: nav.why || null,
                 steps: (nav.steps || []).slice(-6) };
             if (!nav.ok) {
+                // Belegter Squad: das ist meist das Team einer per Drossel
+                // abgebrochenen Runde (live 28.08.: Runde-2-Team blieb nach
+                // 426er-Serie stehen). Auf Wunsch wird ueber EAs eigenen
+                // Clear-Squad-Knopf geleert (Karten zurueck in den Verein)
+                // und derselbe Durchlauf frisch begonnen.
+                const knoepfe = [];
+                if (nav.occupied) {
+                    knoepfe.push({ act: 'leeren', cls: 'primary',
+                        label: 'Squad leeren und weitermachen' });
+                }
+                knoepfe.push({ act: 'skip', cls: 'ghost', label: 'Schritt \u00fcberspringen' });
+                knoepfe.push({ act: 'stop', cls: 'ghost', label: 'Vorlage stoppen' });
                 const antwort = await vorlagenFrage(
                     '<div class="sbc-opt-vl-pausekopf">\u26a0 \u201e' +
                     escapeHtml(st.setName) + '\u201c lie\u00df sich nicht \u00f6ffnen: ' +
-                    escapeHtml(nav.why || '?') + '</div>',
-                    [{ act: 'skip', cls: 'ghost', label: 'Schritt \u00fcberspringen' },
-                     { act: 'stop', cls: 'ghost', label: 'Vorlage stoppen' }]);
+                    escapeHtml(nav.why || '?') + '</div>' +
+                    (nav.occupied
+                        ? '<div class="sbc-opt-batch-round">Das ist meist das Team einer ' +
+                          'abgebrochenen Runde. Beim Leeren gehen die Karten zur\u00fcck ' +
+                          'in den Verein - verloren geht nichts.</div>'
+                        : ''),
+                    knoepfe);
+                if (antwort === 'leeren') {
+                    const c = await clearOpenSquad();
+                    if (c.ok) {
+                        vorlagenLog('Squad geleert - weiter geht es.', 'ok');
+                        d--;               // denselben Durchlauf frisch beginnen
+                        continue;
+                    }
+                    return { done: doneTotal, level: 'warn',
+                             note: '\u201e' + st.setName + '\u201c \u00fcbersprungen (Leeren: ' +
+                                 (c.why || '?') + ')' };
+                }
                 if (antwort === 'stop') {
                     return { done: doneTotal, stop: true,
                              stopReason: '\u201e' + st.setName + '\u201c lie\u00df sich nicht \u00f6ffnen' };

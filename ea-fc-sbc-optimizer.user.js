@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.11.13
+// @version      5.11.14
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.11.13';
+    const VERSION = '5.11.14';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -9179,7 +9179,9 @@
     function renderVorlagen() {
         if (!ui.vorlagenOverlay) return;
         let inner;
-        if (vorlagenView.mode === 'editor' && vorlagenView.draft) {
+        if (vorlagenView.mode === 'transfer') {
+            inner = vorlagenTransferHtml(vorlagenView.richtung, vorlagenView.text);
+        } else if (vorlagenView.mode === 'editor' && vorlagenView.draft) {
             inner = vorlagenEditorHtml(vorlagenView.draft, listHubSetTitles());
         } else if (vorlagenView.mode === 'lauf' && vorlagenRun) {
             inner = vorlagenLaufHtml(vorlagenRun);
@@ -9214,6 +9216,12 @@
         const t = ev.target;
         if (!t || !vorlagenView.draft) return;
         if (t.id === 'sbc-opt-vl-name') { vorlagenView.draft.name = t.value; return; }
+        if (t.id === 'sbc-opt-vl-anzahlchips') {
+            vorlagenView.draft.anzahlChips = String(t.value || '').split(',')
+                .map(function (x) { return parseInt(x, 10); })
+                .filter(function (n) { return isFinite(n) && n >= 1; });
+            return;
+        }
         const f = t.dataset && t.dataset.f;
         if (!f) return;
         const st = vorlagenView.draft.steps[parseInt(t.dataset.i, 10)];
@@ -9342,6 +9350,57 @@
             })();
             return;
         case 'vl-speichern': saveVorlagenDraft(); return;
+        case 'vl-anzahl':
+            (function () {
+                const p2 = String(arg || '').lastIndexOf(':');
+                if (p2 < 0) return;
+                const id = arg.slice(0, p2);
+                const n = parseInt(arg.slice(p2 + 1), 10);
+                const k = items.findIndex(function (v) { return v.id === id; });
+                if (k < 0 || !isFinite(n)) return;
+                items[k].anzahl = n;
+                vorlagenSave(items);
+                renderVorlagen();
+            })();
+            return;
+        case 'vl-export':
+            vorlagenView = { mode: 'transfer', richtung: 'export',
+                text: JSON.stringify({ v: 1, items: items }, null, 1), draft: null };
+            renderVorlagen();
+            return;
+        case 'vl-import':
+            vorlagenView = { mode: 'transfer', richtung: 'import', text: '', draft: null };
+            renderVorlagen();
+            return;
+        case 'vl-transfer-copy':
+            (function () {
+                const ta = ui.vorlagenOverlay.querySelector('#sbc-opt-vl-transfer');
+                const text = ta ? ta.value : '';
+                try {
+                    navigator.clipboard.writeText(text).then(
+                        function () { toast('Vorlagen-JSON in der Zwischenablage.', 'ok'); },
+                        function () {
+                            try { ta.select(); } catch (e) {}
+                            toast('Bitte markieren und von Hand kopieren.', 'warn');
+                        });
+                } catch (e) {
+                    try { ta.select(); } catch (e2) {}
+                    toast('Bitte markieren und von Hand kopieren.', 'warn');
+                }
+            })();
+            return;
+        case 'vl-transfer-ok':
+            (function () {
+                const ta = ui.vorlagenOverlay.querySelector('#sbc-opt-vl-transfer');
+                const r = vorlagenImportParse(ta ? ta.value : '');
+                if (r.fehler) { toast(r.fehler, 'error'); return; }
+                const neu = items.concat(r.items);
+                vorlagenSave(neu);
+                vorlagenView = { mode: 'liste', draft: null };
+                renderVorlagen();
+                toast(r.items.length + ' Vorlage(n) importiert.', 'ok');
+            })();
+            return;
         case 'vl-start': if (idx > -1) startVorlage(items[idx]); return;
         case 'vl-pause':
             if (vorlagenRun && vorlagenRun.pauseResolve) {
@@ -9471,6 +9530,10 @@
                 ' in dieser Stunde \u00b7 ' + (u.day.exact ? '' : 'mind. ') +
                 u.day.used + '/' + QUOTA_DAY_LIMIT + ' heute.';
         } catch (e) {}
+        // Aktive Schnellwahl (Chip auf der Karte) uebersteuert die Anzahl
+        // ALLER Schritte dieses Laufs - die gespeicherte Vorlage bleibt
+        // unangetastet (vorlageMitAnzahl ist rein).
+        v = vorlageMitAnzahl(v, v.anzahl != null ? v.anzahl : null);
         vorlagenRun = { vorlage: v, log: [], pause: null, pauseResolve: null,
                         cancel: false, fertig: false, minimized: false,
                         quotaText: quotaText };
@@ -9883,8 +9946,23 @@
                 steps.push({ type: st.type === 'reihe' ? 'reihe' : 'batch',
                              setName: setName, count: count, profil: profil });
             }
+            // Schnellwahl-Anzahlen (v5.11.14): kleine Liste ganzer Zahlen,
+            // pro Vorlage konfigurierbar; anzahl = die aktive Wahl (null =
+            // die Schritt-eigenen Anzahlen gelten).
+            const chips = [];
+            if (Array.isArray(it.anzahlChips)) {
+                for (const c of it.anzahlChips) {
+                    const n = parseInt(c, 10);
+                    if (isFinite(n) && n >= 1 && n <= VORLAGEN_MAX_COUNT &&
+                        chips.indexOf(n) < 0 && chips.length < 6) chips.push(n);
+                }
+            }
+            let anzahl = parseInt(it.anzahl, 10);
+            if (!isFinite(anzahl) || anzahl < 1 || anzahl > VORLAGEN_MAX_COUNT) anzahl = null;
             out.push({ id: String(it.id || ('vl' + Date.now() + '_' + out.length)),
                        name: name, steps: steps,
+                       anzahlChips: chips.length ? chips : [3, 5, 10],
+                       anzahl: anzahl,
                        lastRun: (it.lastRun && typeof it.lastRun === 'object')
                            ? { t: Number(it.lastRun.t) || 0,
                                text: String(it.lastRun.text || '').slice(0, 200) }
@@ -9938,11 +10016,24 @@
         const t = items[i]; items[i] = items[j]; items[j] = t;
         return true;
     }
-    /** Eine Zeile pro Vorlage: "10x 10x 85+ Upgrade · 1x 87x5 (Set komplett)". */
+    /**
+     * Die Vorlage mit uebersteuerter Anzahl (Schnellwahl-Chip): ALLE
+     * Schritte bekommen `anzahl` als count. null = unveraendert. Rein -
+     * das Original bleibt unangetastet, gespeichert wird nichts.
+     */
+    function vorlageMitAnzahl(v, anzahl) {
+        if (anzahl == null) return v;
+        const kopie = JSON.parse(JSON.stringify(v));
+        for (const st of kopie.steps) st.count = anzahl;
+        return kopie;
+    }
+    /** Eine Zeile pro Vorlage: "10x 10x 85+ Upgrade · 1x 87x5 (Set komplett)".
+     *  Eine aktive Schnellwahl (v.anzahl) ueberschreibt die Schritt-Zahlen. */
     function vorlageSummary(v) {
         if (!v.steps.length) return 'noch keine Schritte';
         return v.steps.map(function (st) {
-            return st.count + '\u00d7 ' + st.setName +
+            const n = (v.anzahl != null) ? v.anzahl : st.count;
+            return n + '\u00d7 ' + st.setName +
                 (st.type === 'reihe' ? ' (Set komplett)' : '');
         }).join(' \u00b7 ');
     }
@@ -10031,6 +10122,18 @@
                 escapeHtml(v.id) + '"' + (avail.aus ? ' disabled title="Heute nicht mehr verf\u00fcgbar"' : '') +
                 '>\u25b6 Start</button></div>' +
                 '<div class="sbc-opt-vl-sum">' + escapeHtml(vorlageSummary(v)) + '</div>' +
+                (function () {
+                    const chips = v.anzahlChips || [];
+                    if (!chips.length) return '';
+                    const aktiv = (v.anzahl != null) ? v.anzahl
+                        : (v.steps[0] ? v.steps[0].count : null);
+                    return '<div class="sbc-opt-chips sbc-opt-vl-anzahl">' +
+                        chips.map(function (c) {
+                            return '<button class="sbc-opt-chip' +
+                                (c === aktiv ? ' on' : '') + '" data-act="vl-anzahl:' +
+                                escapeHtml(v.id) + ':' + c + '">' + c + '\u00d7</button>';
+                        }).join('') + '</div>';
+                })() +
                 avail.zeilen.map(function (z) {
                     return '<div class="sbc-opt-vl-avail">' + escapeHtml(z) + '</div>';
                 }).join('') +
@@ -10046,7 +10149,47 @@
                 '</div></div>';
         }
         h += '<button class="sbc-opt-btn plan" data-act="vl-neu">+ Neue Vorlage</button>';
+        h += '<div class="sbc-opt-vl-tools">' +
+            '<button class="sbc-opt-btn ghost" data-act="vl-export">Exportieren</button>' +
+            '<button class="sbc-opt-btn ghost" data-act="vl-import">Importieren</button></div>';
         return h;
+    }
+    /** Export-/Import-Ansicht: ein Textfeld mit JSON (PC <-> Handy). */
+    function vorlagenTransferHtml(richtung, text) {
+        let h = vorlagenHeaderHtml(richtung === 'export'
+            ? 'Vorlagen exportieren' : 'Vorlagen importieren');
+        h += '<div class="sbc-opt-vl-hint">' + (richtung === 'export'
+            ? 'JSON kopieren und am anderen Ger\u00e4t unter Importieren einf\u00fcgen.'
+            : 'Exportiertes JSON hier einf\u00fcgen. Importierte Vorlagen werden ' +
+              'ANGEH\u00c4NGT (nichts wird \u00fcberschrieben).') + '</div>';
+        h += '<textarea id="sbc-opt-vl-transfer" class="sbc-opt-vl-input" rows="10"' +
+            (richtung === 'export' ? ' readonly' : '') + '>' +
+            escapeHtml(text || '') + '</textarea>';
+        h += '<div class="sbc-opt-vl-tools">';
+        if (richtung === 'export') {
+            h += '<button class="sbc-opt-btn primary" data-act="vl-transfer-copy">In die Zwischenablage</button>';
+        } else {
+            h += '<button class="sbc-opt-btn primary" data-act="vl-transfer-ok">Importieren</button>';
+        }
+        h += '<button class="sbc-opt-btn ghost" data-act="vl-liste">Zur\u00fcck</button></div>';
+        return h;
+    }
+    /**
+     * Import-Text lesen: nimmt {v,items:[...]} ODER ein nacktes Array,
+     * bereinigt ueber vorlagenSanitize und vergibt FRISCHE Ids (kein
+     * Ueberschreiben vorhandener Vorlagen, keine Id-Kollisionen).
+     */
+    function vorlagenImportParse(text) {
+        let roh;
+        try { roh = JSON.parse(String(text || '')); }
+        catch (e) { return { items: [], fehler: 'Kein g\u00fcltiges JSON.' }; }
+        const items = vorlagenSanitize(Array.isArray(roh) ? { items: roh } : roh);
+        if (!items.length) return { items: [], fehler: 'Keine Vorlagen im JSON gefunden.' };
+        for (let i = 0; i < items.length; i++) {
+            items[i].id = 'vl' + Date.now() + '_i' + i;
+            items[i].lastRun = null;
+        }
+        return { items: items, fehler: null };
     }
     function vorlagenEditorHtml(draft, setTitles) {
         let h = vorlagenHeaderHtml(draft.id ? 'Vorlage bearbeiten' : 'Neue Vorlage');
@@ -10081,6 +10224,9 @@
                 '">Aktuelle Panel-Einstellungen \u00fcbernehmen</button>' +
                 '</div>';
         });
+        h += '<label class="sbc-opt-chiplabel" style="margin-top:10px;">Schnellwahl-Anzahlen (z.B. 3, 5, 10)</label>' +
+            '<input type="text" id="sbc-opt-vl-anzahlchips" class="sbc-opt-vl-input" value="' +
+            escapeHtml((draft.anzahlChips || [3, 5, 10]).join(', ')) + '">';
         h += '<button class="sbc-opt-btn ghost" data-act="vl-step-add">+ Schritt</button>' +
             '<div class="sbc-opt-vl-hint">Das Profil friert die Panel-Einstellungen ' +
             '(Min-Rating, \u00dcberschuss, Rarity-Schutz \u2026) f\u00fcr diesen ' +

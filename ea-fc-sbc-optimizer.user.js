@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.11.19
+// @version      5.11.20
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.11.19';
+    const VERSION = '5.11.20';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -8203,6 +8203,15 @@
                     if (b.ok) { await batchWait(900); continue; }
                 }
             } else if (phase === 'zeile') {
+                // Ist von einem frueheren Anlauf schon ein Anforderungs-Popup
+                // DIESER Challenge offen, wird es benutzt statt die Zeile
+                // erneut anzutippen - jeder Zeilen-Tap stapelt sonst ein
+                // weiteres Popup (Screenshot 28.08.: sechs Karten).
+                if (findRequirementsPopup(step && step.name)) {
+                    steps.push({ ms: Date.now() - t0, popupSchonOffen: true });
+                    phase = 'betreten';
+                    continue;
+                }
                 // In der Challenge-Liste: liegt ein Dialog oben, ignoriert EA
                 // den Tap (live belegt beim Kachel-Klick) - erst aufraeumen.
                 const pop = popupState();
@@ -8691,17 +8700,32 @@
      * Popup-Text. Geklickt wird die aeusserste Huelle mit exakter
      * Beschriftung, doppelt (Handler am Kind - wie Kachel und Zeile).
      */
-    function clickRequirementsPopupStart(wantName) {
+    /**
+     * Das offene Anforderungs-Popup ZU DIESER Challenge finden. Der
+     * Namens-Filter gilt IMMER - auch ein einzelnes Popup kann von einem
+     * frueheren Fehlversuch einer ANDEREN Challenge uebrig sein, und ein
+     * blinder Klick wuerde die falsche betreten.
+     */
+    function findRequirementsPopup(wantName) {
         try {
             const pops = visibleAll('[class*="ut-sbc-requirements-popup"]');
-            if (!pops.length) return { ok: false, why: 'kein Anforderungs-Popup offen' };
             const want = String(wantName || '').replace(/\s+/g, ' ').trim().toLowerCase();
             for (const p of pops) {
-                if (want && pops.length > 1) {
+                if (want) {
                     const txt = String(p.textContent || '')
                         .replace(/\s+/g, ' ').toLowerCase();
                     if (txt.indexOf(want) < 0) continue;
                 }
+                return p;
+            }
+        } catch (e) {}
+        return null;
+    }
+    function clickRequirementsPopupStart(wantName) {
+        try {
+            const p = findRequirementsPopup(wantName);
+            if (!p) return { ok: false, why: 'kein passendes Anforderungs-Popup offen' };
+            {
                 const cand = Array.prototype.slice.call(
                     p.querySelectorAll('button, .btn-standard, div, span'));
                 for (const el of cand) {
@@ -8723,6 +8747,7 @@
                 }
             }
             return { ok: false, why: 'Anforderungs-Popup ohne Start-Knopf' };
+            // (Block statt Schleife: findRequirementsPopup hat schon gewaehlt.)
         } catch (e) {
             return { ok: false, why: 'Popup-Weg warf: ' + ((e && e.message) || e) };
         }

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.11.4
+// @version      5.11.5
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.11.4';
+    const VERSION = '5.11.5';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -9388,6 +9388,12 @@
         vorlagenRun.pauseResolve = null;
         hideProgress();
         vorlagenRestore();
+        // EIN leises Nachladen am Ende des GANZEN Laufs ersetzt die
+        // unterdrueckten Pro-Durchlauf-Reloads (Panel-Liste aktuell halten).
+        setTimeout(function () {
+            try { queueTriedSet = null; loadQueueList(true, true, null); }
+            catch (e) {}
+        }, 4000);
         const fazit = abgegeben + ' SBC(s) abgegeben' + (gestoppt ? ' \u00b7 ' + gestoppt : '');
         vorlagenLog('Fertig: ' + fazit, gestoppt ? 'warn' : 'ok');
         const items = vorlagenLoad();
@@ -9436,7 +9442,11 @@
             let plan, want;
             if (st.type === 'batch') {
                 syncSbcWithOpenChallenge();
-                want = st.count;
+                // Nach einem Drossel-Wiederanlauf zaehlen die schon
+                // abgegebenen Runden mit - sonst wuerden count ZUSAETZLICHE
+                // geplant statt der restlichen.
+                want = st.count - doneTotal;
+                if (want <= 0) break;
                 plan = await planBatchRounds(want, readConfig(st.profil));
                 hideProgress();
             } else {
@@ -9510,6 +9520,32 @@
                 ' abgegeben' + (res.stopped ? ' \u00b7 ' + res.stopped : '') + '.',
                 res.stopped ? 'warn' : 'ok');
             if (res.stopped) {
+                // EAs Drossel ist WETTER, kein Defekt: anbieten zu warten,
+                // statt die ganze Vorlage zu kippen (live: 3 Durchlaeufe
+                // sauber, dann 521-Serie durch die eigenen Reloads).
+                if (throttledNow()) {
+                    const antwort = await vorlagenFrage(
+                        '<div class="sbc-opt-vl-pausekopf">⚠ EA drosselt gerade (' +
+                        escapeHtml(res.stopped) + ')</div>' +
+                        '<div class="sbc-opt-batch-round">Die bereits abgegebenen ' +
+                        'Runden sind bestätigt. Nach einer Pause geht es ' +
+                        'normalerweise weiter.</div>',
+                        [{ act: 'retry', cls: 'primary',
+                           label: '90 Sekunden warten, dann weitermachen' },
+                         { act: 'skip', cls: 'ghost', label: 'Schritt überspringen' },
+                         { act: 'stop', cls: 'ghost', label: 'Vorlage stoppen' }]);
+                    if (antwort === 'retry') {
+                        vorlagenLog('EA-Drossel: 90 Sekunden Pause …', 'warn');
+                        await batchWait(90000);
+                        d--;            // denselben Durchlauf noch einmal
+                        continue;
+                    }
+                    if (antwort === 'skip') {
+                        return { done: doneTotal, level: 'warn',
+                                 note: '„' + st.setName + '“ nach EA-Drossel übersprungen (' +
+                                     doneTotal + ' abgegeben).' };
+                    }
+                }
                 return { done: doneTotal, stop: true, stopReason: res.stopped };
             }
             if (d + 1 < durchlaeufe) await batchWait(1500);
@@ -10382,7 +10418,15 @@
             // und direkt hinter der Kontingent-Messung, und EA antwortete mit
             // HTTP 521. Zwei Requests im selben Tick nach zwei Schreibvorgaengen
             // sind genau das Muster aus LEARNINGS 7/30.
-            if (isQueue) {
+            // NICHT waehrend eines laufenden Vorlagen-Laufs: der naechste
+            // Durchlauf navigiert ohnehin frisch, und live liefen genau
+            // diese Nachlade-Requests (einer pro Durchlauf, alle 10s) in
+            // EAs Drossel (429/426/521) - worauf die Drossel-Wache die
+            // eigentliche Arbeit stoppte. Der LETZTE Lauf des Vorlagen-
+            // Laufs laedt wieder nach (dann ist vorlagenRun.fertig noch
+            // false - deshalb haengt der Reload zusaetzlich am Lauf-Ende
+            // in startVorlage).
+            if (isQueue && !(vorlagenRun && !vorlagenRun.fertig)) {
                 // Das Set DES PLANS neu holen - nicht das gerade angesehene:
                 // waehrend der 4s kann Rasmus schon woanders sein.
                 const reloadSid = plan.setId;

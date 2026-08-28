@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.11.16
+// @version      5.11.17
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.11.16';
+    const VERSION = '5.11.17';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -5491,12 +5491,24 @@
         }
         .sbc-opt-vl-cardkopf {
             display: flex; justify-content: space-between; align-items: center;
-            gap: 10px; font-size: 14px;
+            gap: 8px; font-size: 14px;
+        }
+        .sbc-opt-vl-cardkopf b {
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            min-width: 0; flex: 0 1 auto;
         }
         .sbc-opt-vl-cardkopf .sbc-opt-btn { width: auto; flex: 0 0 auto;
             margin-top: 0; padding: 8px 16px; }
         .sbc-opt-vl-sum { color: var(--pt-text-2); margin-top: 6px; }
         .sbc-opt-vl-card.aus { opacity: .55; }
+        .sbc-opt-vl-anzahl {
+            display: flex; gap: 2px; margin-left: auto; margin-right: 8px;
+            flex: 0 0 auto; padding: 2px;
+        }
+        .sbc-opt-vl-anzahl .sbc-opt-chip {
+            min-height: 24px; padding: 2px 9px; font-size: 11px;
+            flex: 0 0 auto; min-width: 0;
+        }
         .sbc-opt-vl-avail { color: var(--pt-warn); font-size: 12px; margin-top: 4px; }
         .sbc-opt-vl-last { color: var(--pt-muted); margin-top: 4px; font-size: 12px; }
         .sbc-opt-vl-tools { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
@@ -9434,7 +9446,13 @@
             return;
         case 'vl-export':
             vorlagenView = { mode: 'transfer', richtung: 'export',
-                text: JSON.stringify({ v: 1, items: items }, null, 1), draft: null };
+                // OHNE id/lastRun: exportiert wird die DEFINITION, nicht die
+                // Lauf-Historie (Rasmus: "der text gehoert gar nicht in die
+                // vorlage"). Der Import vergibt ohnehin frische Ids.
+                text: JSON.stringify({ v: 1, items: items.map(function (v) {
+                    return { name: v.name, steps: v.steps,
+                             anzahlChips: v.anzahlChips, anzahl: v.anzahl };
+                }) }, null, 1), draft: null };
             renderVorlagen();
             return;
         case 'vl-import':
@@ -9642,11 +9660,14 @@
             catch (e) {}
         }, 4000);
         const fazit = abgegeben + ' SBC(s) abgegeben' + (gestoppt ? ' \u00b7 ' + gestoppt : '');
+        // Auf der KARTE nur die Kurzform - der volle Stopp-Grund (mehrzeilige
+        // Fehlertexte) gehoert ins Lauf-Log, nicht in die Vorlagen-Liste.
+        const fazitKurz = abgegeben + ' SBC(s) abgegeben' + (gestoppt ? ' \u00b7 gestoppt' : '');
         vorlagenLog('Fertig: ' + fazit, gestoppt ? 'warn' : 'ok');
         const items = vorlagenLoad();
         const idx = items.findIndex(function (x) { return x.id === v.id; });
         if (idx > -1) {
-            items[idx].lastRun = { t: Date.now(), text: fazit };
+            items[idx].lastRun = { t: Date.now(), text: fazitKurz };
             vorlagenSave(items);
         }
         renderVorlagen();
@@ -10191,24 +10212,27 @@
         for (const e of eintraege) {
             const v = e.v || e;
             const avail = e.avail || { aus: false, zeilen: [] };
+            // Chips KLEIN in der Kopfzeile zwischen Name und Start - eine
+            // eigene Zeile war zu wuchtig (Rasmus, Screenshot 28.08.).
+            const chipsHtml = (function () {
+                const chips = v.anzahlChips || [];
+                if (!chips.length) return '';
+                const aktiv = (v.anzahl != null) ? v.anzahl
+                    : (v.steps[0] ? v.steps[0].count : null);
+                return '<div class="sbc-opt-chips sbc-opt-vl-anzahl">' +
+                    chips.map(function (c) {
+                        return '<button class="sbc-opt-chip' +
+                            (c === aktiv ? ' on' : '') + '" data-act="vl-anzahl:' +
+                            escapeHtml(v.id) + ':' + c + '">' + c + '\u00d7</button>';
+                    }).join('') + '</div>';
+            })();
             h += '<div class="sbc-opt-vl-card' + (avail.aus ? ' aus' : '') + '">' +
                 '<div class="sbc-opt-vl-cardkopf"><b>' + escapeHtml(v.name) + '</b>' +
+                chipsHtml +
                 '<button class="sbc-opt-btn primary sbc-opt-vl-start" data-act="vl-start:' +
                 escapeHtml(v.id) + '"' + (avail.aus ? ' disabled title="Heute nicht mehr verf\u00fcgbar"' : '') +
                 '>\u25b6 Start</button></div>' +
                 '<div class="sbc-opt-vl-sum">' + escapeHtml(vorlageSummary(v)) + '</div>' +
-                (function () {
-                    const chips = v.anzahlChips || [];
-                    if (!chips.length) return '';
-                    const aktiv = (v.anzahl != null) ? v.anzahl
-                        : (v.steps[0] ? v.steps[0].count : null);
-                    return '<div class="sbc-opt-chips sbc-opt-vl-anzahl">' +
-                        chips.map(function (c) {
-                            return '<button class="sbc-opt-chip' +
-                                (c === aktiv ? ' on' : '') + '" data-act="vl-anzahl:' +
-                                escapeHtml(v.id) + ':' + c + '">' + c + '\u00d7</button>';
-                        }).join('') + '</div>';
-                })() +
                 avail.zeilen.map(function (z) {
                     return '<div class="sbc-opt-vl-avail">' + escapeHtml(z) + '</div>';
                 }).join('') +

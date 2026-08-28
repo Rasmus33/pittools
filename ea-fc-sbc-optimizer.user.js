@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.11.10
+// @version      5.11.11
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.11.10';
+    const VERSION = '5.11.11';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -145,7 +145,8 @@
             batchPlanTiming: null,
             // Vorlagen (v5.10.0): letzte Navigation und letztes Gate.
             vorlagenNav: null,
-            vorlagenGate: null,   // Wo geht die Zeit beim Planen hin? (ms pro Phase)
+            vorlagenGate: null,
+            vorlagenRepeats: null,   // Wo geht die Zeit beim Planen hin? (ms pro Phase)
             solverProfile: null,     // Solver-Innenleben: Stufen/Baender/Versuche pro Lauf
             poolCache: null,         // Pool-Cache: geschrieben? Groesse? Grund fuer Nein?
             poolCacheRead: null,     // Pool-Cache: benutzt? sonst WARUM nicht?
@@ -5495,6 +5496,8 @@
         .sbc-opt-vl-cardkopf .sbc-opt-btn { width: auto; flex: 0 0 auto;
             margin-top: 0; padding: 8px 16px; }
         .sbc-opt-vl-sum { color: var(--pt-text-2); margin-top: 6px; }
+        .sbc-opt-vl-card.aus { opacity: .55; }
+        .sbc-opt-vl-avail { color: var(--pt-warn); font-size: 12px; margin-top: 4px; }
         .sbc-opt-vl-last { color: var(--pt-muted); margin-top: 4px; font-size: 12px; }
         .sbc-opt-vl-tools { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
         .sbc-opt-vl-tools .sbc-opt-btn { width: auto; flex: 1 1 auto; }
@@ -7255,6 +7258,7 @@
                     return { gespeichert: vorlagenLoad().length,
                              nav: STATE.diag.vorlagenNav || null,
                              gate: STATE.diag.vorlagenGate || null,
+                             repeats: STATE.diag.vorlagenRepeats || null,
                              log: (vorlagenRun && vorlagenRun.log.slice(-12)) || null };
                 } catch (e) { return { error: String((e && e.message) || e) }; }
             })(),
@@ -8753,6 +8757,32 @@
      * bisher weiter versucht. Eine Fehldiagnose darf keinen laufenden Batch
      * abwuergen.
      */
+    /**
+     * Rest-Wiederholungen aus dem Kachel-Status. EAs Grammatik (live):
+     *   "RepeatableExpires In: ..."            -> unbegrenzt   (left null)
+     *   "Repeatable: 3Expires In: ..."         -> noch 3       (left 3)
+     *   "Repeatable: 0..."                     -> nichts mehr  (left 0)
+     *   "Repeatable: 108 Hours 6 Mins..."      -> Abklingzeit  (cooldown)
+     *   "Non-Repeatable..."                    -> einmalig     (left null)
+     * Der Unterschied Zahl vs. Timer haengt an der ZEITEINHEIT hinter der
+     * Zahl - genau die Verwechslung, vor der der Kommentar in
+     * setLooksRepeatable seit v4.9x warnt ("052 Mins" ist keine 52).
+     */
+    function parseRepeatsLeft(statusRaw) {
+        const raw = String(statusRaw || '').replace(/\s+/g, ' ').trim();
+        if (!raw) return { left: null, cooldown: false, timer: null };
+        if (/non-repeatable/i.test(raw)) {
+            return { left: null, cooldown: false, timer: null, nonRepeatable: true };
+        }
+        const m = raw.match(/Repeatable:\s*(\d+)\s*([A-Za-z]*)/);
+        if (!m) return { left: null, cooldown: false, timer: null };
+        if (/^(Day|Days|Hour|Hours|Min|Mins|Minute|Minutes|Sec|Secs|Second|Seconds)$/i
+                .test(m[2] || '')) {
+            const t = raw.match(/Repeatable:\s*(\d+\s*[A-Za-z]+(?:\s*\d+\s*[A-Za-z]+)?)/);
+            return { left: 0, cooldown: true, timer: t ? t[1] : (m[1] + ' ' + m[2]) };
+        }
+        return { left: Number(m[1]), cooldown: false, timer: null };
+    }
     function setLooksRepeatable(want) {
         try {
             const tiles = visibleAll('.ut-sbc-set-tile-view');
@@ -9139,7 +9169,16 @@
         } else if (vorlagenView.mode === 'lauf' && vorlagenRun) {
             inner = vorlagenLaufHtml(vorlagenRun);
         } else {
-            inner = vorlagenListeHtml(vorlagenLoad());
+            inner = vorlagenListeHtml(vorlagenLoad().map(function (v) {
+                let avail = { aus: false, zeilen: [] };
+                try {
+                    avail = vorlagenAvailability(v, function (name) {
+                        try { return setLooksRepeatable(name || '').status; }
+                        catch (e) { return ''; }
+                    });
+                } catch (e) {}
+                return { v: v, avail: avail };
+            }));
         }
         ui.vorlagenOverlay.innerHTML = '<div class="sbc-opt-vl-box">' + inner + '</div>';
     }
@@ -9227,6 +9266,14 @@
             if (idx < 0) return;
             vorlagenView = { mode: 'editor', draft: JSON.parse(JSON.stringify(items[idx])) };
             renderVorlagen();
+            return;
+        case 'vl-up':
+        case 'vl-down':
+            if (idx < 0) return;
+            if (vorlagenMove(items, arg, cmd === 'vl-up' ? -1 : 1)) {
+                vorlagenSave(items);
+                renderVorlagen();
+            }
             return;
         case 'vl-copy':
             if (idx < 0) return;
@@ -9436,7 +9483,40 @@
         // Die Set-Id des vorigen Durchlaufs: ab Durchlauf 2 ist die offene
         // Liste dieses Sets der direkte Einstieg (kein Hub-Umweg).
         let knownSid = null;
-        const durchlaeufe = (st.type === 'reihe') ? st.count : 1;
+        // EAs Rest-Wiederholungen von der Hub-Kachel (Rasmus: "wenn sie nur
+        // noch 3 mal gehen ... als kleines info ... und nur 3 mal geplant").
+        // JETZT lesen - vor der Navigation ist die Kachel noch sichtbar;
+        // spaeter im Squad/in der Liste gibt es sie nicht mehr. Ohne Kachel
+        // oder ohne Zahl bleibt alles wie bisher.
+        let restErlaubt = null;
+        try {
+            const repStatus = setLooksRepeatable(st.setName || '');
+            const rl = parseRepeatsLeft(repStatus.status);
+            STATE.diag.vorlagenRepeats = { setName: st.setName,
+                status: String(repStatus.status || '').slice(0, 80),
+                left: rl.left, cooldown: !!rl.cooldown };
+            if (rl.cooldown) {
+                return { done: 0, level: 'warn',
+                         note: '\u201e' + st.setName + '\u201c ist auf Abklingzeit (' +
+                             rl.timer + ') - \u00fcbersprungen.' };
+            }
+            if (rl.left != null) {
+                restErlaubt = rl.left;
+                if (restErlaubt <= 0) {
+                    return { done: 0, level: 'warn',
+                             note: '\u201e' + st.setName + '\u201c hat keine Wiederholungen mehr ' +
+                                 '\u00fcbrig - \u00fcbersprungen.' };
+                }
+                if (restErlaubt < st.count) {
+                    vorlagenLog('\u201e' + st.setName + '\u201c: EA erlaubt nur noch ' +
+                        restErlaubt + ' von ' + st.count +
+                        ' Wiederholungen - geplant wird entsprechend.', 'warn');
+                }
+            }
+        } catch (e) {}
+        const zielAnzahl = (restErlaubt != null)
+            ? Math.min(st.count, restErlaubt) : st.count;
+        const durchlaeufe = (st.type === 'reihe') ? zielAnzahl : 1;
         for (let d = 0; d < durchlaeufe; d++) {
             if (vorlagenRun.cancel) {
                 return { done: doneTotal, stop: true, stopReason: 'auf Wunsch gestoppt' };
@@ -9466,8 +9546,9 @@
                 syncSbcWithOpenChallenge();
                 // Nach einem Drossel-Wiederanlauf zaehlen die schon
                 // abgegebenen Runden mit - sonst wuerden count ZUSAETZLICHE
-                // geplant statt der restlichen.
-                want = st.count - doneTotal;
+                // geplant statt der restlichen. zielAnzahl traegt zusaetzlich
+                // EAs Rest-Wiederholungen (v5.11.11).
+                want = zielAnzahl - doneTotal;
                 if (want <= 0) break;
                 plan = await planBatchRounds(want, readConfig(st.profil));
                 hideProgress();
@@ -9749,6 +9830,41 @@
         catch (e) { warn('Vorlagen speichern fehlgeschlagen:', e); }
     }
 
+    /**
+     * Verfuegbarkeit einer Vorlage aus den sichtbaren Hub-Kacheln.
+     * statusFor(setName) liefert den Kachel-Status (leer = unbekannt).
+     * aus=true NUR, wenn ALLE Schritte nachweislich verbraucht sind.
+     */
+    function vorlagenAvailability(v, statusFor) {
+        const zeilen = [];
+        let bekannt = 0, erschoepft = 0;
+        for (const st of v.steps) {
+            const rl = parseRepeatsLeft(statusFor(st.setName));
+            if (rl.cooldown) {
+                bekannt++; erschoepft++;
+                zeilen.push(st.setName + ': heute verbraucht (' + rl.timer + ')');
+            } else if (rl.left != null) {
+                bekannt++;
+                if (rl.left <= 0) {
+                    erschoepft++;
+                    zeilen.push(st.setName + ': heute verbraucht');
+                } else {
+                    zeilen.push(st.setName + ': noch ' + rl.left + ' verf\u00fcgbar');
+                }
+            }
+        }
+        return { aus: v.steps.length > 0 && bekannt === v.steps.length &&
+                      erschoepft === v.steps.length,
+                 zeilen: zeilen };
+    }
+    /** Vorlage in der Liste verschieben; true, wenn sich etwas bewegt hat. */
+    function vorlagenMove(items, id, delta) {
+        const i = items.findIndex(function (v) { return v.id === id; });
+        const j = i + delta;
+        if (i < 0 || j < 0 || j >= items.length) return false;
+        const t = items[i]; items[i] = items[j]; items[j] = t;
+        return true;
+    }
     /** Eine Zeile pro Vorlage: "10x 10x 85+ Upgrade · 1x 87x5 (Set komplett)". */
     function vorlageSummary(v) {
         if (!v.steps.length) return 'noch keine Schritte';
@@ -9824,25 +9940,33 @@
             '</span><button class="sbc-opt-vl-x" data-act="vl-zu" ' +
             'title="Schlie\u00dfen">\u2715</button></div>';
     }
-    function vorlagenListeHtml(items) {
+    function vorlagenListeHtml(eintraege) {
         let h = vorlagenHeaderHtml('Vorlagen');
-        if (!items.length) {
+        if (!eintraege.length) {
             h += '<div class="sbc-opt-vl-leer">Noch keine Vorlagen. Eine Vorlage ' +
                 'ist eine gespeicherte Schrittliste (z.B. \u201e10\u00d7 10x 85+ ' +
                 'Upgrade\u201c), die auf Knopfdruck durchl\u00e4uft \u2013 ' +
                 'abgegeben wird automatisch nur bei 100% Confidence, sonst ' +
                 'h\u00e4lt der Lauf mit Vorschau an.</div>';
         }
-        for (const v of items) {
-            h += '<div class="sbc-opt-vl-card">' +
+        for (const e of eintraege) {
+            const v = e.v || e;
+            const avail = e.avail || { aus: false, zeilen: [] };
+            h += '<div class="sbc-opt-vl-card' + (avail.aus ? ' aus' : '') + '">' +
                 '<div class="sbc-opt-vl-cardkopf"><b>' + escapeHtml(v.name) + '</b>' +
                 '<button class="sbc-opt-btn primary sbc-opt-vl-start" data-act="vl-start:' +
-                escapeHtml(v.id) + '">\u25b6 Start</button></div>' +
+                escapeHtml(v.id) + '"' + (avail.aus ? ' disabled title="Heute nicht mehr verf\u00fcgbar"' : '') +
+                '>\u25b6 Start</button></div>' +
                 '<div class="sbc-opt-vl-sum">' + escapeHtml(vorlageSummary(v)) + '</div>' +
+                avail.zeilen.map(function (z) {
+                    return '<div class="sbc-opt-vl-avail">' + escapeHtml(z) + '</div>';
+                }).join('') +
                 (v.lastRun && v.lastRun.text
                     ? '<div class="sbc-opt-vl-last">zuletzt: ' +
                       escapeHtml(v.lastRun.text) + '</div>' : '') +
                 '<div class="sbc-opt-vl-tools">' +
+                '<button class="sbc-opt-btn ghost sbc-opt-vl-mini" data-act="vl-up:' + escapeHtml(v.id) + '" title="nach oben">\u2191</button>' +
+                '<button class="sbc-opt-btn ghost sbc-opt-vl-mini" data-act="vl-down:' + escapeHtml(v.id) + '" title="nach unten">\u2193</button>' +
                 '<button class="sbc-opt-btn ghost" data-act="vl-edit:' + escapeHtml(v.id) + '">Bearbeiten</button>' +
                 '<button class="sbc-opt-btn ghost" data-act="vl-copy:' + escapeHtml(v.id) + '">Kopie</button>' +
                 '<button class="sbc-opt-btn ghost" data-act="vl-del:' + escapeHtml(v.id) + '">L\u00f6schen</button>' +
@@ -11005,6 +11129,30 @@
         if (parentText != null && norm(parentText) === t) return false;
         return true;
     }
+    /**
+     * Sichtbar im Sinne von "nimmt Platz ein". Bei Fehlern lieber true:
+     * ENTFERNEN und NICHT-DEKORIEREN brauchen einen positiven Beleg.
+     */
+    function elVisible(el) {
+        try {
+            const r = el.getBoundingClientRect();
+            return !!(r && (r.width > 0 || r.height > 0));
+        } catch (e) { return true; }
+    }
+    /** Traegt dieser Kasten einen SICHTBAREN Open-Knopf? */
+    function boxHasVisibleOpen(box) {
+        try {
+            const els = box.querySelectorAll(
+                'button, a, [role="button"], div, span, li, p');
+            for (let i = 0; i < els.length; i++) {
+                const el = els[i];
+                if (!isPackOpenLabel(el.textContent,
+                        el.parentElement ? el.parentElement.textContent : null)) continue;
+                if (elVisible(el)) return true;
+            }
+        } catch (e) {}
+        return false;
+    }
     function packOpenButtons() {
         const out = [];
         try {
@@ -11018,6 +11166,10 @@
                 const el = els[i];
                 if (!isPackOpenLabel(el.textContent,
                         el.parentElement ? el.parentElement.textContent : null)) continue;
+                // Nur SICHTBARE Knoepfe: EA haelt im Store-Hub versteckte
+                // Klon-Instanzen jedes Packs (live: 9 von 10 mit rect 0x0) -
+                // dort dekorierte Reihen wurden zu Geistern.
+                if (!elVisible(el)) continue;
                 out.push(el);
             }
         } catch (e) {}
@@ -11825,32 +11977,41 @@
             const rows = document.querySelectorAll('.sbc-opt-tilebtn-row');
             for (let k = 0; k < rows.length; k++) {
                 const row = rows[k];
+                const home = row.parentElement;
                 const wantId = row.getAttribute('data-sbc-opt-pack');
-                // NUR der direkte Eltern-Kasten zaehlt: die Reihe wurde genau
-                // in das Element gehaengt, dessen Titel passte. Wer hier wie
-                // der Injektor hochklettert, findet an der Wurzel JEDEN Titel
-                // - und ein Geist saehe fuer immer gesund aus (Testfund).
+                let weg = false;
+                // NUR der direkte Eltern-Kasten zaehlt: die Reihe wurde
+                // genau in das Element gehaengt, dessen Titel passte. Wer
+                // hier wie der Injektor hochklettert, findet an der
+                // Wurzel JEDEN Titel (Testfund v5.11.8).
                 let g = null;
-                if (row.parentElement) {
-                    const cands = packTileTitleCandidates(row.parentElement);
+                if (home) {
+                    const cands = packTileTitleCandidates(home);
                     for (const c of cands) {
                         const hit = matchPackGroupByTitle(c);
                         if (hit) { g = hit; break; }
                     }
                 }
-                if (g && String(g.id) === String(wantId)) {
-                    // Gesund - aber stimmt die ANZAHL noch? Die Reihe wird
-                    // nur nach eigenen Pack-Laeufen neu gebaut; kommen Packs
-                    // per SBC-Belohnung dazu, steht sonst dauerhaft die alte
-                    // Zahl da (live: Geist mit "Alle 8", kein Pack hat 8).
+                if (!(g && String(g.id) === String(wantId))) {
+                    weg = true;                    // Geist oder recycelt
+                } else {
                     let text0 = '';
                     try { text0 = String((row.children[0] || {}).textContent || ''); }
                     catch (e2) {}
-                    if (text0.indexOf('Alle ' + g.count + ' ') > -1) continue;
-                    // veraltete Zahl -> neu bauen (faellt durch zum Abraeumen)
+                    if (text0.indexOf('Alle ' + g.count + ' ') < 0) {
+                        weg = true;                // Anzahl veraltet
+                    } else if (home && !boxHasVisibleOpen(home)) {
+                        // Reihe ohne SICHTBAREN Open-Knopf daneben: ein
+                        // versteckter Klon (packRows 28.08.: 9 von 10
+                        // Instanzen mit rect 0x0) oder die einzig sichtbare
+                        // Zeile einer kollabierten Klon-Karte - DER Geist.
+                        // Eine eigene Unsichtbar-Pruefung der Reihe war
+                        // redundant (Mutations-Gegenbeweis): der versteckte
+                        // Klon hat auch keinen sichtbaren Open-Knopf.
+                        weg = true;
+                    }
                 }
-                const home = row.parentElement;
-                if (!home) continue;
+                if (!weg || !home) continue;
                 try {
                     const marked = home.querySelectorAll(
                         '[' + PACK_BTN_MARK + '],[' + PACK_BTN_TRIES + ']');

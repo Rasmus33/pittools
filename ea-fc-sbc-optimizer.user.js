@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.11.0
+// @version      5.11.1
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.11.0';
+    const VERSION = '5.11.1';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -9434,8 +9434,22 @@
                 plan = await planBatchRounds(want, readConfig(st.profil));
                 hideProgress();
             } else {
-                await loadQueueList(true, true, nav.sid);
-                if (String(queueLoadedSet) !== String(nav.sid) || queueLoadError) {
+                // Cache ZUERST: EA hat die Liste beim Oeffnen des Sets gerade
+                // selbst geholt (das passive Mitlesen hat sie eingesammelt).
+                // Ein ERZWUNGENER Netz-Request lief live direkt in EAs
+                // Drossel (HTTP 512) - und der Schritt brach ab, obwohl die
+                // frische Liste laengst da war.
+                await loadQueueList(false, true, nav.sid);
+                if (String(queueLoadedSet) !== String(nav.sid)) {
+                    // Kein Cache furs richtige Set: EINMAL mit Netz
+                    // nachfassen, mit Abstand (Drossel-Hygiene).
+                    await batchWait(1500);
+                    await loadQueueList(true, true, nav.sid);
+                }
+                // Entscheidend ist, DASS die Liste des richtigen Sets da ist -
+                // ein gescheiterter Auffrisch-Versuch (queueLoadError) macht
+                // sie nicht ungueltig (Messproblem, kein Sachproblem).
+                if (String(queueLoadedSet) !== String(nav.sid)) {
                     return { done: doneTotal, level: 'warn',
                              note: 'Challenge-Liste lie\u00df sich nicht laden' +
                                  (queueLoadError ? ' (' + queueLoadError + ')' : '') +

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.11.21
+// @version      5.11.22
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.11.21';
+    const VERSION = '5.11.22';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -8173,7 +8173,14 @@
         // Challenge BETRETEN. Der zweite fehlte bis v4.95.0 komplett.
         let phase = 'zeile';
         for (let i = 0; i < 60; i++) {          // 60 x 300ms = max ~18s
-            dismissRewardPopup();
+            // Anforderungs-Popups sind hier GEWOLLT: der Zeilen-Tap oeffnet
+            // sie, ihr Start-Knopf ist der Eintritt. Der Aufraeumer schloss
+            // sie bisher in JEDER Takt-Runde wieder (Video 28.08.: Karten
+            // auf, Liste sauber, Karten auf ...) - deshalb fand die
+            // Popup-Suche nie etwas. Aufgeraeumt wird nur ohne offenes
+            // Anforderungs-Popup (Belohnungs-Dialoge kommen erst NACH dem
+            // Abgeben, da ist laengst keines mehr offen).
+            if (!findRequirementsPopup(null)) dismissRewardPopup();
             syncSbcWithOpenChallenge();
             const ctrl = findSbcController();
             if (ctrl && String(STATE.sbc.challengeId) === String(step.id)) {

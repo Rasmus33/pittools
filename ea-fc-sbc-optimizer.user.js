@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.11.18
+// @version      5.11.19
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.11.18';
+    const VERSION = '5.11.19';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -8682,7 +8682,62 @@
      * `rowEl` ist die zuvor GEWAEHLTE Zeile - nur dort wird gesucht, nie in
      * allen. Der Fallback ist auf dem Desktop unerreichbar (aussen gewinnt).
      */
+    /**
+     * "Start Challenge" im ANFORDERUNGS-POPUP der schmalen Ansicht klicken.
+     * Live (28.08., Pixel): der Zeilen-Tap oeffnet dort ein Popup
+     * (ut-sbc-requirements-popup) mit den Details - der echte Eintritt ist
+     * DESSEN Start-Knopf. Bei mehreren gestapelten Popups (jeder frühere
+     * Versuch liess eines zurueck) entscheidet der Challenge-Name im
+     * Popup-Text. Geklickt wird die aeusserste Huelle mit exakter
+     * Beschriftung, doppelt (Handler am Kind - wie Kachel und Zeile).
+     */
+    function clickRequirementsPopupStart(wantName) {
+        try {
+            const pops = visibleAll('[class*="ut-sbc-requirements-popup"]');
+            if (!pops.length) return { ok: false, why: 'kein Anforderungs-Popup offen' };
+            const want = String(wantName || '').replace(/\s+/g, ' ').trim().toLowerCase();
+            for (const p of pops) {
+                if (want && pops.length > 1) {
+                    const txt = String(p.textContent || '')
+                        .replace(/\s+/g, ' ').toLowerCase();
+                    if (txt.indexOf(want) < 0) continue;
+                }
+                const cand = Array.prototype.slice.call(
+                    p.querySelectorAll('button, .btn-standard, div, span'));
+                for (const el of cand) {
+                    const t = String(el.textContent || '')
+                        .replace(/\s+/g, ' ').trim().toLowerCase();
+                    if (t !== 'start challenge') continue;
+                    const pt = el.parentElement
+                        ? String(el.parentElement.textContent || '')
+                            .replace(/\s+/g, ' ').trim().toLowerCase()
+                        : null;
+                    if (pt === t) continue;          // aeusserste Huelle nehmen
+                    const ok = clickLike(el);
+                    try {
+                        const kids = Array.prototype.slice.call(el.children || []);
+                        const j = pickRowInnerTarget(kids);
+                        if (j >= 0) clickLike(kids[j]);
+                    } catch (e2) {}
+                    return { ok: ok, why: 'Start-Knopf im Anforderungs-Popup geklickt' };
+                }
+            }
+            return { ok: false, why: 'Anforderungs-Popup ohne Start-Knopf' };
+        } catch (e) {
+            return { ok: false, why: 'Popup-Weg warf: ' + ((e && e.message) || e) };
+        }
+    }
     function clickChallengeEnterButton(rowEl) {
+        // SCHMALE ANSICHT, neues Verhalten (28.08.): der Zeilen-Tap oeffnet
+        // ein Anforderungs-Popup, der Eintritt ist DESSEN Start-Knopf.
+        // Zuerst dieser Weg - ohne offenes Popup (Desktop-Split-View) geht
+        // es unveraendert weiter.
+        const wantName = rowEl
+            ? String(rowEl.textContent || '').replace(/start challenge/ig, ' ')
+                .replace(/\s+/g, ' ').trim()
+            : '';
+        const popStart = clickRequirementsPopupStart(wantName);
+        if (popStart.ok) return popStart;
         let rows = [];
         try {
             rows = Array.prototype.slice.call(document.querySelectorAll(

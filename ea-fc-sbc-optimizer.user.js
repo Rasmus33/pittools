@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.11.15
+// @version      5.11.16
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.11.15';
+    const VERSION = '5.11.16';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -8768,7 +8768,23 @@
      * Zahl - genau die Verwechslung, vor der der Kommentar in
      * setLooksRepeatable seit v4.9x warnt ("052 Mins" ist keine 52).
      */
-    function parseRepeatsLeft(statusRaw) {
+    function parseRepeatsLeft(statusRaw, parts) {
+        // Bevorzugt die KIND-Texte des Status-Containers: dort steht die
+        // Rest-Zahl allein ("Repeatable: 1"), waehrend der Klebetext sie mit
+        // dem Timer verschmilzt ("17 Hours"). Nur ein Teil, der selbst schon
+        // verschmolzen aussieht (Zahl MIT Einheit), faellt auf die flache
+        // Heuristik zurueck.
+        if (parts && parts.length) {
+            for (const p of parts) {
+                if (!/^repeatable/i.test(p)) continue;
+                const pm = p.match(/^Repeatable:?\s*(\d+)\s*([A-Za-z]*)\s*$/i);
+                if (pm && !pm[2]) {
+                    return { left: Number(pm[1]), cooldown: false, timer: null };
+                }
+                if (!/\d/.test(p)) return { left: null, cooldown: false, timer: null };
+                break;
+            }
+        }
         const raw = String(statusRaw || '').replace(/\s+/g, ' ').trim();
         if (!raw) return { left: null, cooldown: false, timer: null };
         if (/non-repeatable/i.test(raw)) {
@@ -8810,17 +8826,34 @@
                 const st = e.querySelector('.sbc-status-container');
                 const raw = ((st && st.textContent) || '').trim().replace(/\s+/g, ' ');
                 if (!raw) return { repeatable: null, status: '' };
+                // Die KIND-Texte einzeln: der Klebetext ist mehrdeutig
+                // ("Repeatable: 1" + Timer "7 Hours" wird zu "17 Hours" -
+                // live 28.08. als Abklingzeit fehlgelesen). In den Kindern
+                // steht die Rest-Zahl sauber fuer sich.
+                const parts = [];
+                try {
+                    const kids = st ? st.children : null;
+                    for (let k = 0; kids && k < kids.length; k++) {
+                        const tx = String(kids[k].textContent || '')
+                            .replace(/\s+/g, ' ').trim();
+                        if (tx) parts.push(tx.slice(0, 60));
+                    }
+                } catch (e2) {}
                 const low = raw.toLowerCase();
                 // "Repeatable: 5 …" / "Repeatable …" -> geht noch.
                 if (low.indexOf('repeatable') > -1) {
                     // Explizite 0 kommt vor - dann ist Schluss.
                     const m = raw.match(/Repeatable:\s*(\d+)/i);
-                    if (m && Number(m[1]) === 0) return { repeatable: false, status: raw };
-                    return { repeatable: true, status: raw };
+                    if (m && Number(m[1]) === 0) {
+                        return { repeatable: false, status: raw, parts: parts };
+                    }
+                    return { repeatable: true, status: raw, parts: parts };
                 }
                 // Kein "Repeatable", aber "Complete(d)" -> fuer heute durch.
-                if (low.indexOf('complete') > -1) return { repeatable: false, status: raw };
-                return { repeatable: null, status: raw };
+                if (low.indexOf('complete') > -1) {
+                    return { repeatable: false, status: raw, parts: parts };
+                }
+                return { repeatable: null, status: raw, parts: parts };
             }
         } catch (e) {}
         return { repeatable: null, status: '' };
@@ -9193,7 +9226,7 @@
                 let avail = { aus: false, zeilen: [] };
                 try {
                     avail = vorlagenAvailability(v, function (name) {
-                        try { return setLooksRepeatable(name || '').status; }
+                        try { return setLooksRepeatable(name || ''); }
                         catch (e) { return ''; }
                     });
                 } catch (e) {}
@@ -9636,7 +9669,7 @@
         let restErlaubt = null;
         try {
             const repStatus = setLooksRepeatable(st.setName || '');
-            const rl = parseRepeatsLeft(repStatus.status);
+            const rl = parseRepeatsLeft(repStatus.status, repStatus.parts);
             STATE.diag.vorlagenRepeats = { setName: st.setName,
                 status: String(repStatus.status || '').slice(0, 80),
                 left: rl.left, cooldown: !!rl.cooldown };
@@ -10029,7 +10062,10 @@
         const zeilen = [];
         let bekannt = 0, erschoepft = 0;
         for (const st of v.steps) {
-            const rl = parseRepeatsLeft(statusFor(st.setName));
+            const rep = statusFor(st.setName);
+            const rl = (rep && typeof rep === 'object')
+                ? parseRepeatsLeft(rep.status, rep.parts)
+                : parseRepeatsLeft(rep);
             if (rl.cooldown) {
                 bekannt++; erschoepft++;
                 zeilen.push(st.setName + ': heute verbraucht (' + rl.timer + ')');

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.11.11
+// @version      5.11.12
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.11.11';
+    const VERSION = '5.11.12';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -8788,10 +8788,25 @@
             const tiles = visibleAll('.ut-sbc-set-tile-view');
             const norm = (x) => String(x || '').toLowerCase().replace(/\s+/g, ' ').trim();
             const target = norm(want);
-            for (const e of tiles) {
-                const t = e.querySelector('.tileTitle, .tileHeader, h1');
-                const title = norm(t && t.textContent);
-                if (!title || (title !== target && title.indexOf(target) < 0)) continue;
+            // ZWEI Durchgaenge: erst exakte Titelgleichheit ueber ALLE
+            // Kacheln, dann der Teilstring-Rueckfall. Live (28.08.): fuer
+            // "Provisions Upgrade" traf der Teilstring zuerst die Kachel
+            // "Repeatable FUTTIES Provisions Upgrade" - und die Vorlage las
+            // die Verfuegbarkeit des FALSCHEN Sets.
+            let hit = null;
+            for (const exakt of [true, false]) {
+                for (const e of tiles) {
+                    const t = e.querySelector('.tileTitle, .tileHeader, h1');
+                    const title = norm(t && t.textContent);
+                    if (!title) continue;
+                    if (exakt ? (title !== target) : (title.indexOf(target) < 0)) continue;
+                    hit = e;
+                    break;
+                }
+                if (hit) break;
+            }
+            if (hit) {
+                const e = hit;
                 const st = e.querySelector('.sbc-status-container');
                 const raw = ((st && st.textContent) || '').trim().replace(/\s+/g, ' ');
                 if (!raw) return { repeatable: null, status: '' };

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.11.23
+// @version      5.12.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.11.23';
+    const VERSION = '5.12.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -9718,6 +9718,40 @@
             vorlagenRestore();
         });
     }
+    /**
+     * In den STORE wechseln - ueber EAs eigene Tab-Leiste unten. Rasmus'
+     * Standard-Workflow nach einer Vorlage: Packs gebaut -> Store -> Storage
+     * auffuellen. Exakte Beschriftung, aeusserste Huelle, Doppel-Tap
+     * (bei Kacheln live belegt: Handler kann am Kind haengen).
+     */
+    function clickStoreTab() {
+        try {
+            const bars = visibleAll('[class*="tab-bar"]');
+            for (const bar of bars) {
+                const els = bar.querySelectorAll(
+                    'button, a, [role="button"], li, div, span');
+                for (let i = 0; i < els.length; i++) {
+                    const el = els[i];
+                    const t = String(el.textContent || '')
+                        .replace(/\s+/g, ' ').trim().toLowerCase();
+                    if (t !== 'store') continue;
+                    const pt = el.parentElement
+                        ? String(el.parentElement.textContent || '')
+                            .replace(/\s+/g, ' ').trim().toLowerCase()
+                        : null;
+                    if (pt === t) continue;          // aeusserste Huelle nehmen
+                    const ok = clickLike(el);
+                    try {
+                        const kids = Array.prototype.slice.call(el.children || []);
+                        const j = pickRowInnerTarget(kids);
+                        if (j >= 0) clickLike(kids[j]);
+                    } catch (e2) {}
+                    return { ok: ok, why: 'Store-Tab geklickt' };
+                }
+            }
+        } catch (e) {}
+        return { ok: false, why: 'kein Store-Tab gefunden' };
+    }
     async function startVorlage(v) {
         if (vorlagenRun && !vorlagenRun.fertig) {
             toast('Es l\u00e4uft schon eine Vorlage.', 'error');
@@ -9777,7 +9811,20 @@
         vorlagenRun.pause = null;
         vorlagenRun.pauseResolve = null;
         hideProgress();
-        vorlagenRestore();
+        // Erfolgs-Workflow (Rasmus, 30.08.): nach einer VOLLSTAENDIG
+        // durchgelaufenen Vorlage direkt in den STORE (Packs bauen ->
+        // Storage auffuellen) - Overlay und Leiste zu, Panel bleibt zu.
+        // Bei einem Stopp oder ohne eine einzige Abgabe kommt wie bisher
+        // die volle Ansicht mit dem Log (da will man SEHEN, warum).
+        if (!gestoppt && abgegeben > 0) {
+            if (ui.vlTopbar) ui.vlTopbar.style.display = 'none';
+            if (ui.vorlagenOverlay) ui.vorlagenOverlay.style.display = 'none';
+            const st = clickStoreTab();
+            toast('Vorlage fertig: ' + abgegeben + ' SBC(s) abgegeben' +
+                (st.ok ? ' - weiter im Store.' : '.'), 'ok');
+        } else {
+            vorlagenRestore();
+        }
         // EIN leises Nachladen am Ende des GANZEN Laufs ersetzt die
         // unterdrueckten Pro-Durchlauf-Reloads (Panel-Liste aktuell halten).
         setTimeout(function () {

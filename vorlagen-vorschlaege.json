@@ -1,121 +1,185 @@
 {
-  "v": 1,
-  "items": [
+ "v": 1,
+ "items": [
+  {
+   "name": "10x10x85",
+   "steps": [
     {
-      "name": "10x10x85",
-      "steps": [
-        {
-          "type": "batch",
-          "setName": "10x 85+ Upgrade",
-          "count": 10,
-          "profil": {
-            "minRating": 75, "maxOvershoot": 0, "applyRarity": true,
-            "specialOnlyFromStorage": true, "maxRatingEnabled": false, "maxRating": 85,
-            "scarcityWeight": 18, "storageBonus": 2, "untradeableBonus": 3,
-            "maxRareRating": 77, "maxCommonRating": 77, "rarityGuardCost": 8,
-            "rarityMode": "vereinTotw", "totwSoftCost": 8, "specialCost": 1,
-            "ratingCostSpec": "0-80:0, 81-84:2, 85-86:1, 87:6, 88:2, 89-90:3, 91-92:4, 93+:12"
-          }
-        }
-      ],
-      "anzahlChips": [3, 5, 10],
-      "anzahl": 10
-    },
-    {
-      "name": "10xfutties pick",
-      "steps": [
-        {
-          "type": "batch",
-          "setName": "1 of 4 FUTTIES Player Pick",
-          "count": 10,
-          "profil": {
-            "minRating": 75, "maxOvershoot": 0, "applyRarity": true,
-            "specialOnlyFromStorage": true, "maxRatingEnabled": false, "maxRating": 78,
-            "scarcityWeight": 18, "storageBonus": 2, "untradeableBonus": 3,
-            "maxRareRating": 77, "maxCommonRating": 77, "rarityGuardCost": 8,
-            "rarityMode": "vereinTotw", "totwSoftCost": 8, "specialCost": 1,
-            "ratingCostSpec": "0-80:0, 81-84:2, 85-86:1, 87:6, 88:2, 89-90:3, 91-92:4, 93+:12"
-          }
-        }
-      ],
-      "anzahlChips": [3, 5, 10]
-    },
-    {
-      "name": "87er Provisions",
-      "steps": [
-        {
-          "type": "batch",
-          "setName": "Repeatable FUTTIES Provisions Upgrade",
-          "count": 5,
-          "profil": {
-            "minRating": 87, "maxOvershoot": 0, "applyRarity": true,
-            "specialOnlyFromStorage": true, "maxRatingEnabled": true, "maxRating": 87,
-            "scarcityWeight": 18, "storageBonus": 2, "untradeableBonus": 3,
-            "maxRareRating": 77, "maxCommonRating": 77, "rarityGuardCost": 8,
-            "rarityMode": "vereinTotw", "totwSoftCost": 8, "specialCost": 1,
-            "ratingCostSpec": "0-80:0, 81-84:2, 85-86:1, 87:6, 88:2, 89-90:3, 91-92:4, 93+:12"
-          }
-        }
-      ],
-      "anzahlChips": [3, 5, 10],
-      "anzahl": 5
-    },
-    {
-      "name": "provisions",
-      "steps": [
-        {
-          "type": "batch",
-          "setName": "Provisions Upgrade",
-          "count": 5,
-          "profil": {
-            "minRating": 85, "maxOvershoot": 0, "applyRarity": true,
-            "specialOnlyFromStorage": true, "maxRatingEnabled": true, "maxRating": 85,
-            "scarcityWeight": 18, "storageBonus": 2, "untradeableBonus": 3,
-            "maxRareRating": 77, "maxCommonRating": 77, "rarityGuardCost": 8,
-            "rarityMode": "vereinTotw", "totwSoftCost": 8, "specialCost": 1,
-            "ratingCostSpec": "0-80:0, 81-84:2, 85-86:1, 87:6, 88:2, 89-90:3, 91-92:4, 93+:12"
-          }
-        }
-      ],
-      "anzahlChips": [3, 5, 10]
-    },
-    {
-      "name": "7 x 87",
-      "steps": [
-        {
-          "type": "reihe",
-          "setName": "7x 87+ Upgrade",
-          "count": 5,
-          "profil": {
-            "minRating": 75, "maxOvershoot": 0, "applyRarity": true,
-            "specialOnlyFromStorage": true, "maxRatingEnabled": false, "maxRating": 77,
-            "scarcityWeight": 18, "storageBonus": 2, "untradeableBonus": 3,
-            "maxRareRating": 77, "maxCommonRating": 77, "rarityGuardCost": 8,
-            "rarityMode": "vereinTotw", "totwSoftCost": 8, "specialCost": 1,
-            "ratingCostSpec": "0-80:0, 81-84:2, 85-86:1, 87:6, 88:2, 89-90:3, 91-92:4, 93+:12"
-          }
-        }
-      ],
-      "anzahlChips": [3, 5, 10]
-    },
-    {
-      "name": "2 von 3 86+",
-      "steps": [
-        {
-          "type": "batch",
-          "setName": "2 of 3 86+ Player Pick",
-          "count": 5,
-          "profil": {
-            "minRating": 75, "maxOvershoot": 0, "applyRarity": true,
-            "specialOnlyFromStorage": true, "maxRatingEnabled": true, "maxRating": 78,
-            "scarcityWeight": 18, "storageBonus": 2, "untradeableBonus": 3,
-            "maxRareRating": 77, "maxCommonRating": 77, "rarityGuardCost": 8,
-            "rarityMode": "vereinTotw", "totwSoftCost": 8, "specialCost": 1,
-            "ratingCostSpec": "0-80:0, 81-84:2, 85-86:1, 87:6, 88:2, 89-90:3, 91-92:4, 93+:12"
-          }
-        }
-      ],
-      "anzahlChips": [3, 5, 10]
+     "type": "batch",
+     "setName": "10x 85+ Upgrade",
+     "count": 10,
+     "profil": {
+      "minRating": 75,
+      "maxOvershoot": 0,
+      "applyRarity": true,
+      "specialOnlyFromStorage": true,
+      "maxRatingEnabled": false,
+      "maxRating": 85,
+      "scarcityWeight": 18,
+      "storageBonus": 2,
+      "untradeableBonus": 3,
+      "maxRareRating": 77,
+      "maxCommonRating": 77,
+      "rarityGuardCost": 8,
+      "rarityMode": "vereinTotw",
+      "totwSoftCost": 8,
+      "specialCost": 1,
+      "ratingCostSpec": "0-80:0, 81-84:2, 85-86:1, 87:6, 88:2, 89-90:3, 91-92:4, 93+:12"
+     }
     }
-  ]
+   ],
+   "anzahlChips": [3, 5, 10],
+   "anzahl": 10
+  },
+  {
+   "name": "Futties pick",
+   "steps": [
+    {
+     "type": "batch",
+     "setName": "1 of 4 96+ FUTTIES Player Pick",
+     "count": 10,
+     "profil": {
+      "minRating": 75,
+      "maxOvershoot": 0,
+      "applyRarity": true,
+      "specialOnlyFromStorage": true,
+      "maxRatingEnabled": false,
+      "maxRating": 85,
+      "scarcityWeight": 18,
+      "storageBonus": 2,
+      "untradeableBonus": 3,
+      "maxRareRating": 77,
+      "maxCommonRating": 77,
+      "rarityGuardCost": 8,
+      "rarityMode": "vereinTotw",
+      "totwSoftCost": 8,
+      "specialCost": 1,
+      "ratingCostSpec": "0-80:0, 81-84:2, 85-86:1, 87:6, 88:2, 89-90:3, 91-92:4, 93+:12"
+     }
+    }
+   ],
+   "anzahlChips": [3, 5, 10],
+   "anzahl": null
+  },
+  {
+   "name": "87er Provisions",
+   "steps": [
+    {
+     "type": "batch",
+     "setName": "Repeatable FUTTIES Provisions Upgrade",
+     "count": 5,
+     "profil": {
+      "minRating": 87,
+      "maxOvershoot": 0,
+      "applyRarity": true,
+      "specialOnlyFromStorage": true,
+      "maxRatingEnabled": true,
+      "maxRating": 87,
+      "scarcityWeight": 18,
+      "storageBonus": 2,
+      "untradeableBonus": 3,
+      "maxRareRating": 77,
+      "maxCommonRating": 77,
+      "rarityGuardCost": 8,
+      "rarityMode": "vereinTotw",
+      "totwSoftCost": 8,
+      "specialCost": 1,
+      "ratingCostSpec": "0-80:0, 81-84:2, 85-86:1, 87:6, 88:2, 89-90:3, 91-92:4, 93+:12"
+     }
+    }
+   ],
+   "anzahlChips": [3, 5, 10],
+   "anzahl": 5
+  },
+  {
+   "name": "7 x 87",
+   "steps": [
+    {
+     "type": "reihe",
+     "setName": "7x 87+ Upgrade",
+     "count": 5,
+     "profil": {
+      "minRating": 75,
+      "maxOvershoot": 0,
+      "applyRarity": true,
+      "specialOnlyFromStorage": true,
+      "maxRatingEnabled": false,
+      "maxRating": 77,
+      "scarcityWeight": 18,
+      "storageBonus": 2,
+      "untradeableBonus": 3,
+      "maxRareRating": 77,
+      "maxCommonRating": 77,
+      "rarityGuardCost": 8,
+      "rarityMode": "vereinTotw",
+      "totwSoftCost": 8,
+      "specialCost": 1,
+      "ratingCostSpec": "0-80:0, 81-84:2, 85-86:1, 87:6, 88:2, 89-90:3, 91-92:4, 93+:12"
+     }
+    }
+   ],
+   "anzahlChips": [3, 5, 10],
+   "anzahl": 5
+  },
+  {
+   "name": "provisions",
+   "steps": [
+    {
+     "type": "batch",
+     "setName": "Provisions Upgrade",
+     "count": 5,
+     "profil": {
+      "minRating": 85,
+      "maxOvershoot": 0,
+      "applyRarity": true,
+      "specialOnlyFromStorage": true,
+      "maxRatingEnabled": true,
+      "maxRating": 85,
+      "scarcityWeight": 18,
+      "storageBonus": 2,
+      "untradeableBonus": 3,
+      "maxRareRating": 77,
+      "maxCommonRating": 77,
+      "rarityGuardCost": 8,
+      "rarityMode": "vereinTotw",
+      "totwSoftCost": 8,
+      "specialCost": 1,
+      "ratingCostSpec": "0-80:0, 81-84:2, 85-86:1, 87:6, 88:2, 89-90:3, 91-92:4, 93+:12"
+     }
+    }
+   ],
+   "anzahlChips": [3, 5, 10],
+   "anzahl": 3
+  },
+  {
+   "name": "10x86",
+   "steps": [
+    {
+     "type": "batch",
+     "setName": "10x 86+ Upgrade",
+     "count": 10,
+     "profil": {
+      "minRating": 75,
+      "maxOvershoot": 0,
+      "applyRarity": true,
+      "specialOnlyFromStorage": true,
+      "maxRatingEnabled": false,
+      "maxRating": 85,
+      "scarcityWeight": 18,
+      "storageBonus": 2,
+      "untradeableBonus": 3,
+      "maxRareRating": 77,
+      "maxCommonRating": 77,
+      "rarityGuardCost": 8,
+      "rarityMode": "vereinTotw",
+      "totwSoftCost": 8,
+      "specialCost": 1,
+      "ratingCostSpec": "0-80:0, 81-84:2, 85-86:1, 87:6, 88:2, 89-90:3, 91-92:4, 93+:12"
+     }
+    }
+   ],
+   "anzahlChips": [3, 5, 10],
+   "anzahl": 5
+  }
+ ]
 }

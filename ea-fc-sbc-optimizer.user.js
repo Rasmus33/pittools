@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.12.0
+// @version      5.13.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.12.0';
+    const VERSION = '5.13.0';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -175,7 +175,19 @@
             popupDismissCount: 0,    // wie oft dismissRewardPopup() seit App-Start wirklich etwas geschlossen hat (analog batchStuckCount, LEARNINGS §27)
             lastAward: null,         // EAs Antwort auf die letzte Abgabe (grantedChallengeAwards)
             queueScan: null,         // SBC-Reihe: die Challenges des offenen Sets (loadQueueList)
-            packScan: null           // Pack-Opener (Ticket #69/#76): myPacks/lastRun/lastAllRun/runsCount/storageCounts/missingGlobals/errorForm, siehe mergePackScan() (LEARNINGS §46)
+            packScan: null,          // Pack-Opener (Ticket #69/#76): myPacks/lastRun/lastAllRun/runsCount/storageCounts/missingGlobals/errorForm, siehe mergePackScan() (LEARNINGS §46)
+            // FC 27 (v5.13.0): welches Spiel spricht EAs API (fc26/fc27)?
+            // Aus dem "/ut/game/{spiel}/"-Segment der ersten utas-URL. Die
+            // Web App ist jahres-agnostisch gebaut (GAME_NAME = 'fc' + Jahr aus
+            // window.fut_year) - der Wert hier ist der LIVE-Beweis, nicht die
+            // Annahme. Steht auch in der Panel-Debugzeile.
+            gameName: null,
+            // FC 27: EAs Antwort auf die SBC-Set-Liste (sbs/sets). Bei
+            // FC-27-Start sind SBCs in der Web App serverseitig abgeschaltet
+            // (SBC_ENABLED, EA: "spaeter in Season 1"). Status/Zeitpunkt/Anzahl,
+            // damit ein Report "keine SBC erkannt" von "EA liefert keine"
+            // unterscheiden kann. Siehe noteSbcSetsStatus().
+            sbcSets: null
         }
     };
     function log(...args) { try { console.log(LOG_PREFIX, ...args); } catch (e) {} }
@@ -354,10 +366,13 @@
     function detectApiBase(url) {
         try {
             const u = String(url);
-            const m = u.match(/^(https?:\/\/[^/]+\/ut\/game\/[^/]+\/)/i);
+            const m = u.match(/^(https?:\/\/[^/]+\/ut\/game\/([^/]+)\/)/i);
             if (m && m[1] && STATE.session.apiBase !== m[1]) {
                 STATE.session.apiBase = m[1];
-                log('API-Base erkannt:', m[1]);
+                // FC 27 (v5.13.0): das Spiel-Segment (fc26/fc27) getrennt
+                // merken - additiv, apiBase bleibt wie bisher die volle Basis.
+                STATE.diag.gameName = String(m[2]).toLowerCase();
+                log('API-Base erkannt:', m[1], '(Spiel: ' + STATE.diag.gameName + ')');
                 refreshDiagUI();
             }
             if (/\/ut\/game\//i.test(u)) {
@@ -504,6 +519,24 @@
             reportError('handleResponseBody(' + kind + ')', e);
         }
     }
+    // FC 27 (v5.13.0): HTTP-Status der SBC-Set-Liste mitschreiben. Zum
+    // FC-27-Start liefert EA in der Web App keine SBCs (serverseitig
+    // abgeschaltet, "spaeter in Season 1"). Ohne diese Zeile saehe ein
+    // Report nur "sbc.setId: null" - und wir wuerden im Script suchen statt
+    // bei EA. Reine Beobachtung: kein Abbruch, keine Meldung.
+    function noteSbcSetsStatus(url, status) {
+        try {
+            if (!RE_SBC_SETS.test(String(url))) return;
+            const s = STATE.diag.sbcSets ||
+                      (STATE.diag.sbcSets = { count: 0, okCount: 0, lastStatus: null, lastAt: 0, lastNonOk: null });
+            const st = parseInt(status, 10);
+            s.count++;
+            s.lastStatus = isNaN(st) ? null : st;
+            s.lastAt = Date.now();
+            if (st >= 200 && st < 300) s.okCount++;
+            else if (!isNaN(st)) s.lastNonOk = { status: st, at: s.lastAt };
+        } catch (e) {}
+    }
     // [URLCLS-END]
     // ---- fetch() Wrapper ---------------------------------------------------
     const _origFetch = window.fetch ? window.fetch.bind(window) : null;
@@ -522,6 +555,7 @@
                 try {
                     const url = (typeof input === 'string') ? input : (input && input.url);
                     if (url) noteUnclassifiedUtas(url);
+                    if (url) noteSbcSetsStatus(url, resp && resp.status);
                     if (url && classifyUrl(url)) {
                         resp.clone().text().then(function (txt) {
                             handleResponseBody(url, txt);
@@ -568,6 +602,7 @@
                 if (url && classifyUrl(url)) {
                     this.addEventListener('load', function () {
                         try {
+                            noteSbcSetsStatus(url, this.status);
                             let data = null;
                             const rt = this.responseType;
                             if (!rt || rt === 'text') data = this.responseText;
@@ -6877,11 +6912,55 @@
     function refreshDiagUI() {
         if (!ui.debug) return;
         const s = STATE.session;
+        // FC 27 (v5.13.0): Spiel und EAs SBC-Schalter sichtbar machen - am
+        // Handy ist das die einzige Stelle, an der man ohne Report sieht,
+        // ob die API schon fc27 spricht und ob EA SBCs ueberhaupt liefert.
+        const game = STATE.diag.gameName ? ' (' + STATE.diag.gameName + ')' : '';
+        const flags = readFeatureFlags();
+        const sbcFlag = (flags && flags.SBC_ENABLED === false) ? ' · SBC: von EA aus' : '';
         ui.debug.textContent =
-            'API: ' + (s.apiBase ? '✓' : '–') +
+            'API: ' + (s.apiBase ? '✓' : '–') + game +
             ' · SID: ' + (s.sid ? '✓' : '–') +
             ' · Services: ' + (servicesAvailable() ? '✓' : '–') +
-            ' · utas: ' + STATE.diag.utasSeen;
+            ' · utas: ' + STATE.diag.utasSeen + sbcFlag;
+    }
+    // FC 27 (v5.13.0): EAs serverseitige Feature-Schalter, so wie die Web App
+    // sie selbst abfragt (services.Configuration.checkFeatureEnabled). Zum
+    // FC-27-Start steht SBC_ENABLED in der Web App auf false - die App zeigt
+    // dann keine SBC-Kachel und schickt keinen sbs/sets-Request. Nur lesen,
+    // jede Stufe abgesichert; null heisst "nicht ablesbar", nicht "aus".
+    function readFeatureFlags() {
+        try {
+            const cfg = window.services && window.services.Configuration;
+            const KEY = window.UTServerSettingsRepository && window.UTServerSettingsRepository.KEY;
+            if (!cfg || typeof cfg.checkFeatureEnabled !== 'function' || !KEY) return null;
+            const out = {};
+            for (const name of ['SBC_ENABLED', 'STORAGE_PILE_ENABLED', 'STORE_ENABLED',
+                                'TRADING_ENABLED', 'ACADEMY_ENABLED', 'SBC_ALLOW_UNTRADEABLE']) {
+                if (KEY[name] == null) { out[name] = null; continue; }
+                try { out[name] = !!cfg.checkFeatureEnabled(KEY[name]); }
+                catch (e) { out[name] = null; }
+            }
+            return out;
+        } catch (e) { return null; }
+    }
+    // FC 27 (v5.13.0): Build-Nummer der Web App aus den Script-Tags
+    // (js/compiled_2.js?_=11321) plus EAs Jahres-Global. Aendert sich die
+    // Build-Nummer, hat EA ein neues Bundle ausgeliefert - z.B. das mit den
+    // Streamlined SBCs. Dann lohnt ein frischer Blick auf Klassen/Endpunkte.
+    function readWebAppBuild() {
+        const out = { build: null, futYear: null, futGuidPresent: false };
+        try {
+            out.futYear = (window.fut_year != null) ? String(window.fut_year) : null;
+            out.futGuidPresent = !!window.fut_guid;
+            const scripts = document.scripts || [];
+            for (let i = 0; i < scripts.length; i++) {
+                const src = String(scripts[i].src || '');
+                const m = src.match(/compiled_\d\.js\?_=(\d+)/);
+                if (m) { out.build = m[1]; break; }
+            }
+        } catch (e) {}
+        return out;
     }
     // [RAREHIST-BEGIN]
     // Reine Funktion (kein STATE-Zugriff ausser dem uebergebenen pool) - so per
@@ -6909,6 +6988,54 @@
         // sichtbar ist, auch wenn er die Top-5-Haeufigkeitsgrenze nicht erreicht.
         out.allSpecialFlagValues = rest.map(x => x.f).slice(0, 30).join(',');
         return out;
+    }
+    // FC 27 (v5.13.0): Karten-Sonde fuer die drei offenen Fragen des
+    // Jahreswechsels - beantwortet aus dem LIVE-Pool statt aus Artikeln:
+    //  1. Gibt es "Rare" noch? EA: "Bronze/Silber/Gold sind nicht mehr Common
+    //     oder Rare." Ob das rareflag 1 verschwindet oder alle Basiskarten
+    //     rareflag 1 bekommen, entscheidet unsere Rare-Vorgaben-Logik
+    //     (isRare/isCommon) - deshalb rareflag 0/1/sonst PRO STUFE.
+    //  2. Wie sehen Holographic-Karten im Item aus? (cosmeticRarity ist der
+    //     einzige Kandidat im Web-Bundle; sonst ein neues Feld.)
+    //  3. Welche Felder hat ein Item ueberhaupt (erste Karte, Cap 60) - damit
+    //     ein neues Feld (Item-Score?) im Report auffaellt, bevor wir raten.
+    // Reine Auswertung, kein Eingriff in Pool oder Solver.
+    function computeItemProbe(pool) {
+        const tier = { gold: { rf0: 0, rf1: 0, other: 0 },
+                       silver: { rf0: 0, rf1: 0, other: 0 },
+                       bronze: { rf0: 0, rf1: 0, other: 0 } };
+        const fieldHits = {};
+        const FIELD_RE = /holo|foil|pristine|cosmetic|score|grading/i;
+        let cosmeticRarityCount = 0;
+        let rawKeySample = null;
+        for (const p of pool) {
+            const r = Number(p.rating);
+            const t = r >= 75 ? tier.gold : (r >= 65 ? tier.silver : tier.bronze);
+            if (p.rareflag === 0) t.rf0++;
+            else if (p.rareflag === 1) t.rf1++;
+            else t.other++;
+            const raw = p.raw;
+            if (!raw || typeof raw !== 'object') continue;
+            if (raw.cosmeticRarity != null) cosmeticRarityCount++;
+            let keys = null;
+            try { keys = Object.keys(raw); } catch (e) { keys = null; }
+            if (!keys) continue;
+            if (!rawKeySample) rawKeySample = keys.slice(0, 60);
+            for (const k of keys) {
+                if (FIELD_RE.test(k) && Object.keys(fieldHits).length < 15) {
+                    fieldHits[k] = (fieldHits[k] || 0) + 1;
+                } else if (fieldHits[k] != null) {
+                    fieldHits[k]++;
+                }
+            }
+        }
+        return {
+            poolSize: pool.length,
+            byTier: tier,
+            cosmeticRarityCount: cosmeticRarityCount,
+            fc27FieldHits: fieldHits,
+            rawKeySample: rawKeySample
+        };
     }
     // [RAREHIST-END]
     function buildDiagReport() {
@@ -7288,6 +7415,18 @@
             // waren ~80 Zeilen. Gebraucht werden Common/Rare - und von den
             // Special-Flags die haeufigsten fuenf plus Restsumme.
             rareflagHistogram: computeRareflagHistogram(STATE.pool),
+            // FC 27 (v5.13.0): Spiel (fc26/fc27), Web-App-Build, EAs
+            // Feature-Schalter, Status der SBC-Set-Liste - und die Karten-
+            // Sonde (Rare pro Stufe, Holo-Kandidaten, Feldnamen). Zusammen
+            // beantworten sie, was an FC 27 fuer uns wirklich anders ist,
+            // bevor am Solver etwas angefasst wird (docs/FC27.md).
+            game: {
+                name: STATE.diag.gameName,
+                webApp: readWebAppBuild(),
+                features: readFeatureFlags(),
+                sbcSets: STATE.diag.sbcSets
+            },
+            itemProbe: computeItemProbe(STATE.pool),
             poolSpecialCount: STATE.pool.filter(p => p.isSpecial).length,
             evoExcluded: STATE.diag.evoExcluded,
             // Struktur-Samples hoher Karten: verrät uns die echten Feldnamen,

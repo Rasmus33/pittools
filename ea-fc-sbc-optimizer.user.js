@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.13.0
+// @version      5.14.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,13 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.13.0';
+    const VERSION = '5.14.0';
+    // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
+    // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
+    // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
+    // dann `node ea-bundle-check.js` laufen lassen, BEVOR man einem Abbruch
+    // am Handy hinterherraet.
+    const KNOWN_WEBAPP_BUILD = '11321';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -6066,6 +6072,13 @@
                         <button class="sbc-opt-btn ghost" id="sbc-opt-band-add" style="margin:0;padding:5px;">+ Stufe</button>
                         <button class="sbc-opt-btn ghost" id="sbc-opt-band-reset" style="margin:0;padding:5px;">Zurücksetzen</button>
                     </div>
+                    <label class="sbc-opt-chiplabel" style="margin-top:8px;">Preset (Saisonphase)</label>
+                    <div class="sbc-opt-chips" id="sbc-opt-band-presets"></div>
+                    <div class="sbc-opt-chipedit" id="sbc-opt-band-preset-edit">
+                        <input type="text" id="sbc-opt-band-preset-name" maxlength="18" placeholder="Name für die aktuelle Tabelle">
+                        <button class="sbc-opt-btn" id="sbc-opt-band-preset-save" type="button">Speichern</button>
+                        <button class="sbc-opt-btn ghost" id="sbc-opt-band-preset-del" type="button" title="Eigene Presets löschen">✕ eigene</button>
+                    </div>
                 </div>
                 <div class="sbc-opt-group-title">Vorgabe-Karte übersteuern</div>
                 <div class="sbc-opt-row">
@@ -6217,6 +6230,11 @@
             bands: panel.querySelector('#sbc-opt-bands'),
             bandAdd: panel.querySelector('#sbc-opt-band-add'),
             bandReset: panel.querySelector('#sbc-opt-band-reset'),
+            bandPresets: panel.querySelector('#sbc-opt-band-presets'),
+            bandPresetEdit: panel.querySelector('#sbc-opt-band-preset-edit'),
+            bandPresetName: panel.querySelector('#sbc-opt-band-preset-name'),
+            bandPresetSave: panel.querySelector('#sbc-opt-band-preset-save'),
+            bandPresetDel: panel.querySelector('#sbc-opt-band-preset-del'),
             rarityPickFilter: panel.querySelector('#sbc-opt-raritypick-filter'),
             rarityPick: panel.querySelector('#sbc-opt-raritypick'),
             load: panel.querySelector('#sbc-opt-load'),
@@ -6336,7 +6354,23 @@
     // siehe LEARNINGS §10) statt sie als zweites Literal zu pflegen: eine
     // Bandgrenze entsteht überall dort, wo sich der geparste Kostenwert ändert.
     function defaultBands() {
-        const costOf = SolverCore.parseRatingCosts(SolverCore.DEFAULT_RATING_COST_SPEC);
+        return bandsFromSpec(SolverCore.DEFAULT_RATING_COST_SPEC);
+    }
+    // Kosten-Presets (v5.14.0). Rasmus' Defaults sind Spaetsaison-Werte
+    // (FUTTIES: 84er kostet 1, 86er reichlich); zum Saisonstart ist 84+
+    // knapp und dieselbe Tabelle waere falsch. Statt die Defaults zu kippen
+    // (No-Regression, localStorage-Nutzer behalten ihre Tabelle), gibt es
+    // benannte Presets: zwei eingebaute plus eigene aus dem Panel. Die
+    // Saisonstart-Werte sind ein VORSCHLAG (im Panel editierbar), die
+    // Fach-Entscheidung liegt bei Rasmus.
+    const BUILT_IN_BAND_PRESETS = [
+        { name: 'Spätsaison', spec: SolverCore.DEFAULT_RATING_COST_SPEC },
+        { name: 'Saisonstart', spec: '0-80:0, 81-83:1, 84:3, 85:5, 86:8, 87-88:12, 89-90:16, 91-92:20, 93+:30' }
+    ];
+    // Spezifikation -> Bandliste: eine Bandgrenze entsteht ueberall dort, wo
+    // sich der geparste Kostenwert aendert. Kehrfunktion zu bandsToSpec().
+    function bandsFromSpec(spec) {
+        const costOf = SolverCore.parseRatingCosts(spec);
         const bands = [];
         let lo = 0, cost = costOf(0);
         for (let r = 1; r <= 99; r++) {
@@ -6382,6 +6416,94 @@
             saveBands(); renderBandRows();
             toast('Rating-Kosten auf Standard zurückgesetzt.', '');
         });
+        initBandPresets();
+    }
+    // ---- Kosten-Presets (v5.14.0) -------------------------------------------
+    // Eigene Presets liegen in localStorage (sbcOptBandPresets, {name: spec}),
+    // die eingebauten kommen aus BUILT_IN_BAND_PRESETS. Welches Preset "gilt",
+    // wird NICHT gespeichert, sondern am Inhalt erkannt: stimmt die aktuelle
+    // Tabelle wortgleich mit einem Preset ueberein, ist dessen Chip an - eine
+    // von Hand geaenderte Tabelle hat dann keinen Chip (dieselbe Regel wie bei
+    // den Schnellwahl-Chips: nie etwas hervorheben, das nicht gilt).
+    function userBandPresets() {
+        try {
+            const o = JSON.parse(localStorage.getItem('sbcOptBandPresets') || 'null');
+            return (o && typeof o === 'object' && !Array.isArray(o)) ? o : {};
+        } catch (e) { return {}; }
+    }
+    function saveUserBandPresets(o) {
+        try { localStorage.setItem('sbcOptBandPresets', JSON.stringify(o)); }
+        catch (e) { reportError('Kosten-Presets speichern fehlgeschlagen', e); }
+    }
+    function allBandPresets() {
+        const user = userBandPresets();
+        const builtIn = BUILT_IN_BAND_PRESETS.map(p => ({ name: p.name, spec: p.spec, builtIn: true }));
+        const own = Object.keys(user).sort().map(n => ({ name: n, spec: String(user[n]), builtIn: false }));
+        return builtIn.concat(own);
+    }
+    function renderBandPresets() {
+        const box = ui.bandPresets;
+        if (!box) return;
+        box.innerHTML = '';
+        // Normalisiert vergleichen: eine von Hand eingegebene "84-84:1" ist
+        // dieselbe Tabelle wie "84:1".
+        const cur = bandsToSpec(bandsFromSpec(bandsToSpec(ratingBands)));
+        for (const p of allBandPresets()) {
+            const b = document.createElement('button');
+            b.type = 'button';
+            const same = bandsToSpec(bandsFromSpec(p.spec)) === cur;
+            b.className = 'sbc-opt-chip' + (same ? ' on' : '');
+            b.textContent = p.name;
+            b.title = (p.builtIn ? 'Eingebaut: ' : 'Eigenes Preset: ') + p.spec;
+            b.addEventListener('click', function () {
+                ratingBands = bandsFromSpec(p.spec);
+                saveBands(); renderBandRows(); renderBandPresets();
+                toast('Rating-Kosten: Preset „' + p.name + '" übernommen.', 'ok');
+            });
+            box.appendChild(b);
+        }
+        const e = document.createElement('button');
+        e.type = 'button';
+        e.className = 'sbc-opt-chip edit';
+        e.textContent = '✎';
+        e.title = 'Aktuelle Tabelle als eigenes Preset speichern';
+        e.addEventListener('click', function () {
+            const ed = ui.bandPresetEdit;
+            if (!ed) return;
+            const open = ed.style.display === 'flex';
+            ed.style.display = open ? 'none' : 'flex';
+            if (!open && ui.bandPresetName) { try { ui.bandPresetName.focus(); } catch (err) {} }
+        });
+        box.appendChild(e);
+    }
+    function initBandPresets() {
+        renderBandPresets();
+        if (ui.bandPresetSave) ui.bandPresetSave.addEventListener('click', function () {
+            const name = String(ui.bandPresetName ? ui.bandPresetName.value : '').trim().slice(0, 18);
+            if (!name) { toast('Bitte einen Namen für das Preset eingeben.', 'warn'); return; }
+            if (BUILT_IN_BAND_PRESETS.some(p => p.name.toLowerCase() === name.toLowerCase())) {
+                toast('„' + name + '" ist ein eingebautes Preset - bitte anderen Namen wählen.', 'warn'); return;
+            }
+            const spec = bandsToSpec(ratingBands);
+            if (!spec) { toast('Die Tabelle ist leer - nichts zu speichern.', 'warn'); return; }
+            const o = userBandPresets();
+            o[name] = spec;
+            saveUserBandPresets(o);
+            if (ui.bandPresetName) ui.bandPresetName.value = '';
+            if (ui.bandPresetEdit) ui.bandPresetEdit.style.display = 'none';
+            renderBandPresets();
+            toast('Preset „' + name + '" gespeichert.', 'ok');
+        });
+        if (ui.bandPresetDel) ui.bandPresetDel.addEventListener('click', function () {
+            const n = Object.keys(userBandPresets()).length;
+            if (!n) { toast('Keine eigenen Presets vorhanden.', ''); return; }
+            saveUserBandPresets({});
+            if (ui.bandPresetEdit) ui.bandPresetEdit.style.display = 'none';
+            renderBandPresets();
+            toast(n + ' eigene(s) Preset(s) gelöscht - die Tabelle selbst bleibt.', '');
+        });
+        // Band-Aenderungen von Hand: Chip-Hervorhebung folgt dem Inhalt.
+        if (ui.bands) ui.bands.addEventListener('change', function () { renderBandPresets(); });
     }
     let bandDragIndex = null;
     function renderBandRows() {
@@ -6918,11 +7040,14 @@
         const game = STATE.diag.gameName ? ' (' + STATE.diag.gameName + ')' : '';
         const flags = readFeatureFlags();
         const sbcFlag = (flags && flags.SBC_ENABLED === false) ? ' · SBC: von EA aus' : '';
+        // v5.14.0: neues EA-Bundle sichtbar machen (Bundle-Waechter).
+        const build = readWebAppBuild().build;
+        const buildNote = (build && build !== KNOWN_WEBAPP_BUILD) ? ' · EA-Bundle NEU (' + build + ')' : '';
         ui.debug.textContent =
             'API: ' + (s.apiBase ? '✓' : '–') + game +
             ' · SID: ' + (s.sid ? '✓' : '–') +
             ' · Services: ' + (servicesAvailable() ? '✓' : '–') +
-            ' · utas: ' + STATE.diag.utasSeen + sbcFlag;
+            ' · utas: ' + STATE.diag.utasSeen + sbcFlag + buildNote;
     }
     // FC 27 (v5.13.0): EAs serverseitige Feature-Schalter, so wie die Web App
     // sie selbst abfragt (services.Configuration.checkFeatureEnabled). Zum

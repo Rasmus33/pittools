@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.14.0
+// @version      5.15.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.14.0';
+    const VERSION = '5.15.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -193,7 +193,13 @@
             // (SBC_ENABLED, EA: "spaeter in Season 1"). Status/Zeitpunkt/Anzahl,
             // damit ein Report "keine SBC erkannt" von "EA liefert keine"
             // unterscheiden kann. Siehe noteSbcSetsStatus().
-            sbcSets: null
+            sbcSets: null,
+            // FC 27, Vorbereitung auf die Freischaltung (v5.15.0) - vier
+            // Messstellen, die EAs NEUE Felder/Endpunkte zeigen, bevor wir raten:
+            sbsTraffic: [],          // Ring (25): Methode/Pfad/Status jedes sbs|sbc-Requests (noteSbsTraffic)
+            sbcSchema: null,         // Feld-Union der Set- und Challenge-Objekte + auffaellige Felder (probeSbcSchema)
+            featureFlips: null,      // EAs Feature-Schalter, die sich WAEHREND der Sitzung geaendert haben (watchFeatureFlips)
+            fc27ScanSamples: null    // Roh-Knoten des Vorgaben-Scans mit Score-/Streamlined-artigem Scope (deepScanChallenge)
         }
     };
     function log(...args) { try { console.log(LOG_PREFIX, ...args); } catch (e) {} }
@@ -427,6 +433,8 @@
                 const path = u.replace(/^https?:\/\/[^/]+/, '').split('?')[0]
                     .replace(/\d{4,}/g, '{id}');
                 STATE.diag.lastUnclassifiedPaths.push(path);
+                // Cap 5 bleibt (Test pinnt ihn): fuer "mehrere neue Endpunkte
+                // auf einmal" gibt es seit v5.15.0 den sbsTraffic-Ring (25).
                 if (STATE.diag.lastUnclassifiedPaths.length > 5) STATE.diag.lastUnclassifiedPaths.shift();
             }
         } catch (e) {}
@@ -502,9 +510,11 @@
                     // geoeffneten Set ueberschrieben.
                     cacheSetChallenges(sid, json);
                 }
+                probeSbcSchema('challenges', json);
                 applyFromSetChallenges();
             } else if (kind === 'sbc-challenge' || kind === 'sbc-sets') {
                 STATE.lastChallengeRaw = json;
+                if (kind === 'sbc-sets') probeSbcSchema('sets', json);
                 // ANTWORT AUF EINE ABGABE. EA schickt darin die zugeteilte
                 // Belohnung - der direkteste Beweis, dass die Abgabe
                 // angekommen ist. Live (Report v4.99.0) war das der einzige
@@ -543,6 +553,56 @@
             else if (!isNaN(st)) s.lastNonOk = { status: st, at: s.lastAt };
         } catch (e) {}
     }
+    // v5.15.0: JEDER sbs|sbc-Request als Zeile (Methode, Pfad mit maskierten
+    // IDs, Status). Wenn EA die Streamlined-Ansicht freischaltet, steht hier
+    // der Eintrage-/Abgabe-Weg, den EAs eigener Client benutzt - das ist die
+    // Quelle, aus der 2026 auch der Squad-PUT abgelesen wurde (LEARNINGS §3).
+    // Ring 25, keine Bodies, keine Tokens.
+    function noteSbsTraffic(method, url, status) {
+        try {
+            const u = String(url || '');
+            if (!RE_SBS_SBC_PREFIX_PATH.test(u)) return;
+            const ring = STATE.diag.sbsTraffic || (STATE.diag.sbsTraffic = []);
+            // Jedes rein numerische Pfadsegment maskieren (auch zweistellige
+            // Challenge-IDs wie 24) - der Ring soll Endpunkt-FORMEN zeigen.
+            const path = u.replace(/^https?:\/\/[^/]+/, '').split('?')[0].replace(/\/\d+(?=\/|$)/g, '/{id}');
+            const st = parseInt(status, 10);
+            ring.push({ m: String(method || 'GET').toUpperCase(), p: path, s: isNaN(st) ? null : st, t: Date.now() });
+            if (ring.length > 25) ring.shift();
+        } catch (e) {}
+    }
+    // v5.15.0: Feld-Union der SBC-Objekte, die EA liefert. Ein neues Feld an
+    // Set oder Challenge (Score-Ziel, Challenge-Typ, ...) faellt damit im
+    // Report auf, ohne dass jemand die Antwort von Hand lesen muss. Felder,
+    // deren NAME nach Score/Streamlined/Typ klingt, bekommen einen Wert-
+    // Auszug (120 Zeichen). Cap 80 Feldnamen pro Objektart.
+    const SBC_SCHEMA_HOT_RE = /score|streamlin|one.?click|target|contribut|challengeType|setType|repeatab|Type$/i;
+    function probeSbcSchema(kind, json) {
+        try {
+            if (!json || typeof json !== 'object') return;
+            let list = null;
+            if (kind === 'sets') list = Array.isArray(json.sets) ? json.sets : (Array.isArray(json) ? json : null);
+            else list = Array.isArray(json.challenges) ? json.challenges : (Array.isArray(json) ? json : null);
+            if (!list || !list.length) return;
+            const schema = STATE.diag.sbcSchema || (STATE.diag.sbcSchema = {});
+            const slot = schema[kind] || (schema[kind] = { keys: [], hot: {}, objects: 0 });
+            const keySet = new Set(slot.keys);
+            for (const o of list) {
+                if (!o || typeof o !== 'object') continue;
+                slot.objects++;
+                for (const k of Object.keys(o)) {
+                    if (keySet.size < 80) keySet.add(k);
+                    if (SBC_SCHEMA_HOT_RE.test(k) && slot.hot[k] === undefined) {
+                        let v;
+                        try { v = JSON.stringify(o[k]); } catch (e) { v = String(o[k]); }
+                        slot.hot[k] = String(v == null ? 'undefined' : v).slice(0, 120);
+                    }
+                }
+            }
+            slot.keys = Array.from(keySet).sort();
+            schema.updatedAt = Date.now();
+        } catch (e) {}
+    }
     // [URLCLS-END]
     // ---- fetch() Wrapper ---------------------------------------------------
     const _origFetch = window.fetch ? window.fetch.bind(window) : null;
@@ -562,6 +622,7 @@
                     const url = (typeof input === 'string') ? input : (input && input.url);
                     if (url) noteUnclassifiedUtas(url);
                     if (url) noteSbcSetsStatus(url, resp && resp.status);
+                    if (url) noteSbsTraffic((init && init.method) || (input && input.method) || 'GET', url, resp && resp.status);
                     if (url && classifyUrl(url)) {
                         resp.clone().text().then(function (txt) {
                             handleResponseBody(url, txt);
@@ -605,6 +666,14 @@
                     try { STATE.diag.lastSquadPutBody = String(body).slice(0, 3000); } catch (e) {}
                 }
                 if (url) noteUnclassifiedUtas(url);
+                // v5.15.0: sbs|sbc-Traffic auch fuer UNKLASSIFIZIERTE Pfade
+                // mitschreiben - genau die sind beim Freischalten interessant.
+                if (url && RE_SBS_SBC_PREFIX_PATH.test(String(url))) {
+                    const m = this.__sbcMethod;
+                    this.addEventListener('loadend', function () {
+                        noteSbsTraffic(m, url, this.status);
+                    });
+                }
                 if (url && classifyUrl(url)) {
                     this.addEventListener('load', function () {
                         try {
@@ -630,6 +699,10 @@
     //  Funktioniert für Netzwerk-JSON UND für App-interne Entities.
     // ========================================================================
     // [SBCSCAN-BEGIN]
+    // FC 27 (v5.15.0): Scope-Namen, die auf die Streamlined-SBC-Mechanik
+    // deuten (Item Score, Zielsumme, Beitrag). Bewusst OHNE "POINTS"
+    // (CHEMISTRY_POINTS ist Bestand) und ohne "TYPE" (zu breit).
+    const FC27_SCOPE_RE = /SCORE|STREAMLIN|ONE_?CLICK|TARGET|CONTRIBUT|GRADING/;
     function scopeString(o) {
         const cand = [o.scope, o.type, o.key, o.requirementKey, o.name];
         for (const c of cand) {
@@ -684,7 +757,7 @@
     // wurde - Ergebnis: keinerlei Vorgaben erkannt, Solver baute regellos.
     // Der Live-Entity-Scan bleibt bei 20000 (Objektgraph der App, unbegrenzt).
     function deepScanChallenge(root, budget) {
-        const out = { target: null, rarity: [], squadId: null, slots: null, playerLevel: [], quality: [], rare: [], reqs: [], scopesSeen: [] };
+        const out = { target: null, rarity: [], squadId: null, slots: null, playerLevel: [], quality: [], rare: [], reqs: [], scopesSeen: [], fc27Samples: [] };
         if (!root || typeof root !== 'object') return out;
         const BUDGET = (budget > 0) ? budget : 20000;
         const seen = new Set();
@@ -716,6 +789,15 @@
             const scope = scopeString(o);
             if (scope) {
                 if (scopesSeenSet.size < 40) scopesSeenSet.add(scope);
+                // v5.15.0 (FC 27): ein Scope, der nach Score/Streamlined klingt,
+                // wird als ROH-KNOTEN mitgenommen (300 Zeichen, Cap 5). Die
+                // Zweige unten kennen ihn nicht - ohne Sample wuesste ein Report
+                // nur den Namen, nicht die Struktur (Ziel? Einheit? Liste?).
+                if (FC27_SCOPE_RE.test(scope) && out.fc27Samples.length < 5) {
+                    let sample;
+                    try { sample = JSON.stringify(o); } catch (e) { sample = null; }
+                    out.fc27Samples.push({ scope: scope, sample: sample == null ? '(nicht serialisierbar)' : sample.slice(0, 300) });
+                }
                 const v = reqValue(o);
                 // matchedAs zeigt, welcher der unten folgenden, sich
                 // gegenseitig ausschliessenden Zweige tatsaechlich griff -
@@ -2023,6 +2105,12 @@
         // die Whitelist-Luecke aus docs/roadmap/gaps/sbc-vorgaben-erkennung.md,
         // Mangel 1.
         STATE.sbc.scopesSeen = scan.scopesSeen || [];
+        // v5.15.0: das letzte NICHT-leere Sample-Set behalten - ein spaeterer
+        // Scan einer klassischen Challenge darf den Fund nicht loeschen.
+        if (Array.isArray(scan.fc27Samples) && scan.fc27Samples.length) {
+            STATE.diag.fc27ScanSamples = scan.fc27Samples;
+            log('FC 27: Score-/Streamlined-artige Vorgaben gesehen:', scan.fc27Samples.map(s => s.scope).join(', '));
+        }
         if (scan.target != null) { STATE.sbc.targetOVR = scan.target; changed = true; }
         if (scan.squadId != null) { STATE.sbc.squadId = scan.squadId; changed = true; }
         // usableSlots (aus playerRequirements) ist präziser als jeder
@@ -7069,6 +7157,31 @@
             return out;
         } catch (e) { return null; }
     }
+    // v5.15.0: aendert EA einen Feature-Schalter WAEHREND der Sitzung (das
+    // Freischalten der SBCs in Season 1 wird genau so aussehen), steht der
+    // Wechsel mit Zeitpunkt im Report, und beim SBC-Schalter gibt es einmal
+    // einen Toast. Laeuft alle 30s (sechs billige Lookups), nur lesen.
+    let lastFeatureFlags = null;
+    function watchFeatureFlips() {
+        try {
+            const now = readFeatureFlags();
+            if (!now) return;
+            if (lastFeatureFlags) {
+                for (const k of Object.keys(now)) {
+                    if (now[k] === lastFeatureFlags[k]) continue;
+                    const ring = STATE.diag.featureFlips || (STATE.diag.featureFlips = []);
+                    ring.push({ flag: k, from: lastFeatureFlags[k], to: now[k], at: Date.now() });
+                    if (ring.length > 10) ring.shift();
+                    log('EA-Feature-Schalter geaendert:', k, lastFeatureFlags[k], '->', now[k]);
+                    if (k === 'SBC_ENABLED' && now[k] === true) {
+                        toast('EA hat SBCs in der Web App freigeschaltet - Panel-Funktionen wieder nutzbar.', 'ok');
+                        refreshDiagUI();
+                    }
+                }
+            }
+            lastFeatureFlags = now;
+        } catch (e) {}
+    }
     // FC 27 (v5.13.0): Build-Nummer der Web App aus den Script-Tags
     // (js/compiled_2.js?_=11321) plus EAs Jahres-Global. Aendert sich die
     // Build-Nummer, hat EA ein neues Bundle ausgeliefert - z.B. das mit den
@@ -7552,6 +7665,14 @@
                 sbcSets: STATE.diag.sbcSets
             },
             itemProbe: computeItemProbe(STATE.pool),
+            // v5.15.0: Vorbereitung auf EAs SBC-Freischaltung - siehe
+            // STATE.diag-Kommentare und docs/FC27.md §7.
+            fc27: {
+                sbsTraffic: STATE.diag.sbsTraffic,
+                sbcSchema: STATE.diag.sbcSchema,
+                featureFlips: STATE.diag.featureFlips,
+                scanSamples: STATE.diag.fc27ScanSamples
+            },
             poolSpecialCount: STATE.pool.filter(p => p.isSpecial).length,
             evoExcluded: STATE.diag.evoExcluded,
             // Struktur-Samples hoher Karten: verrät uns die echten Feldnamen,
@@ -7583,6 +7704,22 @@
             })()
         };
     }
+    // v5.15.0: alle EA-Klassennamen mit "sbc" im DOM (eigene sbc-opt-* raus),
+    // sortiert, Cap 60 - nur beim Diagnose-Klick, kein Dauerbetrieb.
+    function collectSbcDomClasses() {
+        try {
+            const set = new Set();
+            const els = document.querySelectorAll('[class*="sbc"]');
+            for (let i = 0; i < els.length && i < 3000; i++) {
+                const cl = els[i].classList;
+                for (let j = 0; j < cl.length; j++) {
+                    const c = cl[j];
+                    if (/sbc/i.test(c) && c.indexOf('sbc-opt') !== 0 && set.size < 60) set.add(c);
+                }
+            }
+            return Array.from(set).sort();
+        } catch (e) { return null; }
+    }
     function onDiagClick() {
         // uiScan: billige, EIGENSTAENDIGE Momentaufnahme in STATE.diag - anders
         // als das launcher-Sub-Objekt (buildDiagReport() weiter unten, liest
@@ -7594,7 +7731,12 @@
             panelOpen: !!(ui.panel && ui.panel.classList.contains('open')),
             fabVisible: !!(ui.fab && !ui.fab.classList.contains('sbc-opt-hidden')),
             inSbcView: inSbcView(),
-            btnAttached: !!document.getElementById(BTN_ID)
+            btnAttached: !!document.getElementById(BTN_ID),
+            // v5.15.0: EAs SBC-DOM-Klassen der aktuellen Ansicht - eine neue
+            // Klasse (Streamlined-Kachel, Score-Leiste) ist damit im Report,
+            // bevor eine Navigation daran scheitert. Vergleich gegen
+            // docs/ea-bundle-baseline.json (sbcDomClasses).
+            sbcDomClasses: collectSbcDomClasses()
         };
         // Das Diagnose-Werkzeug darf bei EA-Wandel nicht selbst lautlos
         // ausfallen: ein kaputtes Report-Feld liefert sonst gar nichts statt
@@ -13684,6 +13826,8 @@
                 }
             } catch (e) {}
         }, 240000);
+        // v5.15.0: EAs Feature-Schalter beobachten (SBC-Freischaltung).
+        setInterval(watchFeatureFlips, 30000);
     }
     // Ergebnis von onRunClick für den Submit merken
     const _origSolve = SolverCore.solve;

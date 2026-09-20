@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.29.0
+// @version      5.30.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.29.0';
+    const VERSION = '5.30.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -5784,6 +5784,8 @@
         /* Zeilen der Info-Box, die nur den Rating-Optimizer betreffen. */
         #sbc-opt-panel[data-tab="kaufen"] .sbc-opt-only-rating,
         #sbc-opt-panel[data-tab="mehr"] .sbc-opt-only-rating { display:none; }
+        #sbc-opt-panel:not([data-tab="mehr"]) .sbc-opt-tech { display:none; }
+        .sbc-opt-group-title.sbc-opt-secondary { margin-top:16px; }
         .sbc-opt-section { margin-top:0; }
         /* Schritt-Anzeige im Kaufen-Reiter (v5.29.0) */
         .sbc-opt-flow { display:flex; gap:4px; margin:0 0 12px; }
@@ -6103,8 +6105,11 @@
                     Spieler im Pool: <b id="sbc-opt-poolcount">0</b><br>
                     <span class="sbc-opt-only-rating">SBC-Kontingent: <b id="sbc-opt-quota">–</b><br></span>
                     Status: <b id="sbc-opt-status">bereit</b>
-                    <div id="sbc-opt-availability"></div>
-                    <div class="sbc-opt-debug" id="sbc-opt-debug">API: – · SID: – · Services: –</div>
+                    <div id="sbc-opt-availability" class="sbc-opt-only-rating"></div>
+                    <!-- v5.30.0: Technikzeile nur im Reiter "Mehr" - im Kaufen-/
+                         Rating-Alltag ist sie Rauschen; Warnungen (SBC aus,
+                         neues Bundle) kommen zusaetzlich als Toast. -->
+                    <div class="sbc-opt-debug sbc-opt-tech" id="sbc-opt-debug">API: – · SID: – · Services: –</div>
                 </div>
                 <div class="sbc-opt-tabs" id="sbc-opt-tabs" role="tablist">
                     <button type="button" class="sbc-opt-tab-btn" data-tab="kaufen" role="tab">Kaufen</button>
@@ -6133,13 +6138,16 @@
                         Live-Preise am EA-Markt pruefen (empfohlen, dauert etwas)
                     </label>
                     <button class="sbc-opt-btn primary" id="sbc-opt-futbin-search">Futbin-Loesungen suchen</button>
+                    <!-- v5.30.0: das Ergebnis steht DIREKT unter der Hauptaktion;
+                         die Nebenaktion (Nachkaufen) kommt danach. -->
+                    <div class="sbc-opt-result" id="sbc-opt-futbin-result"></div>
                     <!-- v5.22.0: unabhaengig vom futbin-Lauf - liest die Konzept-
                          Spieler aus dem offenen Kader (auch nach Neuladen oder
                          von Hand eingesetzt), Marktpreis je Karte, Rueckfrage,
                          dann derselbe schrittweise Kauf-Lauf. -->
-                    <button class="sbc-opt-btn ghost" id="sbc-opt-futbin-buyconcepts">Konzept-Spieler im Kader nachkaufen</button>
-                    <div class="sbc-opt-debug" style="margin-top:-4px;">Fuer Kader, die schon Konzept-Spieler enthalten (z.B. nach Neuladen oder von Hand).</div>
-                    <div class="sbc-opt-result" id="sbc-opt-futbin-result"></div>
+                    <div class="sbc-opt-group-title sbc-opt-secondary">Ohne futbin</div>
+                    <button class="sbc-opt-btn ghost" id="sbc-opt-futbin-buyconcepts" style="margin-top:0;">Konzept-Spieler im Kader nachkaufen</button>
+                    <div class="sbc-opt-debug" style="margin-top:-4px;">Fuer Kader, die schon Konzept-Spieler enthalten (z.B. nach Neuladen oder von Hand eingesetzt).</div>
                 </div>
                 </div>
                 <!-- REITER RATING: der bisherige Optimizer (Rating-SBCs). -->

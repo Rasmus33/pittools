@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.26.0
+// @version      5.27.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.26.0';
+    const VERSION = '5.27.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -202,6 +202,7 @@
             fc27ScanSamples: null,   // Roh-Knoten des Vorgaben-Scans mit Score-/Streamlined-artigem Scope (deepScanChallenge)
             futbin: null,            // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten, Wahl, Fehler (runFutbinSearch)
             futbinBuy: null,         // schrittweises Kaufen (v5.19.0): Plan, Schritte, gekauft/ausgegeben, Stopp-Grund (buyPlannedPlayers)
+            futbinBuyRefresh: null,  // v5.27.0: Live-Preise vor dem Kaufen nachgeholt (asked/priced/errors)
             futbinBuyPlan: null,     // v5.22.0: Kaufplan aus den Konzept-Spielern des Kaders (Anzahl, uebersprungen, Suchfehler)
             marketUrls: [],          // v5.20.0: letzte 6 Marktsuch-URLs mit Query (unsere UND EAs eigene) - Parameter-Vergleich
             marketProbe: []          // v5.20.0: je Marktabfrage Treffer/fremde Karten/Angebote (Filter ignoriert?)
@@ -7721,6 +7722,22 @@
             ((a[k] == null) - (b[k] == null)) || (a[k] - b[k]) ||
             (a.eval.missing - b.eval.missing) || (a.listRank - b.listRank));
     }
+    /**
+     * v5.27.0: Wann der Marktcheck ueber die ersten `top` Kandidaten hinaus
+     * WEITERGEHT. Live (Report v5.26.0, "Manchester Calling"): die drei
+     * futbin-billigsten kosteten am EA-Markt 23.000-29.200, der vierte war
+     * laut futbin 4.150 - blieb ungeprueft und stand trotzdem hinter den
+     * dreien. Regel: solange der naechste ungepruefte Kandidat laut futbin
+     * BILLIGER ist als der beste geprueft Kader, wird auch er geprueft -
+     * bis zur Obergrenze `max` (Ban-Sicherheit: jeder Kader kostet bis zu
+     * 10 Marktabfragen).
+     */
+    function shouldExtendMarketCheck(checked, nextAdjCost, best, top, max) {
+        if (checked < top) return true;
+        if (checked >= max) return false;
+        if (nextAdjCost == null || isNaN(nextAdjCost)) return false;
+        return best == null || nextAdjCost < best;
+    }
     // [FUTBIN-END]
     // ---- Bruecke zu futbin (CORS) ------------------------------------------
     // Zwei Anbieter, EIN Protokoll: in der App das native Objekt
@@ -7781,6 +7798,7 @@
     // ---- Futbin-Lauf: Einstellungen, Ablauf, Einfuegen ---------------------
     const FUTBIN_CANDIDATES = 8;     // so viele Listen-Loesungen werden als Kader geladen
     const FUTBIN_MARKET_TOP = 3;     // davon werden die besten am EA-Markt gegengeprueft
+    const FUTBIN_MARKET_MAX = 6;     // v5.27.0: weiter pruefen, solange ungepruefte laut futbin billiger sind - hoechstens so viele
     const FUTBIN_SKIP_TOP = 2;       // ohne Marktcheck: Aufschlag auf die ersten Listenplaetze
     const FUTBIN_FETCH_GAP_MS = 400;
     // EAs Marktsuche ist drossel-empfindlich (ein "too many requests" kann den
@@ -8005,17 +8023,32 @@
      * aktualisiert. Nicht gefundene Karten gehen per Notweg (eigener PUT).
      */
     async function adoptBoughtIntoClient(bought) {
-        const out = { refreshed: false, found: 0, moved: 0, httpMoved: 0, error: null };
+        const out = { refreshed: false, found: 0, foundIn: null, moved: 0, httpMoved: 0, error: null };
         const wanted = new Set(bought.map(b => String(b.itemId)).filter(s => s && s !== 'undefined' && s !== 'null'));
         let ents = [];
         try {
             const svc = window.services && window.services.Item;
-            if (svc && typeof svc.requestUnassignedItems === 'function') {
-                const resp = await obsPromise(svc.requestUnassignedItems());
-                out.refreshed = responseOk(resp);
+            // v5.27.0: Sofortkaeufe liegen bei EA NICHT im Kauf-Stapel
+            // (purchased/items), sondern unter TRANSFERZIELE als "gewonnen"
+            // (watchlist) - Report v5.26.0: refreshed true, found 0, alle 10
+            // per Notweg. Beide Stapel laden; der Kauf-Stapel bleibt als
+            // erster Weg (Pack-Karten, unveraendertes Verhalten).
+            const piles = [['unassigned', 'requestUnassignedItems'], ['watchlist', 'requestWatchedItems']];
+            const foundIn = [];
+            for (const pair of piles) {
+                if (!svc || typeof svc[pair[1]] !== 'function') continue;
+                if (ents.length >= wanted.size) break;
+                let resp = null;
+                try { resp = await obsPromise(svc[pair[1]]()); } catch (e) { resp = null; }
+                if (responseOk(resp)) out.refreshed = true;
                 const items = (resp && ((resp.response && resp.response.items) || (resp.data && resp.data.items))) || [];
-                ents = items.filter(it => it && wanted.has(String(it.id)));
-                out.found = ents.length;
+                const have = new Set(ents.map(it => String(it.id)));
+                const hits = items.filter(it => it && wanted.has(String(it.id)) && !have.has(String(it.id)));
+                if (hits.length) { ents = ents.concat(hits); foundIn.push(pair[0] + ':' + hits.length); }
+            }
+            out.found = ents.length;
+            out.foundIn = foundIn.length ? foundIn.join(',') : null;
+            if (svc) {
                 const pile = window.ItemPile && window.ItemPile.CLUB;
                 if (ents.length && pile != null && typeof svc.move === 'function') {
                     let r = null;
@@ -8340,14 +8373,20 @@
             }
             if (!cands.length) throw new Error('Kein Kader lesbar. ' + diag.errors.join(' | '));
             let ranked = rankCandidates(cands, 'adjCost');
+            let marketStats = null;
             if (s.market) {
-                const top = ranked.slice(0, FUTBIN_MARKET_TOP);
                 const cache = new Map();
-                // Obergrenze fuer die Anzeige: alle verschiedenen fehlenden Karten der Top-Kandidaten.
+                // Obergrenze fuer die Anzeige: alle verschiedenen fehlenden Karten der pruefbaren Kandidaten.
                 const distinct = new Set();
-                top.forEach(c => c.squad.players.forEach((pl, i) => { if (!c.owned[i]) distinct.add(pl.resourceId); }));
+                ranked.slice(0, FUTBIN_MARKET_MAX).forEach(c => c.squad.players.forEach((pl, i) => { if (!c.owned[i]) distinct.add(pl.resourceId); }));
                 let best = null;
-                for (const c of top) {
+                // v5.27.0: nicht starr die ersten FUTBIN_MARKET_TOP - weiter,
+                // solange der naechste laut futbin billiger ist als der beste
+                // geprueft Kader (shouldExtendMarketCheck), bis FUTBIN_MARKET_MAX.
+                let checked = 0;
+                while (checked < ranked.length &&
+                       shouldExtendMarketCheck(checked, ranked[checked].adjCost, best, FUTBIN_MARKET_TOP, FUTBIN_MARKET_MAX)) {
+                    const c = ranked[checked++];
                     // Schon bekannte Preise zuerst summieren - dann greift der
                     // Abbruch frueher, noch bevor eine Abfrage laeuft.
                     const idx = c.squad.players.map((pl, i) => i).filter(i => !c.owned[i])
@@ -8382,16 +8421,23 @@
                         if (best == null || live < best) best = live;
                     }
                 }
-                ranked = rankCandidates(top, 'liveCost').concat(ranked.slice(FUTBIN_MARKET_TOP));
+                const rest = ranked.slice(checked);
+                marketStats = {
+                    checked: checked, best: best,
+                    // ungeprueft, aber laut futbin billiger als die Empfehlung (Obergrenze erreicht)
+                    cheapUnchecked: best == null ? 0 : rest.filter(c => c.adjCost != null && c.adjCost < best).length
+                };
+                diag.marketStats = marketStats;
+                ranked = rankCandidates(ranked.slice(0, checked), 'liveCost').concat(rest);
             }
-            futbinLast = { ranked: ranked, platform: s.platform, market: s.market, year: year };
+            futbinLast = { ranked: ranked, platform: s.platform, market: s.market, year: year, marketStats: marketStats };
             diag.candidates = ranked.map(c => ({
                 squadId: c.row.squadId, ai: c.row.ai, listRank: c.listRank, listPrice: c.listPrice,
                 cost: c.eval.cost, adjCost: c.adjCost, liveCost: c.liveCost, liveUnknown: c.liveUnknown,
                 livePruned: c.livePruned, formationOk: c.formationOk,
                 owned: c.eval.ownedCount, missing: c.eval.missing, formation: c.squad.formation
             }));
-            renderFutbinCandidates(ranked, s, poolWarn);
+            renderFutbinCandidates(ranked, s, poolWarn, marketStats);
         } catch (e) {
             diag.errors.push(String(e && e.message || e));
             reportError('Futbin-Suche', e);
@@ -8400,13 +8446,19 @@
             futbinBusy = false;
         }
     }
-    function renderFutbinCandidates(ranked, s, poolWarn) {
+    function renderFutbinCandidates(ranked, s, poolWarn, marketStats) {
         let h = '';
         if (poolWarn) h += warnHtml(poolWarn);
+        const checkedN = marketStats ? marketStats.checked : Math.min(FUTBIN_MARKET_TOP, ranked.length);
         h += '<div class="sbc-opt-summary">' + ranked.length + ' Loesungen geprueft (' +
              (s.platform === 'pc' ? 'PC' : 'Konsole') +
-             (s.market ? ', die besten ' + Math.min(FUTBIN_MARKET_TOP, ranked.length) + ' am EA-Markt gegengeprueft'
+             (s.market ? ', die besten ' + checkedN + ' am EA-Markt gegengeprueft'
                        : ', ohne Marktcheck: +15% auf die ersten ' + FUTBIN_SKIP_TOP + ' Listenplaetze') + ')</div>';
+        if (marketStats && marketStats.cheapUnchecked > 0) {
+            h += warnHtml(marketStats.cheapUnchecked + ' weitere Loesung' + (marketStats.cheapUnchecked === 1 ? ' ist' : 'en sind') +
+                          ' laut futbin billiger als die Empfehlung, aber nicht am Markt geprueft (Obergrenze ' + FUTBIN_MARKET_MAX +
+                          ' Kader pro Suche). Futbin-Preise koennen veraltet sein - die Live-Preise gelten.');
+        }
         if (ranked.length && ranked[0].formationOk === false) {
             h += warnHtml('Keine Loesung in der Formation der Challenge - Chemie und Positionen bitte vor dem Kaufen pruefen.');
         }
@@ -8509,7 +8561,8 @@
             const planned = pl.liveBin != null ? pl.liveBin : futbinPrice(pl, platform);
             if (!(planned > 0)) return;
             plan.push({ index: i, resourceId: pl.resourceId, name: pl.name || ('#' + pl.resourceId), rating: pl.rating,
-                        planned: planned, maxPrice: planMaxPrice(planned, BUY_TOLERANCE, eaPriceTiers()) });
+                        planned: planned, source: pl.liveBin != null ? 'live' : 'futbin',
+                        maxPrice: planMaxPrice(planned, BUY_TOLERANCE, eaPriceTiers()) });
         });
         return plan;
     }
@@ -8526,17 +8579,56 @@
         return status === 429 || status === 426 || status === 512;
     }
     function randomBetween(a, b) { return Math.round(a + Math.random() * (b - a)); }
+    /**
+     * v5.27.0: Live-Preise fuer alle fehlenden Spieler OHNE Marktcheck
+     * nachholen, bevor geplant wird. Report v5.26.0: Rasmus fuegte den
+     * vierten Kandidaten ein (nie am Markt geprueft), der Plan nahm die
+     * futbin-Preise (350, Obergrenze 400) - am Markt kosteten die Karten
+     * 2.000+, 8 von 10 "kein Angebot bis Obergrenze". Der Kaufplan darf
+     * nur noch auf Live-Preisen stehen; futbin bleibt Notwert, wenn der
+     * Markt gar kein Angebot zeigt (dann meldet es der Plan).
+     */
+    async function refreshLiveBins(c, onProgress) {
+        const todo = [];
+        c.squad.players.forEach(function (pl, i) { if (!c.owned[i] && pl.liveBin == null) todo.push(pl); });
+        const out = { asked: todo.length, priced: 0, errors: 0 };
+        for (let k = 0; k < todo.length; k++) {
+            const pl = todo[k];
+            if (onProgress) onProgress(k + 1, todo.length, pl);
+            try {
+                const est = await marketMinBin(pl.resourceId);
+                const bin = est && est.robust != null ? est.robust : null;
+                pl.liveBin = bin;
+                pl.liveMin = est && est.min != null ? est.min : null;
+                pl.liveOffers = est ? est.count : null;
+                if (bin != null) out.priced++;
+            } catch (e) { out.errors++; }
+            if (k < todo.length - 1) await futbinSleep(FUTBIN_MARKET_GAP_MS);
+        }
+        return out;
+    }
     async function onFutbinBuyClick(idx) {
         const c = futbinLast && futbinLast.ranked[idx];
         if (!c) return;
         if (buyBusy || futbinBusy) { toast('Es laeuft schon ein Lauf.', 'warn'); return; }
+        // v5.27.0: erst Live-Preise fuer alles, was der Marktcheck nicht hatte.
+        buyBusy = true;
+        let refreshed = null;
+        try {
+            refreshed = await refreshLiveBins(c, function (k, n, pl) {
+                setFutbinResult('<div class="sbc-opt-dim">Live-Preise holen ... ' + k + ' von ' + n + ' (' + escapeHtml(pl.name || ('#' + pl.resourceId)) + ')</div>');
+            });
+        } finally { buyBusy = false; }
+        STATE.diag.futbinBuyRefresh = refreshed;
         const plan = buildBuyPlan(c, futbinLast.platform);
         if (!plan.length) { toast('Nichts zu kaufen.', ''); return; }
         const total = plan.reduce((a, p) => a + p.maxPrice, 0);
         const coins = userCoins();
-        const lines = plan.map(p => p.name + ' (' + (p.rating || '?') + '): bis ' + fmtCoins(p.maxPrice)).join('\n');
+        const lines = plan.map(p => p.name + ' (' + (p.rating || '?') + '): bis ' + fmtCoins(p.maxPrice) + (p.source === 'futbin' ? ' (futbin-Preis, kein Angebot am Markt)' : '')).join('\n');
+        const noLive = plan.filter(p => p.source === 'futbin').length;
         const frage = plan.length + ' Spieler nach und nach kaufen?\n\n' + lines + '\n\nZusammen hoechstens ' + fmtCoins(total) +
                       (coins != null ? ' (Kontostand ' + fmtCoins(coins) + ')' : '') +
+                      (noLive ? '\n' + noLive + ' Preis(e) stammen von futbin, weil der Markt gerade kein Angebot zeigt.' : '') +
                       '.\nEin Kauf alle 3-6 Sekunden, Abbruch bei Fehlern. Es wird nie mehr als die Obergrenze gezahlt.';
         if (!window.confirm(frage)) return;
         if (coins != null && coins < total) {
@@ -8638,7 +8730,7 @@
                 const swapped = await replaceConceptsWithBought(bought);
                 lines.push(swapped.replaced + ' von ' + bought.length + ' gekauften Karten im Kader eingesetzt' +
                            (swapped.saved ? ', Kader gespeichert.' : ' - Speichern fehlgeschlagen: ' + escapeHtml(swapped.error || '?')));
-                diag.replaced = swapped.replaced; diag.saved = swapped.saved;
+                diag.replaced = swapped.replaced; diag.saved = swapped.saved; diag.viewPushed = swapped.viewPushed || null;
             }
             render(null);
             const rest = plan.length - diag.bought;
@@ -8755,11 +8847,18 @@
             }
             // v5.25.0: Ansicht nachziehen - replaceConceptItem aendert nur das
             // Modell, das Spielfeld zeichnet erst auf Anstoss neu.
+            // v5.27.0: _pushSquadToView(e) erwartet den KADER (Bundle 11321:
+            // "t.setType(e.isDream() ? ...)") - ohne Argument flog
+            // "reading 'isDream'" (Report v5.26.0). Schlaegt es fehl, setSquad.
+            const oc = ctrl._overviewController || ctrl.leftController || null;
             try {
-                const oc = ctrl._overviewController || ctrl.leftController || null;
-                if (oc && typeof oc._pushSquadToView === 'function') { oc._pushSquadToView(); out.viewPushed = true; }
-                else if (oc && typeof oc.setSquad === 'function') { oc.setSquad(liveSquad); out.viewPushed = true; }
-            } catch (e) { reportError('_pushSquadToView', e); }
+                if (oc && typeof oc._pushSquadToView === 'function') { oc._pushSquadToView(liveSquad); out.viewPushed = 'push'; }
+                else if (oc && typeof oc.setSquad === 'function') { oc.setSquad(liveSquad); out.viewPushed = 'setSquad'; }
+            } catch (e) {
+                reportError('_pushSquadToView', e);
+                try { if (oc && typeof oc.setSquad === 'function') { oc.setSquad(liveSquad); out.viewPushed = 'setSquad-fallback'; } }
+                catch (e2) { reportError('setSquad', e2); }
+            }
             const resp = await obsPromise(window.services.SBC.saveChallenge(challenge));
             out.saved = responseOk(resp);
             if (!out.saved) out.error = 'saveChallenge Status ' + (resp && resp.status);
@@ -9252,7 +9351,7 @@
             itemProbe: computeItemProbe(STATE.pool),
             // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten mit
             // Kosten, Marktabfragen, Fehler, eingefuegte Loesung.
-            futbin: STATE.diag.futbin,
+            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null,
             futbinBuy: STATE.diag.futbinBuy || null,
             futbinBuyPlan: STATE.diag.futbinBuyPlan || null,
             marketUrls: STATE.diag.marketUrls,

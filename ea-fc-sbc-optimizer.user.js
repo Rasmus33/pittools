@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.25.0
+// @version      5.26.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.25.0';
+    const VERSION = '5.26.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -973,6 +973,7 @@
         STATE.sbc.formationSlots = 11;
         STATE.sbc.squadSlotTotal = null;
         STATE.sbc.usableSlots = null;
+        STATE.sbc.customBricks = [];
         refreshSbcInfoUI();
     }
     // Im Challenge-Listen-JSON den Knoten der aktuell geöffneten Challenge finden.
@@ -2078,6 +2079,12 @@
                     log('Nutzbare SBC-Slots:', usable.join(','), '(' + usable.length + ' von ' + json.playerRequirements.length + ')');
                     refreshSbcInfoUI();
                 }
+                // v5.26.0: CUSTOM_BRICK-Slots (Pflicht-Slot mit eigener Vorgabe,
+                // Report v5.25.0 "Manchester Calling": Nation 14 / Liga 13 /
+                // Verein 10). Fuer den Rating-Solver bleiben sie nutzbar wie
+                // bisher; die futbin-Loesung hat fuer sie KEINEN Spieler.
+                STATE.sbc.customBricks = parseCustomBricks(json.playerRequirements);
+                if (STATE.sbc.customBricks.length) log('Pflicht-Slots (Custom Brick):', JSON.stringify(STATE.sbc.customBricks));
             }
         } catch (e) {}
         const scan = deepScanChallenge(json, 60000);
@@ -7553,6 +7560,49 @@
         return isNaN(rf) || rf === 0 || rf === 1;
     }
     /**
+     * CUSTOM_BRICK-Slots aus EAs playerRequirements (v5.26.0): Slots, die
+     * einen Spieler mit eigener Vorgabe verlangen (NATION_ID / LEAGUE_ID /
+     * CLUB_ID als elgReq am Slot). futbin-Loesungen lassen diese Slots leer
+     * (10 statt 11 Spieler). Normale BRICK-Slots sind gesperrt und hier egal.
+     */
+    function parseCustomBricks(playerRequirements) {
+        const out = [];
+        for (const pr of (Array.isArray(playerRequirements) ? playerRequirements : [])) {
+            if (!pr || pr.index == null || String(pr.playerType || '').toUpperCase() !== 'CUSTOM_BRICK') continue;
+            const b = { index: Number(pr.index), nation: null, league: null, club: null };
+            for (const r of (Array.isArray(pr.elgReq) ? pr.elgReq : [])) {
+                const t = String(r && r.type || '').toUpperCase();
+                const v = Number(r && r.eligibilityValue);
+                if (!(v > 0)) continue;
+                if (t === 'NATION_ID') b.nation = v;
+                else if (t === 'LEAGUE_ID') b.league = v;
+                else if (t === 'CLUB_ID') b.club = v;
+            }
+            out.push(b);
+        }
+        return out;
+    }
+    /**
+     * Karte aus dem Verein fuer einen Pflicht-Slot: alle gesetzten Vorgaben
+     * (Nation/Liga/Verein) muessen passen; gesperrte und schon benutzte nie;
+     * Storage vor Verein, dann niedrigstes Rating (Verbrauchsmaterial zuerst).
+     */
+    function pickBrickCard(brick, pool, lockedIds, usedIds) {
+        const lock = new Set((lockedIds || []).map(String)), used = new Set((usedIds || []).map(String));
+        let best = null;
+        for (const p of (pool || [])) {
+            if (!p || !p.raw || lock.has(String(p.id)) || used.has(String(p.id))) continue;
+            const r = p.raw;
+            if (brick.nation != null && Number(r.nation) !== brick.nation) continue;
+            if (brick.league != null && Number(r.leagueId) !== brick.league) continue;
+            if (brick.club != null && Number(r.teamid) !== brick.club) continue;
+            if (!best) { best = p; continue; }
+            const s = (best.isStorage ? 1 : 0) - (p.isStorage ? 1 : 0);
+            if (s < 0 || (s === 0 && Number(p.rating) < Number(best.rating))) best = p;
+        }
+        return best;
+    }
+    /**
      * Angebote aus EAs ROHER Marktantwort (v5.24.0): auctionInfo[] mit
      * tradeId, buyNowPrice, expires, tradeState und itemData (dieselbe Form
      * wie Vereinskarten). Nur aktive Sofortkauf-Angebote der gesuchten Karte
@@ -8059,13 +8109,30 @@
             }
         }
         const slotsAll = (typeof liveSquad.getSlots === 'function' ? liveSquad.getSlots() : liveSquad.getPlayers()) || [];
+        // v5.26.0: Pflicht-Slots (Custom Brick) gehoeren NICHT den futbin-
+        // Spielern - sie bekommen eine passende Karte aus dem Verein.
+        const bricks = STATE.sbc.customBricks || [];
+        const brickIdx = new Set(bricks.map(b => b.index));
         const field = slotsAll.filter(s => {
-            try { return s && typeof s.getIndex === 'function' && s.getIndex() < 11 && !(typeof s.isBrick === 'function' && s.isBrick()); }
+            try { return s && typeof s.getIndex === 'function' && s.getIndex() < 11 && !brickIdx.has(s.getIndex()) && !(typeof s.isBrick === 'function' && s.isBrick()); }
             catch (e) { return false; }
         });
         if (field.length < entities.length) throw new Error('Mehr Spieler als freie Feld-Slots (' + entities.length + ' > ' + field.length + ').');
         const total = Math.max(slotsAll.length, 11);
         const arr = new Array(total);
+        const brickInfo = { filled: [], open: [] };
+        const usedIds = (owned || []).filter(Boolean).map(o => o.id);
+        for (const b of bricks) {
+            const locked = (ui.useLocks && ui.useLocks.checked) ? Array.from(readPaletoolsLocks()) : [];
+            const card = pickBrickCard(b, STATE.pool, locked, usedIds);
+            if (card) {
+                arr[b.index] = factory.createItem(card.raw);
+                usedIds.push(card.id);
+                brickInfo.filled.push({ index: b.index, name: card.name, rating: card.rating });
+            } else {
+                brickInfo.open.push(b);
+            }
+        }
         // v5.20.0: nach den Positionen der SPIELER zuordnen (Haupt- und
         // Nebenpositionen der EA-Entity), nicht nach futbins Slot-Layout -
         // das passt bei anderer Formation nicht (Report v5.19.0: 4 daneben).
@@ -8105,7 +8172,7 @@
         const resp = await obsPromise(sbcSvc.saveChallenge(challenge));
         if (!responseOk(resp)) throw new Error('saveChallenge abgelehnt (Status ' + (resp && resp.status) + ').');
         return { placed: entities.length, ownedPlaced: ownedPlaced, conceptPlaced: conceptPlaced,
-                 onPref: asg.onPref, onAlt: asg.onAlt, fallbackPlaced: asg.fallback, placement: placement };
+                 onPref: asg.onPref, onAlt: asg.onAlt, fallbackPlaced: asg.fallback, placement: placement, bricks: brickInfo };
     }
     function safeRawPos(v) {
         try {
@@ -8254,7 +8321,11 @@
                     const r = await bridgeFetch(futbinSquadUrl(year, row.squadId), 40000);
                     if (r.status !== 200) throw new Error('HTTP ' + r.status);
                     const squad = parseFutbinSquad(r.text);
-                    if (!squad || squad.players.length < 11) throw new Error('Kader nicht lesbar (' + (squad ? squad.players.length : 0) + ' Spieler)');
+                    // v5.26.0: Pflicht-Slots (Custom Brick) haben in futbins
+                    // Loesung keinen Spieler - 10 statt 11 ist dann korrekt.
+                    const bricks = (STATE.sbc.customBricks || []).length;
+                    const needPlayers = Math.max(1, ((STATE.sbc.usableSlots && STATE.sbc.usableSlots.length) || 11) - bricks);
+                    if (!squad || squad.players.length < needPlayers) throw new Error('Kader nicht lesbar (' + (squad ? squad.players.length : 0) + ' Spieler, erwartet ' + needPlayers + ')');
                     const owned = matchOwned(squad.players, STATE.pool, locked);
                     const ev = evaluateSolution(squad.players, owned, s.platform);
                     cands.push({
@@ -8367,6 +8438,15 @@
             let h = '<div class="sbc-opt-summary">Eingetragen: ' + res.placed + ' Spieler (' + res.ownedPlaced + ' eigene, ' +
                     res.conceptPlaced + ' Konzept) · Positionen: ' + res.onPref + ' Haupt, ' + res.onAlt + ' Neben' +
                     (res.fallbackPlaced ? ', ' + res.fallbackPlaced + ' ohne Treffer' : '') + '</div>';
+            if (res.bricks) {
+                res.bricks.filled.forEach(function (b) {
+                    h += '<div>Pflicht-Slot ' + (b.index + 1) + ': <b>' + escapeHtml(b.name || '?') + '</b> (' + (b.rating || '?') + ') aus dem Verein</div>';
+                });
+                res.bricks.open.forEach(function (b) {
+                    h += warnHtml('Pflicht-Slot ' + (b.index + 1) + ' bleibt leer - kein passender Spieler im Verein (Nation ' + (b.nation || '–') +
+                                  ', Liga ' + (b.league || '–') + ', Verein ' + (b.club || '–') + '). Bitte selbst fuellen.');
+                });
+            }
             h += '<div class="sbc-opt-dim">Zu kaufen (stehen als Konzept-Spieler auf dem Feld). Preis = Plan; beim Kaufen gilt hoechstens Plan + ' +
                  Math.round(BUY_TOLERANCE * 100) + ' %.</div>';
             c.squad.players.forEach(function (pl, i) {
@@ -9112,6 +9192,7 @@
                 qualityConstraints: STATE.sbc.qualityConstraints || [],
                 rareConstraints: STATE.sbc.rareConstraints || [],
                 usableSlots: STATE.sbc.usableSlots || null,
+                customBricks: STATE.sbc.customBricks || null,
                 reqDump: STATE.sbc.reqDump,
                 // Scopes ohne Wert, die NICHT zur Standard-Boilerplate gehoeren -
                 // rein informativ (siehe applyScan: daraus folgt NICHTS).

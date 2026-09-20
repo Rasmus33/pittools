@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.19.0
+// @version      5.20.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.19.0';
+    const VERSION = '5.20.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -201,7 +201,9 @@
             featureFlips: null,      // EAs Feature-Schalter, die sich WAEHREND der Sitzung geaendert haben (watchFeatureFlips)
             fc27ScanSamples: null,   // Roh-Knoten des Vorgaben-Scans mit Score-/Streamlined-artigem Scope (deepScanChallenge)
             futbin: null,            // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten, Wahl, Fehler (runFutbinSearch)
-            futbinBuy: null          // schrittweises Kaufen (v5.19.0): Plan, Schritte, gekauft/ausgegeben, Stopp-Grund (buyPlannedPlayers)
+            futbinBuy: null,         // schrittweises Kaufen (v5.19.0): Plan, Schritte, gekauft/ausgegeben, Stopp-Grund (buyPlannedPlayers)
+            marketUrls: [],          // v5.20.0: letzte 6 Marktsuch-URLs mit Query (unsere UND EAs eigene) - Parameter-Vergleich
+            marketProbe: []          // v5.20.0: je Marktabfrage Treffer/fremde Karten/Angebote (Filter ignoriert?)
         }
     };
     function log(...args) { try { console.log(LOG_PREFIX, ...args); } catch (e) {} }
@@ -675,6 +677,16 @@
                     this.addEventListener('loadend', function () {
                         noteSbsTraffic(m, url, this.status);
                     });
+                }
+                // v5.20.0: Marktsuchen MIT Query festhalten (welche Parameter
+                // gehen wirklich raus - unsere und die der EA-Oberflaeche?).
+                // Keine Tokens in der Query, nur Filter.
+                if (url && /\/transfermarket\?/i.test(String(url))) {
+                    try {
+                        const ring = STATE.diag.marketUrls || (STATE.diag.marketUrls = []);
+                        ring.push(String(url).replace(/^https?:\/\/[^/]+/, '').slice(0, 300));
+                        if (ring.length > 6) ring.shift();
+                    } catch (e) {}
                 }
                 if (url && classifyUrl(url)) {
                     this.addEventListener('load', function () {
@@ -7498,6 +7510,55 @@
         return { min: arr[0], robust: arr.length > 1 ? arr[1] : arr[0], count: arr.length, lowest: arr.slice(0, 3) };
     }
     /**
+     * Slot-Zuordnung nach den POSITIONEN DER SPIELER (v5.20.0): jeder Spieler
+     * bringt Hauptposition und Nebenpositionen mit, jeder Feld-Slot eine
+     * Position. Maximale Zuordnung (bipartites Matching, Augmenting Paths)
+     * in zwei Runden - erst nur Hauptpositionen, dann auch Nebenpositionen -
+     * Rest der Reihe nach. Live (Report v5.19.0): Challenge 4-5-1, futbin
+     * 3-1-4-2, vier Spieler "der Reihe nach" - Rasmus musste umstellen, bis
+     * die Chemie voll war. Fuer die Chemie zaehlt nur: steht der Spieler auf
+     * EINER seiner Positionen. Rein, ohne EA, testbar.
+     * players: [{pref, alts:[]}], slotPositions: ['GK','RB',...]
+     * Ergebnis: Array slotIndexPerPlayer (Index in slotPositions), plus Zaehler.
+     */
+    function assignSlots(players, slotPositions) {
+        const n = players.length, m = slotPositions.length;
+        const matchSlot = new Array(m).fill(-1);   // slot -> player
+        const matchPlayer = new Array(n).fill(-1); // player -> slot
+        function tryAssign(p, allowed, seen) {
+            for (let s = 0; s < m; s++) {
+                if (seen[s] || !allowed(p, s)) continue;
+                seen[s] = true;
+                if (matchSlot[s] < 0 || tryAssign(matchSlot[s], allowed, seen)) {
+                    matchSlot[s] = p; matchPlayer[p] = s;
+                    return true;
+                }
+            }
+            return false;
+        }
+        const norm = v => String(v == null ? '' : v).toUpperCase().trim();
+        const prefOk = (p, s) => norm(players[p].pref) === norm(slotPositions[s]);
+        const anyOk = (p, s) => prefOk(p, s) ||
+            (Array.isArray(players[p].alts) && players[p].alts.some(a => norm(a) === norm(slotPositions[s])));
+        // Runde 1: Hauptpositionen. Ein spaeterer Spieler darf einen frueheren
+        // verschieben, solange der auf einer anderen Hauptposition landet.
+        for (let p = 0; p < n; p++) if (matchPlayer[p] < 0) tryAssign(p, prefOk, new Array(m).fill(false));
+        let onPref = matchPlayer.filter(s => s >= 0).length;
+        // Runde 2: Nebenpositionen fuer die Uebrigen (Runde-1-Treffer bleiben,
+        // weil anyOk sie einschliesst und nur verschiebt, nie verdraengt).
+        for (let p = 0; p < n; p++) if (matchPlayer[p] < 0) tryAssign(p, anyOk, new Array(m).fill(false));
+        let onAlt = matchPlayer.filter(s => s >= 0).length - onPref;
+        // Runde 3: Rest der Reihe nach in freie Slots.
+        let fallback = 0;
+        for (let p = 0; p < n; p++) {
+            if (matchPlayer[p] >= 0) continue;
+            const s = matchSlot.indexOf(-1);
+            if (s < 0) break;
+            matchSlot[s] = p; matchPlayer[p] = s; fallback++;
+        }
+        return { slotOfPlayer: matchPlayer, onPref: onPref, onAlt: onAlt, fallback: fallback };
+    }
+    /**
      * Formation als Ziffernfolge: EA "f442" / futbin "4-4-2" / "442" -> "442".
      * Live (Report v5.17.0): die Challenge stand auf f442, futbins Loesung
      * war 3-1-4-2 - zwei Spieler fanden keinen Slot, die Chemie wackelt.
@@ -7684,11 +7745,8 @@
             typeof window.services.Item.searchTransferMarket !== 'function') {
             throw new Error('EA-Marktsuche nicht verfuegbar');
         }
-        const crit = new window.UTSearchCriteriaDTO();
-        try { crit.type = window.SearchType ? window.SearchType.PLAYER : 'player'; } catch (e) {}
-        crit.maskedDefId = Number(resourceId);
-        crit.count = 21;
-        if (maxBuy > 0) crit.maxBuy = maxBuy;
+        const rid = Number(resourceId);
+        const crit = marketCriteria(rid, maxBuy);
         const resp = await obsPromise(window.services.Item.searchTransferMarket(crit, 1));
         if (!responseOk(resp)) {
             const err = new Error('Marktsuche abgelehnt (Status ' + (resp && resp.status) + ')');
@@ -7698,7 +7756,13 @@
         const data = (resp && (resp.data || resp.response)) || {};
         const items = data.items || data.auctionInfo || [];
         const offers = [];
+        let foreign = 0;
         for (const it of items) {
+            // v5.20.0: NUR Angebote dieser Karte. Live (Report v5.19.0) kamen
+            // fuer zehn verschiedene Spieler zehnmal "1.100" - die Suche hatte
+            // den Spieler-Filter ignoriert und den ganzen Markt gemessen. Ein
+            // fremdes Angebot ist kein Preis fuer diese Karte.
+            if (!itemIsCard(it, rid)) { foreign++; continue; }
             let a = null;
             try { a = it._auction || (typeof it.getAuctionData === 'function' ? it.getAuctionData() : null); } catch (e) {}
             const bin = a && Number(a.buyNowPrice);
@@ -7707,7 +7771,47 @@
             if (bin > 0 && !(expires != null && Number(expires) < 0) && !(maxBuy > 0 && bin > maxBuy)) offers.push({ item: it, bin: bin });
         }
         offers.sort((x, y) => x.bin - y.bin);
+        noteMarketProbe(rid, items.length, foreign, offers.length);
         return offers;
+    }
+    /** Gehoert das Suchergebnis zu genau dieser Karte (definitionId/resourceId)? */
+    function itemIsCard(it, rid) {
+        try {
+            if (Number(it.definitionId) === rid || Number(it.resourceId) === rid) return true;
+            const sd = it._staticData || (typeof it.getStaticData === 'function' ? it.getStaticData() : null);
+            if (sd && (Number(sd.id) === rid || Number(sd.definitionId) === rid)) return true;
+        } catch (e) {}
+        return false;
+    }
+    /**
+     * Suchkriterien wie EAs eigene Spielersuche: ein UTItemSearchViewModel
+     * bringt die Defaults mit (type PLAYER, category ANY, position any ...);
+     * darauf maskedDefId und maxBuy. Ein nacktes new UTSearchCriteriaDTO()
+     * war der Verdacht fuer den ignorierten Filter (v5.19.0).
+     */
+    function marketCriteria(rid, maxBuy) {
+        let crit = null;
+        try {
+            if (typeof window.UTItemSearchViewModel === 'function') {
+                const vm = new window.UTItemSearchViewModel();
+                crit = vm.searchCriteria || null;
+            }
+        } catch (e) { crit = null; }
+        if (!crit) crit = new window.UTSearchCriteriaDTO();
+        try { crit.type = window.SearchType ? window.SearchType.PLAYER : 'player'; } catch (e) {}
+        try { crit.defId = []; } catch (e) {}
+        crit.maskedDefId = rid;
+        crit.count = 21;
+        if (maxBuy > 0) crit.maxBuy = maxBuy;
+        return crit;
+    }
+    /** Diagnose je Marktabfrage: wie viele Treffer, wie viele fremde Karten (Filter ignoriert?), wie viele Angebote. */
+    function noteMarketProbe(rid, total, foreign, offers) {
+        try {
+            const ring = STATE.diag.marketProbe || (STATE.diag.marketProbe = []);
+            ring.push({ rid: rid, total: total, foreign: foreign, offers: offers, t: Date.now() });
+            if (ring.length > 12) ring.shift();
+        } catch (e) {}
     }
     /** Marktpreis-Schaetzung: robustMinBin ueber die Angebote von Seite 1 (null-Felder, wenn kein Angebot). */
     async function marketMinBin(resourceId) {
@@ -7776,26 +7880,33 @@
             try { return s && typeof s.getIndex === 'function' && s.getIndex() < 11 && !(typeof s.isBrick === 'function' && s.isBrick()); }
             catch (e) { return false; }
         });
+        if (field.length < entities.length) throw new Error('Mehr Spieler als freie Feld-Slots (' + entities.length + ' > ' + field.length + ').');
         const total = Math.max(slotsAll.length, 11);
         const arr = new Array(total);
-        const free = field.slice();
-        const pending = [];
-        let fallbackPlaced = 0;
-        for (const e of entities) {
-            let k = -1;
-            if (e.pos) k = free.findIndex(s => slotGeneralPos(s) === e.pos || slotUniquePos(s) === e.pos);
-            if (k >= 0) { arr[free[k].getIndex()] = e.ent; free.splice(k, 1); }
-            else pending.push(e);
-        }
-        for (const e of pending) {
-            const s = free.shift();
-            if (!s) throw new Error('Mehr Spieler als freie Feld-Slots (' + squad.players.length + ').');
-            arr[s.getIndex()] = e.ent; fallbackPlaced++;
-        }
+        // v5.20.0: nach den Positionen der SPIELER zuordnen (Haupt- und
+        // Nebenpositionen der EA-Entity), nicht nach futbins Slot-Layout -
+        // das passt bei anderer Formation nicht (Report v5.19.0: 4 daneben).
+        const slotPositions = field.map(s => slotGeneralPos(s) || slotUniquePos(s) || '');
+        const playersPos = entities.map(e => ({
+            pref: entityPref(e.ent) || e.pos,
+            alts: entityAlts(e.ent)
+        }));
+        const asg = assignSlots(playersPos, slotPositions);
+        asg.slotOfPlayer.forEach((s, i) => { if (s >= 0) arr[field[s].getIndex()] = entities[i].ent; });
         liveSquad.setPlayers(arr, true);
         const resp = await obsPromise(sbcSvc.saveChallenge(challenge));
         if (!responseOk(resp)) throw new Error('saveChallenge abgelehnt (Status ' + (resp && resp.status) + ').');
-        return { placed: entities.length, ownedPlaced: ownedPlaced, conceptPlaced: conceptPlaced, fallbackPlaced: fallbackPlaced };
+        return { placed: entities.length, ownedPlaced: ownedPlaced, conceptPlaced: conceptPlaced,
+                 onPref: asg.onPref, onAlt: asg.onAlt, fallbackPlaced: asg.fallback };
+    }
+    function entityPref(ent) {
+        try { return ent.preferredPosition || (ent._staticData && ent._staticData.preferredPosition) || null; } catch (e) { return null; }
+    }
+    function entityAlts(ent) {
+        try {
+            const a = ent.possiblePositions || (ent._staticData && ent._staticData.possiblePositions) || [];
+            return Array.isArray(a) ? a.map(String) : [];
+        } catch (e) { return []; }
     }
     async function onFutbinSearchClick() {
         if (futbinBusy) { toast('Futbin-Suche laeuft schon.', 'warn'); return; }
@@ -7947,14 +8058,19 @@
             setStatus('trage Futbin-Loesung ein...');
             const res = await insertFutbinSolution(c.squad, c.owned);
             let h = '<div class="sbc-opt-summary">Eingetragen: ' + res.placed + ' Spieler (' + res.ownedPlaced + ' eigene, ' +
-                    res.conceptPlaced + ' Konzept)' +
-                    (res.fallbackPlaced ? ' - ' + res.fallbackPlaced + ' ohne Positions-Treffer der Reihe nach' : '') + '</div>';
-            h += '<div class="sbc-opt-dim">Zu kaufen (stehen als Konzept-Spieler auf dem Feld):</div>';
+                    res.conceptPlaced + ' Konzept) · Positionen: ' + res.onPref + ' Haupt, ' + res.onAlt + ' Neben' +
+                    (res.fallbackPlaced ? ', ' + res.fallbackPlaced + ' ohne Treffer' : '') + '</div>';
+            h += '<div class="sbc-opt-dim">Zu kaufen (stehen als Konzept-Spieler auf dem Feld). Preis = Plan; beim Kaufen gilt hoechstens Plan + ' +
+                 Math.round(BUY_TOLERANCE * 100) + ' %.</div>';
             c.squad.players.forEach(function (pl, i) {
                 if (c.owned[i]) return;
                 const price = pl.liveBin != null ? pl.liveBin : futbinPrice(pl, futbinLast.platform);
+                const src = pl.liveBin != null
+                    ? 'Markt, 2. Angebot von ' + (pl.liveOffers != null ? pl.liveOffers : '?')
+                    : 'futbin' + (pl.liveOffers === 0 ? ', kein Angebot gesehen' : '');
                 h += '<div>' + escapeHtml(pl.name || ('#' + pl.resourceId)) + ' <span class="sbc-opt-muted">(' + (pl.rating || '?') + ', ' +
-                     escapeHtml(pl.slotPosition || pl.cardPosition || '?') + ')</span> ' + fmtCoins(price) + (pl.liveBin != null ? ' live' : '') + '</div>';
+                     escapeHtml(pl.cardPosition || pl.slotPosition || '?') + ')</span> Plan ' + fmtCoins(price) +
+                     ' <span class="sbc-opt-muted">(' + escapeHtml(src) + ')</span></div>';
             });
             const plan = buildBuyPlan(c, futbinLast.platform);
             if (plan.length) {
@@ -8629,6 +8745,8 @@
             // Kosten, Marktabfragen, Fehler, eingefuegte Loesung.
             futbin: STATE.diag.futbin,
             futbinBuy: STATE.diag.futbinBuy || null,
+            marketUrls: STATE.diag.marketUrls,
+            marketProbe: STATE.diag.marketProbe,
             // v5.15.0: Vorbereitung auf EAs SBC-Freischaltung - siehe
             // STATE.diag-Kommentare und docs/FC27.md §7.
             fc27: {

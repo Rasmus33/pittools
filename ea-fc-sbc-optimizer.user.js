@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.27.0
+// @version      5.28.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.27.0';
+    const VERSION = '5.28.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -5763,6 +5763,29 @@
            BATCH / REIHE: Abschnitte, Vorschau, Team-Details
            ------------------------------------------------------------------ */
         .sbc-opt-batch { margin-top:14px; padding-top:12px; border-top:1px solid var(--pt-line); }
+        /* v5.28.0: Reiter Kaufen / Rating / Mehr - dieselbe Leiste wie die
+           Segment-Schalter, nur hoeher (Hauptnavigation, Trefferflaeche tap). */
+        .sbc-opt-tabs {
+            display:flex; gap:3px; margin:0 0 12px; align-items:stretch;
+            background:var(--pt-sunken); border:1px solid var(--pt-line-2);
+            border-radius:9px; padding:3px;
+        }
+        .sbc-opt-tab-btn {
+            flex:1 1 0; min-width:0; background:transparent; color:var(--pt-muted);
+            border:none; border-radius:var(--pt-r-s); padding:0 6px; min-height:var(--pt-tap);
+            font-size:13px; font-weight:700; font-family:inherit; cursor:pointer;
+            transition:background .12s ease, color .12s ease;
+        }
+        .sbc-opt-tab-btn:hover { background:var(--pt-hover); color:var(--pt-text); }
+        .sbc-opt-tab-btn:active { transform: translateY(1px); }
+        .sbc-opt-tab-btn.on { background:var(--pt-sel); color:var(--pt-text); }
+        .sbc-opt-tab-btn.on:hover { background:var(--pt-sel-hi); }
+        .sbc-opt-tab:not(.on) { display:none; }
+        /* Zeilen der Info-Box, die nur den Rating-Optimizer betreffen. */
+        #sbc-opt-panel[data-tab="kaufen"] .sbc-opt-only-rating,
+        #sbc-opt-panel[data-tab="mehr"] .sbc-opt-only-rating { display:none; }
+        .sbc-opt-section { margin-top:0; }
+        .sbc-opt-flow { color:var(--pt-faint); font-size:11px; margin:0 0 10px; line-height:1.5; }
         #sbc-opt-batch-preview:empty { display:none; }
         /* Der Vorschau-Kasten ist die ganze Zeit im Markup, aber solange kein
            Plan existiert, waere er nur eine leere Trennlinie. */
@@ -6047,22 +6070,56 @@
                 <span id="sbc-opt-close" style="cursor:pointer;">✕</span>
             </div>
             <div class="sbc-opt-body">
-                <!-- VORLAGEN: gespeicherte Auto-Laeufe, eigene Vollbild-
-                     Oberflaeche. GANZ oben und BLAU (Rasmus, 28.08.: "ganz
-                     oben waere sogar noch besser, also noch ueber ziel ovr
-                     ... einfach 'Vorlagen' reicht"). margin-top:0, damit der
-                     erste Knopf nicht an der Kopfzeile klebt-Abstand kommt
-                     sonst nur aus dem Button-Default. -->
-                <button class="sbc-opt-btn blue" id="sbc-opt-vorlagen-btn" style="margin-top:0;">Vorlagen</button>
+                <!-- v5.28.0: REITER. Rasmus (20.09.): "maximale Uebersichtlichkeit
+                     ... die alten Funktionen erst mal verstecken". Drei Reiter:
+                     KAUFEN (futbin-Loesung fuer Kauf-SBCs wie Marquee Matchups),
+                     RATING (der bisherige Optimizer samt Reihe, Batch, Vorlagen)
+                     und MEHR (Werkzeuge). Welcher Reiter beim Oeffnen einer SBC
+                     aufgeht, entscheidet die SBC: mit Ziel-OVR -> Rating, sonst
+                     -> Kaufen; ein Fingertipp uebersteuert das fuer diese SBC. -->
                 <div class="sbc-opt-info" id="sbc-opt-info">
-                    Ziel-OVR: <b id="sbc-opt-target">–</b><br>
-                    Vorgaben: <b id="sbc-opt-rarity">keine</b><br>
+                    <span class="sbc-opt-only-rating">Ziel-OVR: <b id="sbc-opt-target">–</b><br></span>
+                    <span class="sbc-opt-only-rating">Vorgaben: <b id="sbc-opt-rarity">keine</b><br></span>
                     Spieler im Pool: <b id="sbc-opt-poolcount">0</b><br>
-                    SBC-Kontingent: <b id="sbc-opt-quota">–</b><br>
+                    <span class="sbc-opt-only-rating">SBC-Kontingent: <b id="sbc-opt-quota">–</b><br></span>
                     Status: <b id="sbc-opt-status">bereit</b>
                     <div id="sbc-opt-availability"></div>
                     <div class="sbc-opt-debug" id="sbc-opt-debug">API: – · SID: – · Services: –</div>
                 </div>
+                <div class="sbc-opt-tabs" id="sbc-opt-tabs" role="tablist">
+                    <button type="button" class="sbc-opt-tab-btn" data-tab="kaufen" role="tab">Kaufen</button>
+                    <button type="button" class="sbc-opt-tab-btn" data-tab="rating" role="tab">Rating</button>
+                    <button type="button" class="sbc-opt-tab-btn" data-tab="mehr" role="tab">Mehr</button>
+                </div>
+                <!-- REITER KAUFEN: FUTBIN-LOESUNG (v5.16.0) fuer SBCs, die man
+                     zusammenkauft. Holt die Community-Loesungen der offenen
+                     Challenge ueber die Bruecke, gleicht mit dem Verein ab, prueft
+                     am Markt, traegt eigene Karten echt und fehlende als Konzept-
+                     Spieler ein, kauft die fehlenden schrittweise nach. -->
+                <div class="sbc-opt-tab" id="sbc-opt-tab-kaufen" role="tabpanel">
+                <div class="sbc-opt-section" id="sbc-opt-futbin">
+                    <div class="sbc-opt-flow">1&nbsp;Loesung suchen &rarr; 2&nbsp;Einfuegen &rarr; 3&nbsp;Fehlende kaufen &rarr; 4&nbsp;Abgeben (im Spiel)</div>
+                    <label class="sbc-opt-chiplabel">Preise fuer</label>
+                    <div class="sbc-opt-chips" id="sbc-opt-futbin-platform"></div>
+                    <label class="sbc-opt-toggle">
+                        <input type="checkbox" id="sbc-opt-futbin-market" checked>
+                        Live-Preise am EA-Markt pruefen (empfohlen, dauert etwas)
+                    </label>
+                    <button class="sbc-opt-btn primary" id="sbc-opt-futbin-search">Futbin-Loesungen suchen</button>
+                    <!-- v5.22.0: unabhaengig vom futbin-Lauf - liest die Konzept-
+                         Spieler aus dem offenen Kader (auch nach Neuladen oder
+                         von Hand eingesetzt), Marktpreis je Karte, Rueckfrage,
+                         dann derselbe schrittweise Kauf-Lauf. -->
+                    <button class="sbc-opt-btn ghost" id="sbc-opt-futbin-buyconcepts">Konzept-Spieler im Kader kaufen</button>
+                    <div class="sbc-opt-result" id="sbc-opt-futbin-result"></div>
+                </div>
+                </div>
+                <!-- REITER RATING: der bisherige Optimizer (Rating-SBCs). -->
+                <div class="sbc-opt-tab" id="sbc-opt-tab-rating" role="tabpanel">
+                <!-- VORLAGEN: gespeicherte Auto-Laeufe, eigene Vollbild-
+                     Oberflaeche. Erster Knopf im Rating-Reiter und BLAU (Rasmus,
+                     28.08.: "ganz oben ... einfach 'Vorlagen' reicht"). -->
+                <button class="sbc-opt-btn blue" id="sbc-opt-vorlagen-btn" style="margin-top:0;">Vorlagen</button>
                 <button class="sbc-opt-btn ghost" id="sbc-opt-load">Spieler laden</button>
                 <div class="sbc-opt-row" style="margin-bottom:0;">
                     <label class="sbc-opt-chiplabel">Min. Rating pro Spieler</label>
@@ -6216,27 +6273,6 @@
                 </details>
                 <button class="sbc-opt-btn primary" id="sbc-opt-run">Optimieren + Eintragen</button>
                 <div class="sbc-opt-result" id="sbc-opt-result"></div>
-                <!-- FUTBIN-LOESUNG (v5.16.0): fuer SBCs, die man zusammenkauft
-                     (Marquee Matchups & Co.). Holt die Community-Loesungen der
-                     offenen Challenge ueber die Bruecke, gleicht mit dem Verein
-                     ab, prueft am Markt, traegt eigene Karten echt und fehlende
-                     als Konzept-Spieler ein. Gekauft und abgegeben wird von Hand. -->
-                <div class="sbc-opt-batch" id="sbc-opt-futbin">
-                    <div class="sbc-opt-group-title" style="margin:0 0 6px;">Futbin-Lösung (zusammenkaufen)</div>
-                    <label class="sbc-opt-chiplabel">Preise für</label>
-                    <div class="sbc-opt-chips" id="sbc-opt-futbin-platform"></div>
-                    <label class="sbc-opt-toggle">
-                        <input type="checkbox" id="sbc-opt-futbin-market" checked>
-                        Beste 3 am EA-Markt gegenprüfen (Live-Preise, dauert etwas)
-                    </label>
-                    <button class="sbc-opt-btn plan" id="sbc-opt-futbin-search">Futbin-Lösungen suchen</button>
-                    <!-- v5.22.0: unabhaengig vom futbin-Lauf - liest die Konzept-
-                         Spieler aus dem offenen Kader (auch nach Neuladen oder
-                         von Hand eingesetzt), Marktpreis je Karte, Rueckfrage,
-                         dann derselbe schrittweise Kauf-Lauf. -->
-                    <button class="sbc-opt-btn ghost" id="sbc-opt-futbin-buyconcepts">Konzept-Spieler im Kader kaufen</button>
-                    <div class="sbc-opt-result" id="sbc-opt-futbin-result"></div>
-                </div>
                 <!-- SBC-REIHE: verschiedene Challenges EINES Sets nacheinander.
                      Nur sichtbar, wenn das offene Set mehr als eine Challenge
                      hat (syncQueueSection()). Vorschau, Plan-Check und die
@@ -6285,6 +6321,13 @@
                         <div id="sbc-opt-batch-detail-body"></div>
                     </details>
                 </div>
+                </div>
+                <!-- REITER MEHR: Werkzeuge, die zu keiner SBC-Art gehoeren. -->
+                <div class="sbc-opt-tab" id="sbc-opt-tab-mehr" role="tabpanel">
+                    <div class="sbc-opt-group-title" style="margin-top:0;">Werkzeuge</div>
+                    <button class="sbc-opt-btn ghost" id="sbc-opt-diag" style="margin-top:0;">Diagnose in Konsole schreiben</button>
+                    <div class="sbc-opt-debug">Die Diagnose ist ein JSON-Report fuer die Fehlersuche (Konsole bzw. App-Log).</div>
+                </div>
                 <!-- PACK-OPENER (Store, Ticket #69/#76): nur in der Store-Ansicht
                      sichtbar (syncPackSection()) - Pack-Oeffnen ist unumkehrbar,
                      "Alle oeffnen" stoppt deshalb beim ERSTEN Fehler jeder Art. -->
@@ -6315,7 +6358,6 @@
                     <button class="sbc-opt-btn danger" id="sbc-opt-pack-all">Alle öffnen</button>
                     <div id="sbc-opt-pack-result"></div>
                 </div>
-                <button class="sbc-opt-btn ghost" id="sbc-opt-diag" style="margin-top:10px;">Diagnose in Konsole schreiben</button>
             </div>
         `;
         document.body.appendChild(panel);
@@ -6491,6 +6533,20 @@
         });
         ui.rarityPickFilter.addEventListener('input', renderRarityPickOptions);
         // Zustand der "Erweiterte Einstellungen" merken
+        // v5.28.0: Reiter. Letzte Wahl merken; beim Oeffnen einer SBC waehlt
+        // autoPickTab() nach SBC-Art (ein Tipp uebersteuert fuer diese SBC).
+        ui.tabBar = panel.querySelector('#sbc-opt-tabs');
+        ui.tabBtns = Array.from(panel.querySelectorAll('.sbc-opt-tab-btn'));
+        ui.tabPanes = Array.from(panel.querySelectorAll('.sbc-opt-tab'));
+        ui.tabBtns.forEach(function (b) {
+            b.addEventListener('click', function () {
+                tabPinnedChallenge = STATE.sbc.challengeId;
+                setTab(b.getAttribute('data-tab'), true);
+            });
+        });
+        let startTab = 'kaufen';
+        try { startTab = localStorage.getItem('sbcOptTab') || 'kaufen'; } catch (e) {}
+        setTab(startTab, false);
         const adv = panel.querySelector('#sbc-opt-advanced');
         try { if (localStorage.getItem('sbcOptAdvancedOpen') === '1') adv.open = true; } catch (e) {}
         adv.addEventListener('toggle', function () {
@@ -7122,8 +7178,34 @@
         toast('Schnellwahl gespeichert: ' + arr.join(', '), 'ok');
     }
     function setStatus(txt) { if (ui.status) ui.status.textContent = txt; }
+    // ---- Reiter (v5.28.0) ----------------------------------------------------
+    const TAB_NAMES = ['kaufen', 'rating', 'mehr'];
+    let tabCurrent = null;
+    let tabAutoKey = null;          // Challenge + Art, fuer die zuletzt automatisch gewaehlt wurde
+    let tabPinnedChallenge = undefined; // Challenge, fuer die Rasmus selbst gewaehlt hat
+    function setTab(name, manual) {
+        if (TAB_NAMES.indexOf(name) < 0) name = 'kaufen';
+        tabCurrent = name;
+        const panel = document.getElementById('sbc-opt-panel');
+        if (panel) panel.setAttribute('data-tab', name);
+        (ui.tabBtns || []).forEach(b => b.classList.toggle('on', b.getAttribute('data-tab') === name));
+        (ui.tabPanes || []).forEach(p => p.classList.toggle('on', p.id === 'sbc-opt-tab-' + name));
+        if (manual) { try { localStorage.setItem('sbcOptTab', name); } catch (e) {} }
+    }
+    /** Reiter nach SBC-Art: Ziel-OVR -> Rating-Optimizer, sonst Kauf-SBC -> Kaufen. Handwahl fuer diese SBC gewinnt. */
+    function autoPickTab() {
+        const cid = STATE.sbc.challengeId;
+        if (cid == null) return;
+        const rating = STATE.sbc.targetOVR != null;
+        const key = cid + ':' + (rating ? 'r' : 'k');
+        if (key === tabAutoKey) return;
+        tabAutoKey = key;
+        if (tabPinnedChallenge === cid) return;
+        setTab(rating ? 'rating' : 'kaufen', false);
+    }
     function refreshSbcInfoUI() {
         if (!ui.target) return;
+        autoPickTab();
         ui.target.textContent = STATE.sbc.targetOVR || '–';
         const parts = [];
         for (const pl of (STATE.sbc.playerLevelConstraints || [])) {
@@ -7679,11 +7761,16 @@
         // Runde 1: Hauptpositionen. Ein spaeterer Spieler darf einen frueheren
         // verschieben, solange der auf einer anderen Hauptposition landet.
         for (let p = 0; p < n; p++) if (matchPlayer[p] < 0) tryAssign(p, prefOk, new Array(m).fill(false));
-        let onPref = matchPlayer.filter(s => s >= 0).length;
-        // Runde 2: Nebenpositionen fuer die Uebrigen (Runde-1-Treffer bleiben,
-        // weil anyOk sie einschliesst und nur verschiebt, nie verdraengt).
+        const fromRound1 = matchPlayer.map(s => s >= 0);
+        // Runde 2a (v5.28.0): Nebenpositionen fuer die Uebrigen - Runde-1-
+        // Spieler duerfen dabei nur auf eine ANDERE Hauptposition rutschen,
+        // damit kein Haupttreffer verloren geht.
+        const keepPref = (p, s) => fromRound1[p] ? prefOk(p, s) : anyOk(p, s);
+        for (let p = 0; p < n; p++) if (matchPlayer[p] < 0) tryAssign(p, keepPref, new Array(m).fill(false));
+        // Runde 2b: wer dann noch fehlt, darf Haupttreffer auf Nebenposition
+        // verschieben - fuer die Chemie zaehlt "auf EINER seiner Positionen",
+        // ein Spieler ausser Position kostet mehr als ein Haupt-zu-Neben.
         for (let p = 0; p < n; p++) if (matchPlayer[p] < 0) tryAssign(p, anyOk, new Array(m).fill(false));
-        let onAlt = matchPlayer.filter(s => s >= 0).length - onPref;
         // Runde 3: Rest der Reihe nach in freie Slots.
         let fallback = 0;
         for (let p = 0; p < n; p++) {
@@ -7691,6 +7778,17 @@
             const s = matchSlot.indexOf(-1);
             if (s < 0) break;
             matchSlot[s] = p; matchPlayer[p] = s; fallback++;
+        }
+        // v5.28.0: Zaehler aus der ENDZUORDNUNG. Vorher wurde onPref nach
+        // Runde 1 gezaehlt - Runde 2 konnte Haupttreffer auf Nebenpositionen
+        // schieben, der Report sagte trotzdem "9 Haupt" (Log 20.09., 21:55:
+        // gemeldet 9/2, tatsaechlich 7/4).
+        let onPref = 0, onAlt = 0;
+        for (let p = 0; p < n; p++) {
+            const s = matchPlayer[p];
+            if (s < 0) continue;
+            if (prefOk(p, s)) onPref++;
+            else if (anyOk(p, s)) onAlt++;
         }
         return { slotOfPlayer: matchPlayer, onPref: onPref, onAlt: onAlt, fallback: fallback };
     }
@@ -8035,8 +8133,14 @@
             // erster Weg (Pack-Karten, unveraendertes Verhalten).
             const piles = [['unassigned', 'requestUnassignedItems'], ['watchlist', 'requestWatchedItems']];
             const foundIn = [];
+            // v5.28.0: je Stapel Status, Anzahl und ID-Stichprobe in den Report
+            // (App-Log 20.09. 21:55: found 0 in BEIDEN Stapeln - ohne diese
+            // Zahlen ist nicht zu sehen, ob die Stapel leer waren oder die IDs
+            // anders heissen).
+            out.piles = [];
+            out.wantedSample = Array.from(wanted).slice(0, 3);
             for (const pair of piles) {
-                if (!svc || typeof svc[pair[1]] !== 'function') continue;
+                if (!svc || typeof svc[pair[1]] !== 'function') { out.piles.push({ pile: pair[0], missing: true }); continue; }
                 if (ents.length >= wanted.size) break;
                 let resp = null;
                 try { resp = await obsPromise(svc[pair[1]]()); } catch (e) { resp = null; }
@@ -8044,6 +8148,10 @@
                 const items = (resp && ((resp.response && resp.response.items) || (resp.data && resp.data.items))) || [];
                 const have = new Set(ents.map(it => String(it.id)));
                 const hits = items.filter(it => it && wanted.has(String(it.id)) && !have.has(String(it.id)));
+                out.piles.push({
+                    pile: pair[0], ok: responseOk(resp), status: resp && resp.status, count: items.length, hits: hits.length,
+                    sample: items.slice(0, 3).map(it => { try { return { id: String(it.id), def: it.definitionId, keys: Object.keys(it).slice(0, 6) }; } catch (e) { return null; } })
+                });
                 if (hits.length) { ents = ents.concat(hits); foundIn.push(pair[0] + ':' + hits.length); }
             }
             out.found = ents.length;
@@ -8183,12 +8291,17 @@
         // wieder raten muss.
         const slotPositions = field.map(s => slotKeysAll(s));
         const idToName = slotIdNameMap(field);
+        // v5.28.0: futbins SLOT-Position (e.pos) zaehlt NICHT mehr als
+        // Nebenposition. Log 20.09. 21:55: Barrenetxea (LW; EA: RM/LM/RW)
+        // stand in futbins 3-1-4-2 auf ST - "ST" wanderte in seine alts,
+        // PitTools stellte ihn auf EAs ST-Slot, EA zeigte ihn ausser
+        // Position. Nur die Positionen der EA-Karte (und futbins KARTEN-
+        // Position als Reserve, wenn EA nichts liefert) gelten.
         const playersPos = entities.map((e, i) => {
             const pref = playerKeys(entityPref(e.ent), idToName);
             const alts = [].concat.apply([], entityAlts(e.ent).map(a => playerKeys(a, idToName)));
             const fbCard = playerKeys(squad.players[i].cardPosition, idToName);
-            const fbSlot = playerKeys(e.pos, idToName);
-            return { pref: pref.length ? pref : fbCard, alts: alts.concat(fbCard, fbSlot) };
+            return { pref: pref.length ? pref : fbCard, alts: (pref.length || alts.length) ? alts : fbCard };
         });
         const asg = assignSlots(playersPos, slotPositions, []);
         asg.slotOfPlayer.forEach((s, i) => { if (s >= 0) arr[field[s].getIndex()] = entities[i].ent; });
@@ -8488,8 +8601,12 @@
             setStatus('trage Futbin-Loesung ein...');
             const res = await insertFutbinSolution(c.squad, c.owned);
             let h = '<div class="sbc-opt-summary">Eingetragen: ' + res.placed + ' Spieler (' + res.ownedPlaced + ' eigene, ' +
-                    res.conceptPlaced + ' Konzept) · Positionen: ' + res.onPref + ' Haupt, ' + res.onAlt + ' Neben' +
-                    (res.fallbackPlaced ? ', ' + res.fallbackPlaced + ' ohne Treffer' : '') + '</div>';
+                    res.conceptPlaced + ' Konzept)</div>' +
+                    '<div>Positionen: ' + res.onPref + ' auf Hauptposition' + (res.onAlt ? ', ' + res.onAlt + ' auf Nebenposition (zaehlt fuer die Chemie voll)' : '') + '</div>';
+            if (res.fallbackPlaced) {
+                h += warnHtml(res.fallbackPlaced + ' Spieler steh' + (res.fallbackPlaced === 1 ? 't' : 'en') +
+                              ' AUSSER Position - die Loesung passt nicht zur Formation der Challenge. Chemie vor dem Kaufen pruefen oder eine andere Loesung waehlen.');
+            }
             if (res.bricks) {
                 res.bricks.filled.forEach(function (b) {
                     h += '<div>Pflicht-Slot ' + (b.index + 1) + ': <b>' + escapeHtml(b.name || '?') + '</b> (' + (b.rating || '?') + ') aus dem Verein</div>';
@@ -8850,7 +8967,13 @@
             // v5.27.0: _pushSquadToView(e) erwartet den KADER (Bundle 11321:
             // "t.setType(e.isDream() ? ...)") - ohne Argument flog
             // "reading 'isDream'" (Report v5.26.0). Schlaegt es fehl, setSquad.
-            const oc = ctrl._overviewController || ctrl.leftController || null;
+            // v5.28.0: am Handy (schmale Ansicht) gibt es keinen Split-View -
+            // der UTSBCSquadOverviewViewController selbst ist der Controller
+            // (App-Log 20.09. 21:55: viewPushed null, Rasmus musste zurueck
+            // und die SBC neu oeffnen).
+            const oc = ctrl._overviewController || ctrl.leftController ||
+                       (typeof ctrl._pushSquadToView === 'function' ? ctrl : null);
+            out.viewPushed = oc ? null : 'kein Overview-Controller';
             try {
                 if (oc && typeof oc._pushSquadToView === 'function') { oc._pushSquadToView(liveSquad); out.viewPushed = 'push'; }
                 else if (oc && typeof oc.setSquad === 'function') { oc.setSquad(liveSquad); out.viewPushed = 'setSquad'; }

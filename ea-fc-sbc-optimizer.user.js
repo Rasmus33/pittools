@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.22.0
+// @version      5.23.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.22.0';
+    const VERSION = '5.23.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7825,7 +7825,14 @@
             if (bin > 0 && !(expires != null && Number(expires) < 0) && !(maxBuy > 0 && bin > maxBuy)) offers.push({ item: it, bin: bin });
         }
         offers.sort((x, y) => x.bin - y.bin);
-        noteMarketProbe(rid, items.length, foreign, offers.length, foreignSample);
+        const urlRid = lastMarketUrlRid();
+        noteMarketProbe(rid, items.length, foreign, offers.length, foreignSample, urlRid);
+        if (urlRid != null && urlRid !== rid) {
+            // EA hat einen ANDEREN Spieler gesucht (klebende Kriterien) - die
+            // Treffer sind wertlos, lieber "kein Angebot" als ein falscher Preis.
+            reportError('marketOffers', new Error('Kriterien kleben: gesucht ' + rid + ', URL ' + urlRid));
+            return [];
+        }
         return offers;
     }
     /** Gehoert das Suchergebnis zu dieser Karte? Basiskarte: gleiche databaseId + normal; Special: exakt (cardMatchesRid). */
@@ -7845,26 +7852,32 @@
      * war der Verdacht fuer den ignorierten Filter (v5.19.0).
      */
     function marketCriteria(rid, maxBuy) {
-        let crit = null;
-        try {
-            if (typeof window.UTItemSearchViewModel === 'function') {
-                const vm = new window.UTItemSearchViewModel();
-                crit = vm.searchCriteria || null;
-            }
-        } catch (e) { crit = null; }
-        if (!crit) crit = new window.UTSearchCriteriaDTO();
+        // v5.23.0: WIEDER das nackte DTO. Der Umweg ueber UTItemSearchViewModel
+        // (v5.21/22) liess die Kriterien KLEBEN: zwoelf Abfragen, drei
+        // verschiedene URLs, zehnmal derselbe maskedDefId (Report v5.21.0,
+        // marketUrls). Mit dem nackten DTO (v5.20.0) stand in jeder URL der
+        // richtige Spieler - der Filter war nie das Problem, mein Vergleich
+        // der Treffer war es (cardMatchesRid).
+        const crit = new window.UTSearchCriteriaDTO();
         try { crit.type = window.SearchType ? window.SearchType.PLAYER : 'player'; } catch (e) {}
-        try { crit.defId = []; } catch (e) {}
         crit.maskedDefId = rid;
         crit.count = 21;
         if (maxBuy > 0) crit.maxBuy = maxBuy;
         return crit;
     }
+    /** maskedDefId aus der letzten Marktsuch-URL - stimmt er nicht mit rid ueberein, hat EA etwas anderes gesucht. */
+    function lastMarketUrlRid() {
+        try {
+            const ring = STATE.diag.marketUrls || [];
+            const m = String(ring[ring.length - 1] || '').match(/maskedDefId=(\d+)/);
+            return m ? Number(m[1]) : null;
+        } catch (e) { return null; }
+    }
     /** Diagnose je Marktabfrage: wie viele Treffer, wie viele fremde Karten (Filter ignoriert?), wie viele Angebote. */
-    function noteMarketProbe(rid, total, foreign, offers, foreignSample) {
+    function noteMarketProbe(rid, total, foreign, offers, foreignSample, urlRid) {
         try {
             const ring = STATE.diag.marketProbe || (STATE.diag.marketProbe = []);
-            ring.push({ rid: rid, total: total, foreign: foreign, offers: offers, foreignSample: foreignSample || null, t: Date.now() });
+            ring.push({ rid: rid, urlRid: urlRid == null ? null : urlRid, total: total, foreign: foreign, offers: offers, foreignSample: foreignSample || null, t: Date.now() });
             if (ring.length > 12) ring.shift();
         } catch (e) {}
     }
@@ -7986,35 +7999,62 @@
             return v;
         } catch (e) { return String(v); }
     }
-    /** Alle Schluessel eines Slots: General-ID, Unique-ID, General-Name, Unique-Name. */
+    /**
+     * v5.23.0: NUR NOCH NAMEN vergleichen. Zahlen sind bei EA mehrdeutig
+     * (Positions-ID des Repositories vs. Enum vs. Slot-Feld) - live standen
+     * die Spieler falsch, obwohl der ID-Vergleich "9 Haupttreffer" meldete.
+     * Eine Zahl wird ueber repositories.Squad.getPosition(id).getName() zum
+     * Namen; gelingt das nicht, ist sie KEIN Schluessel. Namen sind eindeutig
+     * ("ST", "LCB", "CB").
+     */
+    function posNameOf(v) {
+        try {
+            if (v == null || v === '' || v === -1) return null;
+            if (typeof v === 'object') {
+                if (typeof v.getName === 'function') return String(v.getName()).toUpperCase();
+                if (v.name) return String(v.name).toUpperCase();
+                if (v.id != null) return posNameOf(Number(v.id));
+                return null;
+            }
+            if (typeof v === 'number' || /^\d+$/.test(String(v))) {
+                const repo = window.repositories && window.repositories.Squad;
+                if (repo && typeof repo.getPosition === 'function') {
+                    const p = repo.getPosition(Number(v));
+                    if (p && typeof p.getName === 'function') return String(p.getName()).toUpperCase();
+                    if (p && p.name) return String(p.name).toUpperCase();
+                }
+                return null;
+            }
+            const s = String(v).toUpperCase().trim();
+            return s || null;
+        } catch (e) { return null; }
+    }
+    /** Alle Namens-Schluessel eines Slots: General- und Unique-Name (direkt und ueber die IDs). */
     function slotKeysAll(s) {
         const out = [];
-        try { const g = s.getGeneralPosition && s.getGeneralPosition(); if (g != null && g !== -1) out.push(posKey(g)); } catch (e) {}
-        try { const u = s.getUniquePosition && s.getUniquePosition(); if (u != null && u !== -1) out.push(posKey(u)); } catch (e) {}
         const gn = slotGeneralPos(s), un = slotUniquePos(s);
-        if (gn) { out.push(gn.toUpperCase()); out.push(posKey(gn)); }
-        if (un) { out.push(un.toUpperCase()); out.push(posKey(un)); }
+        if (gn) out.push(gn.toUpperCase());
+        if (un) out.push(un.toUpperCase());
+        try { const g = s.getGeneralPosition && s.getGeneralPosition(); const n = posNameOf(g); if (n) out.push(n); } catch (e) {}
+        try { const u = s.getUniquePosition && s.getUniquePosition(); const n = posNameOf(u); if (n) out.push(n); } catch (e) {}
         return out.filter((v, i, a) => v && a.indexOf(v) === i);
     }
-    /** ID -> Name, aus den Slots der Formation abgelesen (nur die Positionen, die es hier gibt - andere koennen nicht treffen). */
+    /** ID -> Name aus den Slots der Formation (Reserve, falls das Repository keine Namen liefert). */
     function slotIdNameMap(field) {
         const m = {};
         for (const s of field) {
-            try { const g = s.getGeneralPosition && s.getGeneralPosition(); const gn = slotGeneralPos(s); if (g != null && gn) m[String(typeof g === 'object' ? g.id : g)] = gn.toUpperCase(); } catch (e) {}
-            try { const u = s.getUniquePosition && s.getUniquePosition(); const un = slotUniquePos(s); if (u != null && un) m[String(typeof u === 'object' ? u.id : u)] = un.toUpperCase(); } catch (e) {}
+            try { const g = s.getGeneralPosition && s.getGeneralPosition(); const gn = slotGeneralPos(s); if (g != null && typeof g !== 'object' && gn) m[String(g)] = gn.toUpperCase(); } catch (e) {}
+            try { const u = s.getUniquePosition && s.getUniquePosition(); const un = slotUniquePos(s); if (u != null && typeof u !== 'object' && un) m[String(u)] = un.toUpperCase(); } catch (e) {}
         }
         return m;
     }
-    /** Alle Schluessel einer Spieler-Position: ID (ueber Repository), Name, Name-aus-Slot-Map. */
+    /** Namens-Schluessel einer Spieler-Position: Repository-Name, sonst Slot-Karte, sonst der Name selbst. Zahlen ohne Namen zaehlen nicht. */
     function playerKeys(v, idToName) {
         const out = [];
         if (v == null || v === '' || v === -1) return out;
-        const k = posKey(v);
-        if (k) out.push(k);
-        if (typeof v === 'string' && !/^\d+$/.test(v)) out.push(v.toUpperCase().trim());
-        if (typeof v === 'object' && v && v.name) out.push(String(v.name).toUpperCase());
-        if (k && idToName && idToName[k]) out.push(idToName[k]);
-        if (typeof v === 'number' && idToName && idToName[String(v)]) out.push(idToName[String(v)]);
+        const n = posNameOf(v);
+        if (n && !/^\d+$/.test(n)) out.push(n);
+        if ((typeof v === 'number' || /^\d+$/.test(String(v))) && idToName && idToName[String(v)]) out.push(idToName[String(v)]);
         return out.filter((x, i, a) => x && a.indexOf(x) === i);
     }
     function entityPref(ent) {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.20.0
+// @version      5.21.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.20.0';
+    const VERSION = '5.21.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7510,6 +7510,26 @@
         return { min: arr[0], robust: arr.length > 1 ? arr[1] : arr[0], count: arr.length, lowest: arr.slice(0, 3) };
     }
     /**
+     * Gehoert ein Markt-Item zur gesuchten Karte? (v5.21.0) EAs Suche mit
+     * maskedDefId liefert ALLE Versionen eines Spielers (sie vergleicht die
+     * databaseId = definitionId ohne Revisions-Bits; genau so prueft EA auch
+     * compareDream). Live (Report v5.20.0) trugen die Treffer fuer futbins
+     * Basis-ID eine andere definitionId (FC-27-Revision der Basiskarte) -
+     * ein exakter Vergleich verwarf 8 von 12 Suchen komplett.
+     * Regel: Basiskarte (rid < 2^24) -> gleiche databaseId UND normale Karte
+     * (rareflag 0/1); Special (rid >= 2^24) -> exakt dieselbe definitionId.
+     */
+    const ITEM_DB_MASK_FALLBACK = 0xFFFFFF;
+    function cardMatchesRid(defId, rareflag, rid, mask) {
+        const d = Number(defId), r = Number(rid);
+        if (!(d > 0) || !(r > 0)) return false;
+        if (r >= 0x1000000) return d === r;
+        const m = (mask > 0) ? Number(mask) : ITEM_DB_MASK_FALLBACK;
+        if ((d & m) !== (r & m)) return false;
+        const rf = Number(rareflag);
+        return isNaN(rf) || rf === 0 || rf === 1;
+    }
+    /**
      * Slot-Zuordnung nach den POSITIONEN DER SPIELER (v5.20.0): jeder Spieler
      * bringt Hauptposition und Nebenpositionen mit, jeder Feld-Slot eine
      * Position. Maximale Zuordnung (bipartites Matching, Augmenting Paths)
@@ -7521,8 +7541,9 @@
      * players: [{pref, alts:[]}], slotPositions: ['GK','RB',...]
      * Ergebnis: Array slotIndexPerPlayer (Index in slotPositions), plus Zaehler.
      */
-    function assignSlots(players, slotPositions) {
+    function assignSlots(players, slotPositions, slotAlts) {
         const n = players.length, m = slotPositions.length;
+        const alt = Array.isArray(slotAlts) ? slotAlts : [];
         const matchSlot = new Array(m).fill(-1);   // slot -> player
         const matchPlayer = new Array(n).fill(-1); // player -> slot
         function tryAssign(p, allowed, seen) {
@@ -7537,9 +7558,10 @@
             return false;
         }
         const norm = v => String(v == null ? '' : v).toUpperCase().trim();
-        const prefOk = (p, s) => norm(players[p].pref) === norm(slotPositions[s]);
+        const slotHas = (s, v) => { const k = norm(v); return !!k && (k === norm(slotPositions[s]) || (alt[s] != null && k === norm(alt[s]))); };
+        const prefOk = (p, s) => slotHas(s, players[p].pref);
         const anyOk = (p, s) => prefOk(p, s) ||
-            (Array.isArray(players[p].alts) && players[p].alts.some(a => norm(a) === norm(slotPositions[s])));
+            (Array.isArray(players[p].alts) && players[p].alts.some(a => slotHas(s, a)));
         // Runde 1: Hauptpositionen. Ein spaeterer Spieler darf einen frueheren
         // verschieben, solange der auf einer anderen Hauptposition landet.
         for (let p = 0; p < n; p++) if (matchPlayer[p] < 0) tryAssign(p, prefOk, new Array(m).fill(false));
@@ -7756,13 +7778,17 @@
         const data = (resp && (resp.data || resp.response)) || {};
         const items = data.items || data.auctionInfo || [];
         const offers = [];
-        let foreign = 0;
+        let foreign = 0, foreignSample = null;
         for (const it of items) {
             // v5.20.0: NUR Angebote dieser Karte. Live (Report v5.19.0) kamen
             // fuer zehn verschiedene Spieler zehnmal "1.100" - die Suche hatte
             // den Spieler-Filter ignoriert und den ganzen Markt gemessen. Ein
             // fremdes Angebot ist kein Preis fuer diese Karte.
-            if (!itemIsCard(it, rid)) { foreign++; continue; }
+            if (!itemIsCard(it, rid)) {
+                foreign++;
+                if (!foreignSample) foreignSample = { def: it.definitionId, db: it.databaseId, rf: it.rareflag, asset: it.assetId };
+                continue;
+            }
             let a = null;
             try { a = it._auction || (typeof it.getAuctionData === 'function' ? it.getAuctionData() : null); } catch (e) {}
             const bin = a && Number(a.buyNowPrice);
@@ -7771,15 +7797,16 @@
             if (bin > 0 && !(expires != null && Number(expires) < 0) && !(maxBuy > 0 && bin > maxBuy)) offers.push({ item: it, bin: bin });
         }
         offers.sort((x, y) => x.bin - y.bin);
-        noteMarketProbe(rid, items.length, foreign, offers.length);
+        noteMarketProbe(rid, items.length, foreign, offers.length, foreignSample);
         return offers;
     }
-    /** Gehoert das Suchergebnis zu genau dieser Karte (definitionId/resourceId)? */
+    /** Gehoert das Suchergebnis zu dieser Karte? Basiskarte: gleiche databaseId + normal; Special: exakt (cardMatchesRid). */
     function itemIsCard(it, rid) {
         try {
-            if (Number(it.definitionId) === rid || Number(it.resourceId) === rid) return true;
-            const sd = it._staticData || (typeof it.getStaticData === 'function' ? it.getStaticData() : null);
-            if (sd && (Number(sd.id) === rid || Number(sd.definitionId) === rid)) return true;
+            let mask = 0;
+            try { mask = (window.ItemIdMask && window.ItemIdMask.DATABASE) || 0; } catch (e) { mask = 0; }
+            const def = it.definitionId != null ? it.definitionId : it.resourceId;
+            return cardMatchesRid(def, it.rareflag, rid, mask);
         } catch (e) {}
         return false;
     }
@@ -7806,10 +7833,10 @@
         return crit;
     }
     /** Diagnose je Marktabfrage: wie viele Treffer, wie viele fremde Karten (Filter ignoriert?), wie viele Angebote. */
-    function noteMarketProbe(rid, total, foreign, offers) {
+    function noteMarketProbe(rid, total, foreign, offers, foreignSample) {
         try {
             const ring = STATE.diag.marketProbe || (STATE.diag.marketProbe = []);
-            ring.push({ rid: rid, total: total, foreign: foreign, offers: offers, t: Date.now() });
+            ring.push({ rid: rid, total: total, foreign: foreign, offers: offers, foreignSample: foreignSample || null, t: Date.now() });
             if (ring.length > 12) ring.shift();
         } catch (e) {}
     }
@@ -7886,12 +7913,21 @@
         // v5.20.0: nach den Positionen der SPIELER zuordnen (Haupt- und
         // Nebenpositionen der EA-Entity), nicht nach futbins Slot-Layout -
         // das passt bei anderer Formation nicht (Report v5.19.0: 4 daneben).
-        const slotPositions = field.map(s => slotGeneralPos(s) || slotUniquePos(s) || '');
-        const playersPos = entities.map(e => ({
-            pref: entityPref(e.ent) || e.pos,
-            alts: entityAlts(e.ent)
-        }));
-        const asg = assignSlots(playersPos, slotPositions);
+        // v5.21.0: EAs Entities tragen Positionen als NUMMERN (preferredPosition
+        // = Positions-ID, possiblePositions = IDs) - der Namensvergleich traf
+        // live nur die eine eigene Karte (Rohdaten mit "ST"). Deshalb alles
+        // auf Positions-IDs normalisieren (repositories.Squad.
+        // getPositionByUniqueName fuer Namen), Slots ueber Unique- UND
+        // General-ID zulassen.
+        const slotPositions = field.map(s => slotPosKey(s));
+        const playersPos = entities.map((e, i) => {
+            const pref = posKey(entityPref(e.ent));
+            const alts = entityAlts(e.ent).map(posKey).filter(Boolean);
+            // futbin-Kartenposition als letzte Reserve (Name -> ID).
+            const fbPos = posKey(squad.players[i].cardPosition) || posKey(e.pos);
+            return { pref: pref || fbPos, alts: alts.concat(fbPos && fbPos !== pref ? [fbPos] : []) };
+        });
+        const asg = assignSlots(playersPos, slotPositions, slotAltKeys(field));
         asg.slotOfPlayer.forEach((s, i) => { if (s >= 0) arr[field[s].getIndex()] = entities[i].ent; });
         liveSquad.setPlayers(arr, true);
         const resp = await obsPromise(sbcSvc.saveChallenge(challenge));
@@ -7900,13 +7936,43 @@
                  onPref: asg.onPref, onAlt: asg.onAlt, fallbackPlaced: asg.fallback };
     }
     function entityPref(ent) {
-        try { return ent.preferredPosition || (ent._staticData && ent._staticData.preferredPosition) || null; } catch (e) { return null; }
+        try {
+            const p = ent.preferredPosition;
+            if (p != null && p !== -1 && p !== 0 && p !== '') return p;
+            return (ent._staticData && ent._staticData.preferredPosition) || null;
+        } catch (e) { return null; }
     }
     function entityAlts(ent) {
         try {
-            const a = ent.possiblePositions || (ent._staticData && ent._staticData.possiblePositions) || [];
-            return Array.isArray(a) ? a.map(String) : [];
+            const a = ent.possiblePositions || ent.basePossiblePositions || (ent._staticData && ent._staticData.possiblePositions) || [];
+            return Array.isArray(a) ? a.slice() : [];
         } catch (e) { return []; }
+    }
+    /** Position (Name "ST" oder EA-ID 25 oder Objekt {id}) -> Vergleichsschluessel "ID"; Name ohne Repository -> Name. */
+    function posKey(v) {
+        try {
+            if (v == null || v === '' || v === -1) return null;
+            if (typeof v === 'object') return v.id != null ? String(v.id) : (v.name ? posKey(v.name) : null);
+            if (typeof v === 'number' || /^\d+$/.test(String(v))) return String(v);
+            const name = String(v).toUpperCase().trim();
+            const repo = window.repositories && window.repositories.Squad;
+            if (repo && typeof repo.getPositionByUniqueName === 'function') {
+                const p = repo.getPositionByUniqueName(name);
+                if (p && p.id != null) return String(p.id);
+            }
+            return name;
+        } catch (e) { return null; }
+    }
+    function slotPosKey(s) {
+        try { if (typeof s.getGeneralPosition === 'function') { const g = s.getGeneralPosition(); if (g != null && g !== -1) return posKey(g); } } catch (e) {}
+        return posKey(slotGeneralPos(s) || slotUniquePos(s));
+    }
+    /** Zweitschluessel je Slot (Unique-Position, z.B. LCB), damit ein Spieler mit Unique-ID auch trifft. */
+    function slotAltKeys(field) {
+        return field.map(s => {
+            try { if (typeof s.getUniquePosition === 'function') { const u = s.getUniquePosition(); if (u != null && u !== -1) return posKey(u); } } catch (e) {}
+            return posKey(slotUniquePos(s));
+        });
     }
     async function onFutbinSearchClick() {
         if (futbinBusy) { toast('Futbin-Suche laeuft schon.', 'warn'); return; }
@@ -7932,8 +7998,12 @@
                 return;
             }
             const priceOf = x => futbinPrice({ pricePs: x.pricePs, pricePc: x.pricePc }, s.platform);
+            // futbin listet denselben Kader teils doppelt (Report v5.20.0:
+            // 100005491 auf Platz 3 UND 76) - pro squadId nur der erste.
+            const seenSquad = new Set();
             const picks = list.filter(x => priceOf(x) != null)
                 .sort((a, b) => (priceOf(a) - priceOf(b)) || (a.listRank - b.listRank))
+                .filter(x => !seenSquad.has(x.squadId) && seenSquad.add(x.squadId))
                 .slice(0, FUTBIN_CANDIDATES);
             const locked = (ui.useLocks && ui.useLocks.checked) ? Array.from(readPaletoolsLocks()) : [];
             const poolWarn = STATE.pool.length ? '' : 'Pool ist leer - eigene Karten werden nicht erkannt ("Spieler laden").';
@@ -8214,6 +8284,11 @@
                 fails = 0;
                 step.paid = offer.bin; step.status = 'gekauft';
                 diag.bought++; diag.spent += offer.bin;
+                // v5.21.0: gekaufte Karte sofort in den VEREIN. Sie liegt sonst
+                // im Kauf-Stapel (Unassigned), und EA lehnte den Kader-PUT mit
+                // 475 ab (Report v5.20.0, "sie werden nicht direkt im verein
+                // gespeichert" - Rasmus). EAs eigener Weg: services.Item.move.
+                step.moved = await moveToClub(offer.item);
                 bought.push({ plan: p, item: offer.item });
                 lines.push('✓ ' + escapeHtml(p.name) + ' fuer ' + fmtCoins(offer.bin) + (offer.bin > p.planned ? ' (Plan ' + fmtCoins(p.planned) + ')' : ''));
                 render(null);
@@ -8238,6 +8313,15 @@
         } finally {
             buyBusy = false;
         }
+    }
+    /** Gekaufte Karte aus dem Kauf-Stapel in den Verein (EAs services.Item.move, ItemPile.CLUB). true/false/null(unbekannt). */
+    async function moveToClub(item) {
+        try {
+            const pile = window.ItemPile && window.ItemPile.CLUB;
+            if (pile == null || !window.services || !window.services.Item || typeof window.services.Item.move !== 'function') return null;
+            const resp = await obsPromise(window.services.Item.move(item, pile));
+            return responseOk(resp);
+        } catch (e) { reportError('moveToClub', e); return false; }
     }
     /** Konzept-Spieler im Live-Kader durch die gekauften Karten ersetzen (EAs replaceConceptItem), dann saveChallenge. */
     async function replaceConceptsWithBought(bought) {

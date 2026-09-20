@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.23.0
+// @version      5.24.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.23.0';
+    const VERSION = '5.24.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7553,6 +7553,42 @@
         return isNaN(rf) || rf === 0 || rf === 1;
     }
     /**
+     * Angebote aus EAs ROHER Marktantwort (v5.24.0): auctionInfo[] mit
+     * tradeId, buyNowPrice, expires, tradeState und itemData (dieselbe Form
+     * wie Vereinskarten). Nur aktive Sofortkauf-Angebote der gesuchten Karte
+     * (cardMatchesRid ueber itemData.resourceId/rareflag), nach Preis.
+     * Rein - der Client-Cache der Web App ist damit aussen vor.
+     */
+    function parseAuctionOffers(auctionInfo, rid, maxBuy, mask) {
+        const out = [];
+        let foreign = 0, foreignSample = null;
+        for (const a of (Array.isArray(auctionInfo) ? auctionInfo : [])) {
+            if (!a || typeof a !== 'object') continue;
+            const it = a.itemData || {};
+            const def = it.resourceId != null ? it.resourceId : it.definitionId;
+            if (!cardMatchesRid(def, it.rareflag, rid, mask)) {
+                foreign++;
+                if (!foreignSample) foreignSample = { def: def, rf: it.rareflag, asset: it.assetId };
+                continue;
+            }
+            const bin = Number(a.buyNowPrice);
+            const expires = Number(a.expires);
+            const state = String(a.tradeState || '').toLowerCase();
+            if (!(bin > 0)) continue;
+            if (!isNaN(expires) && expires < 0) continue;
+            if (state && state !== 'active') continue;
+            if (maxBuy > 0 && bin > maxBuy) continue;
+            out.push({ tradeId: a.tradeId, bin: bin, raw: it, itemId: it.id });
+        }
+        out.sort((x, y) => x.bin - y.bin);
+        return { offers: out, foreign: foreign, foreignSample: foreignSample, total: Array.isArray(auctionInfo) ? auctionInfo.length : 0 };
+    }
+    /** HTTP-Status aus einer apiGet/apiPut-Fehlermeldung ("... -> HTTP 429"). */
+    function httpStatusOf(err) {
+        const m = String(err && err.message || err || '').match(/HTTP (\d{3})/);
+        return m ? Number(m[1]) : null;
+    }
+    /**
      * Slot-Zuordnung nach den POSITIONEN DER SPIELER (v5.20.0): jeder Spieler
      * bringt Hauptposition und Nebenpositionen mit, jeder Feld-Slot eine
      * Position. Maximale Zuordnung (bipartites Matching, Augmenting Paths)
@@ -7791,11 +7827,17 @@
      * maxBuy optional als Obergrenze. Liefert [{item, bin}] nach Preis.
      */
     async function marketOffers(resourceId, maxBuy) {
+        const rid = Number(resourceId);
+        // v5.24.0: DIREKT ueber EAs Endpunkt (Ebene B, wie der Club-Lader).
+        // Der Client-Weg (services.Item.searchTransferMarket) bediente zwoelf
+        // Anfragen aus EINEM Cache-Eintrag (Report v5.23.0: eine URL, zwoelf
+        // Abfragen) - welche Felder EAs Vergleich ignoriert, ist im
+        // obfuskierten Teil nicht lesbar. Der eigene GET hat keinen Cache.
+        if (sessionReady()) return marketOffersHttp(rid, maxBuy);
         if (typeof window.UTSearchCriteriaDTO !== 'function' || !window.services || !window.services.Item ||
             typeof window.services.Item.searchTransferMarket !== 'function') {
             throw new Error('EA-Marktsuche nicht verfuegbar');
         }
-        const rid = Number(resourceId);
         const crit = marketCriteria(rid, maxBuy);
         const resp = await obsPromise(window.services.Item.searchTransferMarket(crit, 1));
         if (!responseOk(resp)) {
@@ -7880,6 +7922,36 @@
             ring.push({ rid: rid, urlRid: urlRid == null ? null : urlRid, total: total, foreign: foreign, offers: offers, foreignSample: foreignSample || null, t: Date.now() });
             if (ring.length > 12) ring.shift();
         } catch (e) {}
+    }
+    /** Marktsuche per eigenem GET (kein Client-Cache). Wirft bei HTTP-Fehler (Status in der Meldung). */
+    async function marketOffersHttp(rid, maxBuy) {
+        const path = 'transfermarket?num=21&start=0&type=player&maskedDefId=' + rid + (maxBuy > 0 ? '&maxb=' + Math.floor(maxBuy) : '');
+        try {
+            const ring = STATE.diag.marketUrls || (STATE.diag.marketUrls = []);
+            ring.push('/ut/game/' + (STATE.diag.gameName || '?') + '/' + path + ' [eigen]');
+            if (ring.length > 6) ring.shift();
+        } catch (e) {}
+        let json;
+        try { json = await apiGet(path); }
+        catch (e) { const err = new Error('Marktsuche: ' + (e && e.message || e)); err.status = httpStatusOf(e); throw err; }
+        let mask = 0;
+        try { mask = (window.ItemIdMask && window.ItemIdMask.DATABASE) || 0; } catch (e) { mask = 0; }
+        const parsed = parseAuctionOffers(json && json.auctionInfo, rid, maxBuy, mask);
+        noteMarketProbe(rid, parsed.total, parsed.foreign, parsed.offers.length, parsed.foreignSample, rid);
+        return parsed.offers;
+    }
+    /** Sofortkauf per eigenem PUT auf EAs Bid-Endpunkt. Liefert EAs Antwort (auctionInfo) oder wirft (Status in der Meldung). */
+    async function bidHttp(tradeId, bin) {
+        try { return await apiPut('trade/' + tradeId + '/bid', { bid: Math.floor(bin) }); }
+        catch (e) { const err = new Error('Kauf: ' + (e && e.message || e)); err.status = httpStatusOf(e); throw err; }
+    }
+    /** Karte aus dem Kauf-Stapel in den Verein per eigenem PUT (EAs /item, pile club). */
+    async function moveToClubHttp(itemId) {
+        try {
+            const r = await apiPut('item', { itemData: [{ id: itemId, pile: 'club' }] });
+            const row = r && Array.isArray(r.itemData) ? r.itemData[0] : null;
+            return row ? row.success !== false : true;
+        } catch (e) { reportError('moveToClubHttp', e); return false; }
     }
     /** Marktpreis-Schaetzung: robustMinBin ueber die Angebote von Seite 1 (null-Felder, wenn kein Angebot). */
     async function marketMinBin(resourceId) {
@@ -8390,13 +8462,23 @@
                 const coins = userCoins();
                 if (coins != null && coins < offer.bin) { step.status = 'zu wenig Coins'; diag.stopped = 'Coins reichen nicht'; lines.push('⚠ Coins reichen nicht mehr (' + fmtCoins(coins) + ').'); break; }
                 render('Kaufe ' + p.name + ' fuer ' + fmtCoins(offer.bin) + ' ...');
-                let resp = null;
-                try { resp = await obsPromise(window.services.Item.bid(offer.item, offer.bin)); }
-                catch (e) { resp = { success: false, status: 0, error: { message: String(e && e.message || e) } }; }
-                if (isRateLimit(resp && resp.status)) { step.status = 'Rate-Limit'; diag.stopped = 'Rate-Limit beim Kauf'; lines.push('⚠ EA drosselt - Lauf gestoppt.'); break; }
-                if (!responseOk(resp)) {
-                    const code = resp && resp.error && (resp.error.code != null ? resp.error.code : resp.error.message);
-                    step.status = 'Kauf abgelehnt (' + (resp && resp.status) + (code != null ? ', ' + code : '') + ')';
+                // v5.24.0: Kauf ueber EAs Bid-Endpunkt (eigener PUT, wie die
+                // Suche) - Angebote aus dem Client-Weg hatten hier ein Entity,
+                // die HTTP-Angebote haben tradeId + Rohdaten.
+                let ok = false, why = null, status = null;
+                if (offer.tradeId != null) {
+                    try { await bidHttp(offer.tradeId, offer.bin); ok = true; }
+                    catch (e) { why = String(e && e.message || e); status = e && e.status; }
+                } else if (offer.item) {
+                    let resp = null;
+                    try { resp = await obsPromise(window.services.Item.bid(offer.item, offer.bin)); }
+                    catch (e) { resp = { success: false, status: 0, error: { message: String(e && e.message || e) } }; }
+                    ok = responseOk(resp); status = resp && resp.status;
+                    if (!ok) why = 'Status ' + status + (resp && resp.error ? ', ' + (resp.error.code != null ? resp.error.code : resp.error.message) : '');
+                } else { why = 'Angebot ohne tradeId'; }
+                if (isRateLimit(status)) { step.status = 'Rate-Limit'; diag.stopped = 'Rate-Limit beim Kauf'; lines.push('⚠ EA drosselt - Lauf gestoppt.'); break; }
+                if (!ok) {
+                    step.status = 'Kauf abgelehnt (' + (why || '?') + ')';
                     fails++;
                     lines.push('⚠ ' + escapeHtml(p.name) + ': ' + escapeHtml(step.status) + ' - vermutlich schon weg.');
                     if (fails >= BUY_MAX_CONSECUTIVE_FAILS) { diag.stopped = 'zwei Fehler hintereinander'; break; }
@@ -8410,8 +8492,8 @@
                 // im Kauf-Stapel (Unassigned), und EA lehnte den Kader-PUT mit
                 // 475 ab (Report v5.20.0, "sie werden nicht direkt im verein
                 // gespeichert" - Rasmus). EAs eigener Weg: services.Item.move.
-                step.moved = await moveToClub(offer.item);
-                bought.push({ plan: p, item: offer.item });
+                step.moved = offer.tradeId != null ? await moveToClubHttp(offer.itemId) : await moveToClub(offer.item);
+                bought.push({ plan: p, item: offer.item || null, raw: offer.raw || null });
                 lines.push('✓ ' + escapeHtml(p.name) + ' fuer ' + fmtCoins(offer.bin) + (offer.bin > p.planned ? ' (Plan ' + fmtCoins(p.planned) + ')' : ''));
                 render(null);
                 if (k < plan.length - 1) await futbinSleep(randomBetween(BUY_GAP_MIN_MS, BUY_GAP_MAX_MS));
@@ -8526,9 +8608,14 @@
             const liveSquad = ctrl && (ctrl._squad || (ctrl.getSquad && ctrl.getSquad()));
             const challenge = findLiveChallenge();
             if (!liveSquad || !challenge) { out.error = 'Kein Live-Kader'; return out; }
+            const factory = (typeof window.UTItemEntityFactory === 'function') ? new window.UTItemEntityFactory() : null;
             for (const b of bought) {
                 try {
-                    if (typeof liveSquad.replaceConceptItem === 'function') { liveSquad.replaceConceptItem(b.item); out.replaced++; }
+                    // HTTP-Kauf liefert Rohdaten -> echte Entity ueber die Factory
+                    // (derselbe Weg wie beim Eintragen eigener Karten).
+                    let ent = b.item || null;
+                    if (!ent && b.raw && factory) ent = factory.createItem(b.raw);
+                    if (ent && typeof liveSquad.replaceConceptItem === 'function') { liveSquad.replaceConceptItem(ent); out.replaced++; }
                 } catch (e) { reportError('replaceConceptItem', e); }
             }
             const resp = await obsPromise(window.services.SBC.saveChallenge(challenge));

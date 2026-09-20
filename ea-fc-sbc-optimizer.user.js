@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.21.0
+// @version      5.22.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.21.0';
+    const VERSION = '5.22.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -202,6 +202,7 @@
             fc27ScanSamples: null,   // Roh-Knoten des Vorgaben-Scans mit Score-/Streamlined-artigem Scope (deepScanChallenge)
             futbin: null,            // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten, Wahl, Fehler (runFutbinSearch)
             futbinBuy: null,         // schrittweises Kaufen (v5.19.0): Plan, Schritte, gekauft/ausgegeben, Stopp-Grund (buyPlannedPlayers)
+            futbinBuyPlan: null,     // v5.22.0: Kaufplan aus den Konzept-Spielern des Kaders (Anzahl, uebersprungen, Suchfehler)
             marketUrls: [],          // v5.20.0: letzte 6 Marktsuch-URLs mit Query (unsere UND EAs eigene) - Parameter-Vergleich
             marketProbe: []          // v5.20.0: je Marktabfrage Treffer/fremde Karten/Angebote (Filter ignoriert?)
         }
@@ -6221,6 +6222,11 @@
                         Beste 3 am EA-Markt gegenprüfen (Live-Preise, dauert etwas)
                     </label>
                     <button class="sbc-opt-btn plan" id="sbc-opt-futbin-search">Futbin-Lösungen suchen</button>
+                    <!-- v5.22.0: unabhaengig vom futbin-Lauf - liest die Konzept-
+                         Spieler aus dem offenen Kader (auch nach Neuladen oder
+                         von Hand eingesetzt), Marktpreis je Karte, Rueckfrage,
+                         dann derselbe schrittweise Kauf-Lauf. -->
+                    <button class="sbc-opt-btn ghost" id="sbc-opt-futbin-buyconcepts">Konzept-Spieler im Kader kaufen</button>
                     <div class="sbc-opt-result" id="sbc-opt-futbin-result"></div>
                 </div>
                 <!-- SBC-REIHE: verschiedene Challenges EINES Sets nacheinander.
@@ -6359,6 +6365,7 @@
             futbinPlatform: panel.querySelector('#sbc-opt-futbin-platform'),
             futbinMarket: panel.querySelector('#sbc-opt-futbin-market'),
             futbinSearch: panel.querySelector('#sbc-opt-futbin-search'),
+            futbinBuyConcepts: panel.querySelector('#sbc-opt-futbin-buyconcepts'),
             futbinResult: panel.querySelector('#sbc-opt-futbin-result'),
             poolCacheBox: panel.querySelector('#sbc-opt-poolcache'),
             rarityguard: panel.querySelector('#sbc-opt-rarityguard'),
@@ -7510,6 +7517,22 @@
         return { min: arr[0], robust: arr.length > 1 ? arr[1] : arr[0], count: arr.length, lowest: arr.slice(0, 3) };
     }
     /**
+     * Kaufplan aus Konzept-Spielern des Kaders (v5.22.0) - ohne futbin: der
+     * Plan-Preis ist die Marktschaetzung (robustMinBin), fehlt sie, bleibt der
+     * Spieler "ohne Angebot" und wird nicht gekauft.
+     * concepts: [{definitionId, name, rating}], estimates: {definitionId: robust|null}
+     */
+    function conceptBuyPlan(concepts, estimates, tolerance, tiers) {
+        const plan = [], skipped = [];
+        (concepts || []).forEach(function (c, i) {
+            const est = estimates ? estimates[c.definitionId] : null;
+            if (!(est > 0)) { skipped.push({ name: c.name, definitionId: c.definitionId, reason: 'kein Angebot gesehen' }); return; }
+            plan.push({ index: i, resourceId: c.definitionId, name: c.name || ('#' + c.definitionId), rating: c.rating,
+                        planned: est, maxPrice: planMaxPrice(est, tolerance, tiers) });
+        });
+        return { plan: plan, skipped: skipped };
+    }
+    /**
      * Gehoert ein Markt-Item zur gesuchten Karte? (v5.21.0) EAs Suche mit
      * maskedDefId liefert ALLE Versionen eines Spielers (sie vergleicht die
      * databaseId = definitionId ohne Revisions-Bits; genau so prueft EA auch
@@ -7557,8 +7580,12 @@
             }
             return false;
         }
+        // Schluessel duerfen einzeln ODER als Liste kommen (v5.22.0: ID und
+        // Name nebeneinander) - ein Treffer in irgendeiner Form genuegt.
         const norm = v => String(v == null ? '' : v).toUpperCase().trim();
-        const slotHas = (s, v) => { const k = norm(v); return !!k && (k === norm(slotPositions[s]) || (alt[s] != null && k === norm(alt[s]))); };
+        const keysOf = v => (Array.isArray(v) ? v : [v]).map(norm).filter(Boolean);
+        const slotKeys = slotPositions.map((sp, s) => new Set(keysOf(sp).concat(keysOf(alt[s]))));
+        const slotHas = (s, v) => keysOf(v).some(k => slotKeys[s].has(k));
         const prefOk = (p, s) => slotHas(s, players[p].pref);
         const anyOk = (p, s) => prefOk(p, s) ||
             (Array.isArray(players[p].alts) && players[p].alts.some(a => slotHas(s, a)));
@@ -7739,6 +7766,7 @@
             });
         }
         ui.futbinSearch.addEventListener('click', onFutbinSearchClick);
+        if (ui.futbinBuyConcepts) ui.futbinBuyConcepts.addEventListener('click', onBuyConceptsClick);
     }
     function renderFutbinPlatformChips() {
         const box = ui.futbinPlatform;
@@ -7919,21 +7947,75 @@
         // auf Positions-IDs normalisieren (repositories.Squad.
         // getPositionByUniqueName fuer Namen), Slots ueber Unique- UND
         // General-ID zulassen.
-        const slotPositions = field.map(s => slotPosKey(s));
+        // v5.22.0: JEDER Slot und JEDER Spieler bekommt ALLE bekannten
+        // Schluessel (ID und Name, General und Unique) - ein Treffer in
+        // irgendeiner Form zaehlt. Vorher verglich nur IDs, live standen die
+        // Spieler trotzdem falsch; die Zuordnung steht jetzt komplett im
+        // Report (futbin.inserted.placement), damit die naechste Runde nicht
+        // wieder raten muss.
+        const slotPositions = field.map(s => slotKeysAll(s));
+        const idToName = slotIdNameMap(field);
         const playersPos = entities.map((e, i) => {
-            const pref = posKey(entityPref(e.ent));
-            const alts = entityAlts(e.ent).map(posKey).filter(Boolean);
-            // futbin-Kartenposition als letzte Reserve (Name -> ID).
-            const fbPos = posKey(squad.players[i].cardPosition) || posKey(e.pos);
-            return { pref: pref || fbPos, alts: alts.concat(fbPos && fbPos !== pref ? [fbPos] : []) };
+            const pref = playerKeys(entityPref(e.ent), idToName);
+            const alts = [].concat.apply([], entityAlts(e.ent).map(a => playerKeys(a, idToName)));
+            const fbCard = playerKeys(squad.players[i].cardPosition, idToName);
+            const fbSlot = playerKeys(e.pos, idToName);
+            return { pref: pref.length ? pref : fbCard, alts: alts.concat(fbCard, fbSlot) };
         });
-        const asg = assignSlots(playersPos, slotPositions, slotAltKeys(field));
+        const asg = assignSlots(playersPos, slotPositions, []);
         asg.slotOfPlayer.forEach((s, i) => { if (s >= 0) arr[field[s].getIndex()] = entities[i].ent; });
+        const placement = {
+            slots: field.map((s, k) => ({ idx: s.getIndex(), keys: slotPositions[k] })),
+            players: entities.map((e, i) => ({
+                name: squad.players[i].name, concept: e.concept,
+                prefRaw: safeRawPos(entityPref(e.ent)), altsRaw: entityAlts(e.ent).slice(0, 4).map(safeRawPos),
+                pref: playersPos[i].pref, alts: playersPos[i].alts.slice(0, 8),
+                slot: asg.slotOfPlayer[i] >= 0 ? field[asg.slotOfPlayer[i]].getIndex() : null
+            }))
+        };
         liveSquad.setPlayers(arr, true);
         const resp = await obsPromise(sbcSvc.saveChallenge(challenge));
         if (!responseOk(resp)) throw new Error('saveChallenge abgelehnt (Status ' + (resp && resp.status) + ').');
         return { placed: entities.length, ownedPlaced: ownedPlaced, conceptPlaced: conceptPlaced,
-                 onPref: asg.onPref, onAlt: asg.onAlt, fallbackPlaced: asg.fallback };
+                 onPref: asg.onPref, onAlt: asg.onAlt, fallbackPlaced: asg.fallback, placement: placement };
+    }
+    function safeRawPos(v) {
+        try {
+            if (v == null) return null;
+            if (typeof v === 'object') return { id: v.id, name: v.name || v.uniqueName || v.generalName || null };
+            return v;
+        } catch (e) { return String(v); }
+    }
+    /** Alle Schluessel eines Slots: General-ID, Unique-ID, General-Name, Unique-Name. */
+    function slotKeysAll(s) {
+        const out = [];
+        try { const g = s.getGeneralPosition && s.getGeneralPosition(); if (g != null && g !== -1) out.push(posKey(g)); } catch (e) {}
+        try { const u = s.getUniquePosition && s.getUniquePosition(); if (u != null && u !== -1) out.push(posKey(u)); } catch (e) {}
+        const gn = slotGeneralPos(s), un = slotUniquePos(s);
+        if (gn) { out.push(gn.toUpperCase()); out.push(posKey(gn)); }
+        if (un) { out.push(un.toUpperCase()); out.push(posKey(un)); }
+        return out.filter((v, i, a) => v && a.indexOf(v) === i);
+    }
+    /** ID -> Name, aus den Slots der Formation abgelesen (nur die Positionen, die es hier gibt - andere koennen nicht treffen). */
+    function slotIdNameMap(field) {
+        const m = {};
+        for (const s of field) {
+            try { const g = s.getGeneralPosition && s.getGeneralPosition(); const gn = slotGeneralPos(s); if (g != null && gn) m[String(typeof g === 'object' ? g.id : g)] = gn.toUpperCase(); } catch (e) {}
+            try { const u = s.getUniquePosition && s.getUniquePosition(); const un = slotUniquePos(s); if (u != null && un) m[String(typeof u === 'object' ? u.id : u)] = un.toUpperCase(); } catch (e) {}
+        }
+        return m;
+    }
+    /** Alle Schluessel einer Spieler-Position: ID (ueber Repository), Name, Name-aus-Slot-Map. */
+    function playerKeys(v, idToName) {
+        const out = [];
+        if (v == null || v === '' || v === -1) return out;
+        const k = posKey(v);
+        if (k) out.push(k);
+        if (typeof v === 'string' && !/^\d+$/.test(v)) out.push(v.toUpperCase().trim());
+        if (typeof v === 'object' && v && v.name) out.push(String(v.name).toUpperCase());
+        if (k && idToName && idToName[k]) out.push(idToName[k]);
+        if (typeof v === 'number' && idToName && idToName[String(v)]) out.push(idToName[String(v)]);
+        return out.filter((x, i, a) => x && a.indexOf(x) === i);
     }
     function entityPref(ent) {
         try {
@@ -8310,6 +8392,79 @@
             reportError('Futbin kaufen', e);
             lines.push('⚠ Abbruch: ' + escapeHtml(String(e && e.message || e)));
             render(null);
+        } finally {
+            buyBusy = false;
+        }
+    }
+    // ---- Konzept-Spieler direkt aus dem Kader kaufen (v5.22.0) --------------
+    // Rasmus: nach einem Reload fehlte der Kauf-Knopf, weil er am futbin-Lauf
+    // hing. Jetzt zaehlt der KADER: alle Konzept-Spieler (Dream Squad) der
+    // offenen SBC, egal woher sie kommen - Marktpreis je Karte, Rueckfrage,
+    // dann derselbe schrittweise Kauf-Lauf.
+    function collectConceptPlayers() {
+        const out = [];
+        const ctrl = findSbcController();
+        const liveSquad = ctrl && (ctrl._squad || (ctrl.getSquad && ctrl.getSquad()));
+        if (!liveSquad) return out;
+        const slots = (typeof liveSquad.getPlayers === 'function' ? liveSquad.getPlayers() : []) || [];
+        for (const s of slots) {
+            let it = null;
+            try { it = typeof s.getItem === 'function' ? s.getItem() : s.item; } catch (e) { it = null; }
+            if (!it || it.concept !== true) continue;
+            let name = null;
+            try {
+                const sd = it._staticData || (typeof it.getStaticData === 'function' ? it.getStaticData() : null);
+                name = (sd && (sd.name || ((sd.firstName || '') + ' ' + (sd.lastName || '')).trim())) || null;
+            } catch (e) {}
+            const def = Number(it.definitionId || it.resourceId || it.id);
+            if (!(def > 0)) continue;
+            let idx = null;
+            try { idx = typeof s.getIndex === 'function' ? s.getIndex() : s.index; } catch (e) {}
+            out.push({ definitionId: def, name: name, rating: Number(it.rating) || null, slot: idx });
+        }
+        return out;
+    }
+    async function onBuyConceptsClick() {
+        if (buyBusy || futbinBusy) { toast('Es laeuft schon ein Lauf.', 'warn'); return; }
+        const concepts = collectConceptPlayers();
+        if (!concepts.length) { setFutbinResult(warnHtml('Im offenen Kader stehen keine Konzept-Spieler.')); return; }
+        buyBusy = true;
+        try {
+            const estimates = {};
+            const probeErrors = [];
+            for (let i = 0; i < concepts.length; i++) {
+                const c = concepts[i];
+                setFutbinResult('<div class="sbc-opt-dim">Marktpreis ' + (i + 1) + ' von ' + concepts.length + ': ' + escapeHtml(c.name || ('#' + c.definitionId)) + ' ...</div>');
+                try {
+                    const est = await marketMinBin(c.definitionId);
+                    estimates[c.definitionId] = est && est.robust != null ? est.robust : null;
+                    c.offers = est ? est.count : 0;
+                } catch (e) {
+                    estimates[c.definitionId] = null;
+                    probeErrors.push((c.name || c.definitionId) + ': ' + (e && e.message || e));
+                    if (isRateLimit(e && e.status)) { setFutbinResult(warnHtml('EA drosselt die Marktsuche - spaeter noch einmal.')); return; }
+                }
+                await futbinSleep(FUTBIN_MARKET_GAP_MS);
+            }
+            const built = conceptBuyPlan(concepts, estimates, BUY_TOLERANCE, eaPriceTiers());
+            STATE.diag.futbinBuyPlan = { at: Date.now(), concepts: concepts.length, plan: built.plan.length, skipped: built.skipped, probeErrors: probeErrors };
+            let h = '<div class="sbc-opt-summary">' + concepts.length + ' Konzept-Spieler im Kader, ' + built.plan.length + ' mit Angebot</div>';
+            built.plan.forEach(p => { h += '<div>' + escapeHtml(p.name) + ' <span class="sbc-opt-muted">(' + (p.rating || '?') + ')</span> Plan ' + fmtCoins(p.planned) + ', hoechstens ' + fmtCoins(p.maxPrice) + '</div>'; });
+            built.skipped.forEach(s => { h += '<div class="sbc-opt-muted">– ' + escapeHtml(s.name || ('#' + s.definitionId)) + ': ' + escapeHtml(s.reason) + ' - selbst kaufen</div>'; });
+            setFutbinResult(h);
+            if (!built.plan.length) return;
+            const total = built.plan.reduce((a, p) => a + p.maxPrice, 0);
+            const coins = userCoins();
+            const lines = built.plan.map(p => p.name + ' (' + (p.rating || '?') + '): bis ' + fmtCoins(p.maxPrice)).join('\n');
+            const frage = built.plan.length + ' Konzept-Spieler nach und nach kaufen?\n\n' + lines + '\n\nZusammen hoechstens ' + fmtCoins(total) +
+                          (coins != null ? ' (Kontostand ' + fmtCoins(coins) + ')' : '') +
+                          '.\nEin Kauf alle 3-6 Sekunden, Abbruch bei Fehlern. Es wird nie mehr als die Obergrenze gezahlt.';
+            if (!window.confirm(frage)) return;
+            buyBusy = false; // buyPlannedPlayers setzt es selbst
+            await buyPlannedPlayers(null, built.plan);
+        } catch (e) {
+            reportError('Konzept-Spieler kaufen', e);
+            setFutbinResult(warnHtml('Kaufen fehlgeschlagen: ' + (e && e.message || e)));
         } finally {
             buyBusy = false;
         }
@@ -8829,6 +8984,7 @@
             // Kosten, Marktabfragen, Fehler, eingefuegte Loesung.
             futbin: STATE.diag.futbin,
             futbinBuy: STATE.diag.futbinBuy || null,
+            futbinBuyPlan: STATE.diag.futbinBuyPlan || null,
             marketUrls: STATE.diag.marketUrls,
             marketProbe: STATE.diag.marketProbe,
             // v5.15.0: Vorbereitung auf EAs SBC-Freischaltung - siehe

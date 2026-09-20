@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.24.0
+// @version      5.25.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.24.0';
+    const VERSION = '5.25.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7946,6 +7946,49 @@
         catch (e) { const err = new Error('Kauf: ' + (e && e.message || e)); err.status = httpStatusOf(e); throw err; }
     }
     /** Karte aus dem Kauf-Stapel in den Verein per eigenem PUT (EAs /item, pile club). */
+    /**
+     * Gekaufte Karten ueber EAs CLIENT in den Verein (v5.25.0): Kauf-Stapel
+     * neu laden (requestUnassignedItems - dann kennt der Client die Karten),
+     * gefundene Entities per services.Item.move(..., CLUB) verschieben. EA
+     * feuert daraufhin selbst nItemMoved -> replaceItemsInSquads: die
+     * Konzept-Spieler werden in allen SBC-Kadern ersetzt UND die Ansicht
+     * aktualisiert. Nicht gefundene Karten gehen per Notweg (eigener PUT).
+     */
+    async function adoptBoughtIntoClient(bought) {
+        const out = { refreshed: false, found: 0, moved: 0, httpMoved: 0, error: null };
+        const wanted = new Set(bought.map(b => String(b.itemId)).filter(s => s && s !== 'undefined' && s !== 'null'));
+        let ents = [];
+        try {
+            const svc = window.services && window.services.Item;
+            if (svc && typeof svc.requestUnassignedItems === 'function') {
+                const resp = await obsPromise(svc.requestUnassignedItems());
+                out.refreshed = responseOk(resp);
+                const items = (resp && ((resp.response && resp.response.items) || (resp.data && resp.data.items))) || [];
+                ents = items.filter(it => it && wanted.has(String(it.id)));
+                out.found = ents.length;
+                const pile = window.ItemPile && window.ItemPile.CLUB;
+                if (ents.length && pile != null && typeof svc.move === 'function') {
+                    let r = null;
+                    try { r = await obsPromise(svc.move(ents, pile)); } catch (e) { r = null; }
+                    if (responseOk(r)) out.moved = ents.length;
+                    else {
+                        // Einzeln nachfassen, falls der Dienst keine Liste nimmt.
+                        for (const it of ents) {
+                            try { const r1 = await obsPromise(svc.move(it, pile)); if (responseOk(r1)) out.moved++; } catch (e) {}
+                        }
+                    }
+                }
+            }
+        } catch (e) { out.error = String(e && e.message || e); reportError('adoptBoughtIntoClient', e); }
+        // Notweg fuer alles, was der Client nicht kannte: eigener PUT.
+        const movedIds = new Set(ents.slice(0, out.moved).map(it => String(it.id)));
+        for (const b of bought) {
+            const id = String(b.itemId);
+            if (!wanted.has(id) || movedIds.has(id)) continue;
+            if (await moveToClubHttp(b.itemId)) out.httpMoved++;
+        }
+        return out;
+    }
     async function moveToClubHttp(itemId) {
         try {
             const r = await apiPut('item', { itemData: [{ id: itemId, pile: 'club' }] });
@@ -8492,14 +8535,26 @@
                 // im Kauf-Stapel (Unassigned), und EA lehnte den Kader-PUT mit
                 // 475 ab (Report v5.20.0, "sie werden nicht direkt im verein
                 // gespeichert" - Rasmus). EAs eigener Weg: services.Item.move.
-                step.moved = offer.tradeId != null ? await moveToClubHttp(offer.itemId) : await moveToClub(offer.item);
-                bought.push({ plan: p, item: offer.item || null, raw: offer.raw || null });
+                // v5.25.0: NICHT mehr per HTTP in den Verein. Report v5.24.0:
+                // 9 gekauft, 9 verschoben, gespeichert - und die Konzept-
+                // Spieler standen trotzdem noch auf dem Feld. EAs Client hatte
+                // die Karten nie gesehen. Sein eigener Weg (Kauf-Stapel laden,
+                // services.Item.move) loest EAs Ersetzen der Konzept-Spieler
+                // in allen SBC-Kadern samt Anzeige aus - genau das, was
+                // Rasmus mit "in den Verein tun" von Hand ausloest.
+                step.moved = null;
+                bought.push({ plan: p, item: offer.item || null, raw: offer.raw || null, itemId: offer.itemId != null ? offer.itemId : (offer.item && offer.item.id) });
                 lines.push('✓ ' + escapeHtml(p.name) + ' fuer ' + fmtCoins(offer.bin) + (offer.bin > p.planned ? ' (Plan ' + fmtCoins(p.planned) + ')' : ''));
                 render(null);
                 if (k < plan.length - 1) await futbinSleep(randomBetween(BUY_GAP_MIN_MS, BUY_GAP_MAX_MS));
             }
             // Gekaufte Karten in den SBC-Kader statt der Konzept-Spieler, dann speichern.
             if (bought.length) {
+                render('Gekaufte Karten in den Verein uebernehmen ...');
+                const adopted = await adoptBoughtIntoClient(bought);
+                diag.adopted = adopted;
+                lines.push(adopted.moved + ' von ' + bought.length + ' gekauften Karten ueber EAs Client in den Verein' +
+                           (adopted.httpMoved ? ' (' + adopted.httpMoved + ' per Notweg)' : '') + '.');
                 const swapped = await replaceConceptsWithBought(bought);
                 lines.push(swapped.replaced + ' von ' + bought.length + ' gekauften Karten im Kader eingesetzt' +
                            (swapped.saved ? ', Kader gespeichert.' : ' - Speichern fehlgeschlagen: ' + escapeHtml(swapped.error || '?')));
@@ -8618,6 +8673,13 @@
                     if (ent && typeof liveSquad.replaceConceptItem === 'function') { liveSquad.replaceConceptItem(ent); out.replaced++; }
                 } catch (e) { reportError('replaceConceptItem', e); }
             }
+            // v5.25.0: Ansicht nachziehen - replaceConceptItem aendert nur das
+            // Modell, das Spielfeld zeichnet erst auf Anstoss neu.
+            try {
+                const oc = ctrl._overviewController || ctrl.leftController || null;
+                if (oc && typeof oc._pushSquadToView === 'function') { oc._pushSquadToView(); out.viewPushed = true; }
+                else if (oc && typeof oc.setSquad === 'function') { oc.setSquad(liveSquad); out.viewPushed = true; }
+            } catch (e) { reportError('_pushSquadToView', e); }
             const resp = await obsPromise(window.services.SBC.saveChallenge(challenge));
             out.saved = responseOk(resp);
             if (!out.saved) out.error = 'saveChallenge Status ' + (resp && resp.status);

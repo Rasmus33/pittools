@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.16.0
+// @version      5.17.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.16.0';
+    const VERSION = '5.17.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -703,7 +703,15 @@
     // FC 27 (v5.15.0): Scope-Namen, die auf die Streamlined-SBC-Mechanik
     // deuten (Item Score, Zielsumme, Beitrag). Bewusst OHNE "POINTS"
     // (CHEMISTRY_POINTS ist Bestand) und ohne "TYPE" (zu breit).
-    const FC27_SCOPE_RE = /SCORE|STREAMLIN|ONE_?CLICK|TARGET|CONTRIBUT|GRADING/;
+    // Nur ECHTE Scope-Namen (GROSS_MIT_UNTERSTRICH): scopeString() nimmt auch
+    // o.name, und live (Report v5.16.0) landete der Spieler "MATT TARGETT" als
+    // Sample, weil TARGETT das Wort TARGET enthaelt. Ein Leerzeichen im Scope
+    // heisst: kein EA-Schluessel.
+    const FC27_SCOPE_RE = /^[A-Z0-9_]+$/;
+    const FC27_SCOPE_WORDS_RE = /SCORE|STREAMLIN|ONE_?CLICK|TARGET|CONTRIBUT|GRADING/;
+    function isFc27Scope(scope) {
+        return FC27_SCOPE_RE.test(scope) && FC27_SCOPE_WORDS_RE.test(scope);
+    }
     function scopeString(o) {
         const cand = [o.scope, o.type, o.key, o.requirementKey, o.name];
         for (const c of cand) {
@@ -794,7 +802,7 @@
                 // wird als ROH-KNOTEN mitgenommen (300 Zeichen, Cap 5). Die
                 // Zweige unten kennen ihn nicht - ohne Sample wuesste ein Report
                 // nur den Namen, nicht die Struktur (Ziel? Einheit? Liste?).
-                if (FC27_SCOPE_RE.test(scope) && out.fc27Samples.length < 5) {
+                if (isFc27Scope(scope) && out.fc27Samples.length < 5) {
                     let sample;
                     try { sample = JSON.stringify(o); } catch (e) { sample = null; }
                     out.fc27Samples.push({ scope: scope, sample: sample == null ? '(nicht serialisierbar)' : sample.slice(0, 300) });
@@ -7196,7 +7204,14 @@
         try {
             const now = readFeatureFlags();
             if (!now) return;
-            if (lastFeatureFlags) {
+            // Live (Report v5.16.0): 24 s nach dem Start sprangen ALLE sechs
+            // Schalter gleichzeitig von false auf true - das war EAs
+            // Konfiguration, die erst dann geladen war, keine Freischaltung.
+            // Ein Schnappschuss ohne einen einzigen true ist deshalb keine
+            // Basis, sondern "noch nicht geladen".
+            const loaded = Object.keys(now).some(k => now[k] === true);
+            const baseLoaded = lastFeatureFlags && Object.keys(lastFeatureFlags).some(k => lastFeatureFlags[k] === true);
+            if (lastFeatureFlags && baseLoaded && loaded) {
                 for (const k of Object.keys(now)) {
                     if (now[k] === lastFeatureFlags[k]) continue;
                     const ring = STATE.diag.featureFlips || (STATE.diag.featureFlips = []);
@@ -7866,6 +7881,12 @@
         const FIELD_RE = /holo|foil|pristine|cosmetic|score|grading/i;
         let cosmeticRarityCount = 0;
         let rawKeySample = null;
+        // v5.17.0: EAs Item Score steht LIVE an jeder Karte (Report v5.16.0:
+        // `gradingScore` bei 184 von 184). Pro Rating und Kartenart (normal /
+        // Special-rareflag) min/max/Anzahl - damit ist die umstrittene
+        // Score-Tabelle (docs/FC27.md §3) aus dem eigenen Verein ablesbar.
+        const scoreByRating = {};
+        const scoreSpecial = {};
         for (const p of pool) {
             const r = Number(p.rating);
             const t = r >= 75 ? tier.gold : (r >= 65 ? tier.silver : tier.bronze);
@@ -7875,6 +7896,16 @@
             const raw = p.raw;
             if (!raw || typeof raw !== 'object') continue;
             if (raw.cosmeticRarity != null) cosmeticRarityCount++;
+            const gs = Number(raw.gradingScore);
+            if (raw.gradingScore != null && !isNaN(gs)) {
+                const normal = (p.rareflag === 0 || p.rareflag === 1);
+                const bucket = normal ? scoreByRating : scoreSpecial;
+                const key = normal ? String(r) : (String(p.rareflag) + '@' + r);
+                const s = bucket[key] || (bucket[key] = { min: gs, max: gs, n: 0 });
+                if (gs < s.min) s.min = gs;
+                if (gs > s.max) s.max = gs;
+                s.n++;
+            }
             let keys = null;
             try { keys = Object.keys(raw); } catch (e) { keys = null; }
             if (!keys) continue;
@@ -7892,7 +7923,9 @@
             byTier: tier,
             cosmeticRarityCount: cosmeticRarityCount,
             fc27FieldHits: fieldHits,
-            rawKeySample: rawKeySample
+            rawKeySample: rawKeySample,
+            gradingScoreByRating: scoreByRating,
+            gradingScoreSpecial: scoreSpecial
         };
     }
     // [RAREHIST-END]

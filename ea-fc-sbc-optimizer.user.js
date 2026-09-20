@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.18.0
+// @version      5.19.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.18.0';
+    const VERSION = '5.19.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -200,7 +200,8 @@
             sbcSchema: null,         // Feld-Union der Set- und Challenge-Objekte + auffaellige Felder (probeSbcSchema)
             featureFlips: null,      // EAs Feature-Schalter, die sich WAEHREND der Sitzung geaendert haben (watchFeatureFlips)
             fc27ScanSamples: null,   // Roh-Knoten des Vorgaben-Scans mit Score-/Streamlined-artigem Scope (deepScanChallenge)
-            futbin: null             // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten, Wahl, Fehler (runFutbinSearch)
+            futbin: null,            // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten, Wahl, Fehler (runFutbinSearch)
+            futbinBuy: null          // schrittweises Kaufen (v5.19.0): Plan, Schritte, gekauft/ausgegeben, Stopp-Grund (buyPlannedPlayers)
         }
     };
     function log(...args) { try { console.log(LOG_PREFIX, ...args); } catch (e) {} }
@@ -7453,6 +7454,50 @@
         return cost;
     }
     /**
+     * EAs Preisstufen (Fallback, falls UTCurrencyInputControl.PRICE_TIERS
+     * nicht lesbar ist): bis 1.000 in 50ern, bis 10.000 in 100ern, bis
+     * 50.000 in 250ern, bis 100.000 in 500ern, darueber 1.000er.
+     */
+    const PRICE_TIERS_FALLBACK = [
+        { min: 100000, inc: 1000 }, { min: 50000, inc: 500 }, { min: 10000, inc: 250 },
+        { min: 1000, inc: 100 }, { min: 0, inc: 50 }
+    ];
+    function priceTierOf(v, tiers) {
+        const t = (tiers || PRICE_TIERS_FALLBACK).filter(x => x && x.inc > 0).sort((a, b) => b.min - a.min);
+        return t.find(x => v >= x.min) || t[t.length - 1] || { min: 0, inc: 50 };
+    }
+    /** Auf eine gueltige EA-Preisstufe ABrunden (nie ueber dem Wunschwert). */
+    function roundPriceDown(v, tiers) {
+        v = Math.max(0, Math.floor(Number(v) || 0));
+        const inc = priceTierOf(v, tiers).inc;
+        return Math.floor(v / inc) * inc;
+    }
+    /**
+     * Kauf-Obergrenze aus dem geplanten Preis: plus Toleranz (Default 10 %),
+     * auf eine Preisstufe abgerundet, aber mindestens eine Stufe ueber dem
+     * Plan (sonst waere bei 200 -> 220 -> 200 gar kein Spielraum). Live
+     * (Rasmus, 20.09.): eine Karte kostete 2.000 statt geplanter 200 - die
+     * Obergrenze ist der Schutz davor, so etwas automatisch zu kaufen.
+     */
+    function planMaxPrice(planned, tolerance, tiers) {
+        const p = Math.max(0, Number(planned) || 0);
+        if (!p) return 0;
+        const tol = (tolerance == null) ? 0.10 : Number(tolerance);
+        const raised = roundPriceDown(p * (1 + tol), tiers);
+        const oneStep = roundPriceDown(p, tiers) + priceTierOf(p, tiers).inc;
+        return Math.max(raised, oneStep);
+    }
+    /**
+     * Robuster Marktpreis aus den Sofortkauf-Angeboten einer Seite: nicht das
+     * einzelne Minimum (ein Ausreisser, der beim Kauf schon weg ist), sondern
+     * das ZWEITniedrigste; bei nur einem Angebot dieses.
+     */
+    function robustMinBin(bins) {
+        const arr = (bins || []).map(Number).filter(v => v > 0).sort((a, b) => a - b);
+        if (!arr.length) return { min: null, robust: null, count: 0, lowest: [] };
+        return { min: arr[0], robust: arr.length > 1 ? arr[1] : arr[0], count: arr.length, lowest: arr.slice(0, 3) };
+    }
+    /**
      * Formation als Ziffernfolge: EA "f442" / futbin "4-4-2" / "442" -> "442".
      * Live (Report v5.17.0): die Challenge stand auf f442, futbins Loesung
      * war 3-1-4-2 - zwei Spieler fanden keinen Slot, die Chemie wackelt.
@@ -7629,8 +7674,12 @@
             box.appendChild(b);
         });
     }
-    /** Guenstigstes Sofortkauf-Angebot am EA-Markt (Seite 1), null = keins gesehen. */
-    async function marketMinBin(resourceId) {
+    /**
+     * Sofortkauf-Angebote einer Karte am EA-Markt (Seite 1, ohne Position -
+     * Rasmus: "position weg machen, die stimmen nicht immer ueberein").
+     * maxBuy optional als Obergrenze. Liefert [{item, bin}] nach Preis.
+     */
+    async function marketOffers(resourceId, maxBuy) {
         if (typeof window.UTSearchCriteriaDTO !== 'function' || !window.services || !window.services.Item ||
             typeof window.services.Item.searchTransferMarket !== 'function') {
             throw new Error('EA-Marktsuche nicht verfuegbar');
@@ -7639,18 +7688,31 @@
         try { crit.type = window.SearchType ? window.SearchType.PLAYER : 'player'; } catch (e) {}
         crit.maskedDefId = Number(resourceId);
         crit.count = 21;
+        if (maxBuy > 0) crit.maxBuy = maxBuy;
         const resp = await obsPromise(window.services.Item.searchTransferMarket(crit, 1));
-        if (!responseOk(resp)) throw new Error('Marktsuche abgelehnt (Status ' + (resp && resp.status) + ')');
+        if (!responseOk(resp)) {
+            const err = new Error('Marktsuche abgelehnt (Status ' + (resp && resp.status) + ')');
+            err.status = resp && resp.status;
+            throw err;
+        }
         const data = (resp && (resp.data || resp.response)) || {};
         const items = data.items || data.auctionInfo || [];
-        let min = null;
+        const offers = [];
         for (const it of items) {
             let a = null;
             try { a = it._auction || (typeof it.getAuctionData === 'function' ? it.getAuctionData() : null); } catch (e) {}
             const bin = a && Number(a.buyNowPrice);
-            if (bin > 0 && (min == null || bin < min)) min = bin;
+            const expires = a && a.expires;
+            // expires -1 = abgelaufen/geschlossen; 0/undefined lassen wir durch.
+            if (bin > 0 && !(expires != null && Number(expires) < 0) && !(maxBuy > 0 && bin > maxBuy)) offers.push({ item: it, bin: bin });
         }
-        return min;
+        offers.sort((x, y) => x.bin - y.bin);
+        return offers;
+    }
+    /** Marktpreis-Schaetzung: robustMinBin ueber die Angebote von Seite 1 (null-Felder, wenn kein Angebot). */
+    async function marketMinBin(resourceId) {
+        const offers = await marketOffers(resourceId, 0);
+        return robustMinBin(offers.map(o => o.bin));
     }
     /** Konzept-Spieler (Dream Squad) als echte EA-Entity ueber EAs eigene Konzept-Suche. */
     async function conceptEntity(resourceId) {
@@ -7809,14 +7871,20 @@
                             diag.marketQueries++;
                             setFutbinResult('<div class="sbc-opt-dim">Marktpreise pruefen ... Abfrage ' + diag.marketQueries +
                                             ' von hoechstens ' + distinct.size + '</div>');
-                            let bin = null;
-                            try { bin = await marketMinBin(pl.resourceId); }
+                            let est = null;
+                            try { est = await marketMinBin(pl.resourceId); }
                             catch (e) { diag.errors.push('Markt ' + pl.resourceId + ': ' + (e && e.message || e)); }
-                            cache.set(pl.resourceId, bin);
+                            cache.set(pl.resourceId, est);
                             await futbinSleep(FUTBIN_MARKET_GAP_MS);
                         }
-                        const bin = cache.get(pl.resourceId);
+                        const est = cache.get(pl.resourceId);
+                        // ROBUST (zweitniedrigstes Angebot), nicht das Minimum: live
+                        // kostete eine Karte 2.000 statt der 200, die ein einzelnes
+                        // Angebot versprach - das war beim Kauf schon weg.
+                        const bin = est && est.robust != null ? est.robust : null;
                         pl.liveBin = bin;
+                        pl.liveMin = est && est.min != null ? est.min : null;
+                        pl.liveOffers = est ? est.count : null;
                         if (bin == null) { unknown++; live += futbinPrice(pl, s.platform) || 0; } else live += bin;
                     }
                     if (pruned) { c.livePruned = true; c.liveCost = null; }
@@ -7888,8 +7956,17 @@
                 h += '<div>' + escapeHtml(pl.name || ('#' + pl.resourceId)) + ' <span class="sbc-opt-muted">(' + (pl.rating || '?') + ', ' +
                      escapeHtml(pl.slotPosition || pl.cardPosition || '?') + ')</span> ' + fmtCoins(price) + (pl.liveBin != null ? ' live' : '') + '</div>';
             });
-            h += '<div class="sbc-opt-dim">Abgeben drueckst du selbst - erst kaufen, dann pruefen, ob EA alle Vorgaben als erfuellt zeigt.</div>';
+            const plan = buildBuyPlan(c, futbinLast.platform);
+            if (plan.length) {
+                h += '<div class="sbc-opt-dim">Kaufen: nach und nach, ein Spieler alle paar Sekunden, jeder hoechstens bis zur Obergrenze ' +
+                     '(Plan + ' + Math.round(BUY_TOLERANCE * 100) + ' %). Zusammen hoechstens <b>' + fmtCoins(plan.reduce((a, p) => a + p.maxPrice, 0)) + '</b>.</div>';
+                h += '<button type="button" class="sbc-opt-btn primary" id="sbc-opt-futbin-buy">Fehlende Spieler nach und nach kaufen</button>';
+            }
+            h += '<div class="sbc-opt-dim">Abgeben drueckst du selbst - nach dem Kaufen pruefen, ob EA alle Vorgaben als erfuellt zeigt.</div>';
             setFutbinResult(h);
+            futbinLast.insertedIdx = idx;
+            const buyBtn = ui.futbinResult.querySelector('#sbc-opt-futbin-buy');
+            if (buyBtn) buyBtn.addEventListener('click', function () { onFutbinBuyClick(idx); });
             if (STATE.diag.futbin) STATE.diag.futbin.inserted = { squadId: c.row.squadId, at: Date.now(), result: res };
             toast('Futbin-Loesung eingetragen: ' + res.ownedPlaced + ' eigene + ' + res.conceptPlaced + ' Konzept-Spieler.', 'ok');
         } catch (e) {
@@ -7899,6 +7976,171 @@
         } finally {
             setStatus('bereit');
         }
+    }
+    // ---- Schrittweises Kaufen der fehlenden Spieler (v5.19.0) ---------------
+    // Rasmus: "man bekommt einen ban fuers automatische kaufen und snipen, aber
+    // wenn du das nach und nach machst ... also nicht zu schnell alles klicken".
+    // Deshalb: EIN Spieler nach dem anderen, zwischen den Schritten 3-6 s
+    // Zufallspause (Tempo eines Menschen), hoechstens 11 Kaeufe pro Lauf,
+    // Abbruch bei Rate-Limit oder zwei Fehlern hintereinander. Jeder Kauf ist
+    // ein normales Sofortkauf-Angebot aus EAs eigener Suche (ohne Position,
+    // mit Obergrenze maxBuy) - kein Bieten, kein Snipen im Sekundentakt.
+    const BUY_TOLERANCE = 0.10;
+    const BUY_GAP_MIN_MS = 3000;
+    const BUY_GAP_MAX_MS = 6000;
+    const BUY_MAX_PER_RUN = 11;
+    const BUY_MAX_CONSECUTIVE_FAILS = 2;
+    let buyBusy = false;
+    function eaPriceTiers() {
+        try {
+            const t = window.UTCurrencyInputControl && window.UTCurrencyInputControl.PRICE_TIERS;
+            if (Array.isArray(t) && t.length && t.every(x => x && x.inc > 0 && x.min >= 0)) return t;
+        } catch (e) {}
+        return null;
+    }
+    /** Kaufliste aus einer eingefuegten Loesung: fehlende Spieler mit Plan- und Hoechstpreis. */
+    function buildBuyPlan(c, platform) {
+        const plan = [];
+        c.squad.players.forEach(function (pl, i) {
+            if (c.owned[i]) return;
+            const planned = pl.liveBin != null ? pl.liveBin : futbinPrice(pl, platform);
+            if (!(planned > 0)) return;
+            plan.push({ index: i, resourceId: pl.resourceId, name: pl.name || ('#' + pl.resourceId), rating: pl.rating,
+                        planned: planned, maxPrice: planMaxPrice(planned, BUY_TOLERANCE, eaPriceTiers()) });
+        });
+        return plan;
+    }
+    function userCoins() {
+        try {
+            const u = window.services && window.services.User && window.services.User.getUser && window.services.User.getUser();
+            const c = u && u.coins;
+            const n = c && (typeof c.amount === 'number' ? c.amount : Number(c));
+            return isFinite(n) ? n : null;
+        } catch (e) { return null; }
+    }
+    function isRateLimit(status) {
+        try { if (window.HttpStatusCode && status === window.HttpStatusCode.RATE_LIMIT) return true; } catch (e) {}
+        return status === 429 || status === 426 || status === 512;
+    }
+    function randomBetween(a, b) { return Math.round(a + Math.random() * (b - a)); }
+    async function onFutbinBuyClick(idx) {
+        const c = futbinLast && futbinLast.ranked[idx];
+        if (!c) return;
+        if (buyBusy || futbinBusy) { toast('Es laeuft schon ein Lauf.', 'warn'); return; }
+        const plan = buildBuyPlan(c, futbinLast.platform);
+        if (!plan.length) { toast('Nichts zu kaufen.', ''); return; }
+        const total = plan.reduce((a, p) => a + p.maxPrice, 0);
+        const coins = userCoins();
+        const lines = plan.map(p => p.name + ' (' + (p.rating || '?') + '): bis ' + fmtCoins(p.maxPrice)).join('\n');
+        const frage = plan.length + ' Spieler nach und nach kaufen?\n\n' + lines + '\n\nZusammen hoechstens ' + fmtCoins(total) +
+                      (coins != null ? ' (Kontostand ' + fmtCoins(coins) + ')' : '') +
+                      '.\nEin Kauf alle 3-6 Sekunden, Abbruch bei Fehlern. Es wird nie mehr als die Obergrenze gezahlt.';
+        if (!window.confirm(frage)) return;
+        if (coins != null && coins < total) {
+            if (!window.confirm('Der Kontostand reicht nicht fuer die Obergrenze aller Spieler. Trotzdem starten (kauft, so weit die Coins reichen)?')) return;
+        }
+        await buyPlannedPlayers(c, plan);
+    }
+    async function buyPlannedPlayers(c, plan) {
+        const diag = { at: Date.now(), planned: plan.length, bought: 0, spent: 0, steps: [], stopped: null };
+        STATE.diag.futbinBuy = diag;
+        buyBusy = true;
+        let fails = 0;
+        const bought = [];
+        const lines = [];
+        const render = function (current) {
+            let h = '<div class="sbc-opt-summary">Kaufen: ' + diag.bought + ' von ' + plan.length + ' · ausgegeben ' + fmtCoins(diag.spent) + '</div>';
+            lines.forEach(l => { h += '<div>' + l + '</div>'; });
+            if (current) h += '<div class="sbc-opt-dim">' + escapeHtml(current) + '</div>';
+            setFutbinResult(h);
+        };
+        try {
+            for (let k = 0; k < plan.length && k < BUY_MAX_PER_RUN; k++) {
+                const p = plan[k];
+                const step = { name: p.name, planned: p.planned, max: p.maxPrice, found: null, paid: null, status: null };
+                diag.steps.push(step);
+                render('Suche ' + p.name + ' (bis ' + fmtCoins(p.maxPrice) + ') ...');
+                let offers;
+                try { offers = await marketOffers(p.resourceId, p.maxPrice); }
+                catch (e) {
+                    step.status = 'suche: ' + (e && e.message || e);
+                    if (isRateLimit(e && e.status)) { diag.stopped = 'Rate-Limit bei der Suche'; lines.push('⚠ EA drosselt - Lauf gestoppt.'); break; }
+                    fails++; lines.push('⚠ ' + escapeHtml(p.name) + ': Suche fehlgeschlagen.');
+                    if (fails >= BUY_MAX_CONSECUTIVE_FAILS) { diag.stopped = 'zwei Fehler hintereinander'; break; }
+                    await futbinSleep(randomBetween(BUY_GAP_MIN_MS, BUY_GAP_MAX_MS));
+                    continue;
+                }
+                if (!offers.length) {
+                    step.status = 'kein Angebot bis Obergrenze';
+                    lines.push('– ' + escapeHtml(p.name) + ': kein Angebot bis ' + fmtCoins(p.maxPrice) + ' - selbst kaufen.');
+                    fails = 0;
+                    await futbinSleep(randomBetween(BUY_GAP_MIN_MS, BUY_GAP_MAX_MS));
+                    continue;
+                }
+                const offer = offers[0];
+                step.found = offer.bin;
+                const coins = userCoins();
+                if (coins != null && coins < offer.bin) { step.status = 'zu wenig Coins'; diag.stopped = 'Coins reichen nicht'; lines.push('⚠ Coins reichen nicht mehr (' + fmtCoins(coins) + ').'); break; }
+                render('Kaufe ' + p.name + ' fuer ' + fmtCoins(offer.bin) + ' ...');
+                let resp = null;
+                try { resp = await obsPromise(window.services.Item.bid(offer.item, offer.bin)); }
+                catch (e) { resp = { success: false, status: 0, error: { message: String(e && e.message || e) } }; }
+                if (isRateLimit(resp && resp.status)) { step.status = 'Rate-Limit'; diag.stopped = 'Rate-Limit beim Kauf'; lines.push('⚠ EA drosselt - Lauf gestoppt.'); break; }
+                if (!responseOk(resp)) {
+                    const code = resp && resp.error && (resp.error.code != null ? resp.error.code : resp.error.message);
+                    step.status = 'Kauf abgelehnt (' + (resp && resp.status) + (code != null ? ', ' + code : '') + ')';
+                    fails++;
+                    lines.push('⚠ ' + escapeHtml(p.name) + ': ' + escapeHtml(step.status) + ' - vermutlich schon weg.');
+                    if (fails >= BUY_MAX_CONSECUTIVE_FAILS) { diag.stopped = 'zwei Fehler hintereinander'; break; }
+                    await futbinSleep(randomBetween(BUY_GAP_MIN_MS, BUY_GAP_MAX_MS));
+                    continue;
+                }
+                fails = 0;
+                step.paid = offer.bin; step.status = 'gekauft';
+                diag.bought++; diag.spent += offer.bin;
+                bought.push({ plan: p, item: offer.item });
+                lines.push('✓ ' + escapeHtml(p.name) + ' fuer ' + fmtCoins(offer.bin) + (offer.bin > p.planned ? ' (Plan ' + fmtCoins(p.planned) + ')' : ''));
+                render(null);
+                if (k < plan.length - 1) await futbinSleep(randomBetween(BUY_GAP_MIN_MS, BUY_GAP_MAX_MS));
+            }
+            // Gekaufte Karten in den SBC-Kader statt der Konzept-Spieler, dann speichern.
+            if (bought.length) {
+                const swapped = await replaceConceptsWithBought(bought);
+                lines.push(swapped.replaced + ' von ' + bought.length + ' gekauften Karten im Kader eingesetzt' +
+                           (swapped.saved ? ', Kader gespeichert.' : ' - Speichern fehlgeschlagen: ' + escapeHtml(swapped.error || '?')));
+                diag.replaced = swapped.replaced; diag.saved = swapped.saved;
+            }
+            render(null);
+            const rest = plan.length - diag.bought;
+            toast('Kaufen fertig: ' + diag.bought + ' gekauft (' + fmtCoins(diag.spent) + ')' + (rest ? ', ' + rest + ' offen' : '') +
+                  (diag.stopped ? ' - gestoppt: ' + diag.stopped : ''), diag.stopped ? 'warn' : 'ok');
+        } catch (e) {
+            diag.stopped = String(e && e.message || e);
+            reportError('Futbin kaufen', e);
+            lines.push('⚠ Abbruch: ' + escapeHtml(String(e && e.message || e)));
+            render(null);
+        } finally {
+            buyBusy = false;
+        }
+    }
+    /** Konzept-Spieler im Live-Kader durch die gekauften Karten ersetzen (EAs replaceConceptItem), dann saveChallenge. */
+    async function replaceConceptsWithBought(bought) {
+        const out = { replaced: 0, saved: false, error: null };
+        try {
+            const ctrl = findSbcController();
+            const liveSquad = ctrl && (ctrl._squad || (ctrl.getSquad && ctrl.getSquad()));
+            const challenge = findLiveChallenge();
+            if (!liveSquad || !challenge) { out.error = 'Kein Live-Kader'; return out; }
+            for (const b of bought) {
+                try {
+                    if (typeof liveSquad.replaceConceptItem === 'function') { liveSquad.replaceConceptItem(b.item); out.replaced++; }
+                } catch (e) { reportError('replaceConceptItem', e); }
+            }
+            const resp = await obsPromise(window.services.SBC.saveChallenge(challenge));
+            out.saved = responseOk(resp);
+            if (!out.saved) out.error = 'saveChallenge Status ' + (resp && resp.status);
+        } catch (e) { out.error = String(e && e.message || e); }
+        return out;
     }
     // [RAREHIST-BEGIN]
     // Reine Funktion (kein STATE-Zugriff ausser dem uebergebenen pool) - so per
@@ -8386,6 +8628,7 @@
             // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten mit
             // Kosten, Marktabfragen, Fehler, eingefuegte Loesung.
             futbin: STATE.diag.futbin,
+            futbinBuy: STATE.diag.futbinBuy || null,
             // v5.15.0: Vorbereitung auf EAs SBC-Freischaltung - siehe
             // STATE.diag-Kommentare und docs/FC27.md §7.
             fc27: {

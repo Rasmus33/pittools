@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.15.0
+// @version      5.16.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.15.0';
+    const VERSION = '5.16.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -199,7 +199,8 @@
             sbsTraffic: [],          // Ring (25): Methode/Pfad/Status jedes sbs|sbc-Requests (noteSbsTraffic)
             sbcSchema: null,         // Feld-Union der Set- und Challenge-Objekte + auffaellige Felder (probeSbcSchema)
             featureFlips: null,      // EAs Feature-Schalter, die sich WAEHREND der Sitzung geaendert haben (watchFeatureFlips)
-            fc27ScanSamples: null    // Roh-Knoten des Vorgaben-Scans mit Score-/Streamlined-artigem Scope (deepScanChallenge)
+            fc27ScanSamples: null,   // Roh-Knoten des Vorgaben-Scans mit Score-/Streamlined-artigem Scope (deepScanChallenge)
+            futbin: null             // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten, Wahl, Fehler (runFutbinSearch)
         }
     };
     function log(...args) { try { console.log(LOG_PREFIX, ...args); } catch (e) {} }
@@ -5863,6 +5864,14 @@
             border-radius:var(--pt-r-m); padding:10px; display:none;
         }
         .sbc-opt-result.show { display:block; }
+        /* Futbin-Kandidaten (v5.16.0): eine Zeile pro Loesung, Empfehlung
+           mit Akzent-Rand; Knopf in voller Breite fuer den Daumen. */
+        .sbc-opt-fb-row {
+            border:1px solid var(--pt-line); border-radius:var(--pt-r-s);
+            padding:6px 8px; margin:6px 0; font-size:12px;
+        }
+        .sbc-opt-fb-row.best { border-color:var(--pt-accent); }
+        .sbc-opt-fb-row .sbc-opt-btn { margin:6px 0 0; }
         .sbc-opt-player {
             display:flex; justify-content:space-between; align-items:center;
             padding:5px 2px; border-bottom:1px solid var(--pt-line-soft);
@@ -6177,6 +6186,22 @@
                 </details>
                 <button class="sbc-opt-btn primary" id="sbc-opt-run">Optimieren + Eintragen</button>
                 <div class="sbc-opt-result" id="sbc-opt-result"></div>
+                <!-- FUTBIN-LOESUNG (v5.16.0): fuer SBCs, die man zusammenkauft
+                     (Marquee Matchups & Co.). Holt die Community-Loesungen der
+                     offenen Challenge ueber die Bruecke, gleicht mit dem Verein
+                     ab, prueft am Markt, traegt eigene Karten echt und fehlende
+                     als Konzept-Spieler ein. Gekauft und abgegeben wird von Hand. -->
+                <div class="sbc-opt-batch" id="sbc-opt-futbin">
+                    <div class="sbc-opt-group-title" style="margin:0 0 6px;">Futbin-Lösung (zusammenkaufen)</div>
+                    <label class="sbc-opt-chiplabel">Preise für</label>
+                    <div class="sbc-opt-chips" id="sbc-opt-futbin-platform"></div>
+                    <label class="sbc-opt-toggle">
+                        <input type="checkbox" id="sbc-opt-futbin-market" checked>
+                        Beste 3 am EA-Markt gegenprüfen (Live-Preise, dauert etwas)
+                    </label>
+                    <button class="sbc-opt-btn plan" id="sbc-opt-futbin-search">Futbin-Lösungen suchen</button>
+                    <div class="sbc-opt-result" id="sbc-opt-futbin-result"></div>
+                </div>
                 <!-- SBC-REIHE: verschiedene Challenges EINES Sets nacheinander.
                      Nur sichtbar, wenn das offene Set mehr als eine Challenge
                      hat (syncQueueSection()). Vorschau, Plan-Check und die
@@ -6310,6 +6335,10 @@
             maxRare: panel.querySelector('#sbc-opt-maxrare'),
             maxCommon: panel.querySelector('#sbc-opt-maxcommon'),
             useLocks: panel.querySelector('#sbc-opt-uselocks'),
+            futbinPlatform: panel.querySelector('#sbc-opt-futbin-platform'),
+            futbinMarket: panel.querySelector('#sbc-opt-futbin-market'),
+            futbinSearch: panel.querySelector('#sbc-opt-futbin-search'),
+            futbinResult: panel.querySelector('#sbc-opt-futbin-result'),
             poolCacheBox: panel.querySelector('#sbc-opt-poolcache'),
             rarityguard: panel.querySelector('#sbc-opt-rarityguard'),
             raritymode: panel.querySelector('#sbc-opt-raritymode'),
@@ -6371,6 +6400,7 @@
         });
         ui.load.addEventListener('click', onLoadClick);
         ui.run.addEventListener('click', onRunClick);
+        initFutbinUi();
         ui.diagBtn.addEventListener('click', onDiagClick);
         // Schnellwahl aufbauen und mit den Feldern verbinden. Tippt Rasmus von
         // Hand einen Wert, aktualisiert sich nur die Hervorhebung - der Wert
@@ -7200,6 +7230,596 @@
         } catch (e) {}
         return out;
     }
+    // ========================================================================
+    //  FUTBIN-LOESUNGEN (v5.16.0) - "zusammenkaufen"-SBCs
+    // ------------------------------------------------------------------------
+    //  Marquee Matchups & Co. kauft man meist fast komplett zusammen. Bisher:
+    //  auf futbin schauen, Spieler einzeln als Konzept-Spieler eintragen,
+    //  kaufen. Jetzt: PitTools holt die Community-Loesungen der offenen
+    //  Challenge (futbin kennt EAs challengeId in der URL), liest die Kader,
+    //  gleicht sie mit dem Verein ab (eigene Karten kosten 0), rechnet die
+    //  Kaufkosten pro Loesung, prueft die besten am EA-Markt gegen (die
+    //  "billigste" Liste ist ueberlaufen - Rasmus' Hinweis) und traegt die
+    //  gewaehlte Loesung ein: eigene Karten als echte Spieler, fehlende als
+    //  Konzept-Spieler (Dream Squad). Gekauft wird von Hand.
+    //  Dieser Block ist REIN (kein DOM, kein EA) und wird aus Fixtures
+    //  getestet (test-fixtures/futbin-*.html, aus echten Seiten gekuerzt).
+    // ========================================================================
+    // [FUTBIN-BEGIN]
+    const FUTBIN_HOST = 'https://www.futbin.com';
+    /** Spieljahr fuer futbin-URLs: "fc27" -> "27"; sonst aus window.fut_year. */
+    function futbinYear(gameName, futYear) {
+        const m = String(gameName || '').match(/^fc(\d\d)$/i);
+        if (m) return m[1];
+        const y = parseInt(futYear, 10);
+        if (y > 2000 && y < 2100) return String(y - 2000);
+        return '27';
+    }
+    // futbin fuehrt die Challenge unter EAs challengeId; der Slug am Ende ist
+    // frei (live geprueft: ".../Challenges/35/x" liefert dieselbe Liste).
+    function futbinChallengeUrl(year, challengeId) {
+        return FUTBIN_HOST + '/' + year + '/squad-building-challenges/Challenges/' + String(challengeId) + '/pittools';
+    }
+    function futbinSquadUrl(year, squadId) {
+        return FUTBIN_HOST + '/' + year + '/squad/' + String(squadId) + '/sbc';
+    }
+    /** "2,850" / "12.600" / "2 600" -> 2850. null, wenn keine Zahl. */
+    function parseCoins(txt) {
+        const m = String(txt == null ? '' : txt).replace(/[.,\s ]/g, '').match(/-?\d+/);
+        return m ? parseInt(m[0], 10) : null;
+    }
+    function stripTags(html) {
+        return String(html || '').replace(/<[^>]+>/g, ' ')
+            .replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ').replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+            .replace(/\s+/g, ' ').trim();
+    }
+    /**
+     * Loesungsliste einer Challenge-Seite. Jede Zeile: Vorschaubild, Name
+     * ("Community Squad N" / "Powered By FUTBIN AI", mit Anhang "New"/
+     * "Cheapest"), Alter, Likes, PS-Preis, PC-Preis. listRank = Position in
+     * futbins Reihenfolge (die ist nach PS-Preis sortiert - und genau die
+     * obersten Plaetze werden leergekauft).
+     */
+    function parseFutbinSolutionList(html) {
+        const out = [];
+        const rows = String(html || '').match(/<tr[\s>][\s\S]*?<\/tr>/gi) || [];
+        for (const r of rows) {
+            const m = r.match(/href="\/(\d\d)\/squad\/(\d+)\/sbc"/);
+            if (!m) continue;
+            const cells = (r.match(/<td[\s>][\s\S]*?<\/td>/gi) || []).map(stripTags);
+            const label = cells[1] || '';
+            const img = r.match(/players\/(\d+)\.png/);
+            out.push({
+                squadId: m[2],
+                year: m[1],
+                label: label.replace(/\s*\b(New|Cheapest)\b\s*/g, ' ').replace(/\s+/g, ' ').trim(),
+                ai: /FUTBIN\s*AI/i.test(label),
+                tagCheapest: /\bCheapest\b/.test(label),
+                tagNew: /\bNew\b/.test(label),
+                age: cells[2] || null,
+                likes: parseCoins(cells[3]),
+                pricePs: parseCoins(cells[4]),
+                pricePc: parseCoins(cells[5]),
+                thumbResourceId: img ? parseInt(img[1], 10) : null,
+                listRank: out.length
+            });
+        }
+        return out;
+    }
+    /** Balancierte {...}/[...]-Spanne ab Index j (Strings mit Escapes beachtet). */
+    function scanBalanced(t, j) {
+        let depth = 0, inStr = false;
+        for (let k = j; k < t.length; k++) {
+            const c = t[k];
+            if (inStr) { if (c === '\\') k++; else if (c === '"') inStr = false; continue; }
+            if (c === '"') inStr = true;
+            else if (c === '{' || c === '[') depth++;
+            else if (c === '}' || c === ']') { depth--; if (depth === 0) return t.slice(j, k + 1); }
+        }
+        return null;
+    }
+    /** Erstes "key": {...} im Text, das als JSON parst (Vorkommen mit String-Wert werden uebersprungen). */
+    function extractJsonAfterKey(text, key) {
+        const t = String(text || '');
+        const needle = '"' + key + '":';
+        let from = 0;
+        for (let guard = 0; guard < 50; guard++) {
+            const i = t.indexOf(needle, from);
+            if (i < 0) return null;
+            let j = i + needle.length;
+            while (j < t.length && /\s/.test(t[j])) j++;
+            from = i + needle.length;
+            if (t[j] !== '{' && t[j] !== '[') continue;
+            const raw = scanBalanced(t, j);
+            if (!raw) continue;
+            try { return JSON.parse(raw); } catch (e) { /* naechstes Vorkommen */ }
+        }
+        return null;
+    }
+    /**
+     * Kaderseite -> { formation, players[] }. squadData.squad wechselt
+     * {value:"cardlidN"} und Karten-Objekt ab; formationData nennt pro lid
+     * die SLOT-Position (die zaehlt fuer die Chemie, nicht die Kartenposition).
+     * resourceId = EAs definitionId, steht im Bildnamen (players/221820.png)
+     * - derselbe Weg, den PaleTools' Import-Bookmarklet nimmt.
+     */
+    function parseFutbinSquad(html) {
+        const sq = extractJsonAfterKey(html, 'squadData');
+        if (!sq || !Array.isArray(sq.squad)) return null;
+        const fd = extractJsonAfterKey(html, 'formationData');
+        const slotPos = {};
+        let formation = null;
+        try {
+            const f = fd && Array.isArray(fd.formations) ? fd.formations[0] : null;
+            if (f) {
+                formation = f.displayName || (f.formation && f.formation.value) || null;
+                const ps = Array.isArray(f.positions) ? f.positions : [];
+                for (let i = 0; i + 1 < ps.length; i += 2) {
+                    if (ps[i] && ps[i + 1]) slotPos[String(ps[i].value)] = String(ps[i + 1].value);
+                }
+            }
+        } catch (e) {}
+        const players = [];
+        let lid = null;
+        for (const x of sq.squad) {
+            if (!x || typeof x !== 'object') continue;
+            if (Object.keys(x).length === 1 && x.value != null) { lid = String(x.value); continue; }
+            const img = (x.playerImage && x.playerImage.fixed && x.playerImage.fixed.url && x.playerImage.fixed.url.image1x) || '';
+            const rm = String(img).match(/players\/(\d+)\.png/);
+            players.push({
+                lid: lid,
+                slotPosition: (lid && slotPos[lid]) ? slotPos[lid] : null,
+                cardPosition: (x.position && x.position.value != null) ? String(x.position.value) : null,
+                resourceId: rm ? parseInt(rm[1], 10) : null,
+                futbinId: (x.baseId && x.baseId.value != null) ? Number(x.baseId.value) : null,
+                name: x.playerName || (x.statsCard && x.statsCard.cardname) || null,
+                rating: parseInt(x.statsCard && x.statsCard.rating, 10) || null,
+                pricePs: (x.price && x.price.ps && x.price.ps.price != null) ? Number(x.price.ps.price) : null,
+                pricePc: (x.price && x.price.pc && x.price.pc.price != null) ? Number(x.price.pc.price) : null,
+                cardLevel: x.cardLevel || null,
+                isRare: x.isRare === true,
+                isEvolution: x.isEvolution === true
+            });
+            lid = null;
+        }
+        return { formation: formation, players: players };
+    }
+    /** Preis einer futbin-Karte auf der gewaehlten Plattform (ps|pc). */
+    function futbinPrice(pl, platform) {
+        return platform === 'pc' ? pl.pricePc : pl.pricePs;
+    }
+    /**
+     * Eigene Karten zu den Loesungs-Spielern: Treffer ueber EAs resourceId/
+     * definitionId (Base-Karten: resourceId == assetId). Gesperrte (PaleTools)
+     * nie; jede Pool-Karte hoechstens einmal; bei Duplikaten Storage vor
+     * unverkaeuflich vor Rest (Storage ist Verbrauchsmaterial, CLAUDE.md).
+     * Liefert pro Spieler die Pool-Karte oder null.
+     */
+    function matchOwned(players, pool, lockedIds) {
+        const lockSet = new Set((lockedIds || []).map(String));
+        const used = new Set();
+        const prefer = p => (p.isStorage ? 2 : 0) + (p.untradeable ? 1 : 0);
+        return (players || []).map(pl => {
+            const rid = Number(pl && pl.resourceId);
+            if (!rid) return null;
+            let best = null;
+            for (const p of (pool || [])) {
+                if (!p || used.has(p.id) || lockSet.has(String(p.id))) continue;
+                const r = p.raw || {};
+                const hit = Number(r.resourceId) === rid || Number(r.definitionId) === rid ||
+                            (rid < 16777216 && Number(p.assetId) === rid);
+                if (!hit) continue;
+                if (!best || prefer(p) > prefer(best)) best = p;
+            }
+            if (best) used.add(best.id);
+            return best;
+        });
+    }
+    /** Kaufkosten einer Loesung fuer UNS: Summe der futbin-Preise der fehlenden Karten. */
+    function evaluateSolution(players, owned, platform) {
+        let cost = 0, missing = 0, ownedCount = 0, unpriced = 0;
+        (players || []).forEach((pl, i) => {
+            if (owned && owned[i]) { ownedCount++; return; }
+            missing++;
+            const pr = futbinPrice(pl, platform);
+            if (pr == null) unpriced++; else cost += pr;
+        });
+        return { cost: cost, missing: missing, ownedCount: ownedCount, unpriced: unpriced };
+    }
+    /**
+     * Rasmus' Hinweis: die obersten Listenplaetze sind ueberlaufen (alle
+     * kaufen dieselben Spieler, die Preise ziehen kurz an). OHNE Marktcheck
+     * bekommen die ersten skipTop Listenplaetze einen Aufschlag auf die
+     * Kaufkosten; eigene Karten sind davon nicht betroffen. Mit Marktcheck
+     * entscheidet der Live-Preis, kein Aufschlag.
+     */
+    function crowdAdjustedCost(cost, listRank, skipTop, factor) {
+        if (listRank < (skipTop || 0)) return Math.round(cost * (factor || 1.15));
+        return cost;
+    }
+    /** Sortiert Kandidaten: erst Kosten (adjusted bzw. live), dann weniger fehlende, dann Listenplatz. */
+    function rankCandidates(cands, key) {
+        const k = key || 'adjCost';
+        return cands.slice().sort((a, b) =>
+            ((a[k] == null) - (b[k] == null)) || (a[k] - b[k]) ||
+            (a.eval.missing - b.eval.missing) || (a.listRank - b.listRank));
+    }
+    // [FUTBIN-END]
+    // ---- Bruecke zu futbin (CORS) ------------------------------------------
+    // Zwei Anbieter, EIN Protokoll: in der App das native Objekt
+    // PitBridgeNative (App >= 1.11.0), im Browser das Helfer-Userscript
+    // "PitTools Bridge" (pittools-bridge.user.js; Kennung im <html>-Attribut
+    // data-pittools-bridge). Antworten kommen in Stuecken: die App darf pro
+    // evaluateJavascript nur ~60 KB schieben, eine futbin-Kaderseite hat 2 MB.
+    // Der Optimizer selbst bleibt bei "@grant none" - ein Grant wuerde ihn in
+    // Tampermonkeys Sandbox stecken und die fetch/XHR-Interception toeten.
+    const bridgePending = new Map();
+    let bridgeSeq = 0;
+    window.__pitBridgeChunk = function (id, part) {
+        const p = bridgePending.get(String(id));
+        if (p) p.parts.push(String(part == null ? '' : part));
+    };
+    window.__pitBridgeDone = function (id, status, err) {
+        const p = bridgePending.get(String(id));
+        if (!p) return;
+        bridgePending.delete(String(id));
+        clearTimeout(p.timer);
+        if (err) p.reject(new Error(String(err)));
+        else p.resolve({ status: parseInt(status, 10) || 0, text: p.parts.join('') });
+    };
+    try {
+        document.addEventListener('pittools-bridge-done', function (ev) {
+            try {
+                const d = JSON.parse(ev.detail);
+                if (d.text != null) window.__pitBridgeChunk(d.id, d.text);
+                window.__pitBridgeDone(d.id, d.status, d.error);
+            } catch (e) {}
+        });
+    } catch (e) {}
+    function bridgeKind() {
+        try { if (window.PitBridgeNative && typeof window.PitBridgeNative.fetch === 'function') return 'app'; } catch (e) {}
+        try { if (document.documentElement.getAttribute('data-pittools-bridge') === 'tm') return 'tm'; } catch (e) {}
+        return null;
+    }
+    const BRIDGE_HINT = 'Keine Bruecke zu futbin. Browser: das Zusatz-Script "PitTools Bridge" ' +
+        '(pittools-bridge.user.js aus dem PitTools-Repo) in Tampermonkey installieren. App: Version 1.11.0 oder neuer.';
+    function bridgeFetch(url, timeoutMs) {
+        const kind = bridgeKind();
+        if (!kind) return Promise.reject(new Error(BRIDGE_HINT));
+        const id = String(++bridgeSeq);
+        return new Promise(function (resolve, reject) {
+            const timer = setTimeout(function () {
+                bridgePending.delete(id);
+                reject(new Error('Zeitueberschreitung (' + kind + '): ' + url));
+            }, timeoutMs || 30000);
+            bridgePending.set(id, { parts: [], resolve: resolve, reject: reject, timer: timer });
+            try {
+                if (kind === 'app') window.PitBridgeNative.fetch(id, url);
+                else document.dispatchEvent(new CustomEvent('pittools-bridge-fetch', { detail: JSON.stringify({ id: id, url: url }) }));
+            } catch (e) {
+                bridgePending.delete(id); clearTimeout(timer); reject(e);
+            }
+        });
+    }
+    // ---- Futbin-Lauf: Einstellungen, Ablauf, Einfuegen ---------------------
+    const FUTBIN_CANDIDATES = 8;     // so viele Listen-Loesungen werden als Kader geladen
+    const FUTBIN_MARKET_TOP = 3;     // davon werden die besten am EA-Markt gegengeprueft
+    const FUTBIN_SKIP_TOP = 2;       // ohne Marktcheck: Aufschlag auf die ersten Listenplaetze
+    const FUTBIN_FETCH_GAP_MS = 400;
+    const FUTBIN_MARKET_GAP_MS = 1300; // EAs Marktsuche ist drossel-empfindlich
+    const futbinSleep = ms => new Promise(r => setTimeout(r, ms));
+    let futbinBusy = false;
+    let futbinLast = null;
+    function readFutbinSettings() {
+        let s = {};
+        try { s = JSON.parse(localStorage.getItem('sbcOptFutbin') || '{}') || {}; } catch (e) { s = {}; }
+        if (s.platform !== 'pc' && s.platform !== 'ps') s.platform = detectPlatform();
+        if (typeof s.market !== 'boolean') s.market = true;
+        return s;
+    }
+    function saveFutbinSettings(s) {
+        try { localStorage.setItem('sbcOptFutbin', JSON.stringify(s)); } catch (e) {}
+    }
+    // Konsole (PS und Xbox teilen seit FC 24 einen Markt - futbins "PS"-Spalte)
+    // oder PC. Versuch ueber EAs Persona, sonst Konsole; im Panel umschaltbar.
+    function detectPlatform() {
+        try {
+            const u = window.services && window.services.User && typeof window.services.User.getUser === 'function'
+                ? window.services.User.getUser() : null;
+            const persona = u && typeof u.getSelectedPersona === 'function' ? u.getSelectedPersona() : null;
+            const pf = String((persona && (persona.platform || persona.clientPlatform)) || '').toLowerCase();
+            if (/pc|origin|win/.test(pf)) return 'pc';
+        } catch (e) {}
+        return 'ps';
+    }
+    function fmtCoins(n) {
+        if (n == null || isNaN(n)) return '–';
+        return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, '.') + ' Coins';
+    }
+    function warnHtml(t) { return '<div class="sbc-opt-warn">⚠ ' + escapeHtml(t) + '</div>'; }
+    function setFutbinResult(html) {
+        if (!ui.futbinResult) return;
+        ui.futbinResult.className = 'sbc-opt-result show';
+        ui.futbinResult.innerHTML = html;
+    }
+    function initFutbinUi() {
+        if (!ui.futbinSearch) return;
+        renderFutbinPlatformChips();
+        const s = readFutbinSettings();
+        if (ui.futbinMarket) {
+            ui.futbinMarket.checked = !!s.market;
+            ui.futbinMarket.addEventListener('change', function () {
+                const c = readFutbinSettings(); c.market = ui.futbinMarket.checked; saveFutbinSettings(c);
+            });
+        }
+        ui.futbinSearch.addEventListener('click', onFutbinSearchClick);
+    }
+    function renderFutbinPlatformChips() {
+        const box = ui.futbinPlatform;
+        if (!box) return;
+        box.innerHTML = '';
+        const cur = readFutbinSettings().platform;
+        [['ps', 'Konsole (PS/Xbox)'], ['pc', 'PC']].forEach(function (pair) {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'sbc-opt-chip' + (cur === pair[0] ? ' on' : '');
+            b.textContent = pair[1];
+            b.addEventListener('click', function () {
+                const c = readFutbinSettings(); c.platform = pair[0]; saveFutbinSettings(c);
+                renderFutbinPlatformChips();
+            });
+            box.appendChild(b);
+        });
+    }
+    /** Guenstigstes Sofortkauf-Angebot am EA-Markt (Seite 1), null = keins gesehen. */
+    async function marketMinBin(resourceId) {
+        if (typeof window.UTSearchCriteriaDTO !== 'function' || !window.services || !window.services.Item ||
+            typeof window.services.Item.searchTransferMarket !== 'function') {
+            throw new Error('EA-Marktsuche nicht verfuegbar');
+        }
+        const crit = new window.UTSearchCriteriaDTO();
+        try { crit.type = window.SearchType ? window.SearchType.PLAYER : 'player'; } catch (e) {}
+        crit.maskedDefId = Number(resourceId);
+        crit.count = 21;
+        const resp = await obsPromise(window.services.Item.searchTransferMarket(crit, 1));
+        if (!responseOk(resp)) throw new Error('Marktsuche abgelehnt (Status ' + (resp && resp.status) + ')');
+        const data = (resp && (resp.data || resp.response)) || {};
+        const items = data.items || data.auctionInfo || [];
+        let min = null;
+        for (const it of items) {
+            let a = null;
+            try { a = it._auction || (typeof it.getAuctionData === 'function' ? it.getAuctionData() : null); } catch (e) {}
+            const bin = a && Number(a.buyNowPrice);
+            if (bin > 0 && (min == null || bin < min)) min = bin;
+        }
+        return min;
+    }
+    /** Konzept-Spieler (Dream Squad) als echte EA-Entity ueber EAs eigene Konzept-Suche. */
+    async function conceptEntity(resourceId) {
+        if (typeof window.UTSearchCriteriaDTO !== 'function' || !window.services || !window.services.Item ||
+            typeof window.services.Item.searchConceptItems !== 'function') {
+            throw new Error('EA-Konzept-Suche nicht verfuegbar');
+        }
+        const crit = new window.UTSearchCriteriaDTO();
+        try { crit.type = window.SearchType ? window.SearchType.PLAYER : 'player'; } catch (e) {}
+        crit.defId = [Number(resourceId)];
+        const resp = await obsPromise(window.services.Item.searchConceptItems(crit));
+        if (!responseOk(resp)) throw new Error('Konzept-Suche abgelehnt (Status ' + (resp && resp.status) + ')');
+        const data = (resp && (resp.response || resp.data)) || {};
+        const items = data.items || [];
+        const it = items.find(x => Number(x.definitionId) === Number(resourceId)) || items[0];
+        if (!it) throw new Error('Konzept-Spieler ' + resourceId + ' nicht gefunden');
+        return it;
+    }
+    function slotGeneralPos(s) {
+        try { return typeof s.getGeneralPositionName === 'function' ? String(s.getGeneralPositionName()) : null; } catch (e) { return null; }
+    }
+    function slotUniquePos(s) {
+        try { return typeof s.getUniquePositionName === 'function' ? String(s.getUniquePositionName()) : null; } catch (e) { return null; }
+    }
+    /**
+     * Traegt eine futbin-Loesung in die offene SBC ein: eigene Karten als
+     * echte Entities (Factory, wie Submit-Weg 0), fehlende als Konzept-Spieler.
+     * Slots nach POSITION (futbins Slot-Position gegen EAs
+     * getGeneralPositionName) - fuer die Chemie zaehlt der Slot, nicht die
+     * Karte. Ohne Treffer: der Reihe nach in die freien Feld-Slots.
+     * Speichert ueber services.SBC.saveChallenge (Ansicht aktualisiert sich).
+     */
+    async function insertFutbinSolution(squad, owned) {
+        if (typeof window.UTItemEntityFactory !== 'function') throw new Error('UTItemEntityFactory nicht verfuegbar.');
+        const sbcSvc = window.services && window.services.SBC;
+        if (!sbcSvc || typeof sbcSvc.saveChallenge !== 'function') throw new Error('services.SBC.saveChallenge nicht verfuegbar.');
+        const ctrl = findSbcController();
+        if (!ctrl) throw new Error('Kein offener SBC-Squad-Controller (Challenge im Spiel oeffnen).');
+        const liveSquad = ctrl._squad || (ctrl.getSquad && ctrl.getSquad());
+        if (!liveSquad || typeof liveSquad.setPlayers !== 'function') throw new Error('Live-Squad hat kein setPlayers().');
+        const challenge = findLiveChallenge();
+        if (!challenge) throw new Error('Keine Live-Challenge gefunden.');
+        const factory = new window.UTItemEntityFactory();
+        const entities = [];
+        let ownedPlaced = 0, conceptPlaced = 0;
+        for (let i = 0; i < squad.players.length; i++) {
+            const pl = squad.players[i];
+            if (owned && owned[i]) {
+                const it = factory.createItem(owned[i].raw);
+                if (!it) throw new Error('Factory-Item unbrauchbar fuer ' + owned[i].id);
+                entities.push({ ent: it, pos: pl.slotPosition, concept: false });
+                ownedPlaced++;
+            } else {
+                if (!pl.resourceId) throw new Error('Spieler ohne resourceId in der Loesung (' + (pl.name || '?') + ')');
+                entities.push({ ent: await conceptEntity(pl.resourceId), pos: pl.slotPosition, concept: true });
+                conceptPlaced++;
+            }
+        }
+        const slotsAll = (typeof liveSquad.getSlots === 'function' ? liveSquad.getSlots() : liveSquad.getPlayers()) || [];
+        const field = slotsAll.filter(s => {
+            try { return s && typeof s.getIndex === 'function' && s.getIndex() < 11 && !(typeof s.isBrick === 'function' && s.isBrick()); }
+            catch (e) { return false; }
+        });
+        const total = Math.max(slotsAll.length, 11);
+        const arr = new Array(total);
+        const free = field.slice();
+        const pending = [];
+        let fallbackPlaced = 0;
+        for (const e of entities) {
+            let k = -1;
+            if (e.pos) k = free.findIndex(s => slotGeneralPos(s) === e.pos || slotUniquePos(s) === e.pos);
+            if (k >= 0) { arr[free[k].getIndex()] = e.ent; free.splice(k, 1); }
+            else pending.push(e);
+        }
+        for (const e of pending) {
+            const s = free.shift();
+            if (!s) throw new Error('Mehr Spieler als freie Feld-Slots (' + squad.players.length + ').');
+            arr[s.getIndex()] = e.ent; fallbackPlaced++;
+        }
+        liveSquad.setPlayers(arr, true);
+        const resp = await obsPromise(sbcSvc.saveChallenge(challenge));
+        if (!responseOk(resp)) throw new Error('saveChallenge abgelehnt (Status ' + (resp && resp.status) + ').');
+        return { placed: entities.length, ownedPlaced: ownedPlaced, conceptPlaced: conceptPlaced, fallbackPlaced: fallbackPlaced };
+    }
+    async function onFutbinSearchClick() {
+        if (futbinBusy) { toast('Futbin-Suche laeuft schon.', 'warn'); return; }
+        const diag = { at: Date.now(), bridge: bridgeKind(), url: null, listCount: null, candidates: null, marketQueries: 0, errors: [] };
+        STATE.diag.futbin = diag;
+        futbinBusy = true;
+        try {
+            try { syncSbcWithOpenChallenge(); } catch (e) {}
+            const cid = STATE.sbc.challengeId;
+            if (cid == null) { setFutbinResult(warnHtml('Keine SBC erkannt - bitte die Challenge im Spiel oeffnen.')); return; }
+            if (!diag.bridge) { setFutbinResult(warnHtml(BRIDGE_HINT)); return; }
+            const s = readFutbinSettings();
+            const year = futbinYear(STATE.diag.gameName, window.fut_year);
+            const url = futbinChallengeUrl(year, cid);
+            diag.url = url;
+            setFutbinResult('<div class="sbc-opt-dim">Lade Loesungsliste von futbin (Challenge ' + escapeHtml(String(cid)) + ') ...</div>');
+            const listResp = await bridgeFetch(url, 30000);
+            if (listResp.status !== 200) throw new Error('futbin antwortet mit HTTP ' + listResp.status);
+            const list = parseFutbinSolutionList(listResp.text);
+            diag.listCount = list.length;
+            if (!list.length) {
+                setFutbinResult(warnHtml('futbin hat fuer diese Challenge (ID ' + cid + ') keine Loesungen - oder die Seite hat sich geaendert (Report: futbin).'));
+                return;
+            }
+            const priceOf = x => futbinPrice({ pricePs: x.pricePs, pricePc: x.pricePc }, s.platform);
+            const picks = list.filter(x => priceOf(x) != null)
+                .sort((a, b) => (priceOf(a) - priceOf(b)) || (a.listRank - b.listRank))
+                .slice(0, FUTBIN_CANDIDATES);
+            const locked = (ui.useLocks && ui.useLocks.checked) ? Array.from(readPaletoolsLocks()) : [];
+            const poolWarn = STATE.pool.length ? '' : 'Pool ist leer - eigene Karten werden nicht erkannt ("Spieler laden").';
+            const cands = [];
+            for (let i = 0; i < picks.length; i++) {
+                const row = picks[i];
+                setFutbinResult('<div class="sbc-opt-dim">Lade Kader ' + (i + 1) + ' von ' + picks.length + ' ...</div>');
+                try {
+                    const r = await bridgeFetch(futbinSquadUrl(year, row.squadId), 40000);
+                    if (r.status !== 200) throw new Error('HTTP ' + r.status);
+                    const squad = parseFutbinSquad(r.text);
+                    if (!squad || squad.players.length < 11) throw new Error('Kader nicht lesbar (' + (squad ? squad.players.length : 0) + ' Spieler)');
+                    const owned = matchOwned(squad.players, STATE.pool, locked);
+                    const ev = evaluateSolution(squad.players, owned, s.platform);
+                    cands.push({
+                        row: row, squad: squad, owned: owned, eval: ev, listRank: row.listRank,
+                        listPrice: priceOf(row),
+                        adjCost: s.market ? ev.cost : crowdAdjustedCost(ev.cost, row.listRank, FUTBIN_SKIP_TOP, 1.15),
+                        liveCost: null, liveUnknown: 0
+                    });
+                } catch (e) { diag.errors.push('Kader ' + row.squadId + ': ' + (e && e.message || e)); }
+                await futbinSleep(FUTBIN_FETCH_GAP_MS);
+            }
+            if (!cands.length) throw new Error('Kein Kader lesbar. ' + diag.errors.join(' | '));
+            let ranked = rankCandidates(cands, 'adjCost');
+            if (s.market) {
+                const top = ranked.slice(0, FUTBIN_MARKET_TOP);
+                const cache = new Map();
+                for (const c of top) {
+                    let live = 0, unknown = 0;
+                    for (let i = 0; i < c.squad.players.length; i++) {
+                        if (c.owned[i]) continue;
+                        const pl = c.squad.players[i];
+                        if (!cache.has(pl.resourceId)) {
+                            diag.marketQueries++;
+                            setFutbinResult('<div class="sbc-opt-dim">Marktpreise pruefen ... Abfrage ' + diag.marketQueries + '</div>');
+                            let bin = null;
+                            try { bin = await marketMinBin(pl.resourceId); }
+                            catch (e) { diag.errors.push('Markt ' + pl.resourceId + ': ' + (e && e.message || e)); }
+                            cache.set(pl.resourceId, bin);
+                            await futbinSleep(FUTBIN_MARKET_GAP_MS);
+                        }
+                        const bin = cache.get(pl.resourceId);
+                        pl.liveBin = bin;
+                        if (bin == null) { unknown++; live += futbinPrice(pl, s.platform) || 0; } else live += bin;
+                    }
+                    c.liveCost = live; c.liveUnknown = unknown;
+                }
+                ranked = rankCandidates(top, 'liveCost').concat(ranked.slice(FUTBIN_MARKET_TOP));
+            }
+            futbinLast = { ranked: ranked, platform: s.platform, market: s.market, year: year };
+            diag.candidates = ranked.map(c => ({
+                squadId: c.row.squadId, ai: c.row.ai, listRank: c.listRank, listPrice: c.listPrice,
+                cost: c.eval.cost, adjCost: c.adjCost, liveCost: c.liveCost, liveUnknown: c.liveUnknown,
+                owned: c.eval.ownedCount, missing: c.eval.missing, formation: c.squad.formation
+            }));
+            renderFutbinCandidates(ranked, s, poolWarn);
+        } catch (e) {
+            diag.errors.push(String(e && e.message || e));
+            reportError('Futbin-Suche', e);
+            setFutbinResult(warnHtml('Futbin-Suche fehlgeschlagen: ' + (e && e.message || e)));
+        } finally {
+            futbinBusy = false;
+        }
+    }
+    function renderFutbinCandidates(ranked, s, poolWarn) {
+        let h = '';
+        if (poolWarn) h += warnHtml(poolWarn);
+        h += '<div class="sbc-opt-summary">' + ranked.length + ' Loesungen geprueft (' +
+             (s.platform === 'pc' ? 'PC' : 'Konsole') +
+             (s.market ? ', die besten ' + Math.min(FUTBIN_MARKET_TOP, ranked.length) + ' am EA-Markt gegengeprueft'
+                       : ', ohne Marktcheck: +15% auf die ersten ' + FUTBIN_SKIP_TOP + ' Listenplaetze') + ')</div>';
+        ranked.forEach(function (c, i) {
+            const cost = c.liveCost != null ? c.liveCost : c.adjCost;
+            h += '<div class="sbc-opt-fb-row' + (i === 0 ? ' best' : '') + '">' +
+                 '<div><b>' + (i === 0 ? 'Empfehlung: ' : (i + 1) + '. ') + (c.row.ai ? 'FUTBIN AI' : 'Community') +
+                 ' #' + escapeHtml(String(c.row.squadId)) + '</b> <span class="sbc-opt-muted">Liste ' + fmtCoins(c.listPrice) +
+                 ' · Platz ' + (c.listRank + 1) + (c.squad.formation ? ' · ' + escapeHtml(String(c.squad.formation)) : '') + '</span></div>' +
+                 '<div>Fuer dich: <b>' + fmtCoins(cost) + '</b>' +
+                 (c.liveCost != null ? ' (live' + (c.liveUnknown ? ', ' + c.liveUnknown + ' ohne Angebot: futbin-Preis' : '') + ')' : '') +
+                 ' · eigene Karten ' + c.eval.ownedCount + ' · zu kaufen ' + c.eval.missing + '</div>' +
+                 '<button type="button" class="sbc-opt-btn ' + (i === 0 ? 'primary' : 'ghost') + '" data-fb-idx="' + i + '">Einfuegen</button>' +
+                 '</div>';
+        });
+        setFutbinResult(h);
+        ui.futbinResult.querySelectorAll('button[data-fb-idx]').forEach(function (b) {
+            b.addEventListener('click', function () { onFutbinInsert(parseInt(b.getAttribute('data-fb-idx'), 10)); });
+        });
+    }
+    async function onFutbinInsert(idx) {
+        const c = futbinLast && futbinLast.ranked[idx];
+        if (!c) return;
+        try {
+            setStatus('trage Futbin-Loesung ein...');
+            const res = await insertFutbinSolution(c.squad, c.owned);
+            let h = '<div class="sbc-opt-summary">Eingetragen: ' + res.placed + ' Spieler (' + res.ownedPlaced + ' eigene, ' +
+                    res.conceptPlaced + ' Konzept)' +
+                    (res.fallbackPlaced ? ' - ' + res.fallbackPlaced + ' ohne Positions-Treffer der Reihe nach' : '') + '</div>';
+            h += '<div class="sbc-opt-dim">Zu kaufen (stehen als Konzept-Spieler auf dem Feld):</div>';
+            c.squad.players.forEach(function (pl, i) {
+                if (c.owned[i]) return;
+                const price = pl.liveBin != null ? pl.liveBin : futbinPrice(pl, futbinLast.platform);
+                h += '<div>' + escapeHtml(pl.name || ('#' + pl.resourceId)) + ' <span class="sbc-opt-muted">(' + (pl.rating || '?') + ', ' +
+                     escapeHtml(pl.slotPosition || pl.cardPosition || '?') + ')</span> ' + fmtCoins(price) + (pl.liveBin != null ? ' live' : '') + '</div>';
+            });
+            h += '<div class="sbc-opt-dim">Abgeben drueckst du selbst - erst kaufen, dann pruefen, ob EA alle Vorgaben als erfuellt zeigt.</div>';
+            setFutbinResult(h);
+            if (STATE.diag.futbin) STATE.diag.futbin.inserted = { squadId: c.row.squadId, at: Date.now(), result: res };
+            toast('Futbin-Loesung eingetragen: ' + res.ownedPlaced + ' eigene + ' + res.conceptPlaced + ' Konzept-Spieler.', 'ok');
+        } catch (e) {
+            reportError('Futbin einfuegen', e);
+            if (STATE.diag.futbin) STATE.diag.futbin.errors.push('einfuegen: ' + (e && e.message || e));
+            toast('Einfuegen fehlgeschlagen: ' + (e && e.message || e), 'error');
+        } finally {
+            setStatus('bereit');
+        }
+    }
     // [RAREHIST-BEGIN]
     // Reine Funktion (kein STATE-Zugriff ausser dem uebergebenen pool) - so per
     // Marker isoliert testbar (Verhaltensgleichheit zur vormaligen anonymen
@@ -7665,6 +8285,9 @@
                 sbcSets: STATE.diag.sbcSets
             },
             itemProbe: computeItemProbe(STATE.pool),
+            // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten mit
+            // Kosten, Marktabfragen, Fehler, eingefuegte Loesung.
+            futbin: STATE.diag.futbin,
             // v5.15.0: Vorbereitung auf EAs SBC-Freischaltung - siehe
             // STATE.diag-Kommentare und docs/FC27.md §7.
             fc27: {

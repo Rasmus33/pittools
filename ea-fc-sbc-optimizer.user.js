@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.30.0
+// @version      5.31.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.30.0';
+    const VERSION = '5.31.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -5310,6 +5310,9 @@
         :root {
             /* Marke */
             --pt-accent:#00e0b8;      /* Akzent: Zahlen, Titel, Fokus */
+            --pt-accent-soft:rgba(0,224,184,.14); /* Akzent-Tint: Plakette, Fokus-Ring, aktiver Schritt */
+            --pt-accent-glow:rgba(0,224,184,.28); /* Schein unter der Hauptaktion */
+            --pt-bg-glass:rgba(15,22,32,.94);     /* Panel mit Glas-Effekt (backdrop-filter) */
             --pt-accent-2:#0077ff;    /* zweiter Marken-Ton, nur Verlaeufe */
             --pt-on-accent:#001018;   /* Text AUF dem Akzent */
             /* Bedeutungen */
@@ -5393,7 +5396,11 @@
             /* Feste 340px liefen auf schmalen Schirmen aus dem Bild. */
             width: min(340px, calc(100vw - 24px));
             max-height: 78vh; overflow-y: auto; overscroll-behavior: contain;
-            background: var(--pt-bg); color: var(--pt-text);
+            /* v5.31.0: Glas statt Vollton - das Spielfeld scheint leicht durch,
+               das Panel wirkt als Ebene darueber, nicht als Block. Ohne
+               backdrop-filter (alte WebViews) bleibt es 94 % deckend. */
+            background: var(--pt-bg-glass); color: var(--pt-text);
+            -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
             border: 1px solid var(--pt-line);
             border-radius: var(--pt-r-l); box-shadow: var(--pt-shadow);
             font-family: var(--pt-font); font-size: 13px;
@@ -5469,6 +5476,58 @@
             padding:10px 12px; margin-bottom:12px; line-height:1.6;
         }
         .sbc-opt-info b { color:var(--pt-accent); }
+        /* v5.31.0: Kennzahl-Kacheln */
+        .sbc-opt-stats { display:grid; grid-template-columns:1fr 1fr; gap:6px; padding:8px; line-height:1.35; }
+        .sbc-opt-stat { background:var(--pt-sunken); border-radius:var(--pt-r-s); padding:6px 9px; min-width:0; }
+        .sbc-opt-stat .k { display:block; font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--pt-faint); margin-bottom:1px; }
+        .sbc-opt-stat b { display:block; font-size:13px; font-weight:700; overflow-wrap:anywhere; }
+        .sbc-opt-stat-wide { grid-column:1 / -1; }
+        .sbc-opt-stats .sbc-opt-debug { margin-top:0; padding:0 2px; }
+        /* Karte: gruppiert die Eingaben einer Aktion */
+        .sbc-opt-card {
+            background:var(--pt-surface); border:1px solid var(--pt-line); border-radius:var(--pt-r-m);
+            padding:12px; margin:0 0 12px;
+        }
+        .sbc-opt-card .sbc-opt-btn:last-child { margin-bottom:0; }
+        /* Schalter (v5.31.0): Checkbox bleibt das Element, ist nur unsichtbar */
+        .sbc-opt-switch { display:flex; align-items:center; gap:10px; cursor:pointer; margin:2px 0 12px; }
+        .sbc-opt-switch input { position:absolute; opacity:0; width:0; height:0; margin:0; }
+        .sbc-opt-switch .track {
+            flex:0 0 38px; width:38px; height:22px; border-radius:11px; position:relative;
+            background:var(--pt-raised); box-shadow: inset 0 0 0 1px var(--pt-line-2);
+            transition: background .15s ease;
+        }
+        .sbc-opt-switch .track::after {
+            content:''; position:absolute; top:3px; left:3px; width:16px; height:16px; border-radius:50%;
+            background:var(--pt-text); transition: transform .15s ease;
+        }
+        .sbc-opt-switch input:checked + .track { background:var(--pt-accent); box-shadow:none; }
+        .sbc-opt-switch input:checked + .track::after { transform: translateX(16px); background:var(--pt-on-accent); }
+        .sbc-opt-switch input:focus-visible + .track { outline: 2px solid var(--pt-accent); outline-offset: 2px; }
+        .sbc-opt-switch .txt { font-size:13px; color:var(--pt-text); line-height:1.3; }
+        .sbc-opt-switch .txt small { display:block; font-size:11px; color:var(--pt-faint); }
+        /* Knopf mit Icon */
+        .sbc-opt-btn-icon { display:flex; align-items:center; justify-content:center; gap:8px; }
+        .sbc-opt-btn-icon svg { width:16px; height:16px; flex:0 0 auto; }
+        .sbc-opt-btn.primary { box-shadow: 0 6px 18px var(--pt-accent-glow); }
+        /* Beschaeftigt (v5.31.0): Spinner rechts vom Text, kein zweiter Tipp moeglich */
+        .sbc-opt-btn.is-busy { pointer-events:none; opacity:.85; }
+        .sbc-opt-btn.is-busy::after {
+            content:''; display:inline-block; width:12px; height:12px; margin-left:8px; vertical-align:-2px;
+            border:2px solid currentColor; border-right-color:transparent; border-radius:50%;
+            animation: pt-spin .8s linear infinite;
+        }
+        @keyframes pt-spin { to { transform: rotate(360deg); } }
+        /* Fortschrittsbalken fuer Marktabfragen / Kader laden */
+        .sbc-opt-bar { height:4px; background:var(--pt-line); border-radius:2px; overflow:hidden; margin-top:8px; }
+        .sbc-opt-bar-fill { height:100%; width:0; background:linear-gradient(90deg,var(--pt-accent),var(--pt-accent-2)); transition: width .2s ease; }
+        /* Leerzustand */
+        .sbc-opt-result.sbc-opt-result-empty {
+            background:transparent; border:1px dashed var(--pt-line-2); text-align:center;
+            color:var(--pt-faint); padding:16px 12px; font-size:12px; line-height:1.5;
+        }
+        .sbc-opt-result-empty svg { width:28px; height:28px; display:block; margin:0 auto 6px; color:var(--pt-muted); }
+        .sbc-opt-tab-btn svg { width:16px; height:16px; vertical-align:-3px; margin-right:6px; }
         #sbc-opt-availability { font-size:12px; margin-top:4px; color:var(--pt-muted); }
         /* Gleiche Warnfarbe wie .sbc-opt-warn/Toast-Warnungen - kein neues
            Farbschema fuer "verfuegbar < gefordert". */
@@ -5787,14 +5846,25 @@
         #sbc-opt-panel:not([data-tab="mehr"]) .sbc-opt-tech { display:none; }
         .sbc-opt-group-title.sbc-opt-secondary { margin-top:16px; }
         .sbc-opt-section { margin-top:0; }
-        /* Schritt-Anzeige im Kaufen-Reiter (v5.29.0) */
-        .sbc-opt-flow { display:flex; gap:4px; margin:0 0 12px; }
-        .sbc-opt-flow .step {
-            flex:1 1 0; min-width:0; text-align:center; font-size:11px; color:var(--pt-faint);
-            padding:4px 2px; border-bottom:2px solid var(--pt-line); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+        /* Schritt-Anzeige im Kaufen-Reiter (v5.29.0; v5.31.0: Kreise mit Verbindungslinie) */
+        .sbc-opt-flow { display:flex; align-items:flex-start; margin:2px 0 14px; }
+        .sbc-opt-flow .step { flex:1 1 0; min-width:0; position:relative; text-align:center; }
+        .sbc-opt-flow .step .dot {
+            width:24px; height:24px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+            margin:0 auto 4px; font-size:11px; font-weight:700; position:relative; z-index:1;
+            background:var(--pt-raised); color:var(--pt-muted); box-shadow: inset 0 0 0 1px var(--pt-line-2);
+            transition: background .15s ease, box-shadow .15s ease;
         }
-        .sbc-opt-flow .step.on { color:var(--pt-accent); border-bottom-color:var(--pt-accent); font-weight:700; }
-        .sbc-opt-flow .step.done { color:var(--pt-muted); border-bottom-color:var(--pt-muted); }
+        .sbc-opt-flow .step .lbl { display:block; font-size:10.5px; color:var(--pt-faint); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .sbc-opt-flow .step:not(:last-child)::after {
+            content:''; position:absolute; top:11px; left:calc(50% + 14px); right:calc(-50% + 14px); height:2px; background:var(--pt-line);
+        }
+        .sbc-opt-flow .step.on .dot { background:var(--pt-accent); color:var(--pt-on-accent); box-shadow: 0 0 0 4px var(--pt-accent-soft); }
+        .sbc-opt-flow .step.on .lbl { color:var(--pt-text); font-weight:700; }
+        .sbc-opt-flow .step.done .dot { background:var(--pt-sel); color:var(--pt-text); box-shadow:none; font-size:0; }
+        .sbc-opt-flow .step.done .dot::after { content:'✓'; font-size:12px; }
+        .sbc-opt-flow .step.done .lbl { color:var(--pt-muted); }
+        .sbc-opt-flow .step.done::after { background:var(--pt-sel); }
         /* Loesungs-Karten (v5.29.0): Preis zuerst, Details klein, ab der vierten eingeklappt */
         .sbc-opt-fb-top { display:flex; justify-content:space-between; align-items:center; gap:8px; }
         .sbc-opt-fb-price { font-size:16px; font-weight:700; color:var(--pt-accent); }
@@ -5805,6 +5875,10 @@
             padding:2px 6px; border-radius:var(--pt-r-s); background:var(--pt-raised); color:var(--pt-muted); white-space:nowrap;
         }
         .sbc-opt-tag.ok { background:var(--pt-sel); color:var(--pt-text); }
+        .sbc-opt-tag.best { background:var(--pt-accent-soft); color:var(--pt-accent); }
+        .sbc-opt-fb-tags { display:flex; gap:4px; flex-wrap:wrap; justify-content:flex-end; }
+        .sbc-opt-fb-row { padding:10px; margin:8px 0; border-radius:var(--pt-r-m); background:var(--pt-sunken); }
+        .sbc-opt-fb-row.best { box-shadow: 0 0 0 1px var(--pt-accent-soft); }
         .sbc-opt-fb-more { display:none; }
         .sbc-opt-result.fb-all .sbc-opt-fb-more { display:block; }
         .sbc-opt-result details.sbc-opt-details-toggle { margin-top:8px; }
@@ -6010,14 +6084,20 @@
         /* ------------------------------------------------------------------
            RUHE-EINSTELLUNG DES GERAETS RESPEKTIEREN
            ------------------------------------------------------------------ */
+        /* Sehr schmale Schirme: Reiter nur mit Text. (Steht hier unten, weil der
+           :active-Test das CSS nur bis zum ersten @media liest.) */
+        @media (max-width: 380px) { .sbc-opt-tab-btn svg { display:none; } }
         @media (prefers-reduced-motion: reduce) {
             #sbc-opt-panel.open { animation: none; }
             #sbc-opt-fab, .sbc-opt-btn, .sbc-opt-chip, .sbc-opt-queuerow,
             .sbc-opt-tilebtn, #sbc-opt-progress .p-fill,
             #sbc-opt-panel input, #sbc-opt-panel select,
-            .sbc-opt-details-toggle summary, #sbc-opt-close {
+            .sbc-opt-details-toggle summary, #sbc-opt-close,
+            .sbc-opt-switch .track, .sbc-opt-switch .track::after,
+            .sbc-opt-flow .step .dot, .sbc-opt-bar-fill {
                 transition: none;
             }
+            .sbc-opt-btn.is-busy::after { animation: none; border-right-color: currentColor; opacity:.5; }
             #sbc-opt-fab:hover, #sbc-opt-fab:active,
             .sbc-opt-btn:active:not(:disabled), .sbc-opt-chip:active,
             .sbc-opt-tilebtn:active:not(:disabled) { transform: none; }
@@ -6099,22 +6179,25 @@
                      und MEHR (Werkzeuge). Welcher Reiter beim Oeffnen einer SBC
                      aufgeht, entscheidet die SBC: mit Ziel-OVR -> Rating, sonst
                      -> Kaufen; ein Fingertipp uebersteuert das fuer diese SBC. -->
-                <div class="sbc-opt-info" id="sbc-opt-info">
-                    <span class="sbc-opt-only-rating">Ziel-OVR: <b id="sbc-opt-target">–</b><br></span>
-                    <span class="sbc-opt-only-rating">Vorgaben: <b id="sbc-opt-rarity">keine</b><br></span>
-                    Spieler im Pool: <b id="sbc-opt-poolcount">0</b><br>
-                    <span class="sbc-opt-only-rating">SBC-Kontingent: <b id="sbc-opt-quota">–</b><br></span>
-                    Status: <b id="sbc-opt-status">bereit</b>
-                    <div id="sbc-opt-availability" class="sbc-opt-only-rating"></div>
+                <!-- v5.31.0: Kennzahl-Kacheln statt Textzeilen (Beschriftung
+                     klein oben, Wert darunter). Rating-Kacheln nur im Rating-
+                     Reiter, die Technikzeile nur unter "Mehr". -->
+                <div class="sbc-opt-info sbc-opt-stats" id="sbc-opt-info">
+                    <div class="sbc-opt-stat sbc-opt-only-rating"><span class="k">Ziel-OVR</span><b id="sbc-opt-target">–</b></div>
+                    <div class="sbc-opt-stat sbc-opt-only-rating"><span class="k">Vorgaben</span><b id="sbc-opt-rarity">keine</b></div>
+                    <div class="sbc-opt-stat"><span class="k">Verein</span><b id="sbc-opt-poolcount">0</b></div>
+                    <div class="sbc-opt-stat sbc-opt-only-rating"><span class="k">Kontingent</span><b id="sbc-opt-quota">–</b></div>
+                    <div class="sbc-opt-stat"><span class="k">Status</span><b id="sbc-opt-status">bereit</b></div>
+                    <div id="sbc-opt-availability" class="sbc-opt-stat-wide sbc-opt-only-rating"></div>
                     <!-- v5.30.0: Technikzeile nur im Reiter "Mehr" - im Kaufen-/
                          Rating-Alltag ist sie Rauschen; Warnungen (SBC aus,
                          neues Bundle) kommen zusaetzlich als Toast. -->
-                    <div class="sbc-opt-debug sbc-opt-tech" id="sbc-opt-debug">API: – · SID: – · Services: –</div>
+                    <div class="sbc-opt-debug sbc-opt-stat-wide sbc-opt-tech" id="sbc-opt-debug">API: – · SID: – · Services: –</div>
                 </div>
                 <div class="sbc-opt-tabs" id="sbc-opt-tabs" role="tablist">
-                    <button type="button" class="sbc-opt-tab-btn" data-tab="kaufen" role="tab">Kaufen</button>
-                    <button type="button" class="sbc-opt-tab-btn" data-tab="rating" role="tab">Rating</button>
-                    <button type="button" class="sbc-opt-tab-btn" data-tab="mehr" role="tab">Mehr</button>
+                    <button type="button" class="sbc-opt-tab-btn" data-tab="kaufen" role="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>Kaufen</button>
+                    <button type="button" class="sbc-opt-tab-btn" data-tab="rating" role="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/></svg>Rating</button>
+                    <button type="button" class="sbc-opt-tab-btn" data-tab="mehr" role="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/><circle cx="5" cy="12" r="1.5"/></svg>Mehr</button>
                 </div>
                 <!-- REITER KAUFEN: FUTBIN-LOESUNG (v5.16.0) fuer SBCs, die man
                      zusammenkauft. Holt die Community-Loesungen der offenen
@@ -6126,18 +6209,23 @@
                     <!-- v5.29.0: Schritt-Anzeige - der aktuelle Schritt leuchtet,
                          erledigte sind gedaempft (setFutbinStep). -->
                     <div class="sbc-opt-flow" id="sbc-opt-futbin-flow">
-                        <span class="step on" data-step="1">1 Suchen</span>
-                        <span class="step" data-step="2">2 Einfuegen</span>
-                        <span class="step" data-step="3">3 Kaufen</span>
-                        <span class="step" data-step="4">4 Abgeben</span>
+                        <div class="step on" data-step="1"><span class="dot">1</span><span class="lbl">Suchen</span></div>
+                        <div class="step" data-step="2"><span class="dot">2</span><span class="lbl">Einfuegen</span></div>
+                        <div class="step" data-step="3"><span class="dot">3</span><span class="lbl">Kaufen</span></div>
+                        <div class="step" data-step="4"><span class="dot">4</span><span class="lbl">Abgeben</span></div>
                     </div>
-                    <label class="sbc-opt-chiplabel">Preise fuer</label>
-                    <div class="sbc-opt-chips" id="sbc-opt-futbin-platform"></div>
-                    <label class="sbc-opt-toggle">
-                        <input type="checkbox" id="sbc-opt-futbin-market" checked>
-                        Live-Preise am EA-Markt pruefen (empfohlen, dauert etwas)
-                    </label>
-                    <button class="sbc-opt-btn primary" id="sbc-opt-futbin-search">Futbin-Loesungen suchen</button>
+                    <div class="sbc-opt-card">
+                        <label class="sbc-opt-chiplabel">Preise fuer</label>
+                        <div class="sbc-opt-chips" id="sbc-opt-futbin-platform"></div>
+                        <!-- v5.31.0: Schalter statt Haekchen - die Checkbox bleibt
+                             das Element (ID, .checked), nur die Optik ist neu. -->
+                        <label class="sbc-opt-switch">
+                            <input type="checkbox" id="sbc-opt-futbin-market" checked>
+                            <span class="track" aria-hidden="true"></span>
+                            <span class="txt">Live-Preise am EA-Markt pruefen<small>empfohlen · dauert ein paar Sekunden pro Karte</small></span>
+                        </label>
+                        <button class="sbc-opt-btn primary sbc-opt-btn-icon" id="sbc-opt-futbin-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><span>Futbin-Loesungen suchen</span></button>
+                    </div>
                     <!-- v5.30.0: das Ergebnis steht DIREKT unter der Hauptaktion;
                          die Nebenaktion (Nachkaufen) kommt danach. -->
                     <div class="sbc-opt-result" id="sbc-opt-futbin-result"></div>
@@ -6360,6 +6448,10 @@
                 </div>
                 <!-- REITER MEHR: Werkzeuge, die zu keiner SBC-Art gehoeren. -->
                 <div class="sbc-opt-tab" id="sbc-opt-tab-mehr" role="tabpanel">
+                    <div class="sbc-opt-stats sbc-opt-card" style="margin-bottom:12px;">
+                        <div class="sbc-opt-stat"><span class="k">Version</span><b>v` + VERSION + `</b></div>
+                        <div class="sbc-opt-stat"><span class="k">Bruecke zu futbin</span><b id="sbc-opt-bridge-status">–</b></div>
+                    </div>
                     <div class="sbc-opt-group-title" style="margin-top:0;">Werkzeuge</div>
                     <button class="sbc-opt-btn ghost" id="sbc-opt-diag" style="margin-top:0;">Diagnose in Konsole schreiben</button>
                     <div class="sbc-opt-debug">Die Diagnose ist ein JSON-Report fuer die Fehlersuche (Konsole bzw. App-Log).</div>
@@ -6580,9 +6672,9 @@
                 setTab(b.getAttribute('data-tab'), true);
             });
         });
-        let startTab = 'kaufen';
-        try { startTab = localStorage.getItem('sbcOptTab') || 'kaufen'; } catch (e) {}
-        setTab(startTab, false);
+        // v5.31.0: Start immer im Kaufen-Reiter (die gemerkte Handwahl gilt
+        // nur innerhalb einer Sitzung fuer die jeweilige SBC).
+        setTab('kaufen', false);
         const adv = panel.querySelector('#sbc-opt-advanced');
         try { if (localStorage.getItem('sbcOptAdvancedOpen') === '1') adv.open = true; } catch (e) {}
         adv.addEventListener('toggle', function () {
@@ -7227,17 +7319,46 @@
         (ui.tabBtns || []).forEach(b => b.classList.toggle('on', b.getAttribute('data-tab') === name));
         (ui.tabPanes || []).forEach(p => p.classList.toggle('on', p.id === 'sbc-opt-tab-' + name));
         if (manual) { try { localStorage.setItem('sbcOptTab', name); } catch (e) {} }
+        if (name === 'mehr') {
+            const b = document.getElementById('sbc-opt-bridge-status');
+            if (b) {
+                const k = bridgeKind();
+                b.textContent = k === 'app' ? 'App (WebView)' : k === 'tm' ? 'Tampermonkey-Script' : 'keine - Bridge-Script installieren';
+            }
+        }
     }
-    /** Reiter nach SBC-Art: Ziel-OVR -> Rating-Optimizer, sonst Kauf-SBC -> Kaufen. Handwahl fuer diese SBC gewinnt. */
+    /** Knopf beschaeftigt (v5.31.0): Spinner, kein zweiter Tipp; Beschriftung wird gemerkt und zurueckgesetzt. */
+    function setBtnBusy(btn, busy, label) {
+        if (!btn) return;
+        const span = btn.querySelector('span') || btn;
+        if (busy) {
+            if (!btn.dataset.label) btn.dataset.label = span.textContent;
+            if (label) span.textContent = label;
+            btn.classList.add('is-busy');
+        } else {
+            if (btn.dataset.label) { span.textContent = btn.dataset.label; delete btn.dataset.label; }
+            btn.classList.remove('is-busy');
+        }
+    }
+    /** Fortschritts-Zeile mit Balken (k von n). */
+    function progressHtml(text, k, n) {
+        const pct = n > 0 ? Math.max(2, Math.min(100, Math.round(100 * k / n))) : 0;
+        return '<div class="sbc-opt-dim">' + text + '</div><div class="sbc-opt-bar"><div class="sbc-opt-bar-fill" style="width:' + pct + '%"></div></div>';
+    }
+    /**
+     * Reiter beim Wechsel der SBC: IMMER Kaufen (v5.31.0, Rasmus: "der kaufen
+     * reiter sollte in den jeweiligen sbcs als default angewaehlt sein, weil
+     * der andere reiter aktuell gar keinen sinn mehr gibt"). Die Handwahl fuer
+     * DIESE SBC bleibt. Die Ziel-OVR-Heuristik (v5.28.0) ist damit raus.
+     */
     function autoPickTab() {
         const cid = STATE.sbc.challengeId;
         if (cid == null) return;
-        const rating = STATE.sbc.targetOVR != null;
-        const key = cid + ':' + (rating ? 'r' : 'k');
+        const key = String(cid);
         if (key === tabAutoKey) return;
         tabAutoKey = key;
         if (tabPinnedChallenge === cid) return;
-        setTab(rating ? 'rating' : 'kaufen', false);
+        setTab('kaufen', false);
     }
     function refreshSbcInfoUI() {
         if (!ui.target) return;
@@ -8015,6 +8136,13 @@
         }
         ui.futbinSearch.addEventListener('click', onFutbinSearchClick);
         if (ui.futbinBuyConcepts) ui.futbinBuyConcepts.addEventListener('click', onBuyConceptsClick);
+        // v5.31.0: Leerzustand statt leerem Kasten - sagt, was passieren wird.
+        if (ui.futbinResult && !ui.futbinResult.innerHTML) {
+            ui.futbinResult.className = 'sbc-opt-result show sbc-opt-result-empty';
+            ui.futbinResult.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>' +
+                'Oeffne eine Kauf-SBC im Spiel und tippe auf <b>Futbin-Loesungen suchen</b>.<br>' +
+                'PitTools holt die Community-Loesungen, prueft die Live-Preise am EA-Markt und kauft die fehlenden Spieler nach und nach.';
+        }
     }
     function renderFutbinPlatformChips() {
         const box = ui.futbinPlatform;
@@ -8475,6 +8603,7 @@
         const diag = { at: Date.now(), bridge: bridgeKind(), url: null, listCount: null, candidates: null, marketQueries: 0, errors: [] };
         STATE.diag.futbin = diag;
         futbinBusy = true;
+        setBtnBusy(ui.futbinSearch, true, 'Suche laeuft');
         try {
             try { syncSbcWithOpenChallenge(); } catch (e) {}
             const cid = STATE.sbc.challengeId;
@@ -8509,7 +8638,7 @@
             const cands = [];
             for (let i = 0; i < picks.length; i++) {
                 const row = picks[i];
-                setFutbinResult('<div class="sbc-opt-dim">Lade Kader ' + (i + 1) + ' von ' + picks.length + ' ...</div>');
+                setFutbinResult(progressHtml('Lade Kader ' + (i + 1) + ' von ' + picks.length + ' ...', i, picks.length));
                 try {
                     const r = await bridgeFetch(futbinSquadUrl(year, row.squadId), 40000);
                     if (r.status !== 200) throw new Error('HTTP ' + r.status);
@@ -8557,8 +8686,8 @@
                         if (!cache.has(pl.resourceId)) {
                             if (best != null && live >= best) { pruned = true; break; }
                             diag.marketQueries++;
-                            setFutbinResult('<div class="sbc-opt-dim">Marktpreise pruefen ... Abfrage ' + diag.marketQueries +
-                                            ' von hoechstens ' + distinct.size + '</div>');
+                            setFutbinResult(progressHtml('Marktpreise pruefen ... Abfrage ' + diag.marketQueries +
+                                            ' von hoechstens ' + distinct.size, diag.marketQueries, distinct.size));
                             let est = null;
                             try { est = await marketMinBin(pl.resourceId); }
                             catch (e) { diag.errors.push('Markt ' + pl.resourceId + ': ' + (e && e.message || e)); }
@@ -8604,6 +8733,7 @@
             setFutbinResult(warnHtml('Futbin-Suche fehlgeschlagen: ' + (e && e.message || e)));
         } finally {
             futbinBusy = false;
+            setBtnBusy(ui.futbinSearch, false);
         }
     }
     const FUTBIN_SHOW_OPEN = 3; // v5.29.0: so viele Loesungen offen, der Rest hinter "weitere anzeigen"
@@ -8632,8 +8762,9 @@
                       : c.livePruned ? '<span class="sbc-opt-tag">teurer als Empfehlung</span>'
                       : '<span class="sbc-opt-tag">futbin-Schaetzung</span>';
             h += '<div class="sbc-opt-fb-row' + (i === 0 ? ' best' : '') + (i >= FUTBIN_SHOW_OPEN ? ' sbc-opt-fb-more' : '') + '">' +
-                 '<div class="sbc-opt-fb-top"><span class="sbc-opt-fb-price">' + fmtCoins(cost) + '</span>' + tag + '</div>' +
-                 '<div class="sbc-opt-fb-meta">' + (i === 0 ? '<b>Empfehlung</b> · ' : (i + 1) + '. ') + (c.row.ai ? 'FUTBIN AI' : 'Community') +
+                 '<div class="sbc-opt-fb-top"><span class="sbc-opt-fb-price">' + fmtCoins(cost) + '</span>' +
+                 '<span class="sbc-opt-fb-tags">' + (i === 0 ? '<span class="sbc-opt-tag best">Empfehlung</span>' : '') + tag + '</span></div>' +
+                 '<div class="sbc-opt-fb-meta">' + (i + 1) + '. ' + (c.row.ai ? 'FUTBIN AI' : 'Community') +
                  ' #' + escapeHtml(String(c.row.squadId)) + ' · Platz ' + (c.listRank + 1) + ' · Liste ' + fmtCoins(c.listPrice) +
                  (c.squad.formation ? ' · ' + escapeHtml(String(c.squad.formation)) : '') + '</div>' +
                  '<div class="sbc-opt-fb-meta">eigene Karten <b>' + c.eval.ownedCount + '</b> · zu kaufen <b>' + c.eval.missing + '</b>' +
@@ -8803,7 +8934,7 @@
         let refreshed = null;
         try {
             refreshed = await refreshLiveBins(c, function (k, n, pl) {
-                setFutbinResult('<div class="sbc-opt-dim">Live-Preise holen ... ' + k + ' von ' + n + ' (' + escapeHtml(pl.name || ('#' + pl.resourceId)) + ')</div>');
+                setFutbinResult(progressHtml('Live-Preise holen ... ' + k + ' von ' + n + ' (' + escapeHtml(pl.name || ('#' + pl.resourceId)) + ')', k, n));
             });
         } finally { buyBusy = false; }
         STATE.diag.futbinBuyRefresh = refreshed;
@@ -8967,12 +9098,13 @@
         if (!concepts.length) { setFutbinResult(warnHtml('Im offenen Kader stehen keine Konzept-Spieler.')); return; }
         setFutbinStep(3);
         buyBusy = true;
+        setBtnBusy(ui.futbinBuyConcepts, true, 'Preise holen');
         try {
             const estimates = {};
             const probeErrors = [];
             for (let i = 0; i < concepts.length; i++) {
                 const c = concepts[i];
-                setFutbinResult('<div class="sbc-opt-dim">Marktpreis ' + (i + 1) + ' von ' + concepts.length + ': ' + escapeHtml(c.name || ('#' + c.definitionId)) + ' ...</div>');
+                setFutbinResult(progressHtml('Marktpreis ' + (i + 1) + ' von ' + concepts.length + ': ' + escapeHtml(c.name || ('#' + c.definitionId)) + ' ...', i, concepts.length));
                 try {
                     const est = await marketMinBin(c.definitionId);
                     estimates[c.definitionId] = est && est.robust != null ? est.robust : null;
@@ -9005,6 +9137,7 @@
             setFutbinResult(warnHtml('Kaufen fehlgeschlagen: ' + (e && e.message || e)));
         } finally {
             buyBusy = false;
+            setBtnBusy(ui.futbinBuyConcepts, false);
         }
     }
     /** Gekaufte Karte aus dem Kauf-Stapel in den Verein (EAs services.Item.move, ItemPile.CLUB). true/false/null(unbekannt). */

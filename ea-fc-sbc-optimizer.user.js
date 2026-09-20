@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.17.0
+// @version      5.18.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.17.0';
+    const VERSION = '5.18.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7452,10 +7452,31 @@
         if (listRank < (skipTop || 0)) return Math.round(cost * (factor || 1.15));
         return cost;
     }
-    /** Sortiert Kandidaten: erst Kosten (adjusted bzw. live), dann weniger fehlende, dann Listenplatz. */
+    /**
+     * Formation als Ziffernfolge: EA "f442" / futbin "4-4-2" / "442" -> "442".
+     * Live (Report v5.17.0): die Challenge stand auf f442, futbins Loesung
+     * war 3-1-4-2 - zwei Spieler fanden keinen Slot, die Chemie wackelt.
+     * SBC-Kader haben KEINEN Formationswechsel (im Bundle gibt es ihn nur
+     * fuer Taktiken), also muss die Loesung zur Challenge-Formation passen.
+     */
+    function formationDigits(s) {
+        const d = String(s == null ? '' : s).replace(/\D/g, '');
+        return d.length >= 3 ? d : null;
+    }
+    function formationMatches(a, b) {
+        const da = formationDigits(a), db = formationDigits(b);
+        if (!da || !db) return null;
+        return da === db;
+    }
+    /**
+     * Sortiert Kandidaten: passende Formation vor unpassender (null = unbekannt
+     * zaehlt wie passend), dann Kosten (adjusted bzw. live; null zuletzt), dann
+     * weniger fehlende, dann Listenplatz.
+     */
     function rankCandidates(cands, key) {
         const k = key || 'adjCost';
         return cands.slice().sort((a, b) =>
+            ((a.formationOk === false) - (b.formationOk === false)) ||
             ((a[k] == null) - (b[k] == null)) || (a[k] - b[k]) ||
             (a.eval.missing - b.eval.missing) || (a.listRank - b.listRank));
     }
@@ -7521,7 +7542,29 @@
     const FUTBIN_MARKET_TOP = 3;     // davon werden die besten am EA-Markt gegengeprueft
     const FUTBIN_SKIP_TOP = 2;       // ohne Marktcheck: Aufschlag auf die ersten Listenplaetze
     const FUTBIN_FETCH_GAP_MS = 400;
-    const FUTBIN_MARKET_GAP_MS = 1300; // EAs Marktsuche ist drossel-empfindlich
+    // EAs Marktsuche ist drossel-empfindlich (ein "too many requests" kann den
+    // Markt fuer Stunden sperren) - deshalb NICHT parallel, sondern weniger
+    // Abfragen: gemeinsame Spieler nur einmal, und ein Kandidat wird
+    // abgebrochen, sobald seine Zwischensumme die beste fertige Summe
+    // erreicht (Branch & Bound). Live (v5.17.0): 32 Abfragen im 1,3-s-Takt
+    // waren "extrem lang"; 700 ms sind das Tempo eines flotten Hand-Suchers.
+    const FUTBIN_MARKET_GAP_MS = 700;
+    /** Formation der offenen Challenge (EA "f442") als Ziffern, aus dem Set-Cache oder der Live-Entity. */
+    function currentSbcFormationDigits() {
+        try {
+            const cache = STATE.setChallengesBySet && STATE.setChallengesBySet[STATE.sbc.setId];
+            const list = cache && Array.isArray(cache.challenges) ? cache.challenges : [];
+            for (const ch of list) {
+                if (String(ch.challengeId) === String(STATE.sbc.challengeId) && ch.formation) return formationDigits(ch.formation);
+            }
+        } catch (e) {}
+        try {
+            const ch = findLiveChallenge();
+            const f = ch && (ch.formation || (ch.squad && ch.squad.formation));
+            if (f) return formationDigits(typeof f === 'object' ? (f.id || f.name || f.displayName) : f);
+        } catch (e) {}
+        return null;
+    }
     const futbinSleep = ms => new Promise(r => setTimeout(r, ms));
     let futbinBusy = false;
     let futbinLast = null;
@@ -7721,6 +7764,8 @@
                 .slice(0, FUTBIN_CANDIDATES);
             const locked = (ui.useLocks && ui.useLocks.checked) ? Array.from(readPaletoolsLocks()) : [];
             const poolWarn = STATE.pool.length ? '' : 'Pool ist leer - eigene Karten werden nicht erkannt ("Spieler laden").';
+            const eaFormation = currentSbcFormationDigits();
+            diag.eaFormation = eaFormation;
             const cands = [];
             for (let i = 0; i < picks.length; i++) {
                 const row = picks[i];
@@ -7736,7 +7781,8 @@
                         row: row, squad: squad, owned: owned, eval: ev, listRank: row.listRank,
                         listPrice: priceOf(row),
                         adjCost: s.market ? ev.cost : crowdAdjustedCost(ev.cost, row.listRank, FUTBIN_SKIP_TOP, 1.15),
-                        liveCost: null, liveUnknown: 0
+                        formationOk: eaFormation ? formationMatches(squad.formation, eaFormation) : null,
+                        liveCost: null, liveUnknown: 0, livePruned: false
                     });
                 } catch (e) { diag.errors.push('Kader ' + row.squadId + ': ' + (e && e.message || e)); }
                 await futbinSleep(FUTBIN_FETCH_GAP_MS);
@@ -7746,14 +7792,23 @@
             if (s.market) {
                 const top = ranked.slice(0, FUTBIN_MARKET_TOP);
                 const cache = new Map();
+                // Obergrenze fuer die Anzeige: alle verschiedenen fehlenden Karten der Top-Kandidaten.
+                const distinct = new Set();
+                top.forEach(c => c.squad.players.forEach((pl, i) => { if (!c.owned[i]) distinct.add(pl.resourceId); }));
+                let best = null;
                 for (const c of top) {
-                    let live = 0, unknown = 0;
-                    for (let i = 0; i < c.squad.players.length; i++) {
-                        if (c.owned[i]) continue;
+                    // Schon bekannte Preise zuerst summieren - dann greift der
+                    // Abbruch frueher, noch bevor eine Abfrage laeuft.
+                    const idx = c.squad.players.map((pl, i) => i).filter(i => !c.owned[i])
+                        .sort((a, b) => (cache.has(c.squad.players[a].resourceId) ? 0 : 1) - (cache.has(c.squad.players[b].resourceId) ? 0 : 1));
+                    let live = 0, unknown = 0, pruned = false;
+                    for (const i of idx) {
                         const pl = c.squad.players[i];
                         if (!cache.has(pl.resourceId)) {
+                            if (best != null && live >= best) { pruned = true; break; }
                             diag.marketQueries++;
-                            setFutbinResult('<div class="sbc-opt-dim">Marktpreise pruefen ... Abfrage ' + diag.marketQueries + '</div>');
+                            setFutbinResult('<div class="sbc-opt-dim">Marktpreise pruefen ... Abfrage ' + diag.marketQueries +
+                                            ' von hoechstens ' + distinct.size + '</div>');
                             let bin = null;
                             try { bin = await marketMinBin(pl.resourceId); }
                             catch (e) { diag.errors.push('Markt ' + pl.resourceId + ': ' + (e && e.message || e)); }
@@ -7764,7 +7819,11 @@
                         pl.liveBin = bin;
                         if (bin == null) { unknown++; live += futbinPrice(pl, s.platform) || 0; } else live += bin;
                     }
-                    c.liveCost = live; c.liveUnknown = unknown;
+                    if (pruned) { c.livePruned = true; c.liveCost = null; }
+                    else {
+                        c.liveCost = live; c.liveUnknown = unknown;
+                        if (best == null || live < best) best = live;
+                    }
                 }
                 ranked = rankCandidates(top, 'liveCost').concat(ranked.slice(FUTBIN_MARKET_TOP));
             }
@@ -7772,6 +7831,7 @@
             diag.candidates = ranked.map(c => ({
                 squadId: c.row.squadId, ai: c.row.ai, listRank: c.listRank, listPrice: c.listPrice,
                 cost: c.eval.cost, adjCost: c.adjCost, liveCost: c.liveCost, liveUnknown: c.liveUnknown,
+                livePruned: c.livePruned, formationOk: c.formationOk,
                 owned: c.eval.ownedCount, missing: c.eval.missing, formation: c.squad.formation
             }));
             renderFutbinCandidates(ranked, s, poolWarn);
@@ -7790,14 +7850,19 @@
              (s.platform === 'pc' ? 'PC' : 'Konsole') +
              (s.market ? ', die besten ' + Math.min(FUTBIN_MARKET_TOP, ranked.length) + ' am EA-Markt gegengeprueft'
                        : ', ohne Marktcheck: +15% auf die ersten ' + FUTBIN_SKIP_TOP + ' Listenplaetze') + ')</div>';
+        if (ranked.length && ranked[0].formationOk === false) {
+            h += warnHtml('Keine Loesung in der Formation der Challenge - Chemie und Positionen bitte vor dem Kaufen pruefen.');
+        }
         ranked.forEach(function (c, i) {
             const cost = c.liveCost != null ? c.liveCost : c.adjCost;
+            const formNote = c.formationOk === false ? ' <span class="sbc-opt-warn">≠ Formation der Challenge</span>' : '';
+            const pruneNote = c.livePruned ? ' <span class="sbc-opt-muted">(Marktcheck abgebrochen: schon teurer als die Empfehlung)</span>' : '';
             h += '<div class="sbc-opt-fb-row' + (i === 0 ? ' best' : '') + '">' +
                  '<div><b>' + (i === 0 ? 'Empfehlung: ' : (i + 1) + '. ') + (c.row.ai ? 'FUTBIN AI' : 'Community') +
                  ' #' + escapeHtml(String(c.row.squadId)) + '</b> <span class="sbc-opt-muted">Liste ' + fmtCoins(c.listPrice) +
-                 ' · Platz ' + (c.listRank + 1) + (c.squad.formation ? ' · ' + escapeHtml(String(c.squad.formation)) : '') + '</span></div>' +
+                 ' · Platz ' + (c.listRank + 1) + (c.squad.formation ? ' · ' + escapeHtml(String(c.squad.formation)) : '') + '</span>' + formNote + '</div>' +
                  '<div>Fuer dich: <b>' + fmtCoins(cost) + '</b>' +
-                 (c.liveCost != null ? ' (live' + (c.liveUnknown ? ', ' + c.liveUnknown + ' ohne Angebot: futbin-Preis' : '') + ')' : '') +
+                 (c.liveCost != null ? ' (live' + (c.liveUnknown ? ', ' + c.liveUnknown + ' ohne Angebot: futbin-Preis' : '') + ')' : '') + pruneNote +
                  ' · eigene Karten ' + c.eval.ownedCount + ' · zu kaufen ' + c.eval.missing + '</div>' +
                  '<button type="button" class="sbc-opt-btn ' + (i === 0 ? 'primary' : 'ghost') + '" data-fb-idx="' + i + '">Einfuegen</button>' +
                  '</div>';

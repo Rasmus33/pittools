@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.49.0
+// @version      5.50.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.49.0';
+    const VERSION = '5.50.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7974,10 +7974,30 @@
             if (!isNaN(expires) && expires < 0) continue;
             if (state && state !== 'active') continue;
             if (maxBuy > 0 && bin > maxBuy) continue;
-            out.push({ tradeId: a.tradeId, bin: bin, raw: it, itemId: it.id });
+            out.push({ tradeId: a.tradeId, bin: bin, raw: it, itemId: it.id, expires: isNaN(expires) ? null : expires });
         }
         out.sort((x, y) => x.bin - y.bin);
         return { offers: out, foreign: foreign, foreignSample: foreignSample, own: own, total: Array.isArray(auctionInfo) ? auctionInfo.length : 0 };
+    }
+    /**
+     * v5.50.0: Reihenfolge fuer den KAUF - guenstigster Preis zuerst, bei gleichem
+     * Preis das Angebot mit der LAENGSTEN Restzeit (frisch gelistet, noch nicht
+     * weggekauft). Screenshot 21.09.: Noelia Ramos fuenfmal fuer 800 mit 59
+     * Minuten Restzeit im Markt, PitTools bekam fuenfmal 461 - EAs Liste ist
+     * nach Restzeit AUFSTEIGEND sortiert, die ersten 21 sind die aeltesten
+     * Angebote, und die sind bei gefragten Karten schon weg. Doppelte tradeIds
+     * (ueber Seiten hinweg) fallen weg.
+     */
+    function sortOffersForBuy(list) {
+        const seen = new Set(); const out = [];
+        for (const o of (Array.isArray(list) ? list : [])) {
+            if (!o) continue;
+            const k = o.tradeId != null ? String(o.tradeId) : null;
+            if (k != null) { if (seen.has(k)) continue; seen.add(k); }
+            out.push(o);
+        }
+        out.sort((x, y) => (x.bin - y.bin) || ((Number(y.expires) || 0) - (Number(x.expires) || 0)));
+        return out;
     }
     /** HTTP-Status aus einer apiGet/apiPut-Fehlermeldung ("... -> HTTP 429"). */
     function httpStatusOf(err) {
@@ -8774,8 +8794,8 @@
         } catch (e) {}
     }
     /** Marktsuche per eigenem GET (kein Client-Cache). Wirft bei HTTP-Fehler (Status in der Meldung). */
-    async function marketOffersHttp(rid, maxBuy) {
-        const path = 'transfermarket?num=21&start=0&type=player&maskedDefId=' + rid + (maxBuy > 0 ? '&maxb=' + Math.floor(maxBuy) : '');
+    async function marketOffersHttp(rid, maxBuy, start) {
+        const path = 'transfermarket?num=21&start=' + (start > 0 ? Math.floor(start) : 0) + '&type=player&maskedDefId=' + rid + (maxBuy > 0 ? '&maxb=' + Math.floor(maxBuy) : '');
         try {
             const ring = STATE.diag.marketUrls || (STATE.diag.marketUrls = []);
             ring.push('/ut/game/' + (STATE.diag.gameName || '?') + '/' + path + ' [eigen]');
@@ -8788,7 +8808,39 @@
         try { mask = (window.ItemIdMask && window.ItemIdMask.DATABASE) || 0; } catch (e) { mask = 0; }
         const parsed = parseAuctionOffers(json && json.auctionInfo, rid, maxBuy, mask, ownPersonaId());
         noteMarketProbe(rid, parsed.total, parsed.foreign, parsed.offers.length, parsed.foreignSample, rid);
+        try { Object.defineProperty(parsed.offers, 'total', { value: parsed.total, enumerable: false }); } catch (e) {}
         return parsed.offers;
+    }
+    const BUY_PAGE_MAX = 3; // v5.50.0: so viele WEITERE Seiten (je 21) bis zu den frischesten Angeboten
+    /**
+     * v5.50.0: Angebote fuer den KAUF. Zwei Befunde vom 21.09.:
+     * (1) Mit maxb = Obergrenze lagen 10 von 12 Kaeufen EXAKT an der Obergrenze
+     *     (Plan+200), obwohl die Messung Sekunden vorher 16 Angebote AM Plan
+     *     hatte. Deshalb zuerst mit maxb = PLAN suchen (gemessenes Minimum),
+     *     nur ohne Treffer bis zur Obergrenze. Rasmus: "zum Minimum kaufen".
+     * (2) EAs Liste ist nach Restzeit AUFSTEIGEND sortiert: Seite 1 sind die
+     *     aeltesten Angebote - bei gefragten Karten schon weg (fuenfmal 461,
+     *     waehrend fuenf frische fuer 800 mit 59 Minuten im Markt standen).
+     *     Bei voller Seite wird weitergeblaettert (bis BUY_PAGE_MAX Seiten,
+     *     mit Takt), die Angebote werden nach Preis und dann LAENGSTER
+     *     Restzeit sortiert (sortOffersForBuy).
+     */
+    async function marketOffersForBuy(rid, planned, maxPrice) {
+        let at = 'max', maxb = maxPrice, page = null;
+        if (planned > 0 && planned < maxPrice) {
+            page = await marketOffers(rid, planned);
+            if (page.length) { at = 'plan'; maxb = planned; }
+            else { page = null; await futbinSleep(randomBetween(MARKET_STEP_GAP_MIN_MS, MARKET_STEP_GAP_MAX_MS)); }
+        }
+        if (!page) page = await marketOffers(rid, maxb);
+        let all = page.slice(), pages = 1;
+        while ((page.total != null ? page.total : page.length) >= 21 && pages <= BUY_PAGE_MAX && sessionReady()) {
+            await futbinSleep(randomBetween(MARKET_STEP_GAP_MIN_MS, MARKET_STEP_GAP_MAX_MS));
+            try { page = await marketOffersHttp(rid, maxb, pages * 21); } catch (e) { break; }
+            pages++;
+            all = all.concat(page);
+        }
+        return { offers: sortOffersForBuy(all), at: at, pages: pages };
     }
     /** Eigene Persona-ID (Verkaeufer-Kennung in EAs auctionInfo.sellerId), null wenn nicht lesbar. */
     function ownPersonaId() {
@@ -9592,7 +9644,7 @@
         const setResult = typeof opts.setResult === 'function' ? opts.setResult : setFutbinResult;
         const maxPerRun = opts.maxPerRun || BUY_MAX_PER_RUN;
         const gapMin = opts.gapMin || BUY_GAP_MIN_MS, gapMax = opts.gapMax || BUY_GAP_MAX_MS;
-        const diag = { at: Date.now(), mode: opts.noSquad ? 'gallery' : 'sbc', planned: plan.length, bought: 0, spent: 0, steps: [], stopped: null };
+        const diag = { at: Date.now(), mode: opts.noSquad ? 'gallery' : 'sbc', planned: plan.length, bought: 0, spent: 0, plannedSpent: 0, steps: [], stopped: null };
         STATE.diag.futbinBuy = diag;
         buyBusy = true;
         let fails = 0;
@@ -9600,7 +9652,9 @@
         const bought = [];
         const lines = [];
         const render = function (current) {
-            let h = '<div class="sbc-opt-summary">Kaufen: ' + diag.bought + ' von ' + plan.length + ' · ausgegeben ' + fmtCoins(diag.spent) + '</div>';
+            // v5.50.0: Plan-Summe der gekauften Karten daneben - so sieht man sofort, ob zu teuer gekauft wurde.
+            let h = '<div class="sbc-opt-summary">Kaufen: ' + diag.bought + ' von ' + plan.length + ' · ausgegeben ' + fmtCoins(diag.spent) +
+                    (diag.bought && diag.spent !== diag.plannedSpent ? ' <span class="sbc-opt-muted">(Plan ' + fmtCoins(diag.plannedSpent) + ', ' + (diag.spent > diag.plannedSpent ? '+' : '−') + fmtCoins(Math.abs(diag.spent - diag.plannedSpent)) + ')</span>' : '') + '</div>';
             lines.forEach(l => { h += '<div>' + l + '</div>'; });
             if (current) h += '<div class="sbc-opt-dim">' + escapeHtml(current) + '</div>';
             setResult(h);
@@ -9615,7 +9669,7 @@
                 // gelieferte) Trades ausblenden. Report 21.09.: Russell-Rowe - dreimal
                 // dasselbe Angebot 608750162402, dreimal 461, Status "closed".
                 let offers;
-                try { offers = (await marketOffers(p.resourceId, p.maxPrice)).filter(o => !deadTrades.has(String(o.tradeId))); }
+                try { const fb = await marketOffersForBuy(p.resourceId, p.planned, p.maxPrice); step.searchAt = fb.at; step.pages = fb.pages; offers = fb.offers.filter(o => !deadTrades.has(String(o.tradeId))); }
                 catch (e) {
                     step.status = 'suche: ' + (e && e.message || e);
                     if (isRateLimit(e && e.status)) { diag.stopped = 'Rate-Limit bei der Suche'; lines.push('⚠ EA drosselt - Lauf gestoppt.'); break; }
@@ -9638,7 +9692,7 @@
                         lines.push('↻ ' + escapeHtml(p.name) + ': kein Angebot bis ' + fmtCoins(step.max === p.maxPrice ? step.replannedFrom : p.maxPrice) + ' - Markt liegt bei ' + fmtCoins(neu) + ', neue Obergrenze ' + fmtCoins(p.maxPrice) + '.');
                         render('Suche ' + p.name + ' erneut (bis ' + fmtCoins(p.maxPrice) + ') ...');
                         await futbinSleep(randomBetween(1500, 2500));
-                        try { offers = (await marketOffers(p.resourceId, p.maxPrice)).filter(o => !deadTrades.has(String(o.tradeId))); } catch (e) { offers = []; }
+                        try { const fb = await marketOffersForBuy(p.resourceId, p.planned, p.maxPrice); step.searchAt = fb.at; step.pages = fb.pages; offers = fb.offers.filter(o => !deadTrades.has(String(o.tradeId))); } catch (e) { offers = []; }
                     }
                 }
                 if (!offers.length) {
@@ -9676,19 +9730,6 @@
                     if (status === 461 && offer.tradeId != null) {
                         denied461++;
                         if (!diag.ownBidHeaders) { try { diag.ownBidHeaders = Object.keys(apiHeaders()).concat(['Content-Type']); } catch (e) {} }
-                        // v5.49.0: einmal je Schritt ueber EAs Client kaufen (Report 21.09.:
-                        // Kauf von Hand geht, eigener PUT bekommt 461).
-                        if (!step.clientBid) {
-                            const cb = await clientBidFallback(p.resourceId, offer.tradeId, p.maxPrice);
-                            step.clientBid = { tried: !!cb.tried, ok: !!cb.ok, status: cb.status || null, sameTrade: !!cb.sameTrade, bin: cb.bin || null, why: cb.why || null };
-                            if (cb.ok) {
-                                offer = { tradeId: cb.tradeId, bin: cb.bin, item: cb.item, itemId: cb.item && cb.item.id, raw: null };
-                                step.found = cb.bin; step.via = 'client';
-                                ok = true; denied461 = 0;
-                                lines.push('✓ ' + escapeHtml(p.name) + ' ueber EAs Client gekauft (eigener Weg: 461).');
-                                break;
-                            }
-                        }
                         // v5.48.0: beim ersten 461 die Stapel messen (Report 21.09.: zwoelf 461 in
                         // Folge, alle "closed" - voller Zielstapel oder Marktsperre sind die Verdaechtigen).
                         if (!diag.market461) {
@@ -9715,6 +9756,20 @@
                         const st = await tradeStateOf(offer.tradeId);
                         step.tradeState = st;
                         if (st === 'active') {
+                            // v5.49.0/v5.50.0: einmal je Schritt ueber EAs Client kaufen - NUR bei
+                            // aktivem Angebot (Report 21.09.: bei "closed" war die Karte wirklich
+                            // weg, der Client-Versuch brachte nur 429/512 obendrauf).
+                            if (!step.clientBid) {
+                                const cb = await clientBidFallback(p.resourceId, offer.tradeId, p.maxPrice);
+                                step.clientBid = { tried: !!cb.tried, ok: !!cb.ok, status: cb.status || null, sameTrade: !!cb.sameTrade, bin: cb.bin || null, why: cb.why || null };
+                                if (cb.ok) {
+                                    offer = { tradeId: cb.tradeId, bin: cb.bin, item: cb.item, itemId: cb.item && cb.item.id, raw: null };
+                                    step.found = cb.bin; step.via = 'client';
+                                    ok = true; denied461 = 0;
+                                    lines.push('✓ ' + escapeHtml(p.name) + ' ueber EAs Client gekauft (eigener Weg: 461).');
+                                    break;
+                                }
+                            }
                             step.status = 'EA verweigert den Kauf (461) - Angebot ist aktiv';
                             diag.stopped = 'EA verweigert Kaeufe (461) bei aktivem Angebot - Transfermarkt vermutlich vorruebergehend gesperrt';
                             lines.push('⚠ ' + escapeHtml(p.name) + ': EA verweigert den Kauf, obwohl das Angebot aktiv ist. Das ist meist eine zeitweise Marktsperre nach vielen Aktionen - bitte im Spiel einen Kauf von Hand probieren und spaeter erneut.');
@@ -9738,7 +9793,7 @@
                 }
                 fails = 0;
                 step.paid = offer.bin; step.status = 'gekauft';
-                diag.bought++; diag.spent += offer.bin;
+                diag.bought++; diag.spent += offer.bin; diag.plannedSpent += p.planned;
                 // v5.21.0: gekaufte Karte sofort in den VEREIN. Sie liegt sonst
                 // im Kauf-Stapel (Unassigned), und EA lehnte den Kader-PUT mit
                 // 475 ab (Report v5.20.0, "sie werden nicht direkt im verein

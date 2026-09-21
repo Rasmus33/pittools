@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.34.0
+// @version      5.35.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.34.0';
+    const VERSION = '5.35.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -204,6 +204,7 @@
             futbinBuy: null,         // schrittweises Kaufen (v5.19.0): Plan, Schritte, gekauft/ausgegeben, Stopp-Grund (buyPlannedPlayers)
             futbinBuyRefresh: null,  // v5.27.0: Live-Preise vor dem Kaufen nachgeholt (asked/priced/errors)
             gallery: null,           // v5.32.0: FUT Gallery (Sets geladen, gewaehlt, Plan)
+            gallerySell: null,       // v5.35.0: Verkauf gekaufter Galerie-Karten (Preise, Schritte)
             futbinBuyPlan: null,     // v5.22.0: Kaufplan aus den Konzept-Spielern des Kaders (Anzahl, uebersprungen, Suchfehler)
             marketUrls: [],          // v5.20.0: letzte 6 Marktsuch-URLs mit Query (unsere UND EAs eigene) - Parameter-Vergleich
             marketProbe: []          // v5.20.0: je Marktabfrage Treffer/fremde Karten/Angebote (Filter ignoriert?)
@@ -2746,6 +2747,35 @@
             noteThrottle('PUT ' + path + ' -> HTTP ' + resp.status);
             diagError('PUT ' + path + ' -> HTTP ' + resp.status + (bodyTxt ? ' BODY: ' + bodyTxt : ''));
             throw new Error(httpErrText('PUT', path, resp.status));
+        }
+        noteRequestOk();
+        try { return await resp.json(); } catch (e) { return {}; }
+    }
+    /** v5.35.0: eigener POST (Listen auf dem Transfermarkt). Fehler-BODY wird wie bei apiPut mitgeloggt. */
+    async function apiPost(path, body, _attempt) {
+        const url = STATE.session.apiBase + path.replace(/^\//, '');
+        const headers = apiHeaders();
+        headers['Content-Type'] = 'application/json';
+        let resp;
+        try {
+            resp = await _origFetch(url, { method: 'POST', headers: headers, credentials: 'omit', body: JSON.stringify(body) });
+        } catch (e) {
+            noteThrottle('POST ' + path + ' -> ' + (e.message || e));
+            diagError('POST ' + path + ' -> ' + (e.message || e));
+            throw e;
+        }
+        if (!resp.ok) {
+            if (resp.status === 401 && (_attempt || 0) < 2) {
+                if ((_attempt || 0) === 0) { await nudgeSession(); } else { await sleep(3000); }
+                return apiPost(path, body, (_attempt || 0) + 1);
+            }
+            let bodyTxt = '';
+            try { bodyTxt = (await resp.text()).slice(0, 200); } catch (e) {}
+            noteThrottle('POST ' + path + ' -> HTTP ' + resp.status);
+            diagError('POST ' + path + ' -> HTTP ' + resp.status + (bodyTxt ? ' BODY: ' + bodyTxt : ''));
+            const err = new Error(httpErrText('POST', path, resp.status));
+            err.status = resp.status;
+            throw err;
         }
         noteRequestOk();
         try { return await resp.json(); } catch (e) { return {}; }
@@ -6258,6 +6288,11 @@
                             <span class="track" aria-hidden="true"></span>
                             <span class="txt">Erledigte Sets ausblenden<small>Sets, die du hier als erledigt markiert hast</small></span>
                         </label>
+                        <!-- v5.35.0: gekaufte Galerie-Karten wieder verkaufen (Preis = guenstigstes aktuelles Angebot). -->
+                        <div class="sbc-opt-inline" style="margin:0 0 8px;">
+                            <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gallery-sell" style="margin:0;"><span>Gekaufte Karten verkaufen (0)</span></button>
+                            <button type="button" class="sbc-opt-btn ghost small" id="sbc-opt-gallery-sell-clear" style="margin:0;width:auto;flex:0 0 auto;padding:8px 10px;" title="Merkliste leeren (z.B. schon von Hand verkauft)">Liste leeren</button>
+                        </div>
                         <button class="sbc-opt-btn primary sbc-opt-btn-icon" id="sbc-opt-gallery-load"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span>Naechstes Set kaufen</span></button>
                     </div>
                     <div class="sbc-opt-result" id="sbc-opt-gallery-result"></div>
@@ -6574,6 +6609,8 @@
             galleryLoad: panel.querySelector('#sbc-opt-gallery-load'),
             galleryResult: panel.querySelector('#sbc-opt-gallery-result'),
             galleryHideDone: panel.querySelector('#sbc-opt-gallery-hidedone'),
+            gallerySell: panel.querySelector('#sbc-opt-gallery-sell'),
+            gallerySellClear: panel.querySelector('#sbc-opt-gallery-sell-clear'),
             poolCacheBox: panel.querySelector('#sbc-opt-poolcache'),
             rarityguard: panel.querySelector('#sbc-opt-rarityguard'),
             raritymode: panel.querySelector('#sbc-opt-raritymode'),
@@ -8165,6 +8202,47 @@
         });
         return { plan: plan, skipped: skipped, ownedCount: ownedCount };
     }
+    /**
+     * v5.35.0 Verkaufspreis (Rasmus: "der marktpreis sollte sich daran
+     * orientieren, fuer wie viel die real weg gehen ... wenn wir eine karte
+     * fuer 200 gekauft haben und die fuer 2k weggeht, moechte ich sie nicht
+     * fuer 200 verkaufen"). Massstab ist das guenstigste AKTUELLE Angebot
+     * derselben Karte: dort steigen Kaeufer ein. Ein einzelner Ausreisser
+     * nach unten (mehr als 15 % unter dem zweiten Angebot) zieht uns nicht
+     * mit - dann gilt das zweite. Preisspanne von EA (marketDataMin/Max)
+     * begrenzt, Startpreis eine Stufe unter dem Sofortkauf.
+     * bins: aktuelle Sofortkaufpreise; paid: was wir gezahlt haben (nur zur
+     * Warnung); limits: {min,max}|null; tiers: EA-Preisstufen|null.
+     */
+    function sellPriceFor(bins, paid, limits, tiers) {
+        const arr = (bins || []).map(Number).filter(v => v > 0).sort((a, b) => a - b);
+        if (!arr.length) return null;
+        let base = arr[0];
+        if (arr.length > 1 && arr[0] < arr[1] * 0.85) base = arr[1];
+        let buyNow = roundPriceDown(base, tiers);
+        if (limits) {
+            if (limits.max > 0 && buyNow > limits.max) buyNow = roundPriceDown(limits.max, tiers);
+            if (limits.min > 0 && buyNow < limits.min) buyNow = limits.min;
+        }
+        if (!(buyNow > 0)) return null;
+        const inc = priceTierOf(buyNow, tiers).inc;
+        let start = buyNow - inc;
+        if (limits && limits.min > 0 && start < limits.min) start = limits.min; // Spanne gewinnt
+        if (!(start > 0) || start > buyNow) start = buyNow; // EA nimmt Start = Sofortkauf
+        return { buyNow: buyNow, start: start, lowest: arr[0], second: arr.length > 1 ? arr[1] : null, count: arr.length,
+                 belowPaid: paid > 0 && buyNow < paid, net: Math.floor(buyNow * 0.95) };
+    }
+    /** Gekaufte Galerie-Karten merken (localStorage): zusammenfuehren ohne Doppel (itemId). */
+    function mergeBoughtRecords(existing, fresh) {
+        const out = (existing || []).slice();
+        const seen = new Set(out.map(r => String(r.itemId)));
+        (fresh || []).forEach(r => { if (r && r.itemId != null && !seen.has(String(r.itemId))) { out.push(r); seen.add(String(r.itemId)); } });
+        return out;
+    }
+    function removeBoughtRecords(existing, itemIds) {
+        const gone = new Set((itemIds || []).map(String));
+        return (existing || []).filter(r => !gone.has(String(r.itemId)));
+    }
     // [GALLERY-END]
     // ---- Bruecke zu futbin (CORS) ------------------------------------------
     // Zwei Anbieter, EIN Protokoll: in der App das native Objekt
@@ -9227,7 +9305,7 @@
                 // in allen SBC-Kadern samt Anzeige aus - genau das, was
                 // Rasmus mit "in den Verein tun" von Hand ausloest.
                 step.moved = null;
-                bought.push({ plan: p, item: offer.item || null, raw: offer.raw || null, itemId: offer.itemId != null ? offer.itemId : (offer.item && offer.item.id) });
+                bought.push({ plan: p, item: offer.item || null, raw: offer.raw || null, itemId: offer.itemId != null ? offer.itemId : (offer.item && offer.item.id), paid: offer.bin });
                 lines.push('✓ ' + escapeHtml(p.name) + ' fuer ' + fmtCoins(offer.bin) + (offer.bin > p.planned ? ' (Plan ' + fmtCoins(p.planned) + ')' : ''));
                 render(null);
                 if (k < plan.length - 1) await futbinSleep(randomBetween(gapMin, gapMax));
@@ -9301,6 +9379,14 @@
     function initGalleryUi() {
         if (!ui.galleryLoad) return;
         ui.galleryLoad.addEventListener('click', onGalleryLoadClick);
+        if (ui.gallerySell && !ui.gallerySell.dataset.wired) {
+            ui.gallerySell.dataset.wired = '1';
+            ui.gallerySell.addEventListener('click', onGallerySellClick);
+            if (ui.gallerySellClear) ui.gallerySellClear.addEventListener('click', function () {
+                if (window.confirm('Merkliste der gekauften Galerie-Karten leeren? (Nichts wird verkauft oder geloescht.)')) { galleryBoughtSave([]); toast('Merkliste geleert.', 'ok'); }
+            });
+        }
+        refreshGallerySellBtn();
         if (ui.galleryResult && !ui.galleryResult.innerHTML) {
             ui.galleryResult.className = 'sbc-opt-result show sbc-opt-result-empty';
             ui.galleryResult.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>' +
@@ -9519,6 +9605,9 @@
                     const added = mergeIntoPool((bought || []).map(b => b && b.raw ? normalizePlayer(b.raw, false) : null).filter(Boolean));
                     if (STATE.diag.gallery) STATE.diag.gallery.pooled = added;
                 } catch (e) { reportError('Gallery: Pool ergaenzen', e); }
+                // v5.35.0: fuer "Gekaufte Karten verkaufen" merken (itemId, Einkaufspreis, Set).
+                try { const n = rememberGalleryBought(ch.meta, bought); if (STATE.diag.gallery) STATE.diag.gallery.remembered = n; }
+                catch (e) { reportError('Gallery: Karten merken', e); }
                 const rest = built.plan.length - d.bought;
                 if (rest > 0 && ui.galleryResult) {
                     ui.galleryResult.insertAdjacentHTML('beforeend',
@@ -9552,6 +9641,167 @@
                 if (b) b.addEventListener('click', function () { galleryMarkDone(ch.meta.id); toast('"' + ch.meta.name + '" als erledigt markiert.', 'ok'); onGalleryLoadClick(); });
             }
         });
+    }
+    // ---- Gekaufte Galerie-Karten verkaufen (v5.35.0) --------------------------
+    // Nach dem Bewerten im Spiel duerfen die Karten wieder weg. Preis = das
+    // guenstigste aktuelle Angebot derselben Karte (sellPriceFor), NICHT der
+    // Einkaufspreis. Ablauf: Vorschau je Set -> Rueckfrage -> nacheinander auf
+    // die Transferliste (PUT item pile trade) und listen (POST auctionhouse,
+    // 3 Stunden). Erfolgreich gelistete Karten fallen aus der Merkliste.
+    const GALLERY_BOUGHT_KEY = 'sbcOptGalleryBought';
+    const SELL_DURATION_S = 10800;
+    const SELL_MAX_PER_RUN = 40;
+    let sellBusy = false;
+    function galleryBoughtLoad() { try { const a = JSON.parse(localStorage.getItem(GALLERY_BOUGHT_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
+    function galleryBoughtSave(list) { try { localStorage.setItem(GALLERY_BOUGHT_KEY, JSON.stringify(list || [])); } catch (e) {} refreshGallerySellBtn(); }
+    function refreshGallerySellBtn() {
+        if (!ui.gallerySell) return;
+        const n = galleryBoughtLoad().length;
+        const span = ui.gallerySell.querySelector('span') || ui.gallerySell;
+        span.textContent = 'Gekaufte Karten verkaufen (' + n + ')';
+        ui.gallerySell.disabled = n === 0;
+        if (ui.gallerySellClear) ui.gallerySellClear.style.display = n ? '' : 'none';
+    }
+    function rememberGalleryBought(meta, bought) {
+        const fresh = (bought || []).filter(b => b && b.itemId != null).map(b => {
+            const raw = b.raw || {};
+            return { itemId: b.itemId, defId: b.plan ? b.plan.resourceId : (raw.resourceId || null), name: b.plan ? b.plan.name : (raw.name || '?'),
+                     rating: b.plan ? b.plan.rating : (raw.rating || null), paid: b.paid != null ? b.paid : null,
+                     setId: meta ? meta.id : null, setName: meta ? meta.name : null, at: Date.now(),
+                     limits: (raw.marketDataMinPrice > 0 || raw.marketDataMaxPrice > 0) ? { min: raw.marketDataMinPrice || 0, max: raw.marketDataMaxPrice || 0 } : null };
+        });
+        galleryBoughtSave(mergeBoughtRecords(galleryBoughtLoad(), fresh));
+        return fresh.length;
+    }
+    async function listItemHttp(itemId, start, buyNow, duration) {
+        // Erst auf die Transferliste, dann listen - so macht es EAs Client auch.
+        const pileTrade = (window.ItemPile && window.ItemPile.TRANSFER) || 'trade';
+        const mv = await apiPut('item', { itemData: [{ id: itemId, pile: pileTrade }] });
+        const row = mv && Array.isArray(mv.itemData) ? mv.itemData[0] : null;
+        if (row && row.success === false) throw new Error('Transferliste: ' + (row.reason || row.errorCode || 'abgelehnt'));
+        return apiPost('auctionhouse', { itemData: { id: itemId }, startingBid: start, duration: duration, buyNowPrice: buyNow });
+    }
+    async function onGallerySellClick() {
+        if (sellBusy || buyBusy || galleryBusy) { toast('Es laeuft schon ein Lauf.', 'warn'); return; }
+        const records = galleryBoughtLoad();
+        if (!records.length) { toast('Keine gekauften Galerie-Karten gemerkt.', ''); return; }
+        if (!sessionReady()) { setGalleryResult(warnHtml('EA-Sitzung noch nicht erfasst - einmal im Spiel klicken, dann erneut.')); return; }
+        sellBusy = true;
+        setBtnBusy(ui.gallerySell, true, 'Preise holen');
+        const diag = { at: Date.now(), records: records.length, priced: 0, noOffer: 0, belowPaid: 0, steps: [], listed: 0, stopped: null };
+        STATE.diag.gallerySell = diag;
+        try {
+            const byDef = {};
+            const defIds = Array.from(new Set(records.map(r => r.defId).filter(Boolean)));
+            for (let k = 0; k < defIds.length; k++) {
+                setGalleryResult(progressHtml('Aktuelle Angebote holen ... ' + (k + 1) + ' von ' + defIds.length, k + 1, defIds.length));
+                try {
+                    const offers = await marketOffers(defIds[k], 0);
+                    byDef[defIds[k]] = offers.map(o => o.bin);
+                } catch (e) {
+                    byDef[defIds[k]] = [];
+                    if (isRateLimit(e && e.status)) { diag.stopped = 'Rate-Limit bei der Preissuche'; setGalleryResult(warnHtml('EA drosselt die Marktsuche - spaeter noch einmal.')); return; }
+                }
+                if (k < defIds.length - 1) await futbinSleep(FUTBIN_MARKET_GAP_MS);
+            }
+            const tiers = eaPriceTiers();
+            const rows = records.map(r => {
+                const price = r.defId ? sellPriceFor(byDef[r.defId] || [], r.paid, r.limits, tiers) : null;
+                return { rec: r, price: price };
+            });
+            const sellable = rows.filter(x => x.price);
+            diag.priced = sellable.length; diag.noOffer = rows.length - sellable.length;
+            diag.belowPaid = sellable.filter(x => x.price.belowPaid).length;
+            renderSellPreview(rows, sellable);
+        } catch (e) {
+            reportError('Gallery verkaufen', e);
+            setGalleryResult(warnHtml('Preise holen fehlgeschlagen: ' + (e && e.message || e)));
+        } finally {
+            sellBusy = false;
+            setBtnBusy(ui.gallerySell, false);
+            refreshGallerySellBtn();
+        }
+    }
+    function renderSellPreview(rows, sellable) {
+        const bySet = {};
+        rows.forEach(x => { const k = x.rec.setName || 'Ohne Set'; (bySet[k] = bySet[k] || []).push(x); });
+        const gross = sellable.reduce((a, x) => a + x.price.buyNow, 0);
+        const paidSum = sellable.reduce((a, x) => a + (x.rec.paid || 0), 0);
+        let h = '<div class="sbc-opt-summary">' + sellable.length + ' von ' + rows.length + ' Karten mit aktuellem Angebot</div>' +
+                '<div class="sbc-opt-fb-meta">Sofortkauf zusammen <b>' + fmtCoins(gross) + '</b> · nach 5 % Steuer ~<b>' + fmtCoins(Math.floor(gross * 0.95)) + '</b>' +
+                (paidSum ? ' · gekauft fuer ' + fmtCoins(paidSum) : '') + '</div>' +
+                warnHtml('Erst im Spiel bewerten und die Token-Gutschrift pruefen - danach verkaufen. Gelistet wird fuer 3 Stunden zum Preis des guenstigsten aktuellen Angebots.');
+        Object.keys(bySet).forEach(function (setName) {
+            h += '<details class="sbc-opt-details-toggle" open><summary>' + escapeHtml(setName) + ' (' + bySet[setName].length + ')</summary>';
+            bySet[setName].forEach(function (x) {
+                const r = x.rec, p = x.price;
+                h += '<div>' + escapeHtml(r.name) + ' <span class="sbc-opt-muted">(' + (r.rating || '?') + ')</span>' +
+                     (r.paid ? ' <span class="sbc-opt-muted">gekauft ' + fmtCoins(r.paid) + '</span>' : '') +
+                     (p ? ' → <b>' + fmtCoins(p.buyNow) + '</b> <span class="sbc-opt-muted">(Start ' + fmtCoins(p.start) + ', ' + p.count + ' Angebote ab ' + fmtCoins(p.lowest) + ')</span>' +
+                          (p.belowPaid ? ' <span class="sbc-opt-warn">unter Einkauf</span>' : '')
+                        : ' <span class="sbc-opt-warn">kein Angebot am Markt - wird nicht gelistet</span>') + '</div>';
+            });
+            h += '</details>';
+        });
+        if (sellable.length) h += '<button type="button" class="sbc-opt-btn primary" id="sbc-opt-gal-sell-go">' + sellable.length + ' Karten listen</button>';
+        h += '<div class="sbc-opt-inline" style="margin-top:8px;">' +
+             '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-sell-back" style="margin:0;">Abbrechen</button></div>';
+        setGalleryResult(h);
+        const go = ui.galleryResult.querySelector('#sbc-opt-gal-sell-go');
+        if (go) go.addEventListener('click', function () { runSell(sellable); });
+        const back = ui.galleryResult.querySelector('#sbc-opt-gal-sell-back');
+        if (back) back.addEventListener('click', function () { if (galleryLast && galleryLast.ranked) renderGallerySets(galleryLast.ranked); else initGalleryUi(); });
+    }
+    async function runSell(sellable) {
+        if (sellBusy) return;
+        const frage = sellable.length + ' Karten auf den Transfermarkt stellen (3 Stunden, Sofortkauf = guenstigstes aktuelles Angebot)?\n\n' +
+                      sellable.slice(0, 12).map(x => x.rec.name + ': ' + fmtCoins(x.price.buyNow)).join('\n') + (sellable.length > 12 ? '\n...' : '') +
+                      '\n\nHast du das Set im Spiel schon bewertet? Danach zaehlen die Karten weiter, aber weg ist weg.';
+        if (!window.confirm(frage)) return;
+        sellBusy = true;
+        const diag = STATE.diag.gallerySell || (STATE.diag.gallerySell = {});
+        diag.steps = []; diag.listed = 0; diag.stopped = null;
+        const lines = [];
+        const render = function (cur) {
+            let h = '<div class="sbc-opt-summary">Listen: ' + diag.listed + ' von ' + sellable.length + '</div>';
+            lines.forEach(l => { h += '<div>' + l + '</div>'; });
+            if (cur) h += progressHtml(escapeHtml(cur), diag.steps.length, sellable.length);
+            setGalleryResult(h);
+        };
+        let fails = 0;
+        try {
+            for (let k = 0; k < sellable.length && k < SELL_MAX_PER_RUN; k++) {
+                const x = sellable[k];
+                const step = { name: x.rec.name, buyNow: x.price.buyNow, start: x.price.start, status: null };
+                diag.steps.push(step);
+                render('Liste ' + x.rec.name + ' fuer ' + fmtCoins(x.price.buyNow) + ' ...');
+                try {
+                    await listItemHttp(x.rec.itemId, x.price.start, x.price.buyNow, SELL_DURATION_S);
+                    step.status = 'gelistet'; diag.listed++; fails = 0;
+                    galleryBoughtSave(removeBoughtRecords(galleryBoughtLoad(), [x.rec.itemId]));
+                    lines.push('✓ ' + escapeHtml(x.rec.name) + ' fuer ' + fmtCoins(x.price.buyNow));
+                } catch (e) {
+                    const st = httpStatusOf(e);
+                    step.status = 'Fehler: ' + (e && e.message || e);
+                    if (isRateLimit(st)) { diag.stopped = 'Rate-Limit'; lines.push('⚠ EA drosselt - Lauf gestoppt.'); break; }
+                    fails++;
+                    lines.push('⚠ ' + escapeHtml(x.rec.name) + ': ' + escapeHtml(String(e && e.message || e)) + (st === 461 || st === 478 ? ' (Transferliste voll?)' : ''));
+                    if (fails >= 2) { diag.stopped = 'zwei Fehler hintereinander'; break; }
+                }
+                if (k < sellable.length - 1) await futbinSleep(randomBetween(BUY_GAP_MIN_MS, BUY_GAP_MAX_MS));
+            }
+            render(null);
+            toast('Verkaufen: ' + diag.listed + ' von ' + sellable.length + ' gelistet' + (diag.stopped ? ' - gestoppt: ' + diag.stopped : ''), diag.stopped ? 'warn' : 'ok');
+            if (ui.galleryResult) {
+                ui.galleryResult.insertAdjacentHTML('beforeend', '<div class="sbc-opt-dim">Die Karten liegen jetzt auf der Transferliste (im Spiel unter Transfers). Nicht verkaufte Karten kannst du dort neu listen.</div>' +
+                    '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-sell-back2">Zur Set-Liste</button>');
+                const b = ui.galleryResult.querySelector('#sbc-opt-gal-sell-back2');
+                if (b) b.addEventListener('click', function () { if (galleryLast && galleryLast.ranked) renderGallerySets(galleryLast.ranked); else onGalleryLoadClick(); });
+            }
+        } finally {
+            sellBusy = false;
+            refreshGallerySellBtn();
+        }
     }
     // ---- Konzept-Spieler direkt aus dem Kader kaufen (v5.22.0) --------------
     // Rasmus: nach einem Reload fehlte der Kauf-Knopf, weil er am futbin-Lauf
@@ -10168,7 +10418,7 @@
             itemProbe: computeItemProbe(STATE.pool),
             // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten mit
             // Kosten, Marktabfragen, Fehler, eingefuegte Loesung.
-            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null,
+            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, gallerySell: STATE.diag.gallerySell || null,
             futbinBuy: STATE.diag.futbinBuy || null,
             futbinBuyPlan: STATE.diag.futbinBuyPlan || null,
             marketUrls: STATE.diag.marketUrls,

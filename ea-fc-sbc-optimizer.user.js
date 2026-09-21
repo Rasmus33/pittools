@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.38.0
+// @version      5.39.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.38.0';
+    const VERSION = '5.39.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -8240,6 +8240,7 @@
         let base = arr[0];
         if (arr.length > 1 && arr[0] < arr[1] * 0.85) base = arr[1];
         let buyNow = roundPriceDown(base, tiers);
+        const baseClamped = (limits && limits.max > 0 && buyNow > limits.max) ? roundPriceDown(limits.max, tiers) : buyNow; // fuer den Rueckfall ohne Aufschlag
         // v5.37.0 Aufschlag (Rasmus: "minimal hoeher als marktpreis anbieten,
         // weil es immer lazy kaeufer gibt, die auch mehr zahlen"): n Stufen
         // ueber dem Markt oder x Prozent (auf eine Stufe gerundet).
@@ -8256,7 +8257,7 @@
         if (!(start > 0) || start > buyNow) start = buyNow; // EA nimmt Start = Sofortkauf
         const net = Math.floor(buyNow * 0.95);
         // v5.38.0 (Rasmus): "wie viel verlust bzw. gewinn man macht durchs verkaufen, nach abzug der 5 % steuern".
-        return { buyNow: buyNow, start: start, lowest: arr[0], second: arr.length > 1 ? arr[1] : null, count: arr.length,
+        return { buyNow: buyNow, start: start, base: Math.max(1, baseClamped), lowest: arr[0], second: arr.length > 1 ? arr[1] : null, count: arr.length,
                  belowPaid: paid > 0 && buyNow < paid, net: net, profit: paid > 0 ? net - paid : null };
     }
     /** Aufschlag-Modus -> Parameter fuer sellPriceFor. '0' = Markt, 'tier1' = eine Stufe drueber (Default), 'pct5' = +5 %. */
@@ -8732,9 +8733,41 @@
         } catch (e) { reportError('moveToClubHttp', e); return false; }
     }
     /** Marktpreis-Schaetzung: robustMinBin ueber die Angebote von Seite 1 (null-Felder, wenn kein Angebot). */
+    /**
+     * v5.39.0: das ECHTE guenstigste Angebot. EAs Suche liefert ohne Preisfilter
+     * 21 beliebige Angebote (nach Restzeit, nicht nach Preis) - Report 21.09.:
+     * McNair fuer 10.000 gekauft, obwohl er mehrfach fuer 4.000 stand; die
+     * Stichprobe hatte die 4.000er nicht. Deshalb wie die alten Autobuyer:
+     * nach der Stichprobe mit sinkender Obergrenze (maxb = Minimum minus eine
+     * Stufe) nachfragen, bis die Liste unter 21 Treffer hat (vollstaendig)
+     * oder leer ist (nichts Billigeres). Hoechstens MARKET_LOWEST_STEPS
+     * Nachfragen, jede mit Takt.
+     */
+    const MARKET_LOWEST_STEPS = 4;
+    async function marketOffersLowest(resourceId) {
+        const tiers = eaPriceTiers();
+        let pool = await marketOffers(resourceId, 0);
+        let complete = pool.length < 21;
+        let steps = 0;
+        let curMin = pool.length ? Math.min.apply(null, pool.map(o => o.bin)) : null;
+        while (!complete && steps < MARKET_LOWEST_STEPS && curMin > 0) {
+            const maxb = curMin - priceTierOf(curMin, tiers).inc;
+            if (!(maxb > 0)) break;
+            await futbinSleep(FUTBIN_MARKET_GAP_MS);
+            const r = await marketOffers(resourceId, maxb);
+            steps++;
+            if (!r.length) { complete = true; break; } // nichts unter curMin - das ist der Boden
+            pool = r;
+            curMin = Math.min.apply(null, r.map(o => o.bin));
+            if (r.length < 21) complete = true;
+        }
+        return { offers: pool, complete: complete, steps: steps, min: curMin };
+    }
     async function marketMinBin(resourceId) {
-        const offers = await marketOffers(resourceId, 0);
-        return robustMinBin(offers.map(o => o.bin));
+        const low = await marketOffersLowest(resourceId);
+        const est = robustMinBin(low.offers.map(o => o.bin));
+        est.complete = low.complete; est.steps = low.steps;
+        return est;
     }
     /** Konzept-Spieler (Dream Squad) als echte EA-Entity ueber EAs eigene Konzept-Suche. */
     async function conceptEntity(resourceId) {
@@ -9873,14 +9906,23 @@
             for (let k = 0; k < defIds.length; k++) {
                 setSellResult(progressHtml('Aktuelle Angebote holen ... ' + (k + 1) + ' von ' + defIds.length, k + 1, defIds.length));
                 try {
-                    const offers = await marketOffers(defIds[k], 0);
-                    byDef[defIds[k]] = offers.map(o => o.bin);
+                    // v5.39.0: das echte guenstigste Angebot (absteigende Obergrenze), nicht die erste Stichprobe.
+                    const low = await marketOffersLowest(defIds[k]);
+                    byDef[defIds[k]] = low.offers.map(o => o.bin);
                 } catch (e) {
                     byDef[defIds[k]] = [];
                     if (isRateLimit(e && e.status)) { diag.stopped = 'Rate-Limit bei der Preissuche'; setSellResult(warnHtml('EA drosselt die Marktsuche - spaeter noch einmal.')); return; }
                 }
                 if (k < defIds.length - 1) await futbinSleep(FUTBIN_MARKET_GAP_MS);
             }
+            // v5.39.0: EAs Preisspanne aus dem Pool nachholen, wenn der Datensatz keine hat
+            // (Report 21.09.: McNair fuer 10.250 gelistet, Spanne endete bei 10.000 -> 461).
+            records.forEach(r => {
+                if (r.limits) return;
+                const p = STATE.poolById && STATE.poolById.get(r.itemId);
+                const raw = p && p.raw;
+                if (raw && (raw.marketDataMinPrice > 0 || raw.marketDataMaxPrice > 0)) r.limits = { min: raw.marketDataMinPrice || 0, max: raw.marketDataMaxPrice || 0 };
+            });
             sellLastRows = { records: records, byDef: byDef, diagKey: diagKey };
             repriceAndRender();
         } catch (e) {
@@ -10012,6 +10054,20 @@
                     lines.push('✓ ' + escapeHtml(x.rec.name) + ' fuer ' + fmtCoins(x.price.buyNow));
                 } catch (e) {
                     const st = httpStatusOf(e);
+                    // v5.39.0: 461 mit Aufschlag -> einmal zum Basispreis (EAs Spanne war unbekannt).
+                    if (st === 461 && x.price.base && x.price.base < x.price.buyNow) {
+                        try {
+                            const inc2 = priceTierOf(x.price.base, eaPriceTiers()).inc;
+                            const start2 = Math.max(1, Math.min(x.price.start, x.price.base - inc2));
+                            await futbinSleep(1500);
+                            await listItemHttp(x.rec.itemId, start2 < x.price.base ? start2 : x.price.base, x.price.base, SELL_DURATION_S, true);
+                            step.status = 'gelistet (ohne Aufschlag: ' + x.price.base + ')'; step.retryAt = x.price.base; diag.listed++; fails = 0;
+                            if (!x.rec.inTradePile) galleryBoughtSave(removeBoughtRecords(galleryBoughtLoad(), [x.rec.itemId]));
+                            lines.push('✓ ' + escapeHtml(x.rec.name) + ' fuer ' + fmtCoins(x.price.base) + ' (Aufschlag lag ueber EAs Preisspanne)');
+                            if (k < sellable.length - 1) await futbinSleep(randomBetween(BUY_GAP_MIN_MS, BUY_GAP_MAX_MS));
+                            continue;
+                        } catch (e2) { /* faellt in die normale Fehlerbehandlung */ }
+                    }
                     step.status = 'Fehler: ' + (e && e.message || e);
                     if (isRateLimit(st)) { diag.stopped = 'Rate-Limit'; lines.push('⚠ EA drosselt - Lauf gestoppt.'); break; }
                     fails++;

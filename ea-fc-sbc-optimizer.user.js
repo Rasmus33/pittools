@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.32.0
+// @version      5.33.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.32.0';
+    const VERSION = '5.33.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -9326,8 +9326,10 @@
             if (r.status !== 200) throw new Error('fut.gg antwortet mit HTTP ' + r.status);
             const set = parseFutggGallerySet(r.text);
             if (!set.players.length) throw new Error('Keine Aufstellung auf der Set-Seite gefunden.');
-            const locked = (ui.useLocks && ui.useLocks.checked) ? Array.from(readPaletoolsLocks()) : [];
-            const owned = matchOwned(set.players.map(p => ({ resourceId: p.defId })), STATE.pool, locked);
+            // v5.33.0 (Rasmus): PaleTools-Sperren zaehlen hier NICHT - fuer die
+            // Galerie wird nichts verbraucht, die Karte muss nur im Verein sein.
+            // Eine gesperrte Karte im Verein ist also "vorhanden", nicht zu kaufen.
+            const owned = matchOwned(set.players.map(p => ({ resourceId: p.defId })), STATE.pool, []);
             galleryLast.chosen = { idx: idx, meta: x, set: set, owned: owned };
             if (STATE.diag.gallery) STATE.diag.gallery.chosen = { id: x.id, name: x.name, players: set.players.length, owned: owned.filter(Boolean).length, coinsTotal: set.coinsTotal, grade: set.bestGrade, tokens: set.tokens };
             renderGallerySet(x, set, owned);

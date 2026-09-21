@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         PitTools Bridge
 // @namespace    https://github.com/sbc-optimizer
-// @version      1.0.0
-// @description  CORS-Bruecke fuer PitTools: holt Seiten von futbin.com (SBC-Loesungen). Ohne dieses Script fehlt im Browser die Futbin-Loesungssuche - in der PitTools-App uebernimmt die App selbst.
+// @version      1.1.0
+// @description  CORS-Bruecke fuer PitTools: holt Seiten von futbin.com (SBC-Loesungen) und fut.gg (FUT Gallery). Ohne dieses Script fehlen im Browser Futbin-Loesungssuche und Galerie - in der PitTools-App uebernimmt die App selbst.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
 // @license      PolyForm-Noncommercial-1.0.0; https://polyformproject.org/licenses/noncommercial/1.0.0
@@ -12,6 +12,8 @@
 // @grant        GM_xmlhttpRequest
 // @connect      futbin.com
 // @connect      www.futbin.com
+// @connect      fut.gg
+// @connect      www.fut.gg
 // @updateURL    https://raw.githubusercontent.com/Rasmus33/pittools/main/pittools-bridge.user.js
 // @downloadURL  https://raw.githubusercontent.com/Rasmus33/pittools/main/pittools-bridge.user.js
 // ==/UserScript==
@@ -25,7 +27,8 @@
 // In der App gibt es dasselbe Protokoll nativ (PitBridgeNative, App >= 1.11.0).
 (function () {
     'use strict';
-    const ALLOW = /^https:\/\/(www\.)?futbin\.com\//;
+    // 1.1.0: fut.gg dazu (FUT Gallery, v5.32.0).
+    const ALLOW = /^https:\/\/(www\.)?(futbin\.com|fut\.gg)\//;
     function reply(o) {
         try {
             document.dispatchEvent(new CustomEvent('pittools-bridge-done', { detail: JSON.stringify(o) }));
@@ -52,5 +55,5 @@
             reply({ id: req.id, status: 0, error: 'GM_xmlhttpRequest: ' + (e && e.message || e) });
         }
     });
-    try { console.log('[PitTools Bridge] bereit (futbin.com)'); } catch (e) {}
+    try { console.log('[PitTools Bridge] bereit (futbin.com, fut.gg)'); } catch (e) {}
 })();

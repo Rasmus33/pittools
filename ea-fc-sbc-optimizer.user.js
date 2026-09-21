@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.31.0
+// @version      5.32.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.31.0';
+    const VERSION = '5.32.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -203,6 +203,7 @@
             futbin: null,            // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten, Wahl, Fehler (runFutbinSearch)
             futbinBuy: null,         // schrittweises Kaufen (v5.19.0): Plan, Schritte, gekauft/ausgegeben, Stopp-Grund (buyPlannedPlayers)
             futbinBuyRefresh: null,  // v5.27.0: Live-Preise vor dem Kaufen nachgeholt (asked/priced/errors)
+            gallery: null,           // v5.32.0: FUT Gallery (Sets geladen, gewaehlt, Plan)
             futbinBuyPlan: null,     // v5.22.0: Kaufplan aus den Konzept-Spielern des Kaders (Anzahl, uebersprungen, Suchfehler)
             marketUrls: [],          // v5.20.0: letzte 6 Marktsuch-URLs mit Query (unsere UND EAs eigene) - Parameter-Vergleich
             marketProbe: []          // v5.20.0: je Marktabfrage Treffer/fremde Karten/Angebote (Filter ignoriert?)
@@ -6086,7 +6087,8 @@
            ------------------------------------------------------------------ */
         /* Sehr schmale Schirme: Reiter nur mit Text. (Steht hier unten, weil der
            :active-Test das CSS nur bis zum ersten @media liest.) */
-        @media (max-width: 380px) { .sbc-opt-tab-btn svg { display:none; } }
+        @media (max-width: 460px) { .sbc-opt-tab-btn svg { display:none; } }
+        .sbc-opt-tab-btn { padding:0 4px; }
         @media (prefers-reduced-motion: reduce) {
             #sbc-opt-panel.open { animation: none; }
             #sbc-opt-fab, .sbc-opt-btn, .sbc-opt-chip, .sbc-opt-queuerow,
@@ -6196,6 +6198,7 @@
                 </div>
                 <div class="sbc-opt-tabs" id="sbc-opt-tabs" role="tablist">
                     <button type="button" class="sbc-opt-tab-btn" data-tab="kaufen" role="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>Kaufen</button>
+                    <button type="button" class="sbc-opt-tab-btn" data-tab="galerie" role="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Galerie</button>
                     <button type="button" class="sbc-opt-tab-btn" data-tab="rating" role="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/></svg>Rating</button>
                     <button type="button" class="sbc-opt-tab-btn" data-tab="mehr" role="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/><circle cx="5" cy="12" r="1.5"/></svg>Mehr</button>
                 </div>
@@ -6237,6 +6240,25 @@
                     <button class="sbc-opt-btn ghost" id="sbc-opt-futbin-buyconcepts" style="margin-top:0;">Konzept-Spieler im Kader nachkaufen</button>
                     <div class="sbc-opt-debug" style="margin-top:-4px;">Fuer Kader, die schon Konzept-Spieler enthalten (z.B. nach Neuladen oder von Hand eingesetzt).</div>
                 </div>
+                </div>
+                <!-- REITER GALERIE (v5.32.0): FUT-Gallery-Sets von fut.gg kaufen. -->
+                <div class="sbc-opt-tab" id="sbc-opt-tab-galerie" role="tabpanel">
+                    <div class="sbc-opt-flow" id="sbc-opt-gallery-flow">
+                        <div class="step on" data-step="1"><span class="dot">1</span><span class="lbl">Sets laden</span></div>
+                        <div class="step" data-step="2"><span class="dot">2</span><span class="lbl">Set waehlen</span></div>
+                        <div class="step" data-step="3"><span class="dot">3</span><span class="lbl">Kaufen</span></div>
+                        <div class="step" data-step="4"><span class="dot">4</span><span class="lbl">Bewerten</span></div>
+                    </div>
+                    <div class="sbc-opt-card">
+                        <label class="sbc-opt-switch">
+                            <input type="checkbox" id="sbc-opt-gallery-hidedone" checked>
+                            <span class="track" aria-hidden="true"></span>
+                            <span class="txt">Erledigte Sets ausblenden<small>Sets, die du hier als erledigt markiert hast</small></span>
+                        </label>
+                        <button class="sbc-opt-btn primary sbc-opt-btn-icon" id="sbc-opt-gallery-load"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span>Naechstes Set kaufen</span></button>
+                    </div>
+                    <div class="sbc-opt-result" id="sbc-opt-gallery-result"></div>
+                    <div class="sbc-opt-debug">Quelle fut.gg (guenstigste Aufstellung je Set). Bewertet wird im Spiel: Galerie → Set → Bewerten. Die Karten zaehlen, sobald sie im Verein waren, und duerfen danach verkauft werden.</div>
                 </div>
                 <!-- REITER RATING: der bisherige Optimizer (Rating-SBCs). -->
                 <div class="sbc-opt-tab" id="sbc-opt-tab-rating" role="tabpanel">
@@ -6545,6 +6567,10 @@
             futbinSearch: panel.querySelector('#sbc-opt-futbin-search'),
             futbinBuyConcepts: panel.querySelector('#sbc-opt-futbin-buyconcepts'),
             futbinResult: panel.querySelector('#sbc-opt-futbin-result'),
+            // FUT Gallery (v5.32.0)
+            galleryLoad: panel.querySelector('#sbc-opt-gallery-load'),
+            galleryResult: panel.querySelector('#sbc-opt-gallery-result'),
+            galleryHideDone: panel.querySelector('#sbc-opt-gallery-hidedone'),
             poolCacheBox: panel.querySelector('#sbc-opt-poolcache'),
             rarityguard: panel.querySelector('#sbc-opt-rarityguard'),
             raritymode: panel.querySelector('#sbc-opt-raritymode'),
@@ -6607,6 +6633,7 @@
         ui.load.addEventListener('click', onLoadClick);
         ui.run.addEventListener('click', onRunClick);
         initFutbinUi();
+        initGalleryUi();
         ui.diagBtn.addEventListener('click', onDiagClick);
         // Schnellwahl aufbauen und mit den Feldern verbinden. Tippt Rasmus von
         // Hand einen Wert, aktualisiert sich nur die Hervorhebung - der Wert
@@ -7307,7 +7334,7 @@
     }
     function setStatus(txt) { if (ui.status) ui.status.textContent = txt; }
     // ---- Reiter (v5.28.0) ----------------------------------------------------
-    const TAB_NAMES = ['kaufen', 'rating', 'mehr'];
+    const TAB_NAMES = ['kaufen', 'galerie', 'rating', 'mehr'];
     let tabCurrent = null;
     let tabAutoKey = null;          // Challenge + Art, fuer die zuletzt automatisch gewaehlt wurde
     let tabPinnedChallenge = undefined; // Challenge, fuer die Rasmus selbst gewaehlt hat
@@ -7994,6 +8021,121 @@
         return best == null || nextAdjCost < best;
     }
     // [FUTBIN-END]
+    // [GALLERY-BEGIN]
+    // FUT GALLERY (v5.32.0, reine Funktionen, per Marker testbar). Quelle ist
+    // fut.gg: der Index (/fut-gallery/) listet jedes Set mit bester
+    // erreichbarer Note, benoetigten Coins, Spielerzahl und Tokens; die
+    // Set-Seite traegt die guenstigste Aufstellung mit EA-Definitions-IDs
+    // (data-gallery-lineup-player), Score und Preis je Karte. Beides ist
+    // serverseitig gerendert (kein JSON, keine API) - deshalb Regex auf
+    // stabile Attribute (aria-label, data-*, title), nie auf CSS-Klassen.
+    function galleryNum(s) {
+        if (s == null) return null;
+        const n = parseInt(String(s).replace(/[^\d]/g, ''), 10);
+        return isNaN(n) ? null : n;
+    }
+    function galleryDecode(t) {
+        return String(t == null ? '' : t).replace(/&amp;/g, '&').replace(/&#39;|&apos;|&#x27;/g, "'").replace(/&quot;/g, '"').replace(/\s+/g, ' ').trim();
+    }
+    function futggGalleryIndexUrl() { return 'https://www.fut.gg/fut-gallery/'; }
+    function futggGallerySetUrl(path) { return 'https://www.fut.gg' + String(path || ''); }
+    /** Index: alle Set-Karten. Liga-Links (ein Pfadsegment) sind keine Sets. */
+    function parseFutggGalleryIndex(html) {
+        const out = [];
+        const re = /<a aria-label="Explore ([^"]*)" data-gallery-set="(\d+)" href="(\/fut-gallery\/([a-z0-9-]+)\/([a-z0-9-]+)\/)"[^>]*>([\s\S]*?)<\/a>/g;
+        let m;
+        while ((m = re.exec(String(html || ''))) !== null) {
+            const body = m[6];
+            const g = /title="Grade ([DCBAS]) is the best possible"/.exec(body);
+            const sc = /title="([\d,]+) grading score"[\s\S]*?<span[^>]*>\/ (?:<!-- -->)?([\d,]+)<\/span>/.exec(body);
+            const co = /title="Coins needed in hand"[\s\S]*?\/>([\d,]+)<\/span>/.exec(body);
+            const it = /title="(\d+) items to complete"/.exec(body);
+            const tk = /title="Gallery tokens[^"]*"[\s\S]*?<span[^>]*>([\d,]+)<\/span><span[^>]*>\/ (?:<!-- -->)?([\d,]+)<\/span>/.exec(body);
+            out.push({
+                id: galleryNum(m[2]), name: galleryDecode(m[1]), path: m[3], league: m[4], slug: m[5],
+                bestGrade: g ? g[1] : null,
+                score: sc ? galleryNum(sc[1]) : null, threshold: sc ? galleryNum(sc[2]) : null,
+                coins: co ? galleryNum(co[1]) : null, items: it ? galleryNum(it[1]) : null,
+                tokens: tk ? galleryNum(tk[1]) : null, tokensTotal: tk ? galleryNum(tk[2]) : null
+            });
+        }
+        return out;
+    }
+    /** Set-Seite: Kopfdaten (Meta), Noten-Tabelle, guenstigste Aufstellung, Summen. */
+    function parseFutggGallerySet(html) {
+        const s = String(html || '');
+        const out = { name: null, requires: null, requirement: null, bestGrade: null, coinsInHand: null, coinsTotal: null,
+                      tokens: null, tokensTotal: null, grades: [], players: [], score: null, tax: null };
+        const h1 = /<h1[^>]*>([\s\S]*?)<\/h1>/.exec(s);
+        if (h1) out.name = galleryDecode(h1[1].replace(/<[^>]+>/g, ' ')).replace(/\s*FUT Gallery Set\s*$/i, '');
+        const meta = /content="Requires (\d+) ([^"]*?) to complete\. The best possible grade today is ([DCBAS]),[^"]*?needs ([\d,]+) coins in hand and ([\d,]+) in total and earns ([\d,]+) of ([\d,]+) Gallery Tokens/.exec(s);
+        if (meta) {
+            out.requires = galleryNum(meta[1]); out.requirement = galleryDecode(meta[2]); out.bestGrade = meta[3];
+            out.coinsInHand = galleryNum(meta[4]); out.coinsTotal = galleryNum(meta[5]);
+            out.tokens = galleryNum(meta[6]); out.tokensTotal = galleryNum(meta[7]);
+        } else {
+            const m2 = /content="Requires (\d+) /.exec(s);
+            if (m2) out.requires = galleryNum(m2[1]);
+        }
+        const rowRe = /<tr[^>]*data-slot="table-row"[^>]*>([\s\S]*?)<\/tr>/g;
+        let r;
+        while ((r = rowRe.exec(s)) !== null) {
+            const cells = []; const cRe = /<td[^>]*>([\s\S]*?)<\/td>/g; let c;
+            while ((c = cRe.exec(r[1])) !== null) cells.push(galleryDecode(c[1].replace(/<[^>]+>/g, ' ')));
+            if (cells.length >= 2 && /^[DCBAS]$/.test(cells[0])) {
+                const tokM = /([\d,]+)\s*Gallery Token/i.exec(cells[2] || '');
+                out.grades.push({ grade: cells[0], score: galleryNum(cells[1]), tokens: tokM ? galleryNum(tokM[1]) : 0, reward: cells[2] || '' });
+            }
+        }
+        const parts = s.split(/<li data-gallery-lineup-player="(\d+)"/);
+        for (let k = 1; k + 1 < parts.length; k += 2) {
+            const body = parts[k + 1];
+            const alt = /alt="([^"]+)"/.exec(body);
+            const base = /href="\/players\/(\d+)-/.exec(body);
+            const sc = /title="([\d,]+) Grading Score"/i.exec(body);
+            const pr = /alt="Coin"[^>]*\/>([\d,]+)/.exec(body);
+            const tags = []; const tRe = /aria-label="([^"]+: \+\d+%)"/g; let t;
+            while ((t = tRe.exec(body)) !== null) tags.push(galleryDecode(t[1]));
+            const altParts = alt ? galleryDecode(alt[1]).split(' - ') : [];
+            out.players.push({
+                defId: galleryNum(parts[k]), baseId: base ? galleryNum(base[1]) : null,
+                name: altParts[0] || ('#' + parts[k]), rating: altParts.length > 1 ? galleryNum(altParts[1]) : null,
+                version: altParts.length > 2 ? altParts.slice(2).join(' - ') : null,
+                score: sc ? galleryNum(sc[1]) : null, price: pr ? galleryNum(pr[1]) : null, tags: tags
+            });
+        }
+        const tot = /<dt[^>]*>Score<\/dt>[\s\S]*?title="([\d,]+) grading score"/.exec(s);
+        if (tot) out.score = galleryNum(tot[1]);
+        const tax = /<dt[^>]*>Lost to tax<\/dt>[\s\S]*?\/>([\d,]+)/.exec(s);
+        if (tax) out.tax = galleryNum(tax[1]);
+        return out;
+    }
+    /**
+     * Rangfolge fuer "Naechstes Set kaufen": nur Sets, deren beste Aufstellung
+     * Tokens bringt, nicht erledigt, optional unter einem Coin-Limit; sortiert
+     * nach Coins je Token (aufsteigend), dann Coins, dann Spielerzahl.
+     */
+    function rankGallerySets(sets, doneIds, maxCoins) {
+        const done = new Set((doneIds || []).map(String));
+        return (sets || [])
+            .filter(x => x && x.tokens > 0 && x.coins != null && !done.has(String(x.id)) && (maxCoins == null || x.coins <= maxCoins))
+            .map(x => Object.assign({}, x, { perToken: Math.round(x.coins / x.tokens) }))
+            .sort((a, b) => (a.perToken - b.perToken) || (a.coins - b.coins) || ((a.items || 0) - (b.items || 0)));
+    }
+    /** Kaufliste: fehlende Spieler mit Live-Preis (sonst fut.gg-Preis als Notwert) und Obergrenze. */
+    function galleryBuyPlan(players, owned, liveBins, tolerance, tiers) {
+        const plan = [], skipped = []; let ownedCount = 0;
+        (players || []).forEach((p, i) => {
+            if (owned && owned[i]) { ownedCount++; return; }
+            const live = liveBins ? liveBins[p.defId] : undefined;
+            const planned = live != null ? live : p.price;
+            if (!(planned > 0)) { skipped.push({ defId: p.defId, name: p.name, reason: 'kein Preis' }); return; }
+            plan.push({ index: i, resourceId: p.defId, name: p.name, rating: p.rating, planned: planned,
+                        source: live != null ? 'live' : 'futgg', maxPrice: planMaxPrice(planned, tolerance, tiers) });
+        });
+        return { plan: plan, skipped: skipped, ownedCount: ownedCount };
+    }
+    // [GALLERY-END]
     // ---- Bruecke zu futbin (CORS) ------------------------------------------
     // Zwei Anbieter, EIN Protokoll: in der App das native Objekt
     // PitBridgeNative (App >= 1.11.0), im Browser das Helfer-Userscript
@@ -8031,7 +8173,7 @@
         return null;
     }
     const BRIDGE_HINT = 'Keine Bruecke zu futbin. Browser: das Zusatz-Script "PitTools Bridge" ' +
-        '(pittools-bridge.user.js aus dem PitTools-Repo) in Tampermonkey installieren. App: Version 1.11.0 oder neuer.';
+        '(pittools-bridge.user.js aus dem PitTools-Repo) in Tampermonkey installieren. App: Version 1.11.0 oder neuer (FUT Gallery: Bridge 1.1.0 / App 1.14.0).';
     function bridgeFetch(url, timeoutMs) {
         const kind = bridgeKind();
         if (!kind) return Promise.reject(new Error(BRIDGE_HINT));
@@ -8954,8 +9096,15 @@
         }
         await buyPlannedPlayers(c, plan);
     }
-    async function buyPlannedPlayers(c, plan) {
-        const diag = { at: Date.now(), planned: plan.length, bought: 0, spent: 0, steps: [], stopped: null };
+    async function buyPlannedPlayers(c, plan, opts) {
+        // v5.32.0: Optionen fuer den Galerie-Kauf - kein Kader (noSquad), eigenes
+        // Ergebnisfeld, mehr Kaeufe je Lauf, laengere Pausen. Ohne opts: exakt
+        // das bisherige Verhalten.
+        opts = opts || {};
+        const setResult = typeof opts.setResult === 'function' ? opts.setResult : setFutbinResult;
+        const maxPerRun = opts.maxPerRun || BUY_MAX_PER_RUN;
+        const gapMin = opts.gapMin || BUY_GAP_MIN_MS, gapMax = opts.gapMax || BUY_GAP_MAX_MS;
+        const diag = { at: Date.now(), mode: opts.noSquad ? 'gallery' : 'sbc', planned: plan.length, bought: 0, spent: 0, steps: [], stopped: null };
         STATE.diag.futbinBuy = diag;
         buyBusy = true;
         let fails = 0;
@@ -8965,10 +9114,10 @@
             let h = '<div class="sbc-opt-summary">Kaufen: ' + diag.bought + ' von ' + plan.length + ' · ausgegeben ' + fmtCoins(diag.spent) + '</div>';
             lines.forEach(l => { h += '<div>' + l + '</div>'; });
             if (current) h += '<div class="sbc-opt-dim">' + escapeHtml(current) + '</div>';
-            setFutbinResult(h);
+            setResult(h);
         };
         try {
-            for (let k = 0; k < plan.length && k < BUY_MAX_PER_RUN; k++) {
+            for (let k = 0; k < plan.length && k < maxPerRun; k++) {
                 const p = plan[k];
                 const step = { name: p.name, planned: p.planned, max: p.maxPrice, found: null, paid: null, status: null };
                 diag.steps.push(step);
@@ -8980,14 +9129,14 @@
                     if (isRateLimit(e && e.status)) { diag.stopped = 'Rate-Limit bei der Suche'; lines.push('⚠ EA drosselt - Lauf gestoppt.'); break; }
                     fails++; lines.push('⚠ ' + escapeHtml(p.name) + ': Suche fehlgeschlagen.');
                     if (fails >= BUY_MAX_CONSECUTIVE_FAILS) { diag.stopped = 'zwei Fehler hintereinander'; break; }
-                    await futbinSleep(randomBetween(BUY_GAP_MIN_MS, BUY_GAP_MAX_MS));
+                    await futbinSleep(randomBetween(gapMin, gapMax));
                     continue;
                 }
                 if (!offers.length) {
                     step.status = 'kein Angebot bis Obergrenze';
                     lines.push('– ' + escapeHtml(p.name) + ': kein Angebot bis ' + fmtCoins(p.maxPrice) + ' - selbst kaufen.');
                     fails = 0;
-                    await futbinSleep(randomBetween(BUY_GAP_MIN_MS, BUY_GAP_MAX_MS));
+                    await futbinSleep(randomBetween(gapMin, gapMax));
                     continue;
                 }
                 const offer = offers[0];
@@ -9015,7 +9164,7 @@
                     fails++;
                     lines.push('⚠ ' + escapeHtml(p.name) + ': ' + escapeHtml(step.status) + ' - vermutlich schon weg.');
                     if (fails >= BUY_MAX_CONSECUTIVE_FAILS) { diag.stopped = 'zwei Fehler hintereinander'; break; }
-                    await futbinSleep(randomBetween(BUY_GAP_MIN_MS, BUY_GAP_MAX_MS));
+                    await futbinSleep(randomBetween(gapMin, gapMax));
                     continue;
                 }
                 fails = 0;
@@ -9036,7 +9185,7 @@
                 bought.push({ plan: p, item: offer.item || null, raw: offer.raw || null, itemId: offer.itemId != null ? offer.itemId : (offer.item && offer.item.id) });
                 lines.push('✓ ' + escapeHtml(p.name) + ' fuer ' + fmtCoins(offer.bin) + (offer.bin > p.planned ? ' (Plan ' + fmtCoins(p.planned) + ')' : ''));
                 render(null);
-                if (k < plan.length - 1) await futbinSleep(randomBetween(BUY_GAP_MIN_MS, BUY_GAP_MAX_MS));
+                if (k < plan.length - 1) await futbinSleep(randomBetween(gapMin, gapMax));
             }
             // Gekaufte Karten in den SBC-Kader statt der Konzept-Spieler, dann speichern.
             if (bought.length) {
@@ -9045,14 +9194,21 @@
                 diag.adopted = adopted;
                 lines.push(adopted.moved + ' von ' + bought.length + ' gekauften Karten ueber EAs Client in den Verein' +
                            (adopted.httpMoved ? ' (' + adopted.httpMoved + ' per Notweg)' : '') + '.');
-                const swapped = await replaceConceptsWithBought(bought);
-                lines.push(swapped.replaced + ' von ' + bought.length + ' gekauften Karten im Kader eingesetzt' +
-                           (swapped.saved ? ', Kader gespeichert.' : ' - Speichern fehlgeschlagen: ' + escapeHtml(swapped.error || '?')));
-                diag.replaced = swapped.replaced; diag.saved = swapped.saved; diag.viewPushed = swapped.viewPushed || null;
+                if (opts.noSquad) {
+                    lines.push('Die Karten liegen im Verein und zaehlen fuer die Galerie.');
+                } else {
+                    const swapped = await replaceConceptsWithBought(bought);
+                    lines.push(swapped.replaced + ' von ' + bought.length + ' gekauften Karten im Kader eingesetzt' +
+                               (swapped.saved ? ', Kader gespeichert.' : ' - Speichern fehlgeschlagen: ' + escapeHtml(swapped.error || '?')));
+                    diag.replaced = swapped.replaced; diag.saved = swapped.saved; diag.viewPushed = swapped.viewPushed || null;
+                }
             }
             render(null);
             const rest = plan.length - diag.bought;
-            if (diag.bought && !rest) setFutbinStep(4);
+            if (diag.bought && !rest) {
+                if (opts.noSquad) { if (typeof opts.onDone === 'function') opts.onDone(diag); }
+                else setFutbinStep(4);
+            }
             toast('Kaufen fertig: ' + diag.bought + ' gekauft (' + fmtCoins(diag.spent) + ')' + (rest ? ', ' + rest + ' offen' : '') +
                   (diag.stopped ? ' - gestoppt: ' + diag.stopped : ''), diag.stopped ? 'warn' : 'ok');
         } catch (e) {
@@ -9063,6 +9219,224 @@
         } finally {
             buyBusy = false;
         }
+    }
+    // ---- FUT Gallery (v5.32.0) ------------------------------------------------
+    // Rasmus: "eine oberflaeche wo steht 'naechstes set kaufen', dann stehen
+    // dort ein paar sets von futbin und ich kann entscheiden welche davon du
+    // kaufen sollst". Quelle ist fut.gg (serverseitig gerendert, Karten mit
+    // EA-IDs). Ablauf: Sets laden -> Set waehlen -> fehlende Spieler kaufen
+    // (derselbe schrittweise Kauf-Lauf wie bei SBCs, nur ohne Kader: die
+    // Karten gehen in den Verein und zaehlen damit fuer die Galerie) ->
+    // bewerten muss Rasmus im Spiel (Konsole/Companion; EAs Web-App-Bundle
+    // 11321 kennt die Galerie nicht).
+    const GALLERY_SHOW_OPEN = 5;
+    const GALLERY_BUY_MAX_PER_RUN = 25;      // Sets haben 15-20 Spieler
+    const GALLERY_BUY_GAP_MIN_MS = 4000, GALLERY_BUY_GAP_MAX_MS = 8000; // etwas langsamer als bei SBCs (mehr Kaeufe je Lauf)
+    const GALLERY_DONE_KEY = 'sbcOptGalleryDone';
+    let galleryLast = null;
+    let galleryBusy = false;
+    function galleryDoneIds() { try { const a = JSON.parse(localStorage.getItem(GALLERY_DONE_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
+    function galleryMarkDone(id) { const a = galleryDoneIds(); if (a.indexOf(id) < 0) a.push(id); try { localStorage.setItem(GALLERY_DONE_KEY, JSON.stringify(a)); } catch (e) {} }
+    function setGalleryResult(html) {
+        if (!ui.galleryResult) return;
+        ui.galleryResult.className = 'sbc-opt-result show';
+        ui.galleryResult.innerHTML = html;
+    }
+    function setGalleryStep(n) {
+        const flow = document.getElementById('sbc-opt-gallery-flow');
+        if (!flow) return;
+        Array.from(flow.querySelectorAll('.step')).forEach(function (el) {
+            const k = parseInt(el.getAttribute('data-step'), 10);
+            el.classList.toggle('done', k < n);
+            el.classList.toggle('on', k === n);
+        });
+    }
+    function initGalleryUi() {
+        if (!ui.galleryLoad) return;
+        ui.galleryLoad.addEventListener('click', onGalleryLoadClick);
+        if (ui.galleryResult && !ui.galleryResult.innerHTML) {
+            ui.galleryResult.className = 'sbc-opt-result show sbc-opt-result-empty';
+            ui.galleryResult.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>' +
+                'Tippe auf <b>Naechstes Set kaufen</b>: PitTools holt die guenstigsten Gallery-Sets von fut.gg, ' +
+                'du waehlst eines, PitTools kauft die fehlenden Spieler nach und nach in den Verein. Bewertet wird danach im Spiel.';
+        }
+    }
+    async function onGalleryLoadClick() {
+        if (galleryBusy || buyBusy) { toast('Es laeuft schon ein Lauf.', 'warn'); return; }
+        const diag = { at: Date.now(), bridge: bridgeKind(), sets: null, shown: null, errors: [] };
+        STATE.diag.gallery = diag;
+        galleryBusy = true;
+        setBtnBusy(ui.galleryLoad, true, 'Sets laden');
+        try {
+            if (!diag.bridge) { setGalleryResult(warnHtml(BRIDGE_HINT)); return; }
+            setGalleryStep(1);
+            setGalleryResult(progressHtml('Lade Gallery-Sets von fut.gg ...', 0, 1));
+            const r = await bridgeFetch(futggGalleryIndexUrl(), 30000);
+            if (r.status !== 200) throw new Error('fut.gg antwortet mit HTTP ' + r.status + (r.status === 0 ? ' - Bruecke zu alt? Browser: Bridge-Script 1.1.0, App: 1.14.0' : ''));
+            const sets = parseFutggGalleryIndex(r.text);
+            diag.sets = sets.length;
+            if (!sets.length) throw new Error('Keine Sets auf der fut.gg-Seite gefunden (Seite geaendert?).');
+            const hideDone = !ui.galleryHideDone || ui.galleryHideDone.checked;
+            const ranked = rankGallerySets(sets, hideDone ? galleryDoneIds() : [], null);
+            galleryLast = { sets: sets, ranked: ranked, at: Date.now() };
+            diag.shown = ranked.slice(0, GALLERY_SHOW_OPEN).map(x => ({ id: x.id, name: x.name, coins: x.coins, tokens: x.tokens, grade: x.bestGrade }));
+            renderGallerySets(ranked);
+            setGalleryStep(2);
+        } catch (e) {
+            diag.errors.push(String(e && e.message || e));
+            reportError('Gallery-Sets', e);
+            setGalleryResult(warnHtml('Gallery-Sets laden fehlgeschlagen: ' + (e && e.message || e)));
+        } finally {
+            galleryBusy = false;
+            setBtnBusy(ui.galleryLoad, false);
+        }
+    }
+    function renderGallerySets(ranked) {
+        let h = '<div class="sbc-opt-summary">' + ranked.length + ' Sets mit Tokens · sortiert nach Coins je Token <span class="sbc-opt-muted">(fut.gg, Richtwert)</span></div>';
+        if (!ranked.length) h += warnHtml('Kein Set uebrig - alle erledigt oder ohne Tokens. Schalter "Erledigte ausblenden" pruefen.');
+        ranked.forEach(function (x, i) {
+            h += '<div class="sbc-opt-fb-row' + (i === 0 ? ' best' : '') + (i >= GALLERY_SHOW_OPEN ? ' sbc-opt-fb-more' : '') + '">' +
+                 '<div class="sbc-opt-fb-top"><span class="sbc-opt-fb-price">' + escapeHtml(x.name) + '</span>' +
+                 '<span class="sbc-opt-fb-tags">' + (i === 0 ? '<span class="sbc-opt-tag best">Bester Kurs</span>' : '') +
+                 '<span class="sbc-opt-tag ok">Note ' + escapeHtml(x.bestGrade || '?') + '</span></span></div>' +
+                 '<div class="sbc-opt-fb-meta"><b>' + fmtCoins(x.coins) + '</b> fuer <b>' + x.tokens + '</b> Tokens' + (x.tokensTotal ? ' von ' + x.tokensTotal : '') +
+                 ' · ~' + fmtCoins(x.perToken) + ' je Token</div>' +
+                 '<div class="sbc-opt-fb-meta">' + (x.items || '?') + ' Spieler · ' + escapeHtml(x.league.replace(/-/g, ' ')) +
+                 (x.score != null && x.threshold != null ? ' · Score ' + x.score.toLocaleString('de-DE') + ' / ' + x.threshold.toLocaleString('de-DE') : '') + '</div>' +
+                 '<button type="button" class="sbc-opt-btn ' + (i === 0 ? 'primary' : 'ghost') + '" data-gal-idx="' + i + '">Set ansehen</button></div>';
+        });
+        if (ranked.length > GALLERY_SHOW_OPEN) {
+            h += '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-showmore">' + (ranked.length - GALLERY_SHOW_OPEN) + ' weitere Sets anzeigen</button>';
+        }
+        setGalleryResult(h);
+        ui.galleryResult.querySelectorAll('button[data-gal-idx]').forEach(function (b) {
+            b.addEventListener('click', function () { onGalleryPick(parseInt(b.getAttribute('data-gal-idx'), 10)); });
+        });
+        const more = ui.galleryResult.querySelector('#sbc-opt-gal-showmore');
+        if (more) more.addEventListener('click', function () { ui.galleryResult.classList.add('fb-all'); more.remove(); });
+    }
+    async function onGalleryPick(idx) {
+        const x = galleryLast && galleryLast.ranked[idx];
+        if (!x) return;
+        if (galleryBusy || buyBusy) { toast('Es laeuft schon ein Lauf.', 'warn'); return; }
+        galleryBusy = true;
+        try {
+            setGalleryResult(progressHtml('Lade Set "' + escapeHtml(x.name) + '" von fut.gg ...', 0, 1));
+            const r = await bridgeFetch(futggGallerySetUrl(x.path), 40000);
+            if (r.status !== 200) throw new Error('fut.gg antwortet mit HTTP ' + r.status);
+            const set = parseFutggGallerySet(r.text);
+            if (!set.players.length) throw new Error('Keine Aufstellung auf der Set-Seite gefunden.');
+            const locked = (ui.useLocks && ui.useLocks.checked) ? Array.from(readPaletoolsLocks()) : [];
+            const owned = matchOwned(set.players.map(p => ({ resourceId: p.defId })), STATE.pool, locked);
+            galleryLast.chosen = { idx: idx, meta: x, set: set, owned: owned };
+            if (STATE.diag.gallery) STATE.diag.gallery.chosen = { id: x.id, name: x.name, players: set.players.length, owned: owned.filter(Boolean).length, coinsTotal: set.coinsTotal, grade: set.bestGrade, tokens: set.tokens };
+            renderGallerySet(x, set, owned);
+            setGalleryStep(3);
+        } catch (e) {
+            reportError('Gallery-Set', e);
+            if (STATE.diag.gallery) STATE.diag.gallery.errors.push('set: ' + (e && e.message || e));
+            setGalleryResult(warnHtml('Set laden fehlgeschlagen: ' + (e && e.message || e)) +
+                             '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-back">Zurueck zur Liste</button>');
+            const back = ui.galleryResult.querySelector('#sbc-opt-gal-back');
+            if (back) back.addEventListener('click', function () { renderGallerySets(galleryLast.ranked); });
+        } finally {
+            galleryBusy = false;
+        }
+    }
+    function renderGallerySet(x, set, owned) {
+        const missing = set.players.filter((p, i) => !owned[i]);
+        const ownedN = set.players.length - missing.length;
+        const sumMissing = missing.reduce((a, p) => a + (p.price || 0), 0);
+        let h = '<div class="sbc-opt-summary"><b>' + escapeHtml(set.name || x.name) + '</b> · Note ' + escapeHtml(set.bestGrade || x.bestGrade || '?') +
+                ' · ' + (set.tokens != null ? set.tokens : x.tokens) + ' Tokens</div>' +
+                '<div class="sbc-opt-fb-meta">' + set.players.length + ' Spieler in der guenstigsten Aufstellung' + (set.requires ? ' (Set braucht ' + set.requires + ')' : '') +
+                ' · <b>' + ownedN + '</b> schon im Verein · <b>' + missing.length + '</b> zu kaufen' +
+                (set.score != null ? ' · Score ' + set.score.toLocaleString('de-DE') : '') + '</div>' +
+                '<div class="sbc-opt-fb-meta">fut.gg-Preise der fehlenden Karten zusammen <b>' + fmtCoins(sumMissing) + '</b>' +
+                (set.tax != null ? ' · beim Wiederverkauf gehen ~' + fmtCoins(set.tax) + ' Steuer weg' : '') + '</div>';
+        if (missing.length) {
+            h += '<button type="button" class="sbc-opt-btn primary" id="sbc-opt-gal-buy">' + missing.length + ' Spieler kaufen</button>' +
+                 '<div class="sbc-opt-dim">Erst werden die Live-Preise am EA-Markt geholt, dann kommt eine Rueckfrage. Ein Kauf alle 4-8 Sekunden, nie ueber der Obergrenze (Plan + ' +
+                 Math.round(BUY_TOLERANCE * 100) + ' %). Die Karten gehen direkt in den Verein.</div>';
+        } else {
+            h += '<div class="sbc-opt-summary">Alle Spieler sind schon im Verein - nichts zu kaufen. Im Spiel bewerten.</div>';
+        }
+        h += '<details class="sbc-opt-details-toggle"><summary>Aufstellung (' + set.players.length + ')</summary>';
+        set.players.forEach(function (p, i) {
+            h += '<div>' + (owned[i] ? '✓ ' : '') + escapeHtml(p.name) + ' <span class="sbc-opt-muted">(' + (p.rating || '?') + (p.version ? ', ' + escapeHtml(p.version) : '') + ')</span> ' +
+                 (owned[i] ? '<span class="sbc-opt-muted">im Verein</span>' : fmtCoins(p.price)) +
+                 (p.score != null ? ' <span class="sbc-opt-muted">· Score ' + p.score.toLocaleString('de-DE') + '</span>' : '') + '</div>';
+        });
+        h += '</details>';
+        if (set.grades.length) {
+            h += '<details class="sbc-opt-details-toggle"><summary>Noten und Tokens</summary>';
+            set.grades.forEach(g => { h += '<div>' + g.grade + ': ab ' + (g.score != null ? g.score.toLocaleString('de-DE') : '?') + ' Score → ' + (g.tokens ? g.tokens + ' Tokens' : escapeHtml(g.reward || '–')) + '</div>'; });
+            h += '</details>';
+        }
+        h += '<div class="sbc-opt-inline" style="margin-top:8px;">' +
+             '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-back" style="margin:0;">Zurueck</button>' +
+             '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-done" style="margin:0;">Als erledigt markieren</button></div>';
+        setGalleryResult(h);
+        const buy = ui.galleryResult.querySelector('#sbc-opt-gal-buy');
+        if (buy) buy.addEventListener('click', onGalleryBuyClick);
+        const back = ui.galleryResult.querySelector('#sbc-opt-gal-back');
+        if (back) back.addEventListener('click', function () { renderGallerySets(galleryLast.ranked); setGalleryStep(2); });
+        const done = ui.galleryResult.querySelector('#sbc-opt-gal-done');
+        if (done) done.addEventListener('click', function () { galleryMarkDone(x.id); toast('"' + x.name + '" als erledigt markiert.', 'ok'); onGalleryLoadClick(); });
+    }
+    async function onGalleryBuyClick() {
+        const ch = galleryLast && galleryLast.chosen;
+        if (!ch) return;
+        if (galleryBusy || buyBusy) { toast('Es laeuft schon ein Lauf.', 'warn'); return; }
+        galleryBusy = true;
+        const liveBins = {};
+        try {
+            const todo = ch.set.players.filter((p, i) => !ch.owned[i]);
+            for (let k = 0; k < todo.length; k++) {
+                const p = todo[k];
+                setGalleryResult(progressHtml('Live-Preise holen ... ' + (k + 1) + ' von ' + todo.length + ' (' + escapeHtml(p.name) + ')', k + 1, todo.length));
+                try {
+                    const est = await marketMinBin(p.defId);
+                    liveBins[p.defId] = est && est.robust != null ? est.robust : null;
+                } catch (e) {
+                    liveBins[p.defId] = null;
+                    if (isRateLimit(e && e.status)) { setGalleryResult(warnHtml('EA drosselt die Marktsuche - spaeter noch einmal.')); return; }
+                }
+                if (k < todo.length - 1) await futbinSleep(FUTBIN_MARKET_GAP_MS);
+            }
+        } finally {
+            galleryBusy = false;
+        }
+        const built = galleryBuyPlan(ch.set.players, ch.owned, liveBins, BUY_TOLERANCE, eaPriceTiers());
+        if (STATE.diag.gallery) STATE.diag.gallery.plan = { at: Date.now(), plan: built.plan.length, skipped: built.skipped.length, noLive: built.plan.filter(p => p.source !== 'live').length };
+        if (!built.plan.length) { setGalleryResult(warnHtml('Kein kaufbarer Spieler (keine Preise).')); return; }
+        const total = built.plan.reduce((a, p) => a + p.maxPrice, 0);
+        const coins = userCoins();
+        const noLive = built.plan.filter(p => p.source !== 'live').length;
+        const lines = built.plan.map(p => p.name + ' (' + (p.rating || '?') + '): bis ' + fmtCoins(p.maxPrice) + (p.source !== 'live' ? ' (fut.gg-Preis, kein Angebot am Markt)' : '')).join('\n');
+        const frage = 'Gallery-Set "' + ch.meta.name + '": ' + built.plan.length + ' Spieler nach und nach kaufen?\n\n' + lines +
+                      '\n\nZusammen hoechstens ' + fmtCoins(total) + (coins != null ? ' (Kontostand ' + fmtCoins(coins) + ')' : '') +
+                      (noLive ? '\n' + noLive + ' Preis(e) stammen von fut.gg, weil der Markt gerade kein Angebot zeigt.' : '') +
+                      '.\nEin Kauf alle 4-8 Sekunden, Abbruch bei Fehlern. Die Karten gehen in den Verein und zaehlen fuer die Galerie.';
+        if (!window.confirm(frage)) { renderGallerySet(ch.meta, ch.set, ch.owned); return; }
+        if (coins != null && coins < total) {
+            if (!window.confirm('Der Kontostand reicht nicht fuer die Obergrenze aller Spieler. Trotzdem starten (kauft, so weit die Coins reichen)?')) { renderGallerySet(ch.meta, ch.set, ch.owned); return; }
+        }
+        await buyPlannedPlayers(null, built.plan, {
+            noSquad: true, setResult: setGalleryResult, maxPerRun: GALLERY_BUY_MAX_PER_RUN,
+            gapMin: GALLERY_BUY_GAP_MIN_MS, gapMax: GALLERY_BUY_GAP_MAX_MS,
+            onDone: function (d) {
+                setGalleryStep(4);
+                const el = ui.galleryResult;
+                if (!el) return;
+                el.insertAdjacentHTML('beforeend',
+                    '<div class="sbc-opt-summary">Fertig: ' + d.bought + ' gekauft, im Verein.</div>' +
+                    '<div>Jetzt im Spiel (Konsole/PC oder Companion App): <b>Galerie → ' + escapeHtml(ch.meta.name) + ' → bewerten</b>. Erst die Token-Gutschrift pruefen, dann die Karten wieder verkaufen (5 % Steuer).</div>' +
+                    '<button type="button" class="sbc-opt-btn primary" id="sbc-opt-gal-done2">Set als erledigt markieren</button>');
+                const b = el.querySelector('#sbc-opt-gal-done2');
+                if (b) b.addEventListener('click', function () { galleryMarkDone(ch.meta.id); toast('"' + ch.meta.name + '" als erledigt markiert.', 'ok'); onGalleryLoadClick(); });
+            }
+        });
     }
     // ---- Konzept-Spieler direkt aus dem Kader kaufen (v5.22.0) --------------
     // Rasmus: nach einem Reload fehlte der Kauf-Knopf, weil er am futbin-Lauf
@@ -9679,7 +10053,7 @@
             itemProbe: computeItemProbe(STATE.pool),
             // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten mit
             // Kosten, Marktabfragen, Fehler, eingefuegte Loesung.
-            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null,
+            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null,
             futbinBuy: STATE.diag.futbinBuy || null,
             futbinBuyPlan: STATE.diag.futbinBuyPlan || null,
             marketUrls: STATE.diag.marketUrls,

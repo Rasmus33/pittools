@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.37.0
+// @version      5.38.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.37.0';
+    const VERSION = '5.38.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -6070,6 +6070,9 @@
         .sbc-opt-summary { margin:10px 0 4px; font-size:14px; }
         .sbc-opt-summary b { color:var(--pt-accent); }
         .sbc-opt-warn { color:var(--pt-warn); font-size:12px; margin-top:6px; }
+        /* v5.38.0: Gewinn/Verlust nach Steuer in der Verkaufs-Vorschau */
+        .sbc-opt-gain { color:var(--pt-accent); font-weight:700; }
+        .sbc-opt-loss { color:var(--pt-bad); font-weight:700; }
         /* ------------------------------------------------------------------
            RATING-KOSTEN-TABELLE
            ------------------------------------------------------------------ */
@@ -8251,8 +8254,10 @@
         let start = buyNow - inc;
         if (limits && limits.min > 0 && start < limits.min) start = limits.min; // Spanne gewinnt
         if (!(start > 0) || start > buyNow) start = buyNow; // EA nimmt Start = Sofortkauf
+        const net = Math.floor(buyNow * 0.95);
+        // v5.38.0 (Rasmus): "wie viel verlust bzw. gewinn man macht durchs verkaufen, nach abzug der 5 % steuern".
         return { buyNow: buyNow, start: start, lowest: arr[0], second: arr.length > 1 ? arr[1] : null, count: arr.length,
-                 belowPaid: paid > 0 && buyNow < paid, net: Math.floor(buyNow * 0.95) };
+                 belowPaid: paid > 0 && buyNow < paid, net: net, profit: paid > 0 ? net - paid : null };
     }
     /** Aufschlag-Modus -> Parameter fuer sellPriceFor. '0' = Markt, 'tier1' = eine Stufe drueber (Default), 'pct5' = +5 %. */
     function sellMarkupOf(mode) {
@@ -9831,10 +9836,19 @@
         // Erst auf die Transferliste, dann listen - so macht es EAs Client auch.
         // v5.37.0: liegt die Karte schon dort (Transferlisten-Verkauf), entfaellt das Verschieben.
         if (!alreadyInTradePile) {
-            const pileTrade = (window.ItemPile && window.ItemPile.TRANSFER) || 'trade';
-            const mv = await apiPut('item', { itemData: [{ id: itemId, pile: pileTrade }] });
-            const row = mv && Array.isArray(mv.itemData) ? mv.itemData[0] : null;
-            if (row && row.success === false) throw new Error('Transferliste: ' + (row.reason || row.errorCode || 'abgelehnt'));
+            // v5.38.0: Report 21.09. - "Invalid deck" mit EAs Enum-Wert zuerst. Das seit
+            // Jahren bewaehrte Literal 'trade' kommt jetzt zuerst; EAs Wert (falls er
+            // abweicht) ist der zweite Versuch. Der gesendete Wert steht im Fehler.
+            const cands = ['trade'];
+            try { const t = window.ItemPile && window.ItemPile.TRANSFER; if (t != null && String(t) !== 'trade') cands.push(String(t)); } catch (e) {}
+            let lastErr = null;
+            for (const pile of cands) {
+                const mv = await apiPut('item', { itemData: [{ id: itemId, pile: pile }] });
+                const row = mv && Array.isArray(mv.itemData) ? mv.itemData[0] : null;
+                if (!row || row.success !== false) { lastErr = null; break; }
+                lastErr = new Error('Transferliste (pile ' + pile + '): ' + (row.reason || row.errorCode || 'abgelehnt'));
+            }
+            if (lastErr) throw lastErr;
         }
         return apiPost('auctionhouse', { itemData: { id: itemId }, startingBid: start, duration: duration, buyNowPrice: buyNow });
     }
@@ -9917,12 +9931,17 @@
         const bySet = {};
         rows.forEach(x => { const k = x.rec.setName || 'Ohne Set'; (bySet[k] = bySet[k] || []).push(x); });
         const gross = sellable.reduce((a, x) => a + x.price.buyNow, 0);
-        const paidSum = sellable.reduce((a, x) => a + (x.rec.paid || 0), 0);
+        const withPaid = sellable.filter(x => x.rec.paid > 0);
+        const paidSum = withPaid.reduce((a, x) => a + x.rec.paid, 0);
+        const profitSum = withPaid.reduce((a, x) => a + (x.price.profit || 0), 0);
+        const signed = v => (v >= 0 ? '+' : '−') + fmtCoins(Math.abs(v));
         const mode = sellMarkupMode();
         const isGallery = sellTargetEl === ui.galleryResult || !sellTargetEl;
         let h = '<div class="sbc-opt-summary">' + sellable.length + ' von ' + rows.length + ' Karten mit aktuellem Angebot</div>' +
                 '<div class="sbc-opt-fb-meta">Sofortkauf zusammen <b>' + fmtCoins(gross) + '</b> · nach 5 % Steuer ~<b>' + fmtCoins(Math.floor(gross * 0.95)) + '</b>' +
                 (paidSum ? ' · gekauft fuer ' + fmtCoins(paidSum) : '') + '</div>' +
+                (withPaid.length ? '<div class="sbc-opt-fb-meta">Ergebnis nach Steuer: <b class="' + (profitSum >= 0 ? 'sbc-opt-gain' : 'sbc-opt-loss') + '">' + signed(profitSum) + '</b>' +
+                    (withPaid.length < sellable.length ? ' <span class="sbc-opt-muted">(' + (sellable.length - withPaid.length) + ' ohne bekannten Einkaufspreis)</span>' : '') + '</div>' : '') +
                 '<label class="sbc-opt-chiplabel" style="margin-top:8px;">Preis gegenueber dem guenstigsten Angebot</label>' +
                 '<div class="sbc-opt-chips" id="sbc-opt-sell-markup">' +
                 '<button type="button" class="sbc-opt-chip' + (mode === '0' ? ' on' : '') + '" data-markup="0">Gleich</button>' +
@@ -9937,7 +9956,7 @@
                 h += '<div>' + escapeHtml(r.name) + ' <span class="sbc-opt-muted">(' + (r.rating || '?') + ')</span>' +
                      (r.paid ? ' <span class="sbc-opt-muted">gekauft ' + fmtCoins(r.paid) + '</span>' : '') +
                      (p ? ' → <b>' + fmtCoins(p.buyNow) + '</b> <span class="sbc-opt-muted">(Start ' + fmtCoins(p.start) + ', ' + p.count + ' Angebote ab ' + fmtCoins(p.lowest) + ')</span>' +
-                          (p.belowPaid ? ' <span class="sbc-opt-warn">unter Einkauf</span>' : '')
+                          (p.profit != null ? ' <span class="' + (p.profit >= 0 ? 'sbc-opt-gain' : 'sbc-opt-loss') + '">' + signed(p.profit) + '</span>' : '')
                         : ' <span class="sbc-opt-warn">kein Angebot am Markt - wird nicht gelistet</span>') + '</div>';
             });
             h += '</details>';

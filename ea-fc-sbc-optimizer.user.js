@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.44.0
+// @version      5.45.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.44.0';
+    const VERSION = '5.45.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -10036,8 +10036,13 @@
                 setGalleryStep(4);
                 const el = ui.galleryResult;
                 if (!el) return;
+                // v5.45.0 (Rasmus): am Ende noch einmal klar sagen, WELCHES Set gekauft wurde.
+                const kind = ch.meta.eaKind === 'league' ? 'Liga-Set' : ch.meta.eaKind === 'nation' ? 'Nationen-Set' : ch.meta.eaKind === 'club' ? 'Vereins-Set' : 'Set';
+                const liga = ch.meta.league ? ch.meta.league.replace(/-/g, ' ') : '';
                 el.insertAdjacentHTML('beforeend',
-                    '<div class="sbc-opt-summary">Fertig: ' + d.bought + ' gekauft, im Verein.</div>' +
+                    '<div class="sbc-opt-summary">' + kind + ' <b>' + escapeHtml(ch.meta.name) + '</b>' + (liga && ch.meta.eaKind === 'club' ? ' <span class="sbc-opt-muted">(' + escapeHtml(liga) + ')</span>' : '') +
+                    ' komplett gekauft: ' + d.bought + ' Karten, jetzt im Verein' + (ch.set && ch.set.bestGrade ? ' · Ziel-Note ' + escapeHtml(ch.set.bestGrade) : '') +
+                    (ch.meta.tokens ? ' · ' + ch.meta.tokens + ' Tokens' : '') + '.</div>' +
                     '<div>Jetzt im Spiel (Konsole/PC oder Companion App): <b>Galerie → ' + escapeHtml(ch.meta.name) + ' → bewerten</b>. Erst die Token-Gutschrift pruefen, dann die Karten wieder verkaufen (5 % Steuer).</div>' +
                     '<button type="button" class="sbc-opt-btn primary" id="sbc-opt-gal-done2">Set als erledigt markieren</button>');
                 const b = el.querySelector('#sbc-opt-gal-done2');

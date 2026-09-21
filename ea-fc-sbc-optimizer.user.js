@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.48.0
+// @version      5.49.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.48.0';
+    const VERSION = '5.49.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -206,6 +206,7 @@
             gallery: null,           // v5.32.0: FUT Gallery (Sets geladen, gewaehlt, Plan)
             gallerySell: null,       // v5.35.0: Verkauf gekaufter Galerie-Karten (Preise, Schritte)
             tradepileSell: null,     // v5.37.0: Transferliste zum Marktpreis listen
+            clientTradeSamples: null, // v5.49.0: Handels-Requests der EA-Oberflaeche (Header-Namen, Body, Status)
             futbinBuyPlan: null,     // v5.22.0: Kaufplan aus den Konzept-Spielern des Kaders (Anzahl, uebersprungen, Suchfehler)
             marketUrls: [],          // v5.20.0: letzte 6 Marktsuch-URLs mit Query (unsere UND EAs eigene) - Parameter-Vergleich
             marketProbe: []          // v5.20.0: je Marktabfrage Treffer/fremde Karten/Angebote (Filter ignoriert?)
@@ -675,6 +676,23 @@
                     try { STATE.diag.lastSquadPutBody = String(body).slice(0, 3000); } catch (e) {}
                 }
                 if (url) noteUnclassifiedUtas(url);
+                // v5.49.0: Handels-Requests der EA-OBERFLAECHE mitschneiden (Kauf,
+                // Listen, Verschieben) - Report 21.09.: Kauf von Hand geht, unser
+                // eigener PUT trade/{id}/bid bekommt 461. Der Unterschied muss in
+                // Headern oder Body liegen; Tokens werden maskiert.
+                if (url && /\/(trade\/\d+\/bid|auctionhouse|item)(\?|$)/.test(String(url)) && (this.__sbcMethod === 'PUT' || this.__sbcMethod === 'POST')) {
+                    try {
+                        const hs = {};
+                        Object.keys(this.__sbcHeaders || {}).forEach(k => {
+                            const v = String(this.__sbcHeaders[k]);
+                            hs[k] = /sid|phishing|nucleus|token|auth/i.test(k) ? ('<' + v.length + ' Zeichen>') : v.slice(0, 80);
+                        });
+                        const sample = { m: this.__sbcMethod, p: String(url).replace(/^https?:\/\/[^/]+/, '').slice(0, 120), h: hs, body: body ? String(body).slice(0, 240) : null, t: Date.now(), status: null };
+                        const ring = STATE.diag.clientTradeSamples || (STATE.diag.clientTradeSamples = []);
+                        ring.push(sample); if (ring.length > 5) ring.shift();
+                        this.addEventListener('loadend', function () { sample.status = this.status; });
+                    } catch (e) {}
+                }
                 // v5.15.0: sbs|sbc-Traffic auch fuer UNKLASSIFIZIERTE Pfade
                 // mitschreiben - genau die sind beim Freischalten interessant.
                 if (url && RE_SBS_SBC_PREFIX_PATH.test(String(url))) {
@@ -8792,6 +8810,41 @@
             return a ? String(a.tradeState || '').toLowerCase() : null;
         } catch (e) { return null; }
     }
+    /**
+     * v5.49.0: Kauf ueber EAs CLIENT (services.Item.bid) als zweiter Weg, wenn
+     * der eigene PUT 461 bekommt. Sucht die Karte ueber den Client, nimmt das
+     * Angebot mit derselben tradeId (sonst das guenstigste bis maxBuy, tote
+     * Trades ausgenommen) und bietet mit EAs eigener Methode.
+     */
+    async function clientBidFallback(rid, tradeId, maxBuy) {
+        try {
+            if (typeof window.UTSearchCriteriaDTO !== 'function' || !window.services || !window.services.Item ||
+                typeof window.services.Item.searchTransferMarket !== 'function' || typeof window.services.Item.bid !== 'function') return { tried: false, why: 'Client-Weg nicht verfuegbar' };
+            const crit = marketCriteria(rid, maxBuy);
+            const resp = await obsPromise(window.services.Item.searchTransferMarket(crit, 1));
+            if (!responseOk(resp)) return { tried: true, ok: false, why: 'Client-Suche Status ' + (resp && resp.status) };
+            const data = (resp && (resp.data || resp.response)) || {};
+            const items = data.items || data.auctionInfo || [];
+            let pick = null, same = false;
+            for (const it of items) {
+                if (!itemIsCard(it, rid)) continue;
+                let a = null;
+                try { a = it._auction || (typeof it.getAuctionData === 'function' ? it.getAuctionData() : null); } catch (e) {}
+                const bin = a && Number(a.buyNowPrice); const tid = a && a.tradeId;
+                if (!(bin > 0) || (maxBuy > 0 && bin > maxBuy) || (a.expires != null && Number(a.expires) < 0)) continue;
+                if (tid != null && deadTrades.has(String(tid))) continue;
+                if (tradeId != null && String(tid) === String(tradeId)) { pick = { it: it, bin: bin, tid: tid }; same = true; break; }
+                if (!pick || bin < pick.bin) pick = { it: it, bin: bin, tid: tid };
+            }
+            if (!pick) return { tried: true, ok: false, why: 'kein Angebot im Client-Ergebnis', seen: items.length };
+            let r = null;
+            try { r = await obsPromise(window.services.Item.bid(pick.it, pick.bin)); }
+            catch (e) { return { tried: true, ok: false, why: String(e && e.message || e), sameTrade: same }; }
+            const ok = responseOk(r);
+            return { tried: true, ok: ok, status: r && r.status, sameTrade: same, bin: pick.bin, item: pick.it, tradeId: pick.tid,
+                     why: ok ? null : ('Client-Kauf Status ' + (r && r.status) + (r && r.error ? ' ' + (r.error.code != null ? r.error.code : r.error.message) : '')) };
+        } catch (e) { return { tried: true, ok: false, why: String(e && e.message || e) }; }
+    }
     /** Sofortkauf per eigenem PUT auf EAs Bid-Endpunkt. Liefert EAs Antwort (auctionInfo) oder wirft (Status in der Meldung). */
     async function bidHttp(tradeId, bin) {
         try { return await apiPut('trade/' + tradeId + '/bid', { bid: Math.floor(bin) }); }
@@ -9622,6 +9675,20 @@
                     if (isRateLimit(status)) { step.status = 'Rate-Limit'; diag.stopped = 'Rate-Limit beim Kauf'; lines.push('⚠ EA drosselt - Lauf gestoppt.'); hardStop = true; break; }
                     if (status === 461 && offer.tradeId != null) {
                         denied461++;
+                        if (!diag.ownBidHeaders) { try { diag.ownBidHeaders = Object.keys(apiHeaders()).concat(['Content-Type']); } catch (e) {} }
+                        // v5.49.0: einmal je Schritt ueber EAs Client kaufen (Report 21.09.:
+                        // Kauf von Hand geht, eigener PUT bekommt 461).
+                        if (!step.clientBid) {
+                            const cb = await clientBidFallback(p.resourceId, offer.tradeId, p.maxPrice);
+                            step.clientBid = { tried: !!cb.tried, ok: !!cb.ok, status: cb.status || null, sameTrade: !!cb.sameTrade, bin: cb.bin || null, why: cb.why || null };
+                            if (cb.ok) {
+                                offer = { tradeId: cb.tradeId, bin: cb.bin, item: cb.item, itemId: cb.item && cb.item.id, raw: null };
+                                step.found = cb.bin; step.via = 'client';
+                                ok = true; denied461 = 0;
+                                lines.push('✓ ' + escapeHtml(p.name) + ' ueber EAs Client gekauft (eigener Weg: 461).');
+                                break;
+                            }
+                        }
                         // v5.48.0: beim ersten 461 die Stapel messen (Report 21.09.: zwoelf 461 in
                         // Folge, alle "closed" - voller Zielstapel oder Marktsperre sind die Verdaechtigen).
                         if (!diag.market461) {
@@ -11065,7 +11132,7 @@
             itemProbe: computeItemProbe(STATE.pool),
             // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten mit
             // Kosten, Marktabfragen, Fehler, eingefuegte Loesung.
-            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null,
+            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null,
             futbinBuy: STATE.diag.futbinBuy || null,
             futbinBuyPlan: STATE.diag.futbinBuyPlan || null,
             marketUrls: STATE.diag.marketUrls,

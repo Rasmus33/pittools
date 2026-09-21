@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.42.0
+// @version      5.43.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.42.0';
+    const VERSION = '5.43.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -8790,9 +8790,9 @@
     const MARKET_STEP_GAP_MIN_MS = 1400, MARKET_STEP_GAP_MAX_MS = 2400;
     const MARKET_LOW_CACHE_MS = 180000;
     const marketLowCache = new Map();
-    async function marketOffersLowest(resourceId) {
+    async function marketOffersLowest(resourceId, opts) {
         const cached = marketLowCache.get(String(resourceId));
-        if (cached && Date.now() - cached.at < MARKET_LOW_CACHE_MS) return Object.assign({ fromCache: true }, cached.low);
+        if (!(opts && opts.fresh) && cached && Date.now() - cached.at < MARKET_LOW_CACHE_MS) return Object.assign({ fromCache: true }, cached.low);
         const low = await marketOffersLowestUncached(resourceId);
         if (low.offers.length || low.complete) marketLowCache.set(String(resourceId), { at: Date.now(), low: low });
         return low;
@@ -8816,8 +8816,8 @@
         }
         return { offers: pool, complete: complete, steps: steps, min: curMin };
     }
-    async function marketMinBin(resourceId) {
-        const low = await marketOffersLowest(resourceId);
+    async function marketMinBin(resourceId, opts) {
+        const low = await marketOffersLowest(resourceId, opts);
         const est = robustMinBin(low.offers.map(o => o.bin));
         est.complete = low.complete; est.steps = low.steps;
         return est;
@@ -9319,6 +9319,9 @@
     const BUY_GAP_MAX_MS = 6000;
     const BUY_MAX_PER_RUN = 11;
     const BUY_MAX_CONSECUTIVE_FAILS = 2;
+    const BUY_OFFER_TRIES = 3;          // v5.43.0: so viele Angebote je Schritt, wenn eines tot ist
+    const BUY_REPLAN_MAX_FACTOR = 2;    // v5.43.0: Neubewertung darf den Plan hoechstens verdoppeln
+    const deadTrades = new Set();       // v5.43.0: Trades, die EA als weg gemeldet hat (461/closed)
     let buyBusy = false;
     function eaPriceTiers() {
         try {
@@ -9436,8 +9439,11 @@
                 const step = { name: p.name, planned: p.planned, max: p.maxPrice, found: null, paid: null, status: null };
                 diag.steps.push(step);
                 render('Suche ' + p.name + ' (bis ' + fmtCoins(p.maxPrice) + ') ...');
+                // v5.43.0: Angebote holen, tote (schon verkaufte, aber von EAs Suche noch
+                // gelieferte) Trades ausblenden. Report 21.09.: Russell-Rowe - dreimal
+                // dasselbe Angebot 608750162402, dreimal 461, Status "closed".
                 let offers;
-                try { offers = await marketOffers(p.resourceId, p.maxPrice); }
+                try { offers = (await marketOffers(p.resourceId, p.maxPrice)).filter(o => !deadTrades.has(String(o.tradeId))); }
                 catch (e) {
                     step.status = 'suche: ' + (e && e.message || e);
                     if (isRateLimit(e && e.status)) { diag.stopped = 'Rate-Limit bei der Suche'; lines.push('⚠ EA drosselt - Lauf gestoppt.'); break; }
@@ -9447,49 +9453,78 @@
                     continue;
                 }
                 if (!offers.length) {
+                    // v5.43.0 (Rasmus: "dann sollte der preis neu evaluiert und angepasst
+                    // werden, anstatt es so oft zu versuchen"): echtes Marktminimum frisch
+                    // holen; liegt es hoechstens beim Doppelten des Plans, Plan anheben und
+                    // einmal neu suchen. Darueber bleibt es beim Nutzer.
+                    let est = null;
+                    try { est = await marketMinBin(p.resourceId, { fresh: true }); } catch (e) { est = null; }
+                    const neu = est && est.robust != null ? est.robust : null;
+                    if (neu && neu > p.planned && neu <= p.planned * BUY_REPLAN_MAX_FACTOR) {
+                        step.replannedFrom = p.planned; step.replanned = neu;
+                        p.planned = neu; p.maxPrice = planMaxPrice(neu, BUY_TOLERANCE, eaPriceTiers()); step.max = p.maxPrice;
+                        lines.push('↻ ' + escapeHtml(p.name) + ': kein Angebot bis ' + fmtCoins(step.max === p.maxPrice ? step.replannedFrom : p.maxPrice) + ' - Markt liegt bei ' + fmtCoins(neu) + ', neue Obergrenze ' + fmtCoins(p.maxPrice) + '.');
+                        render('Suche ' + p.name + ' erneut (bis ' + fmtCoins(p.maxPrice) + ') ...');
+                        await futbinSleep(randomBetween(1500, 2500));
+                        try { offers = (await marketOffers(p.resourceId, p.maxPrice)).filter(o => !deadTrades.has(String(o.tradeId))); } catch (e) { offers = []; }
+                    }
+                }
+                if (!offers.length) {
                     step.status = 'kein Angebot bis Obergrenze';
-                    lines.push('– ' + escapeHtml(p.name) + ': kein Angebot bis ' + fmtCoins(p.maxPrice) + ' - selbst kaufen.');
+                    lines.push('– ' + escapeHtml(p.name) + ': kein Angebot bis ' + fmtCoins(p.maxPrice) + (step.replanned ? ' (auch nach Neubewertung)' : '') + ' - selbst kaufen.');
                     fails = 0;
                     await futbinSleep(randomBetween(gapMin, gapMax));
                     continue;
                 }
-                const offer = offers[0];
-                step.found = offer.bin;
-                const coins = userCoins();
-                if (coins != null && coins < offer.bin) { step.status = 'zu wenig Coins'; diag.stopped = 'Coins reichen nicht'; lines.push('⚠ Coins reichen nicht mehr (' + fmtCoins(coins) + ').'); break; }
-                render('Kaufe ' + p.name + ' fuer ' + fmtCoins(offer.bin) + ' ...');
-                // v5.24.0: Kauf ueber EAs Bid-Endpunkt (eigener PUT, wie die
-                // Suche) - Angebote aus dem Client-Weg hatten hier ein Entity,
-                // die HTTP-Angebote haben tradeId + Rohdaten.
-                let ok = false, why = null, status = null;
-                if (offer.tradeId != null) {
-                    try { await bidHttp(offer.tradeId, offer.bin); ok = true; }
-                    catch (e) { why = String(e && e.message || e); status = e && e.status; }
-                } else if (offer.item) {
-                    let resp = null;
-                    try { resp = await obsPromise(window.services.Item.bid(offer.item, offer.bin)); }
-                    catch (e) { resp = { success: false, status: 0, error: { message: String(e && e.message || e) } }; }
-                    ok = responseOk(resp); status = resp && resp.status;
-                    if (!ok) why = 'Status ' + status + (resp && resp.error ? ', ' + (resp.error.code != null ? resp.error.code : resp.error.message) : '');
-                } else { why = 'Angebot ohne tradeId'; }
-                if (isRateLimit(status)) { step.status = 'Rate-Limit'; diag.stopped = 'Rate-Limit beim Kauf'; lines.push('⚠ EA drosselt - Lauf gestoppt.'); break; }
-                if (!ok && status === 461 && offer.tradeId != null) {
-                    // v5.42.0: 461 = "weg" ODER "nicht erlaubt". Report 21.09.: sieben 461 in
-                    // Folge, einmal "You are not allowed to bid on this trade" - der Markt
-                    // war fuer den Account gesperrt, nicht die Karten weg.
-                    const st = await tradeStateOf(offer.tradeId);
-                    step.tradeState = st;
-                    if (st === 'active') {
-                        step.status = 'EA verweigert den Kauf (461) - Angebot ist aktiv';
-                        diag.stopped = 'EA verweigert Kaeufe (461) bei aktivem Angebot - Transfermarkt vermutlich vorruebergehend gesperrt';
-                        lines.push('⚠ ' + escapeHtml(p.name) + ': EA verweigert den Kauf, obwohl das Angebot aktiv ist. Das ist meist eine zeitweise Marktsperre nach vielen Aktionen - bitte im Spiel einen Kauf von Hand probieren und spaeter erneut.');
-                        break;
+                // v5.43.0: bis zu BUY_OFFER_TRIES Angebote desselben Suchergebnisses
+                // nacheinander - ein totes Angebot kostet keinen Schritt mehr.
+                let offer = null, ok = false, why = null, status = null, hardStop = false;
+                for (let t = 0; t < offers.length && t < BUY_OFFER_TRIES && !ok; t++) {
+                    offer = offers[t];
+                    step.found = offer.bin;
+                    const coins = userCoins();
+                    if (coins != null && coins < offer.bin) { step.status = 'zu wenig Coins'; diag.stopped = 'Coins reichen nicht'; lines.push('⚠ Coins reichen nicht mehr (' + fmtCoins(coins) + ').'); hardStop = true; break; }
+                    render('Kaufe ' + p.name + ' fuer ' + fmtCoins(offer.bin) + (t ? ' (Angebot ' + (t + 1) + ')' : '') + ' ...');
+                    // v5.24.0: Kauf ueber EAs Bid-Endpunkt (eigener PUT, wie die
+                    // Suche) - Angebote aus dem Client-Weg hatten hier ein Entity,
+                    // die HTTP-Angebote haben tradeId + Rohdaten.
+                    ok = false; why = null; status = null;
+                    if (offer.tradeId != null) {
+                        try { await bidHttp(offer.tradeId, offer.bin); ok = true; }
+                        catch (e) { why = String(e && e.message || e); status = e && e.status; }
+                    } else if (offer.item) {
+                        let resp = null;
+                        try { resp = await obsPromise(window.services.Item.bid(offer.item, offer.bin)); }
+                        catch (e) { resp = { success: false, status: 0, error: { message: String(e && e.message || e) } }; }
+                        ok = responseOk(resp); status = resp && resp.status;
+                        if (!ok) why = 'Status ' + status + (resp && resp.error ? ', ' + (resp.error.code != null ? resp.error.code : resp.error.message) : '');
+                    } else { why = 'Angebot ohne tradeId'; }
+                    if (ok) break;
+                    if (isRateLimit(status)) { step.status = 'Rate-Limit'; diag.stopped = 'Rate-Limit beim Kauf'; lines.push('⚠ EA drosselt - Lauf gestoppt.'); hardStop = true; break; }
+                    if (status === 461 && offer.tradeId != null) {
+                        // v5.42.0: 461 = "weg" ODER "nicht erlaubt". Report 21.09.: sieben 461 in
+                        // Folge, einmal "You are not allowed to bid on this trade" - der Markt
+                        // war fuer den Account gesperrt, nicht die Karten weg.
+                        const st = await tradeStateOf(offer.tradeId);
+                        step.tradeState = st;
+                        if (st === 'active') {
+                            step.status = 'EA verweigert den Kauf (461) - Angebot ist aktiv';
+                            diag.stopped = 'EA verweigert Kaeufe (461) bei aktivem Angebot - Transfermarkt vermutlich vorruebergehend gesperrt';
+                            lines.push('⚠ ' + escapeHtml(p.name) + ': EA verweigert den Kauf, obwohl das Angebot aktiv ist. Das ist meist eine zeitweise Marktsperre nach vielen Aktionen - bitte im Spiel einen Kauf von Hand probieren und spaeter erneut.');
+                            hardStop = true; break;
+                        }
+                        deadTrades.add(String(offer.tradeId)); // weg - nie wieder anbieten lassen
+                        step.deadTried = (step.deadTried || 0) + 1;
+                        if (t < offers.length - 1 && t < BUY_OFFER_TRIES - 1) await futbinSleep(randomBetween(1200, 2000));
+                        continue;
                     }
+                    break; // anderer Fehler: normale Fehlerbehandlung
                 }
+                if (hardStop) break;
                 if (!ok) {
                     step.status = 'Kauf abgelehnt (' + (why || '?') + ')';
                     fails++;
-                    lines.push('⚠ ' + escapeHtml(p.name) + ': ' + escapeHtml(step.status) + ' - vermutlich schon weg.');
+                    lines.push('⚠ ' + escapeHtml(p.name) + ': ' + escapeHtml(step.status) + (step.deadTried ? ' - ' + step.deadTried + ' Angebot(e) waren schon weg.' : ' - vermutlich schon weg.'));
                     if (fails >= BUY_MAX_CONSECUTIVE_FAILS) { diag.stopped = 'zwei Fehler hintereinander'; break; }
                     await futbinSleep(randomBetween(gapMin, gapMax));
                     continue;

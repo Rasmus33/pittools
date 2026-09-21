@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.45.0
+// @version      5.46.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.45.0';
+    const VERSION = '5.46.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -8272,12 +8272,20 @@
         return { buyNow: buyNow, start: start, base: Math.max(1, baseClamped), lowest: arr[0], second: arr.length > 1 ? arr[1] : null, count: arr.length,
                  belowPaid: paid > 0 && buyNow < paid, net: net, profit: paid > 0 ? net - paid : null };
     }
-    /** Aufschlag-Modus -> Parameter fuer sellPriceFor. '0' = Markt, 'tier1' = eine Stufe drueber (Default), 'pct5' = +5 %. */
+    /**
+     * Aufschlag-Modus -> Parameter fuer sellPriceFor. '0' = Markt, 'tier1'/'tier2' =
+     * Stufen drueber, 'pct5'/'pct10'/'pct15' = Prozent. v5.46.0 (Rasmus: "ich muss
+     * noch hoeher gehen koennen als +1 Schritt und +5 %").
+     */
     function sellMarkupOf(mode) {
         if (mode === '0') return null;
+        if (mode === 'tier2') return { tiers: 2 };
         if (mode === 'pct5') return { pct: 0.05 };
+        if (mode === 'pct10') return { pct: 0.10 };
+        if (mode === 'pct15') return { pct: 0.15 };
         return { tiers: 1 };
     }
+    const SELL_MARKUP_MODES = ['0', 'tier1', 'tier2', 'pct5', 'pct10', 'pct15'];
     /**
      * v5.37.0 Transferliste (Rasmus: "wenn ich da 80 spieler rumliegen habe,
      * dass du die dann zu marktueblichen preisen alle auf den transfermarkt
@@ -8456,8 +8464,10 @@
      * alt). Liegt er ueber EAs Untergrenze, wird die Basis angehoben - hoechstens
      * auf capFactor x Untergrenze (Schutz vor veralteten oder Ausreisser-Verkaeufen).
      */
-    function blendSellBase(eaBase, sales, stamp, maxAgeMin, capFactor) {
-        const out = { base: eaBase, used: 0, median: null, raised: false };
+    function blendSellBase(eaBase, sales, stamp, maxAgeMin, capFactor, anchor) {
+        // v5.46.0: anchor 'max' (Default) = hoechster juengster Verkauf ("zum Maximum
+        // verkaufen"), 'median' = Mittelwert. Die 1,5x-Kappung bleibt der Schutz.
+        const out = { base: eaBase, used: 0, median: null, max: null, raised: false };
         if (!(eaBase > 0)) return out;
         const fresh = (sales || []).filter(x => x && x.price > 0).filter(x => {
             const age = futbinSaleAgeMinutes(x.when, stamp);
@@ -8465,8 +8475,9 @@
         }).map(x => x.price).sort((a, b) => a - b);
         if (!fresh.length) return out;
         const med = fresh.length % 2 ? fresh[(fresh.length - 1) / 2] : Math.round((fresh[fresh.length / 2 - 1] + fresh[fresh.length / 2]) / 2);
-        out.used = fresh.length; out.median = med;
-        if (med > eaBase) { out.base = Math.min(med, Math.round(eaBase * (capFactor || 1.5))); out.raised = out.base > eaBase; }
+        out.used = fresh.length; out.median = med; out.max = fresh[fresh.length - 1];
+        const target = anchor === 'median' ? med : out.max;
+        if (target > eaBase) { out.base = Math.min(target, Math.round(eaBase * (capFactor || 1.5))); out.raised = out.base > eaBase; }
         return out;
     }
     /** Reihenfolge "Meiste Tokens": Tokens absteigend, dann Gesamtpreis (bzw. Untergrenze) aufsteigend. */
@@ -9542,7 +9553,7 @@
         try {
             for (let k = 0; k < plan.length && k < maxPerRun; k++) {
                 const p = plan[k];
-                const step = { name: p.name, planned: p.planned, max: p.maxPrice, found: null, paid: null, status: null };
+                const step = { name: p.name, planned: p.planned, max: p.maxPrice, found: null, paid: null, status: null, est: p.est || null, futgg: p.futggPrice || null };
                 diag.steps.push(step);
                 render('Suche ' + p.name + ' (bis ' + fmtCoins(p.maxPrice) + ') ...');
                 // v5.43.0: Angebote holen, tote (schon verkaufte, aber von EAs Suche noch
@@ -9962,7 +9973,7 @@
         if (!ch) return;
         if (galleryBusy || buyBusy) { toast('Es laeuft schon ein Lauf.', 'warn'); return; }
         galleryBusy = true;
-        const liveBins = {};
+        const liveBins = {}, liveEst = {};
         // v5.36.0: "vervollstaendigen" kauft nur die gewaehlten Indizes; alles andere gilt als vorhanden.
         const mask = ch.set.players.map((p, i) => ch.owned[i] || (ch.buyIdx && ch.buyIdx.indexOf(i) < 0) ? (ch.owned[i] || { skip: true }) : null);
         try {
@@ -9973,6 +9984,7 @@
                 try {
                     const est = await marketMinBin(p.defId);
                     liveBins[p.defId] = est && est.robust != null ? est.robust : null;
+                    liveEst[p.defId] = est ? { min: est.min, robust: est.robust, count: est.count, complete: est.complete, steps: est.steps, fromCache: !!est.fromCache } : null; // v5.46.0: Report
                 } catch (e) {
                     liveBins[p.defId] = null;
                     if (isRateLimit(e && e.status)) { setGalleryResult(warnHtml('EA drosselt die Marktsuche - spaeter noch einmal.')); return; }
@@ -9983,7 +9995,9 @@
             galleryBusy = false;
         }
         const built = galleryBuyPlan(ch.set.players, mask, liveBins, BUY_TOLERANCE, eaPriceTiers());
-        if (STATE.diag.gallery) STATE.diag.gallery.plan = { at: Date.now(), plan: built.plan.length, skipped: built.skipped.length, noLive: built.plan.filter(p => p.source !== 'live').length };
+        built.plan.forEach(p => { p.est = liveEst[p.resourceId] || null; p.futggPrice = (ch.set.players[p.index] || {}).price || null; });
+        if (STATE.diag.gallery) STATE.diag.gallery.plan = { at: Date.now(), plan: built.plan.length, skipped: built.skipped.length, noLive: built.plan.filter(p => p.source !== 'live').length,
+                                                             players: built.plan.map(p => ({ name: p.name, planned: p.planned, max: p.maxPrice, futgg: p.futggPrice, est: p.est })) };
         if (!built.plan.length) { setGalleryResult(warnHtml('Kein kaufbarer Spieler (keine Preise).')); return; }
         const total = built.plan.reduce((a, p) => a + p.maxPrice, 0);
         const coins = userCoins();
@@ -10070,7 +10084,7 @@
         el.className = 'sbc-opt-result show';
         el.innerHTML = html;
     }
-    function sellMarkupMode() { try { const m = localStorage.getItem('sbcOptSellMarkup'); return m === '0' || m === 'pct5' ? m : 'tier1'; } catch (e) { return 'tier1'; } }
+    function sellMarkupMode() { try { const m = localStorage.getItem('sbcOptSellMarkup'); return SELL_MARKUP_MODES.indexOf(m) >= 0 ? m : 'tier1'; } catch (e) { return 'tier1'; } }
     let sellLastRows = null; // fuer Neuberechnung beim Aufschlag-Wechsel
     // v5.44.0: EA-Karten-ID -> futbin-ID, dauerhaft (aendert sich nie).
     function futbinIdCacheLoad() { try { const o = JSON.parse(localStorage.getItem('sbcOptFutbinIds') || '{}'); return o && typeof o === 'object' ? o : {}; } catch (e) { return {}; } }
@@ -10226,10 +10240,15 @@
             if (!r.defId) return { rec: r, price: null };
             const bins = sellLastRows.byDef[r.defId] || [];
             const fb = sellLastRows.futbin && sellLastRows.futbin[r.defId];
-            const blend = fb ? blendSellBase(lowestBaseOf(bins), fb.sales, fb.stamp, 180, 1.5) : null;
+            const eaLowest = lowestBaseOf(bins);
+            const blend = fb ? blendSellBase(eaLowest, fb.sales, fb.stamp, 180, 1.5, 'max') : null;
             const limits = r.limits || (fb && fb.range && fb.range.max > 0 ? fb.range : null);
             const price = sellPriceFor(bins, r.paid, limits, tiers, markup, blend ? blend.base : null);
-            if (price && fb) { price.futbin = { sales: fb.sales.slice(0, 3), raised: !!blend.raised, median: blend.median, trendPct: fb.trendPct }; }
+            if (price) {
+                // v5.46.0: Herkunft des Preises fuer Vorschau und Report.
+                price.detail = { eaLowest: eaLowest, eaOffers: bins.length, futbinMax: blend ? blend.max : null, futbinMedian: blend ? blend.median : null, floor: blend ? blend.base : null, markup: sellMarkupMode(), limits: limits || null };
+                if (fb) price.futbin = { sales: fb.sales.slice(0, 3), raised: !!blend.raised, median: blend.median, max: blend.max, trendPct: fb.trendPct };
+            }
             return { rec: r, price: price };
         });
         const sellable = rows.filter(x => x.price);
@@ -10281,9 +10300,9 @@
                     (withPaid.length < sellable.length ? ' <span class="sbc-opt-muted">(' + (sellable.length - withPaid.length) + ' ohne bekannten Einkaufspreis)</span>' : '') + '</div>' : '') +
                 '<label class="sbc-opt-chiplabel" style="margin-top:8px;">Preis gegenueber dem guenstigsten Angebot</label>' +
                 '<div class="sbc-opt-chips" id="sbc-opt-sell-markup">' +
-                '<button type="button" class="sbc-opt-chip' + (mode === '0' ? ' on' : '') + '" data-markup="0">Gleich</button>' +
-                '<button type="button" class="sbc-opt-chip' + (mode === 'tier1' ? ' on' : '') + '" data-markup="tier1">+1 Stufe</button>' +
-                '<button type="button" class="sbc-opt-chip' + (mode === 'pct5' ? ' on' : '') + '" data-markup="pct5">+5 %</button></div>' +
+                [['0', 'Gleich'], ['tier1', '+1 St.'], ['tier2', '+2 St.'], ['pct5', '+5 %'], ['pct10', '+10 %'], ['pct15', '+15 %']].map(function (o) {
+                    return '<button type="button" class="sbc-opt-chip' + (mode === o[0] ? ' on' : '') + '" data-markup="' + o[0] + '">' + o[1] + '</button>';
+                }).join('') + '</div>' +
                 (isGallery ? warnHtml('Erst im Spiel bewerten und die Token-Gutschrift pruefen - danach verkaufen. Gelistet wird fuer 1 Stunde.')
                            : '<div class="sbc-opt-dim">Gelistet wird fuer 1 Stunde. Die Karten liegen schon auf der Transferliste, verschoben wird nichts.</div>');
         Object.keys(bySet).forEach(function (setName) {
@@ -10321,8 +10340,9 @@
     }
     async function runSell(sellable) {
         if (sellBusy) return;
-        const frage = sellable.length + ' Karten auf den Transfermarkt stellen (1 Stunde, Sofortkauf = guenstigstes aktuelles Angebot' +
-                      (sellMarkupMode() === 'tier1' ? ' + 1 Stufe' : sellMarkupMode() === 'pct5' ? ' + 5 %' : '') + ')?\n\n' +
+        const mk = sellMarkupOf(sellMarkupMode());
+        const frage = sellable.length + ' Karten auf den Transfermarkt stellen (1 Stunde, Sofortkauf = Verkaufsniveau' +
+                      (mk && mk.tiers ? ' + ' + mk.tiers + ' Stufe(n)' : mk && mk.pct ? ' + ' + Math.round(mk.pct * 100) + ' %' : '') + ')?\n\n' +
                       sellable.slice(0, 12).map(x => x.rec.name + ': ' + fmtCoins(x.price.buyNow)).join('\n') + (sellable.length > 12 ? '\n...' : '') +
                       '\n\nHast du das Set im Spiel schon bewertet? Danach zaehlen die Karten weiter, aber weg ist weg.';
         if (!window.confirm(frage)) return;
@@ -10341,7 +10361,7 @@
         try {
             for (let k = 0; k < sellable.length && k < SELL_MAX_PER_RUN; k++) {
                 const x = sellable[k];
-                const step = { name: x.rec.name, buyNow: x.price.buyNow, start: x.price.start, status: null };
+                const step = { name: x.rec.name, buyNow: x.price.buyNow, start: x.price.start, status: null, paid: x.rec.paid || null, detail: x.price.detail || null };
                 diag.steps.push(step);
                 render('Liste ' + x.rec.name + ' fuer ' + fmtCoins(x.price.buyNow) + ' ...');
                 try {

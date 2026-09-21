@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.50.0
+// @version      5.51.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.50.0';
+    const VERSION = '5.51.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7863,8 +7863,17 @@
      */
     function robustMinBin(bins) {
         const arr = (bins || []).map(Number).filter(v => v > 0).sort((a, b) => a - b);
-        if (!arr.length) return { min: null, robust: null, count: 0, lowest: [] };
-        return { min: arr[0], robust: arr.length > 1 ? arr[1] : arr[0], count: arr.length, lowest: arr.slice(0, 3) };
+        if (!arr.length) return { min: null, robust: null, count: 0, lowest: [], dist: [] };
+        // v5.51.0: Verteilung der untersten Preisstufen (Wert x Anzahl), wie PaleTools'
+        // "Find lowest market price" sie zeigt - daran erkennt man Ausreisser nach unten
+        // (Rasmus: "1x30.000, 20x45.000 - dann weiss ich, dass die 30k unrealistisch sind").
+        const dist = [];
+        for (const v of arr) { if (dist.length && dist[dist.length - 1].value === v) dist[dist.length - 1].count++; else dist.push({ value: v, count: 1 }); }
+        return { min: arr[0], robust: arr.length > 1 ? arr[1] : arr[0], count: arr.length, lowest: arr.slice(0, 3), dist: dist.slice(0, 3) };
+    }
+    /** v5.51.0: Verteilung als Text, z.B. "800 x5, 850 x9". */
+    function fmtDist(dist) {
+        return (dist || []).map(d => fmtCoins(d.value) + ' x' + d.count).join(', ');
     }
     /**
      * Kaufplan aus Konzept-Spielern des Kaders (v5.22.0) - ohne futbin: der
@@ -8826,11 +8835,19 @@
      *     Restzeit sortiert (sortOffersForBuy).
      */
     async function marketOffersForBuy(rid, planned, maxPrice) {
-        let at = 'max', maxb = maxPrice, page = null;
+        // v5.51.0 (Rasmus: "zum Kaufen stelle ich den Max-Preis auf das Unterste und
+        // gehe schrittweise nach oben, bis jemand erscheint"): Stufe fuer Stufe vom
+        // Plan bis zur Obergrenze statt eines Sprungs auf die Obergrenze.
+        const tiers = eaPriceTiers();
+        let at = 'max', maxb = maxPrice, page = null, tried = 0;
         if (planned > 0 && planned < maxPrice) {
-            page = await marketOffers(rid, planned);
-            if (page.length) { at = 'plan'; maxb = planned; }
-            else { page = null; await futbinSleep(randomBetween(MARKET_STEP_GAP_MIN_MS, MARKET_STEP_GAP_MAX_MS)); }
+            for (let b = planned; b < maxPrice && tried < 4; b = roundPriceDown(b, tiers) + priceTierOf(b, tiers).inc) {
+                if (tried) await futbinSleep(randomBetween(MARKET_STEP_GAP_MIN_MS, MARKET_STEP_GAP_MAX_MS));
+                page = await marketOffers(rid, b); tried++;
+                if (page.length) { at = (b === planned ? 'plan' : 'plan+' + tried); maxb = b; break; }
+                page = null;
+            }
+            if (!page) await futbinSleep(randomBetween(MARKET_STEP_GAP_MIN_MS, MARKET_STEP_GAP_MAX_MS));
         }
         if (!page) page = await marketOffers(rid, maxb);
         let all = page.slice(), pages = 1;
@@ -8873,6 +8890,9 @@
             if (typeof window.UTSearchCriteriaDTO !== 'function' || !window.services || !window.services.Item ||
                 typeof window.services.Item.searchTransferMarket !== 'function' || typeof window.services.Item.bid !== 'function') return { tried: false, why: 'Client-Weg nicht verfuegbar' };
             const crit = marketCriteria(rid, maxBuy);
+            // v5.51.0: EAs Suchcache leeren, wie PaleTools vor jeder Suche (unser
+            // Client-Weg bekam in v5.23 zwoelfmal dasselbe Ergebnis aus dem Cache).
+            try { if (typeof window.services.Item.clearTransferMarketCache === 'function') window.services.Item.clearTransferMarketCache(); } catch (e) {}
             const resp = await obsPromise(window.services.Item.searchTransferMarket(crit, 1));
             if (!responseOk(resp)) return { tried: true, ok: false, why: 'Client-Suche Status ' + (resp && resp.status) };
             const data = (resp && (resp.data || resp.response)) || {};
@@ -9380,6 +9400,7 @@
                         pl.liveBin = bin;
                         pl.liveMin = est && est.min != null ? est.min : null;
                         pl.liveOffers = est ? est.count : null;
+                        pl.liveDist = est ? est.dist : null; // v5.51.0
                         if (bin == null) { unknown++; live += futbinPrice(pl, s.platform) || 0; } else live += bin;
                     }
                     if (pruned) { c.livePruned = true; c.liveCost = null; }
@@ -9494,7 +9515,7 @@
                 missing++;
                 const price = pl.liveBin != null ? pl.liveBin : futbinPrice(pl, futbinLast.platform);
                 const src = pl.liveBin != null
-                    ? 'Markt, 2. Angebot von ' + (pl.liveOffers != null ? pl.liveOffers : '?')
+                    ? 'Markt: ' + (pl.liveDist && pl.liveDist.length ? fmtDist(pl.liveDist) : '2. Angebot von ' + (pl.liveOffers != null ? pl.liveOffers : '?'))
                     : 'futbin' + (pl.liveOffers === 0 ? ', kein Angebot gesehen' : '');
                 list += '<div>' + escapeHtml(pl.name || ('#' + pl.resourceId)) + ' <span class="sbc-opt-muted">(' + (pl.rating || '?') + ', ' +
                         escapeHtml(pl.cardPosition || pl.slotPosition || '?') + ')</span> ' + fmtCoins(price) +
@@ -9601,6 +9622,7 @@
                 pl.liveBin = bin;
                 pl.liveMin = est && est.min != null ? est.min : null;
                 pl.liveOffers = est ? est.count : null;
+                pl.liveDist = est ? est.dist : null; // v5.51.0
                 if (bin != null) out.priced++;
             } catch (e) { out.errors++; }
             if (k < todo.length - 1) await futbinSleep(FUTBIN_MARKET_GAP_MS);
@@ -10148,7 +10170,7 @@
                 try {
                     const est = await marketMinBin(p.defId);
                     liveBins[p.defId] = est && est.robust != null ? est.robust : null;
-                    liveEst[p.defId] = est ? { min: est.min, robust: est.robust, count: est.count, complete: est.complete, steps: est.steps, fromCache: !!est.fromCache } : null; // v5.46.0: Report
+                    liveEst[p.defId] = est ? { min: est.min, robust: est.robust, count: est.count, complete: est.complete, steps: est.steps, fromCache: !!est.fromCache, dist: est.dist || null } : null; // v5.46.0: Report, v5.51.0: Verteilung
                 } catch (e) {
                     liveBins[p.defId] = null;
                     if (isRateLimit(e && e.status)) { setGalleryResult(warnHtml('EA drosselt die Marktsuche - spaeter noch einmal.')); return; }
@@ -10166,7 +10188,9 @@
         const total = built.plan.reduce((a, p) => a + p.maxPrice, 0);
         const coins = userCoins();
         const noLive = built.plan.filter(p => p.source !== 'live').length;
-        const lines = built.plan.map(p => p.name + ' (' + (p.rating || '?') + '): bis ' + fmtCoins(p.maxPrice) + (p.source !== 'live' ? ' (fut.gg-Preis, kein Angebot am Markt)' : '')).join('\n');
+        // v5.51.0: Plan, Markt-Verteilung (wie PaleTools) und Obergrenze je Spieler.
+        const lines = built.plan.map(p => p.name + ' (' + (p.rating || '?') + '): Plan ' + fmtCoins(p.planned) + ', bis ' + fmtCoins(p.maxPrice) +
+                                          (p.source !== 'live' ? ' (fut.gg-Preis, kein Angebot am Markt)' : (p.est && p.est.dist && p.est.dist.length ? ' [Markt: ' + fmtDist(p.est.dist) + ']' : ''))).join('\n');
         const frage = 'Gallery-Set "' + ch.meta.name + '": ' + built.plan.length + ' Spieler nach und nach kaufen?\n\n' + lines +
                       '\n\nZusammen hoechstens ' + fmtCoins(total) + (coins != null ? ' (Kontostand ' + fmtCoins(coins) + ')' : '') +
                       (noLive ? '\n' + noLive + ' Preis(e) stammen von fut.gg, weil der Markt gerade kein Angebot zeigt.' : '') +

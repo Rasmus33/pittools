@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.41.0
+// @version      5.42.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.41.0';
+    const VERSION = '5.42.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7933,11 +7933,14 @@
      * (cardMatchesRid ueber itemData.resourceId/rareflag), nach Preis.
      * Rein - der Client-Cache der Web App ist damit aussen vor.
      */
-    function parseAuctionOffers(auctionInfo, rid, maxBuy, mask) {
+    function parseAuctionOffers(auctionInfo, rid, maxBuy, mask, ownId) {
         const out = [];
-        let foreign = 0, foreignSample = null;
+        let foreign = 0, foreignSample = null, own = 0;
         for (const a of (Array.isArray(auctionInfo) ? auctionInfo : [])) {
             if (!a || typeof a !== 'object') continue;
+            // v5.42.0: eigene Angebote nie kaufen (Report 21.09.: 461 "You are not
+            // allowed to bid on this trade" - nach dem Listen von 29 Karten).
+            if (ownId != null && a.sellerId != null && String(a.sellerId) === String(ownId)) { own++; continue; }
             const it = a.itemData || {};
             const def = it.resourceId != null ? it.resourceId : it.definitionId;
             if (!cardMatchesRid(def, it.rareflag, rid, mask)) {
@@ -7955,7 +7958,7 @@
             out.push({ tradeId: a.tradeId, bin: bin, raw: it, itemId: it.id });
         }
         out.sort((x, y) => x.bin - y.bin);
-        return { offers: out, foreign: foreign, foreignSample: foreignSample, total: Array.isArray(auctionInfo) ? auctionInfo.length : 0 };
+        return { offers: out, foreign: foreign, foreignSample: foreignSample, own: own, total: Array.isArray(auctionInfo) ? auctionInfo.length : 0 };
     }
     /** HTTP-Status aus einer apiGet/apiPut-Fehlermeldung ("... -> HTTP 429"). */
     function httpStatusOf(err) {
@@ -8648,9 +8651,29 @@
         catch (e) { const err = new Error('Marktsuche: ' + (e && e.message || e)); err.status = httpStatusOf(e); throw err; }
         let mask = 0;
         try { mask = (window.ItemIdMask && window.ItemIdMask.DATABASE) || 0; } catch (e) { mask = 0; }
-        const parsed = parseAuctionOffers(json && json.auctionInfo, rid, maxBuy, mask);
+        const parsed = parseAuctionOffers(json && json.auctionInfo, rid, maxBuy, mask, ownPersonaId());
         noteMarketProbe(rid, parsed.total, parsed.foreign, parsed.offers.length, parsed.foreignSample, rid);
         return parsed.offers;
+    }
+    /** Eigene Persona-ID (Verkaeufer-Kennung in EAs auctionInfo.sellerId), null wenn nicht lesbar. */
+    function ownPersonaId() {
+        try {
+            const u = window.services && window.services.User && window.services.User.getUser && window.services.User.getUser();
+            const id = u && (u.personaId != null ? u.personaId : (u.id != null ? u.id : null));
+            return id != null ? String(id) : null;
+        } catch (e) { return null; }
+    }
+    /**
+     * v5.42.0: Ist das Angebot noch aktiv? EAs 461 beim Kauf heisst sowohl
+     * "schon weg" als auch "du darfst nicht" (eigenes Angebot, Marktsperre).
+     * Der Unterschied entscheidet, ob der Lauf weitermacht oder stoppt.
+     */
+    async function tradeStateOf(tradeId) {
+        try {
+            const r = await apiGet('trade/status?tradeIds=' + encodeURIComponent(String(tradeId)));
+            const a = r && Array.isArray(r.auctionInfo) ? r.auctionInfo[0] : null;
+            return a ? String(a.tradeState || '').toLowerCase() : null;
+        } catch (e) { return null; }
     }
     /** Sofortkauf per eigenem PUT auf EAs Bid-Endpunkt. Liefert EAs Antwort (auctionInfo) oder wirft (Status in der Meldung). */
     async function bidHttp(tradeId, bin) {
@@ -9450,6 +9473,19 @@
                     if (!ok) why = 'Status ' + status + (resp && resp.error ? ', ' + (resp.error.code != null ? resp.error.code : resp.error.message) : '');
                 } else { why = 'Angebot ohne tradeId'; }
                 if (isRateLimit(status)) { step.status = 'Rate-Limit'; diag.stopped = 'Rate-Limit beim Kauf'; lines.push('⚠ EA drosselt - Lauf gestoppt.'); break; }
+                if (!ok && status === 461 && offer.tradeId != null) {
+                    // v5.42.0: 461 = "weg" ODER "nicht erlaubt". Report 21.09.: sieben 461 in
+                    // Folge, einmal "You are not allowed to bid on this trade" - der Markt
+                    // war fuer den Account gesperrt, nicht die Karten weg.
+                    const st = await tradeStateOf(offer.tradeId);
+                    step.tradeState = st;
+                    if (st === 'active') {
+                        step.status = 'EA verweigert den Kauf (461) - Angebot ist aktiv';
+                        diag.stopped = 'EA verweigert Kaeufe (461) bei aktivem Angebot - Transfermarkt vermutlich vorruebergehend gesperrt';
+                        lines.push('⚠ ' + escapeHtml(p.name) + ': EA verweigert den Kauf, obwohl das Angebot aktiv ist. Das ist meist eine zeitweise Marktsperre nach vielen Aktionen - bitte im Spiel einen Kauf von Hand probieren und spaeter erneut.');
+                        break;
+                    }
+                }
                 if (!ok) {
                     step.status = 'Kauf abgelehnt (' + (why || '?') + ')';
                     fails++;

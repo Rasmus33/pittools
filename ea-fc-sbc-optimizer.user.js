@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.47.0
+// @version      5.48.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.47.0';
+    const VERSION = '5.48.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -9436,7 +9436,8 @@
     const BUY_GAP_MAX_MS = 6000;
     const BUY_MAX_PER_RUN = 11;
     const BUY_MAX_CONSECUTIVE_FAILS = 2;
-    const BUY_OFFER_TRIES = 3;          // v5.43.0: so viele Angebote je Schritt, wenn eines tot ist
+    const BUY_OFFER_TRIES = 5;          // v5.43.0 (v5.48.0: 3 -> 5): so viele Angebote je Schritt, wenn eines tot ist
+    const BUY_461_LOCK_LIMIT = 6;       // v5.48.0: so viele 461 in Folge (ueber Spieler hinweg) = Marktsperre, Lauf stoppt
     const BUY_REPLAN_MAX_FACTOR = 2;    // v5.43.0: Neubewertung darf den Plan hoechstens verdoppeln
     const deadTrades = new Set();       // v5.43.0: Trades, die EA als weg gemeldet hat (461/closed)
     let buyBusy = false;
@@ -9542,6 +9543,7 @@
         STATE.diag.futbinBuy = diag;
         buyBusy = true;
         let fails = 0;
+        let denied461 = 0; // v5.48.0: 461 in Folge ueber alle Spieler
         const bought = [];
         const lines = [];
         const render = function (current) {
@@ -9616,9 +9618,30 @@
                         ok = responseOk(resp); status = resp && resp.status;
                         if (!ok) why = 'Status ' + status + (resp && resp.error ? ', ' + (resp.error.code != null ? resp.error.code : resp.error.message) : '');
                     } else { why = 'Angebot ohne tradeId'; }
-                    if (ok) break;
+                    if (ok) { denied461 = 0; break; }
                     if (isRateLimit(status)) { step.status = 'Rate-Limit'; diag.stopped = 'Rate-Limit beim Kauf'; lines.push('⚠ EA drosselt - Lauf gestoppt.'); hardStop = true; break; }
                     if (status === 461 && offer.tradeId != null) {
+                        denied461++;
+                        // v5.48.0: beim ersten 461 die Stapel messen (Report 21.09.: zwoelf 461 in
+                        // Folge, alle "closed" - voller Zielstapel oder Marktsperre sind die Verdaechtigen).
+                        if (!diag.market461) {
+                            diag.market461 = { at: Date.now() };
+                            try { const w = await apiGet('watchlist'); diag.market461.watchlist = w && Array.isArray(w.auctionInfo) ? w.auctionInfo.length : null; } catch (e) { diag.market461.watchlist = 'err'; }
+                            try { const t = await apiGet('tradepile'); diag.market461.tradepile = t && Array.isArray(t.auctionInfo) ? t.auctionInfo.length : null; } catch (e) { diag.market461.tradepile = 'err'; }
+                            try { const u = await apiGet('purchased/items'); diag.market461.unassigned = u && Array.isArray(u.itemData) ? u.itemData.length : null; } catch (e) { diag.market461.unassigned = 'err'; }
+                            if (diag.market461.watchlist >= 50) {
+                                step.status = 'Transferziele voll (' + diag.market461.watchlist + ')';
+                                diag.stopped = 'Transferziele voll - EA nimmt keine Kaeufe an';
+                                lines.push('⚠ Deine Transferziele sind voll (' + diag.market461.watchlist + '). Im Spiel unter Transfers → Transferziele gewonnene Karten in den Verein schicken, dann erneut.');
+                                hardStop = true; break;
+                            }
+                        }
+                        if (denied461 >= BUY_461_LOCK_LIMIT) {
+                            step.status = 'EA lehnt jeden Kauf ab (461 x' + denied461 + ')';
+                            diag.stopped = 'EA lehnt alle Kaeufe ab (461 in Folge) - Transfermarkt vermutlich vorruebergehend gesperrt';
+                            lines.push('⚠ ' + denied461 + ' Kaeufe in Folge abgelehnt, auch bei frischen Angeboten. Das ist meist eine zeitweise Marktsperre nach vielen Aktionen (Listings, Suchen). Bitte im Spiel einen Kauf von Hand probieren; klappt der nicht, 30-60 Minuten warten.');
+                            hardStop = true; break;
+                        }
                         // v5.42.0: 461 = "weg" ODER "nicht erlaubt". Report 21.09.: sieben 461 in
                         // Folge, einmal "You are not allowed to bid on this trade" - der Markt
                         // war fuer den Account gesperrt, nicht die Karten weg.

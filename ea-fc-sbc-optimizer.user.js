@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.40.0
+// @version      5.41.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.40.0';
+    const VERSION = '5.41.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -8760,7 +8760,21 @@
      * Nachfragen, jede mit Takt.
      */
     const MARKET_LOWEST_STEPS = 4;
+    // v5.41.0: EAs Suche drosselt hart (Report 21.09.: HTTP 512 nach ~12 Abfragen
+    // in 10 s, der Verkaufslauf brach jedes Mal an derselben Stelle ab). Deshalb
+    // ein weiterer Takt INNERHALB der Minimum-Suche und ein kurzer Cache je Karte,
+    // damit ein Wiederholungslauf nicht alles neu fragt.
+    const MARKET_STEP_GAP_MIN_MS = 1400, MARKET_STEP_GAP_MAX_MS = 2400;
+    const MARKET_LOW_CACHE_MS = 180000;
+    const marketLowCache = new Map();
     async function marketOffersLowest(resourceId) {
+        const cached = marketLowCache.get(String(resourceId));
+        if (cached && Date.now() - cached.at < MARKET_LOW_CACHE_MS) return Object.assign({ fromCache: true }, cached.low);
+        const low = await marketOffersLowestUncached(resourceId);
+        if (low.offers.length || low.complete) marketLowCache.set(String(resourceId), { at: Date.now(), low: low });
+        return low;
+    }
+    async function marketOffersLowestUncached(resourceId) {
         const tiers = eaPriceTiers();
         let pool = await marketOffers(resourceId, 0);
         let complete = pool.length < 21;
@@ -8769,7 +8783,7 @@
         while (!complete && steps < MARKET_LOWEST_STEPS && curMin > 0) {
             const maxb = curMin - priceTierOf(curMin, tiers).inc;
             if (!(maxb > 0)) break;
-            await futbinSleep(FUTBIN_MARKET_GAP_MS);
+            await futbinSleep(randomBetween(MARKET_STEP_GAP_MIN_MS, MARKET_STEP_GAP_MAX_MS));
             const r = await marketOffers(resourceId, maxb);
             steps++;
             if (!r.length) { complete = true; break; } // nichts unter curMin - das ist der Boden
@@ -9931,17 +9945,30 @@
         try {
             const byDef = {};
             const defIds = Array.from(new Set(records.map(r => r.defId).filter(Boolean)));
+            let throttled = 0;
+            diag.throttlePauses = 0;
             for (let k = 0; k < defIds.length; k++) {
                 setSellResult(progressHtml('Aktuelle Angebote holen ... ' + (k + 1) + ' von ' + defIds.length, k + 1, defIds.length));
                 try {
                     // v5.39.0: das echte guenstigste Angebot (absteigende Obergrenze), nicht die erste Stichprobe.
                     const low = await marketOffersLowest(defIds[k]);
                     byDef[defIds[k]] = low.offers.map(o => o.bin);
+                    throttled = 0;
                 } catch (e) {
+                    if (isRateLimit(e && e.status)) {
+                        // v5.41.0: einmal warten statt abbrechen; beim zweiten Mal mit dem Teilergebnis weiter.
+                        throttled++; diag.throttlePauses++;
+                        if (throttled === 1) {
+                            for (let sec = 25; sec > 0; sec -= 5) { setSellResult(progressHtml('EA drosselt die Marktsuche - warte ' + sec + ' s ...', k, defIds.length)); await futbinSleep(5000); }
+                            k--; // dieselbe Karte noch einmal
+                            continue;
+                        }
+                        diag.stopped = 'Rate-Limit bei der Preissuche (Teilergebnis)';
+                        break;
+                    }
                     byDef[defIds[k]] = [];
-                    if (isRateLimit(e && e.status)) { diag.stopped = 'Rate-Limit bei der Preissuche'; setSellResult(warnHtml('EA drosselt die Marktsuche - spaeter noch einmal.')); return; }
                 }
-                if (k < defIds.length - 1) await futbinSleep(FUTBIN_MARKET_GAP_MS);
+                if (k < defIds.length - 1) await futbinSleep(randomBetween(MARKET_STEP_GAP_MIN_MS, MARKET_STEP_GAP_MAX_MS));
             }
             // v5.39.0: EAs Preisspanne aus dem Pool nachholen, wenn der Datensatz keine hat
             // (Report 21.09.: McNair fuer 10.250 gelistet, Spanne endete bei 10.000 -> 461).
@@ -10007,7 +10034,9 @@
         const signed = v => (v >= 0 ? '+' : '−') + fmtCoins(Math.abs(v));
         const mode = sellMarkupMode();
         const isGallery = sellTargetEl === ui.galleryResult || !sellTargetEl;
+        const dg = sellLastRows && STATE.diag[sellLastRows.diagKey];
         let h = '<div class="sbc-opt-summary">' + sellable.length + ' von ' + rows.length + ' Karten mit aktuellem Angebot</div>' +
+                (dg && dg.stopped ? warnHtml('EA hat die Preissuche gedrosselt - nur die schon gepreisten Karten stehen hier. Die anderen beim naechsten Lauf (Preise bleiben 3 Minuten gemerkt).') : '') +
                 '<div class="sbc-opt-fb-meta">Sofortkauf zusammen <b>' + fmtCoins(gross) + '</b> · nach 5 % Steuer ~<b>' + fmtCoins(Math.floor(gross * 0.95)) + '</b>' +
                 (paidSum ? ' · gekauft fuer ' + fmtCoins(paidSum) : '') + '</div>' +
                 (withPaid.length ? '<div class="sbc-opt-fb-meta">Ergebnis nach Steuer: <b class="' + (profitSum >= 0 ? 'sbc-opt-gain' : 'sbc-opt-loss') + '">' + signed(profitSum) + '</b>' +

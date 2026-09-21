@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.39.0
+// @version      5.40.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.39.0';
+    const VERSION = '5.40.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -6524,7 +6524,7 @@
                     <div class="sbc-opt-group-title" style="margin-top:0;">Transfermarkt</div>
                     <!-- v5.37.0: alle unverkauften Spieler der Transferliste zum Marktpreis listen. -->
                     <button type="button" class="sbc-opt-btn primary" id="sbc-opt-tools-sell" style="margin-top:0;"><span>Transferliste zum Marktpreis listen</span></button>
-                    <div class="sbc-opt-debug">Liest EAs Transferliste, holt je Karte das guenstigste aktuelle Angebot, zeigt eine Vorschau und listet nach Rueckfrage nacheinander (3 Stunden). Aktive und verkaufte Karten bleiben unberuehrt.</div>
+                    <div class="sbc-opt-debug">Liest EAs Transferliste, holt je Karte das guenstigste aktuelle Angebot, zeigt eine Vorschau und listet nach Rueckfrage nacheinander (1 Stunde). Aktive und verkaufte Karten bleiben unberuehrt.</div>
                     <div class="sbc-opt-result" id="sbc-opt-tools-result"></div>
                     <div class="sbc-opt-group-title">Werkzeuge</div>
                     <button class="sbc-opt-btn ghost" id="sbc-opt-diag" style="margin-top:0;">Diagnose in Konsole schreiben</button>
@@ -8346,8 +8346,24 @@
     }
     /** Reihenfolge "Fast fertig": wenigste fehlende Karten zuerst, dann Coins je Token. */
     function orderGalleryByCompletion(ranked) {
+        // v5.40.0 (Screenshot 21.09.: "Heroes, 5 Spieler, 0 im Verein" stand als
+        // "fast fertig" oben): begonnen heisst MINDESTENS EINE eigene Karte.
+        // Nicht begonnene Sets folgen dahinter in der Kurs-Reihenfolge.
+        const started = x => x.own && x.own.count > 0;
         const miss = x => Math.max(0, (x.items || 0) - ((x.own && x.own.count) || 0));
-        return ranked.slice().sort((a, b) => (miss(a) - miss(b)) || ((a.truePerToken != null ? a.truePerToken : a.perToken) - (b.truePerToken != null ? b.truePerToken : b.perToken)));
+        const kurs = x => (x.truePerToken != null ? x.truePerToken : x.perToken);
+        return ranked.slice().sort((a, b) => ((started(b) ? 1 : 0) - (started(a) ? 1 : 0)) ||
+            (started(a) ? (miss(a) - miss(b)) || (kurs(a) - kurs(b)) : (kurs(a) - kurs(b))));
+    }
+    /**
+     * v5.40.0 Budget (Rasmus: "schlag mir nicht Heroes vor, wenn die 1 Mio kosten
+     * und ich 130k habe"): Sets, deren Untergrenze (Index) oder echte Summe ueber
+     * dem Kontostand liegt, wandern ans Ende und werden markiert.
+     */
+    function applyGalleryBudget(ranked, coins) {
+        if (!(coins > 0)) return ranked;
+        return ranked.map(x => Object.assign({}, x, { overBudget: (x.total != null ? x.total : x.coins) > coins }))
+            .sort((a, b) => (a.overBudget ? 1 : 0) - (b.overBudget ? 1 : 0));
     }
     // [GALLERY-END]
     // ---- Bruecke zu futbin (CORS) ------------------------------------------
@@ -9537,7 +9553,7 @@
                 try { localStorage.setItem('sbcOptGallerySort', b.getAttribute('data-sort')); } catch (e) {}
                 apply();
                 if (galleryLast && galleryLast.ranked) {
-                    galleryLast.ranked = gallerySortMode() === 'fertig' ? orderGalleryByCompletion(galleryLast.ranked) : orderGallerySets(galleryLast.ranked);
+                    galleryLast.ranked = applyGalleryBudget(gallerySortMode() === 'fertig' ? orderGalleryByCompletion(galleryLast.ranked) : orderGallerySets(galleryLast.ranked), galleryLast.coins);
                     renderGallerySets(galleryLast.ranked);
                 }
             });
@@ -9566,12 +9582,15 @@
             if (!sets.length) throw new Error('Keine Sets auf der fut.gg-Seite gefunden (Seite geaendert?).');
             const hideDone = !ui.galleryHideDone || ui.galleryHideDone.checked;
             let ranked = rankGallerySets(sets, hideDone ? galleryDoneIds() : [], null);
-            galleryLast = { sets: sets, ranked: ranked, at: Date.now(), setCache: {} };
+            const coins = userCoins();
+            diag.coins = coins;
+            galleryLast = { sets: sets, ranked: ranked, at: Date.now(), setCache: {}, coins: coins };
             // v5.34.0: die echten Summen der besten Kandidaten von der Set-Seite.
             let checked = 0, best = null;
             diag.verified = [];
             for (let i = 0; i < ranked.length && shouldVerifyGallerySet(checked, ranked[i].perToken, best, GALLERY_CHECK_MAX); i++) {
                 const x = ranked[i];
+                if (coins > 0 && x.coins > coins) continue; // v5.40.0: ueber dem Kontostand - keine Pruefung wert
                 checked++;
                 setGalleryResult(progressHtml('Pruefe Set ' + checked + ' von hoechstens ' + GALLERY_CHECK_MAX + ': ' + escapeHtml(x.name) + ' ...', checked, GALLERY_CHECK_MAX));
                 try {
@@ -9589,6 +9608,7 @@
             // v5.36.0: eigener Fortschritt je Set aus dem Pool; Sortierung "Fast fertig" optional.
             ranked.forEach(x => { x.own = galleryOwnProgress(x, STATE.pool); });
             if (gallerySortMode() === 'fertig') ranked = orderGalleryByCompletion(ranked);
+            ranked = applyGalleryBudget(ranked, coins); // v5.40.0
             galleryLast.ranked = ranked;
             diag.shown = ranked.slice(0, GALLERY_SHOW_OPEN).map(x => ({ id: x.id, name: x.name, coins: x.coins, total: x.total || null, tokens: x.tokens, grade: x.bestGrade }));
             renderGallerySets(ranked);
@@ -9603,12 +9623,18 @@
         }
     }
     function renderGallerySets(ranked) {
-        let h = '<div class="sbc-opt-summary">' + ranked.length + ' Sets mit Tokens · sortiert nach Coins je Token <span class="sbc-opt-muted">(fut.gg, Richtwert)</span></div>';
+        const coins = galleryLast && galleryLast.coins;
+        const over = ranked.filter(x => x.overBudget).length;
+        let h = '<div class="sbc-opt-summary">' + ranked.length + ' Sets mit Tokens · ' +
+                (gallerySortMode() === 'fertig' ? 'begonnene Sets zuerst (wenigste fehlende Karten)' : 'sortiert nach Coins je Token') +
+                ' <span class="sbc-opt-muted">(fut.gg)</span></div>' +
+                (coins > 0 ? '<div class="sbc-opt-fb-meta">Kontostand <b>' + fmtCoins(coins) + '</b>' + (over ? ' · ' + over + ' Sets darueber stehen am Ende' : '') + '</div>' : '');
         if (!ranked.length) h += warnHtml('Kein Set uebrig - alle erledigt oder ohne Tokens. Schalter "Erledigte ausblenden" pruefen.');
         ranked.forEach(function (x, i) {
             h += '<div class="sbc-opt-fb-row' + (i === 0 ? ' best' : '') + (i >= GALLERY_SHOW_OPEN ? ' sbc-opt-fb-more' : '') + '">' +
                  '<div class="sbc-opt-fb-top"><span class="sbc-opt-fb-price">' + escapeHtml(x.name) + '</span>' +
                  '<span class="sbc-opt-fb-tags">' + (i === 0 ? '<span class="sbc-opt-tag best">Bester Kurs</span>' : '') +
+                 (x.overBudget ? '<span class="sbc-opt-tag" title="teurer als dein Kontostand">zu teuer</span>' : '') +
                  (x.truePerToken != null ? '<span class="sbc-opt-tag ok">geprueft</span>' : '<span class="sbc-opt-tag">Richtwert</span>') +
                  '<span class="sbc-opt-tag ok">Note ' + escapeHtml(x.bestGrade || '?') + '</span></span></div>' +
                  (x.truePerToken != null
@@ -9829,9 +9855,11 @@
     // guenstigste aktuelle Angebot derselben Karte (sellPriceFor), NICHT der
     // Einkaufspreis. Ablauf: Vorschau je Set -> Rueckfrage -> nacheinander auf
     // die Transferliste (PUT item pile trade) und listen (POST auctionhouse,
-    // 3 Stunden). Erfolgreich gelistete Karten fallen aus der Merkliste.
+    // 1 Stunde). Erfolgreich gelistete Karten fallen aus der Merkliste.
     const GALLERY_BOUGHT_KEY = 'sbcOptGalleryBought';
-    const SELL_DURATION_S = 10800;
+    // v5.40.0 (Rasmus): "am besten immer nur 1 stunde - die lazy verkaeufe bekommt
+    // man, wenn die noch <10 minuten auf dem markt stehen". Vorher 3 Stunden.
+    const SELL_DURATION_S = 3600;
     const SELL_MAX_PER_RUN = 40;
     let sellBusy = false;
     // v5.37.0: die Verkaufs-Ausgabe kann im Galerie-Reiter ODER unter "Mehr" stehen.
@@ -9989,8 +10017,8 @@
                 '<button type="button" class="sbc-opt-chip' + (mode === '0' ? ' on' : '') + '" data-markup="0">Gleich</button>' +
                 '<button type="button" class="sbc-opt-chip' + (mode === 'tier1' ? ' on' : '') + '" data-markup="tier1">+1 Stufe</button>' +
                 '<button type="button" class="sbc-opt-chip' + (mode === 'pct5' ? ' on' : '') + '" data-markup="pct5">+5 %</button></div>' +
-                (isGallery ? warnHtml('Erst im Spiel bewerten und die Token-Gutschrift pruefen - danach verkaufen. Gelistet wird fuer 3 Stunden.')
-                           : '<div class="sbc-opt-dim">Gelistet wird fuer 3 Stunden. Die Karten liegen schon auf der Transferliste, verschoben wird nichts.</div>');
+                (isGallery ? warnHtml('Erst im Spiel bewerten und die Token-Gutschrift pruefen - danach verkaufen. Gelistet wird fuer 1 Stunde.')
+                           : '<div class="sbc-opt-dim">Gelistet wird fuer 1 Stunde. Die Karten liegen schon auf der Transferliste, verschoben wird nichts.</div>');
         Object.keys(bySet).forEach(function (setName) {
             h += '<details class="sbc-opt-details-toggle" open><summary>' + escapeHtml(setName) + ' (' + bySet[setName].length + ')</summary>';
             bySet[setName].forEach(function (x) {
@@ -10024,7 +10052,7 @@
     }
     async function runSell(sellable) {
         if (sellBusy) return;
-        const frage = sellable.length + ' Karten auf den Transfermarkt stellen (3 Stunden, Sofortkauf = guenstigstes aktuelles Angebot' +
+        const frage = sellable.length + ' Karten auf den Transfermarkt stellen (1 Stunde, Sofortkauf = guenstigstes aktuelles Angebot' +
                       (sellMarkupMode() === 'tier1' ? ' + 1 Stufe' : sellMarkupMode() === 'pct5' ? ' + 5 %' : '') + ')?\n\n' +
                       sellable.slice(0, 12).map(x => x.rec.name + ': ' + fmtCoins(x.price.buyNow)).join('\n') + (sellable.length > 12 ? '\n...' : '') +
                       '\n\nHast du das Set im Spiel schon bewertet? Danach zaehlen die Karten weiter, aber weg ist weg.';

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.46.0
+// @version      5.47.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.46.0';
+    const VERSION = '5.47.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -9791,12 +9791,16 @@
             const coins = userCoins();
             diag.coins = coins;
             galleryLast = { sets: sets, ranked: ranked, at: Date.now(), setCache: {}, coins: coins };
-            // v5.34.0: die echten Summen der besten Kandidaten von der Set-Seite.
+            // v5.36.0: eigener Fortschritt je Set aus dem Pool (vor der Sortierung, v5.47.0).
+            ranked.forEach(x => { x.own = galleryOwnProgress(x, STATE.pool); });
+            // v5.34.0: die echten Summen von der Set-Seite. v5.47.0 (Screenshot 21.09.:
+            // Birmingham "ab 9.100" als Richtwert, echte Summe 48.100): geprueft
+            // werden die Sets, die der Nutzer SIEHT - im Modus "Guenstig" per
+            // Branch & Bound ueber die Untergrenze, in "Fast fertig"/"Meiste Tokens"
+            // die ersten GALLERY_CHECK_MAX der angezeigten Reihenfolge.
             let checked = 0, best = null;
             diag.verified = [];
-            for (let i = 0; i < ranked.length && shouldVerifyGallerySet(checked, ranked[i].perToken, best, GALLERY_CHECK_MAX); i++) {
-                const x = ranked[i];
-                if (coins > 0 && x.coins > coins) continue; // v5.40.0: ueber dem Kontostand - keine Pruefung wert
+            const verifyOne = async function (x) {
                 checked++;
                 setGalleryResult(progressHtml('Pruefe Set ' + checked + ' von hoechstens ' + GALLERY_CHECK_MAX + ': ' + escapeHtml(x.name) + ' ...', checked, GALLERY_CHECK_MAX));
                 try {
@@ -9809,10 +9813,25 @@
                     diag.verified.push({ id: x.id, name: x.name, total: tv ? tv.total : null, perToken: tv ? tv.perToken : null, players: set.players.length });
                 } catch (e) { diag.errors.push('pruefen ' + x.name + ': ' + (e && e.message || e)); }
                 await futbinSleep(FUTBIN_FETCH_GAP_MS);
+            };
+            const mode = gallerySortMode();
+            diag.sortMode = mode;
+            if (mode === 'guenstig') {
+                for (let i = 0; i < ranked.length && shouldVerifyGallerySet(checked, ranked[i].perToken, best, GALLERY_CHECK_MAX); i++) {
+                    const x = ranked[i];
+                    if (coins > 0 && x.coins > coins) continue; // v5.40.0: ueber dem Kontostand - keine Pruefung wert
+                    await verifyOne(x);
+                }
+                ranked = orderGallerySets(ranked);
+            } else {
+                ranked = orderGalleryByMode(ranked);
+                for (let i = 0; i < ranked.length && checked < GALLERY_CHECK_MAX; i++) {
+                    const x = ranked[i];
+                    if (coins > 0 && x.coins > coins) continue;
+                    if (x.truePerToken != null) continue;
+                    await verifyOne(x);
+                }
             }
-            ranked = orderGallerySets(ranked);
-            // v5.36.0: eigener Fortschritt je Set aus dem Pool; Sortierung "Fast fertig" optional.
-            ranked.forEach(x => { x.own = galleryOwnProgress(x, STATE.pool); });
             ranked = orderGalleryByMode(ranked); // v5.44.0: guenstig / fertig / tokens
             ranked = applyGalleryBudget(ranked, coins); // v5.40.0
             galleryLast.ranked = ranked;
@@ -9841,11 +9860,11 @@
                  '<div class="sbc-opt-fb-top"><span class="sbc-opt-fb-price">' + escapeHtml(x.name) + '</span>' +
                  '<span class="sbc-opt-fb-tags">' + (i === 0 ? '<span class="sbc-opt-tag best">Bester Kurs</span>' : '') +
                  (x.overBudget ? '<span class="sbc-opt-tag" title="teurer als dein Kontostand">zu teuer</span>' : '') +
-                 (x.truePerToken != null ? '<span class="sbc-opt-tag ok">geprueft</span>' : '<span class="sbc-opt-tag">Richtwert</span>') +
+                 (x.truePerToken != null ? '<span class="sbc-opt-tag ok">geprueft</span>' : '<span class="sbc-opt-tag">ungeprueft</span>') +
                  '<span class="sbc-opt-tag ok">Note ' + escapeHtml(x.bestGrade || '?') + '</span></span></div>' +
                  (x.truePerToken != null
                     ? '<div class="sbc-opt-fb-meta"><b>' + fmtCoins(x.total) + '</b> gesamt fuer <b>' + x.tokens + '</b> Tokens' + (x.tokensTotal ? ' von ' + x.tokensTotal : '') + ' · ~' + fmtCoins(x.truePerToken) + ' je Token</div>'
-                    : '<div class="sbc-opt-fb-meta">ab <b>' + fmtCoins(x.coins) + '</b> fuer <b>' + x.tokens + '</b> Tokens' + (x.tokensTotal ? ' von ' + x.tokensTotal : '') + ' · mind. ~' + fmtCoins(x.perToken) + ' je Token (Summe erst auf der Set-Seite)</div>') +
+                    : '<div class="sbc-opt-fb-meta">mind. <b>' + fmtCoins(x.coins) + '</b> fuer <b>' + x.tokens + '</b> Tokens' + (x.tokensTotal ? ' von ' + x.tokensTotal : '') + ' <span class="sbc-opt-muted">(fut.gg-Untergrenze, die echte Summe ist meist deutlich hoeher - "Set ansehen" prueft)</span></div>') +
                  '<div class="sbc-opt-fb-meta">' + (x.playersN || x.items || '?') + ' Spieler' +
                  (x.own && x.eaKind ? ' · im Verein <b>' + x.own.count + '</b>' + (x.items ? ' von ' + x.items : '') : '') +
                  ' · ' + escapeHtml(x.league.replace(/-/g, ' ')) +

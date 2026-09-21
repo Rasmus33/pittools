@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.43.0
+// @version      5.44.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.43.0';
+    const VERSION = '5.44.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -6301,6 +6301,7 @@
                         <div class="sbc-opt-chips" id="sbc-opt-gallery-sort">
                             <button type="button" class="sbc-opt-chip on" data-sort="guenstig">Guenstigste Tokens</button>
                             <button type="button" class="sbc-opt-chip" data-sort="fertig">Fast fertig</button>
+                            <button type="button" class="sbc-opt-chip" data-sort="tokens">Meiste Tokens</button>
                         </div>
                         <button class="sbc-opt-btn primary sbc-opt-btn-icon" id="sbc-opt-gallery-load"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span>Naechstes Set kaufen</span></button>
                     </div>
@@ -8237,11 +8238,19 @@
      * bins: aktuelle Sofortkaufpreise; paid: was wir gezahlt haben (nur zur
      * Warnung); limits: {min,max}|null; tiers: EA-Preisstufen|null.
      */
-    function sellPriceFor(bins, paid, limits, tiers, markup) {
+    /** EAs Untergrenze aus den Angeboten: guenstigstes, Ausreisser (>15 % unter dem zweiten) zaehlt nicht. */
+    function lowestBaseOf(bins) {
+        const arr = (bins || []).map(Number).filter(v => v > 0).sort((a, b) => a - b);
+        if (!arr.length) return null;
+        return (arr.length > 1 && arr[0] < arr[1] * 0.85) ? arr[1] : arr[0];
+    }
+    function sellPriceFor(bins, paid, limits, tiers, markup, floorBase) {
         const arr = (bins || []).map(Number).filter(v => v > 0).sort((a, b) => a - b);
         if (!arr.length) return null;
         let base = arr[0];
         if (arr.length > 1 && arr[0] < arr[1] * 0.85) base = arr[1];
+        // v5.44.0: Verkaufsniveau (futbins letzte echte Verkaeufe) hebt die Basis an.
+        if (floorBase > base) base = floorBase;
         let buyNow = roundPriceDown(base, tiers);
         const baseClamped = (limits && limits.max > 0 && buyNow > limits.max) ? roundPriceDown(limits.max, tiers) : buyNow; // fuer den Rueckfall ohne Aufschlag
         // v5.37.0 Aufschlag (Rasmus: "minimal hoeher als marktpreis anbieten,
@@ -8367,6 +8376,103 @@
         if (!(coins > 0)) return ranked;
         return ranked.map(x => Object.assign({}, x, { overBudget: (x.total != null ? x.total : x.coins) > coins }))
             .sort((a, b) => (a.overBudget ? 1 : 0) - (b.overBudget ? 1 : 0));
+    }
+    /**
+     * v5.44.0 futbin-VERKAUFSDATEN (Rasmus: "einige karten sind instant
+     * verkauft worden - zu guenstig ... reelle zahlen fuer verkaufte spieler in
+     * den letzten minuten/stunden"). futbins Spielerseite hat ein htmx-
+     * Fragment /27/player/snapshot-prices/{futbinId}: je Plattform die fuenf
+     * guenstigsten Angebote, die drei letzten ECHTEN Verkaeufe mit Uhrzeit,
+     * Preisspanne und Trend, dazu futbins Zeitstempel. Die futbin-ID einer
+     * Karte steht in futbins Spielerliste (/27/players?club=&nation=): jede
+     * Zeile traegt den Link /27/player/{fid}/ und das Kartenbild
+     * players/{rid}.png (Basiskarte) bzw. players/p{defId}.png (Special).
+     */
+    function futbinPlayersListUrl(year, teamid, nation) {
+        let u = 'https://www.futbin.com/' + year + '/players?club=' + encodeURIComponent(String(teamid));
+        if (nation) u += '&nation=' + encodeURIComponent(String(nation));
+        return u;
+    }
+    function futbinSnapshotUrl(year, fid) { return 'https://www.futbin.com/' + year + '/player/snapshot-prices/' + encodeURIComponent(String(fid)); }
+    function parseFutbinPlayerRows(html) {
+        const out = [];
+        const re = /<tr[^>]*>([\s\S]*?)<\/tr>/g; let m;
+        while ((m = re.exec(String(html || ''))) !== null) {
+            const r = m[1];
+            const fid = /href="\/\d+\/player\/(\d+)\//.exec(r);
+            if (!fid) continue;
+            const imgs = []; const ir = /players\/(p?)(\d+)\.png/g; let im;
+            while ((im = ir.exec(r)) !== null) imgs.push({ special: im[1] === 'p', id: Number(im[2]) });
+            out.push({ fid: Number(fid[1]), imgs: imgs });
+        }
+        return out;
+    }
+    /** futbin-ID der Karte: Special ueber players/p{defId}.png, Basiskarte ueber players/{defId}.png in einer Zeile OHNE Special-Bild. */
+    function futbinIdForCard(rows, defId) {
+        const id = Number(defId);
+        if (!(id > 0)) return null;
+        const special = id >= 16777216;
+        for (const row of (rows || [])) {
+            if (special) { if (row.imgs.some(x => x.special && x.id === id)) return row.fid; }
+            else if (row.imgs.some(x => !x.special && x.id === id) && !row.imgs.some(x => x.special)) return row.fid;
+        }
+        return null;
+    }
+    function parseFutbinSnapshot(html) {
+        const s = String(html || '');
+        const segs = s.split(/<img alt="pc"/);
+        const one = function (seg) {
+            const i = seg.indexOf('Latest sales');
+            const head = i > 0 ? seg.slice(0, i) : seg;
+            const bins = []; const br = />\s*([\d,]+)\s*<img alt="Small Coin"/g; let m;
+            while ((m = br.exec(head)) !== null) { const v = galleryNum(m[1]); if (v > 0) bins.push(v); }
+            const sales = []; const sr = /<div[^>]*>([A-Z][a-z]{2} \d{1,2}, \d{2}:\d{2})<\/div>\s*<div[^>]*>([\d,]+)<\/div>/g;
+            while ((m = sr.exec(seg)) !== null) { const p = galleryNum(m[2]); if (p > 0) sales.push({ when: m[1], price: p }); }
+            const rg = /Price range:<\/div>\s*<div[^>]*>([\d,]+)\s*[\u2014\u2013-]\s*([\d,]+)<\/div>/.exec(seg);
+            const tr = /Trend:<\/div>\s*<div[^>]*>([\d.]+|NaN)% \(([+-][\d.,]+K?)\)/.exec(seg);
+            // Der erste Wert ist die Kopfzeile (aktueller Preis), danach die fuenf guenstigsten Angebote.
+            return { bins: bins.length > 1 ? bins.slice(1) : bins, sales: sales,
+                     range: rg ? { min: galleryNum(rg[1]), max: galleryNum(rg[2]) } : null,
+                     trendPct: tr && tr[1] !== 'NaN' ? parseFloat(tr[1]) : null };
+        };
+        const st = /(\d{2})-(\d{2})-(\d{4}) \/ (\d{2}):(\d{2})/.exec(s);
+        return { console: one(segs[0] || ''), pc: one(segs[1] || ''),
+                 stamp: st ? { day: +st[1], month: +st[2], year: +st[3], hour: +st[4], minute: +st[5] } : null };
+    }
+    const FUTBIN_MONTHS = { Jan: 1, Feb: 2, Mar: 3, Apr: 4, May: 5, Jun: 6, Jul: 7, Aug: 8, Sep: 9, Oct: 10, Nov: 11, Dec: 12 };
+    /** Alter eines Verkaufs in Minuten gegen futbins Zeitstempel; null, wenn nicht lesbar. */
+    function futbinSaleAgeMinutes(when, stamp) {
+        const m = /^([A-Z][a-z]{2}) (\d{1,2}), (\d{2}):(\d{2})$/.exec(String(when || ''));
+        if (!m || !stamp || !FUTBIN_MONTHS[m[1]]) return null;
+        let year = stamp.year;
+        const mon = FUTBIN_MONTHS[m[1]];
+        if (mon > stamp.month) year--; // Jahreswechsel
+        const sale = Date.UTC(year, mon - 1, +m[2], +m[3], +m[4]);
+        const ref = Date.UTC(stamp.year, stamp.month - 1, stamp.day, stamp.hour, stamp.minute);
+        return Math.round((ref - sale) / 60000);
+    }
+    /**
+     * Verkaufsniveau: Median der juengsten echten Verkaeufe (hoechstens maxAgeMin
+     * alt). Liegt er ueber EAs Untergrenze, wird die Basis angehoben - hoechstens
+     * auf capFactor x Untergrenze (Schutz vor veralteten oder Ausreisser-Verkaeufen).
+     */
+    function blendSellBase(eaBase, sales, stamp, maxAgeMin, capFactor) {
+        const out = { base: eaBase, used: 0, median: null, raised: false };
+        if (!(eaBase > 0)) return out;
+        const fresh = (sales || []).filter(x => x && x.price > 0).filter(x => {
+            const age = futbinSaleAgeMinutes(x.when, stamp);
+            return age == null || (age >= -5 && age <= (maxAgeMin || 180));
+        }).map(x => x.price).sort((a, b) => a - b);
+        if (!fresh.length) return out;
+        const med = fresh.length % 2 ? fresh[(fresh.length - 1) / 2] : Math.round((fresh[fresh.length / 2 - 1] + fresh[fresh.length / 2]) / 2);
+        out.used = fresh.length; out.median = med;
+        if (med > eaBase) { out.base = Math.min(med, Math.round(eaBase * (capFactor || 1.5))); out.raised = out.base > eaBase; }
+        return out;
+    }
+    /** Reihenfolge "Meiste Tokens": Tokens absteigend, dann Gesamtpreis (bzw. Untergrenze) aufsteigend. */
+    function orderGalleryByTokens(ranked) {
+        const cost = x => (x.total != null ? x.total : x.coins);
+        return ranked.slice().sort((a, b) => ((b.tokens || 0) - (a.tokens || 0)) || (cost(a) - cost(b)));
     }
     // [GALLERY-END]
     // ---- Bruecke zu futbin (CORS) ------------------------------------------
@@ -9599,7 +9705,11 @@
     const GALLERY_DONE_KEY = 'sbcOptGalleryDone';
     let galleryLast = null;
     let galleryBusy = false;
-    function gallerySortMode() { try { return localStorage.getItem('sbcOptGallerySort') === 'fertig' ? 'fertig' : 'guenstig'; } catch (e) { return 'guenstig'; } }
+    function gallerySortMode() { try { const m = localStorage.getItem('sbcOptGallerySort'); return m === 'fertig' || m === 'tokens' ? m : 'guenstig'; } catch (e) { return 'guenstig'; } }
+    function orderGalleryByMode(ranked) {
+        const m = gallerySortMode();
+        return m === 'fertig' ? orderGalleryByCompletion(ranked) : m === 'tokens' ? orderGalleryByTokens(ranked) : orderGallerySets(ranked);
+    }
     function galleryDoneIds() { try { const a = JSON.parse(localStorage.getItem(GALLERY_DONE_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
     function galleryMarkDone(id) { const a = galleryDoneIds(); if (a.indexOf(id) < 0) a.push(id); try { localStorage.setItem(GALLERY_DONE_KEY, JSON.stringify(a)); } catch (e) {} }
     function setGalleryResult(html) {
@@ -9638,7 +9748,7 @@
                 try { localStorage.setItem('sbcOptGallerySort', b.getAttribute('data-sort')); } catch (e) {}
                 apply();
                 if (galleryLast && galleryLast.ranked) {
-                    galleryLast.ranked = applyGalleryBudget(gallerySortMode() === 'fertig' ? orderGalleryByCompletion(galleryLast.ranked) : orderGallerySets(galleryLast.ranked), galleryLast.coins);
+                    galleryLast.ranked = applyGalleryBudget(orderGalleryByMode(galleryLast.ranked), galleryLast.coins);
                     renderGallerySets(galleryLast.ranked);
                 }
             });
@@ -9692,7 +9802,7 @@
             ranked = orderGallerySets(ranked);
             // v5.36.0: eigener Fortschritt je Set aus dem Pool; Sortierung "Fast fertig" optional.
             ranked.forEach(x => { x.own = galleryOwnProgress(x, STATE.pool); });
-            if (gallerySortMode() === 'fertig') ranked = orderGalleryByCompletion(ranked);
+            ranked = orderGalleryByMode(ranked); // v5.44.0: guenstig / fertig / tokens
             ranked = applyGalleryBudget(ranked, coins); // v5.40.0
             galleryLast.ranked = ranked;
             diag.shown = ranked.slice(0, GALLERY_SHOW_OPEN).map(x => ({ id: x.id, name: x.name, coins: x.coins, total: x.total || null, tokens: x.tokens, grade: x.bestGrade }));
@@ -9711,7 +9821,7 @@
         const coins = galleryLast && galleryLast.coins;
         const over = ranked.filter(x => x.overBudget).length;
         let h = '<div class="sbc-opt-summary">' + ranked.length + ' Sets mit Tokens · ' +
-                (gallerySortMode() === 'fertig' ? 'begonnene Sets zuerst (wenigste fehlende Karten)' : 'sortiert nach Coins je Token') +
+                (gallerySortMode() === 'fertig' ? 'begonnene Sets zuerst (wenigste fehlende Karten)' : gallerySortMode() === 'tokens' ? 'meiste Tokens zuerst (im Budget)' : 'sortiert nach Coins je Token') +
                 ' <span class="sbc-opt-muted">(fut.gg)</span></div>' +
                 (coins > 0 ? '<div class="sbc-opt-fb-meta">Kontostand <b>' + fmtCoins(coins) + '</b>' + (over ? ' · ' + over + ' Sets darueber stehen am Ende' : '') + '</div>' : '');
         if (!ranked.length) h += warnHtml('Kein Set uebrig - alle erledigt oder ohne Tokens. Schalter "Erledigte ausblenden" pruefen.');
@@ -9957,6 +10067,9 @@
     }
     function sellMarkupMode() { try { const m = localStorage.getItem('sbcOptSellMarkup'); return m === '0' || m === 'pct5' ? m : 'tier1'; } catch (e) { return 'tier1'; } }
     let sellLastRows = null; // fuer Neuberechnung beim Aufschlag-Wechsel
+    // v5.44.0: EA-Karten-ID -> futbin-ID, dauerhaft (aendert sich nie).
+    function futbinIdCacheLoad() { try { const o = JSON.parse(localStorage.getItem('sbcOptFutbinIds') || '{}'); return o && typeof o === 'object' ? o : {}; } catch (e) { return {}; } }
+    function futbinIdCacheSave(o) { try { localStorage.setItem('sbcOptFutbinIds', JSON.stringify(o)); } catch (e) {} }
     function galleryBoughtLoad() { try { const a = JSON.parse(localStorage.getItem(GALLERY_BOUGHT_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
     function galleryBoughtSave(list) { try { localStorage.setItem(GALLERY_BOUGHT_KEY, JSON.stringify(list || [])); } catch (e) {} refreshGallerySellBtn(); }
     function refreshGallerySellBtn() {
@@ -10049,7 +10162,46 @@
                 const raw = p && p.raw;
                 if (raw && (raw.marketDataMinPrice > 0 || raw.marketDataMaxPrice > 0)) r.limits = { min: raw.marketDataMinPrice || 0, max: raw.marketDataMaxPrice || 0 };
             });
-            sellLastRows = { records: records, byDef: byDef, diagKey: diagKey };
+            // v5.44.0: futbins letzte echte Verkaeufe je Karte (Verkaufsniveau statt nur Untergrenze).
+            const futbin = {};
+            diag.futbin = { asked: 0, found: 0, sales: 0, errors: 0 };
+            if (bridgeKind()) {
+                const year = futbinYear(STATE.diag.gameName, window.fut_year);
+                const idCache = futbinIdCacheLoad();
+                const plat = readFutbinSettings().platform === 'pc' ? 'pc' : 'console';
+                for (let k = 0; k < defIds.length; k++) {
+                    const defId = defIds[k];
+                    const rec = records.find(r => r.defId === defId) || {};
+                    const raw = rec.raw || (STATE.poolById && STATE.poolById.get(rec.itemId) && STATE.poolById.get(rec.itemId).raw) || {};
+                    setSellResult(progressHtml('futbin-Verkaeufe holen ... ' + (k + 1) + ' von ' + defIds.length, k + 1, defIds.length));
+                    diag.futbin.asked++;
+                    try {
+                        let fid = idCache[String(defId)];
+                        if (!fid && raw.teamid) {
+                            const lr = await bridgeFetch(futbinPlayersListUrl(year, raw.teamid, raw.nation), 30000);
+                            if (lr.status === 200) fid = futbinIdForCard(parseFutbinPlayerRows(lr.text), defId);
+                            if (!fid && raw.nation) { // ohne Nation noch einmal (Liste kann gefiltert leer sein)
+                                await futbinSleep(randomBetween(900, 1500));
+                                const lr2 = await bridgeFetch(futbinPlayersListUrl(year, raw.teamid, null), 30000);
+                                if (lr2.status === 200) fid = futbinIdForCard(parseFutbinPlayerRows(lr2.text), defId);
+                            }
+                            if (fid) { idCache[String(defId)] = fid; futbinIdCacheSave(idCache); }
+                            await futbinSleep(randomBetween(900, 1500));
+                        }
+                        if (fid) {
+                            const sr = await bridgeFetch(futbinSnapshotUrl(year, fid), 20000);
+                            if (sr.status === 200) {
+                                const snap = parseFutbinSnapshot(sr.text);
+                                const side = snap[plat] || {};
+                                futbin[defId] = { fid: fid, sales: side.sales || [], bins: side.bins || [], range: side.range, trendPct: side.trendPct, stamp: snap.stamp };
+                                diag.futbin.found++; diag.futbin.sales += (side.sales || []).length;
+                            }
+                        }
+                    } catch (e) { diag.futbin.errors++; }
+                    if (k < defIds.length - 1) await futbinSleep(randomBetween(900, 1500));
+                }
+            }
+            sellLastRows = { records: records, byDef: byDef, futbin: futbin, diagKey: diagKey };
             repriceAndRender();
         } catch (e) {
             reportError('Verkaufen: Preise', e);
@@ -10065,7 +10217,16 @@
         if (!sellLastRows) return;
         const tiers = eaPriceTiers();
         const markup = sellMarkupOf(sellMarkupMode());
-        const rows = sellLastRows.records.map(r => ({ rec: r, price: r.defId ? sellPriceFor(sellLastRows.byDef[r.defId] || [], r.paid, r.limits, tiers, markup) : null }));
+        const rows = sellLastRows.records.map(r => {
+            if (!r.defId) return { rec: r, price: null };
+            const bins = sellLastRows.byDef[r.defId] || [];
+            const fb = sellLastRows.futbin && sellLastRows.futbin[r.defId];
+            const blend = fb ? blendSellBase(lowestBaseOf(bins), fb.sales, fb.stamp, 180, 1.5) : null;
+            const limits = r.limits || (fb && fb.range && fb.range.max > 0 ? fb.range : null);
+            const price = sellPriceFor(bins, r.paid, limits, tiers, markup, blend ? blend.base : null);
+            if (price && fb) { price.futbin = { sales: fb.sales.slice(0, 3), raised: !!blend.raised, median: blend.median, trendPct: fb.trendPct }; }
+            return { rec: r, price: price };
+        });
         const sellable = rows.filter(x => x.price);
         const diag = STATE.diag[sellLastRows.diagKey];
         if (diag) { diag.priced = sellable.length; diag.noOffer = rows.length - sellable.length; diag.belowPaid = sellable.filter(x => x.price.belowPaid).length; diag.markup = sellMarkupMode(); }
@@ -10106,7 +10267,8 @@
         const mode = sellMarkupMode();
         const isGallery = sellTargetEl === ui.galleryResult || !sellTargetEl;
         const dg = sellLastRows && STATE.diag[sellLastRows.diagKey];
-        let h = '<div class="sbc-opt-summary">' + sellable.length + ' von ' + rows.length + ' Karten mit aktuellem Angebot</div>' +
+        const withFb = sellable.filter(x => x.price.futbin && x.price.futbin.sales.length).length;
+        let h = '<div class="sbc-opt-summary">' + sellable.length + ' von ' + rows.length + ' Karten mit aktuellem Angebot' + (withFb ? ' · ' + withFb + ' mit futbin-Verkaeufen' : '') + '</div>' +
                 (dg && dg.stopped ? warnHtml('EA hat die Preissuche gedrosselt - nur die schon gepreisten Karten stehen hier. Die anderen beim naechsten Lauf (Preise bleiben 3 Minuten gemerkt).') : '') +
                 '<div class="sbc-opt-fb-meta">Sofortkauf zusammen <b>' + fmtCoins(gross) + '</b> · nach 5 % Steuer ~<b>' + fmtCoins(Math.floor(gross * 0.95)) + '</b>' +
                 (paidSum ? ' · gekauft fuer ' + fmtCoins(paidSum) : '') + '</div>' +
@@ -10126,7 +10288,9 @@
                 h += '<div>' + escapeHtml(r.name) + ' <span class="sbc-opt-muted">(' + (r.rating || '?') + ')</span>' +
                      (r.paid ? ' <span class="sbc-opt-muted">gekauft ' + fmtCoins(r.paid) + '</span>' : '') +
                      (p ? ' → <b>' + fmtCoins(p.buyNow) + '</b> <span class="sbc-opt-muted">(Start ' + fmtCoins(p.start) + ', ' + p.count + ' Angebote ab ' + fmtCoins(p.lowest) + ')</span>' +
-                          (p.profit != null ? ' <span class="' + (p.profit >= 0 ? 'sbc-opt-gain' : 'sbc-opt-loss') + '">' + signed(p.profit) + '</span>' : '')
+                          (p.profit != null ? ' <span class="' + (p.profit >= 0 ? 'sbc-opt-gain' : 'sbc-opt-loss') + '">' + signed(p.profit) + '</span>' : '') +
+                          (p.futbin && p.futbin.sales.length ? '<div class="sbc-opt-fb-meta">zuletzt verkauft: ' + p.futbin.sales.map(x => fmtCoins(x.price) + ' <span class="sbc-opt-muted">(' + escapeHtml(x.when.replace(/^\w+ \d+, /, '')) + ')</span>').join(' · ') +
+                              (p.futbin.raised ? ' · <b>auf Verkaufsniveau angehoben</b>' : '') + '</div>' : (p.futbin ? '<div class="sbc-opt-fb-meta sbc-opt-muted">futbin: keine juengsten Verkaeufe</div>' : ''))
                         : ' <span class="sbc-opt-warn">kein Angebot am Markt - wird nicht gelistet</span>') + '</div>';
             });
             h += '</details>';

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.53.0
+// @version      5.54.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.53.0';
+    const VERSION = '5.54.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -8576,12 +8576,25 @@
         const p = bridgePending.get(String(id));
         if (p) p.parts.push(String(part == null ? '' : part));
     };
+    /**
+     * v5.54.0: Brueckenfehler in Klartext. Live 22.09. (Pixel 8 Pro, App
+     * 1.13.0): im Panel stand nur EAs Rohtext "Host nicht erlaubt:
+     * www.fut.gg" - fut.gg kam erst mit App 1.14.0 in den Hostfilter der
+     * Bruecke. Wer das nicht weiss, sucht den Fehler am falschen Ende.
+     */
+    function bridgeErrorText(msg) {
+        const m = String(msg == null ? '' : msg);
+        if (!/Host nicht erlaubt/i.test(m)) return m;
+        return /fut\.gg/i.test(m)
+            ? m + ' - die Galerie braucht App 1.14.0 oder neuer (im Browser das Bridge-Script 1.1.0). Bitte die neue App installieren.'
+            : m + ' - Bruecke zu alt oder Adresse nicht freigegeben (App 1.14.0 / Bridge-Script 1.1.0).';
+    }
     window.__pitBridgeDone = function (id, status, err) {
         const p = bridgePending.get(String(id));
         if (!p) return;
         bridgePending.delete(String(id));
         clearTimeout(p.timer);
-        if (err) p.reject(new Error(String(err)));
+        if (err) p.reject(new Error(bridgeErrorText(err)));
         else p.resolve({ status: parseInt(status, 10) || 0, text: p.parts.join('') });
     };
     try {

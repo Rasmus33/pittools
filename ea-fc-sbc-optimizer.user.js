@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.52.0
+// @version      5.53.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.52.0';
+    const VERSION = '5.53.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -10824,7 +10824,15 @@
                        silver: { rf0: 0, rf1: 0, other: 0 },
                        bronze: { rf0: 0, rf1: 0, other: 0 } };
         const fieldHits = {};
-        const FIELD_RE = /holo|foil|pristine|cosmetic|score|grading/i;
+        const FIELD_RE = /holo|foil|pristine|cosmetic|score|grading|collect/i;
+        // v5.53.0: `isCollected` steht an JEDER Karte, wird in EAs Web-App-Bundle
+        // 11321 aber NIRGENDS gelesen (0 Treffer). Die einzige Funktion, die im
+        // Bundle fehlt, ist die FUT Gallery - der Verdacht ist also, dass EA hier
+        // selbst fuehrt, welche Karten schon fuer die Galerie gezaehlt haben.
+        // Waere das belegt, braeuchte der Erledigt-Stand keinen lokalen Speicher
+        // mehr (Rasmus 22.09.: "am Handy habe ich diese Liste nicht"). Deshalb
+        // erst messen: Werte-Histogramm plus Stichproben je Wert.
+        const collected = { values: {}, samples: {} };
         let cosmeticRarityCount = 0;
         let rawKeySample = null;
         // v5.17.0: EAs Item Score steht LIVE an jeder Karte (Report v5.16.0:
@@ -10842,6 +10850,10 @@
             const raw = p.raw;
             if (!raw || typeof raw !== 'object') continue;
             if (raw.cosmeticRarity != null) cosmeticRarityCount++;
+            const cv = (raw.isCollected === undefined) ? 'fehlt' : String(raw.isCollected);
+            collected.values[cv] = (collected.values[cv] || 0) + 1;
+            const cs = collected.samples[cv] || (collected.samples[cv] = []);
+            if (cs.length < 4) cs.push({ rid: raw.resourceId != null ? raw.resourceId : null, rating: r, name: p.name || null, storage: !!p.isStorage });
             const gs = Number(raw.gradingScore);
             if (raw.gradingScore != null && !isNaN(gs)) {
                 const normal = (p.rareflag === 0 || p.rareflag === 1);
@@ -10868,6 +10880,7 @@
             poolSize: pool.length,
             byTier: tier,
             cosmeticRarityCount: cosmeticRarityCount,
+            isCollected: collected, // v5.53.0: EAs eigener Galerie-Marker?
             fc27FieldHits: fieldHits,
             rawKeySample: rawKeySample,
             gradingScoreByRating: scoreByRating,

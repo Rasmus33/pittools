@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.62.0
+// @version      5.63.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.62.0';
+    const VERSION = '5.63.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -8570,6 +8570,60 @@
         return out;
     }
     /** Beste Note, deren Schwelle der Score erreicht (grades aus der Set-Seite); null ohne Treffer. */
+    /**
+     * v5.63.0 (Rasmus 22.09.: "warum wurde hier Tiago Santos 2x gekauft? Und
+     * jedes Mal so teuer. Das kostet echte Coins und ist auf Dauer sehr teuer."):
+     * der Kostenspiegel einer Aufstellung, BEVOR gekauft wird.
+     *
+     * Der Befund war kein Fehler im Parser - fut.ggs guenstigste Lille-Aufstellung
+     * enthaelt Tiago Santos wirklich zweimal, mit zwei verschiedenen TOTW-Karten
+     * (17.750 + 12.250 Coins). Das Set verlangt 15 Karten aus dem Verein; hat ein
+     * Club zu wenige billige Karten, fuellt fut.gg mit teuren Versionen desselben
+     * Spielers auf. Beides ist legal und beides steht klein im Kleingedruckten -
+     * nur der PREIS stand nirgends: 39.750 Coins fuer 8 Tokens sind 4.969 je
+     * Token, waehrend Leeds im selben Bildschirm bei 1.375 lag.
+     *
+     * Deshalb nennt PitTools ab jetzt drei Dinge vor dem Kauf:
+     *  - den Kurs (Coins je Token) dieser Aufstellung,
+     *  - Karten, die den Preis dominieren (Anteil >= 20 % UND >= 5x der
+     *    Mittelwert-Karte), samt ihrem Anteil,
+     *  - Spieler, die mehrfach vorkommen (verschiedene Versionen).
+     * Entschieden wird nicht automatisch - es ist Rasmus' Geld und seine
+     * Spielmechanik; PitTools legt die Zahlen hin.
+     */
+    const GALLERY_DOMINANT_SHARE = 0.2;  // Anteil an der Gesamtsumme
+    const GALLERY_DOMINANT_FACTOR = 5;   // Vielfaches der Median-Karte
+    function gallerySpendProfile(players, owned, tokens) {
+        const buy = [];
+        (players || []).forEach((p, i) => { if (p && !(owned && owned[i])) buy.push({ i: i, name: p.name || ('#' + p.defId), price: p.price > 0 ? p.price : 0, version: p.version || null }); });
+        const total = buy.reduce((a, c) => a + c.price, 0);
+        const sorted = buy.map(c => c.price).sort((a, b) => a - b);
+        const median = sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0;
+        const dominant = buy.filter(c => total > 0 && c.price >= total * GALLERY_DOMINANT_SHARE && median > 0 && c.price >= median * GALLERY_DOMINANT_FACTOR)
+                            .sort((a, b) => b.price - a.price)
+                            .map(c => Object.assign({ share: total > 0 ? c.price / total : 0 }, c));
+        const seen = {};
+        buy.forEach(c => { const k = String(c.name).toLowerCase(); (seen[k] || (seen[k] = [])).push(c); });
+        const duplicates = Object.keys(seen).filter(k => seen[k].length > 1)
+            .map(k => ({ name: seen[k][0].name, count: seen[k].length, total: seen[k].reduce((a, c) => a + c.price, 0) }))
+            .sort((a, b) => b.total - a.total);
+        return {
+            count: buy.length, total: total, median: median,
+            perToken: tokens > 0 ? Math.round(total / tokens) : null,
+            dominant: dominant, duplicates: duplicates,
+            dominantShare: total > 0 ? dominant.reduce((a, c) => a + c.price, 0) / total : 0
+        };
+    }
+    /** Der beste (guenstigste) Kurs unter den geprueften Sets - als Vergleichsmassstab. */
+    function bestPerTokenOf(ranked, exceptId) {
+        let best = null;
+        (ranked || []).forEach(x => {
+            if (!x || String(x.id) === String(exceptId)) return;
+            const v = x.truePerToken != null ? x.truePerToken : null; // nur GEPRUEFTE Sets vergleichen
+            if (v != null && (best == null || v < best.perToken)) best = { name: x.name, perToken: v };
+        });
+        return best;
+    }
     function gradeForScore(grades, score) {
         let best = null;
         (grades || []).forEach(g => { if (g && g.score != null && score >= g.score && (!best || g.score > best.score)) best = g; });
@@ -10401,6 +10455,25 @@
                 (set.score != null ? ' · Score ' + set.score.toLocaleString('de-DE') : '') + '</div>' +
                 '<div class="sbc-opt-fb-meta">fut.gg-Preise der fehlenden Karten zusammen <b>' + fmtCoins(sumMissing) + '</b>' +
                 (set.tax != null ? ' · beim Wiederverkauf gehen ~' + fmtCoins(set.tax) + ' Steuer weg' : '') + '</div>';
+        // v5.63.0: was kostet ein Token hier wirklich - und welche Karten treiben den Preis?
+        const spend = gallerySpendProfile(set.players, owned, set.tokens != null ? set.tokens : x.tokens);
+        const bestOther = bestPerTokenOf(galleryLast.ranked, x.id);
+        if (spend.perToken != null && spend.count) {
+            h += '<div class="sbc-opt-fb-meta">Kurs dieses Kaufs: <b>' + fmtCoins(spend.perToken) + '</b> je Token' +
+                 (bestOther && bestOther.perToken < spend.perToken
+                    ? ' <span class="sbc-opt-warn">· "' + escapeHtml(bestOther.name) + '" liegt bei ' + fmtCoins(bestOther.perToken) + '</span>'
+                    : '') + '</div>';
+        }
+        if (spend.dominant.length) {
+            h += warnHtml(spend.dominant.length + ' Karte(n) machen ' + Math.round(spend.dominantShare * 100) + ' % der Kosten aus: ' +
+                 spend.dominant.map(d => escapeHtml(d.name) + ' ' + fmtCoins(d.price) + ' (' + Math.round(d.share * 100) + ' %)').join(', ') +
+                 '. Ohne sie fehlen dem Set Karten - die Frage ist, ob dir das Set diesen Preis wert ist.');
+        }
+        if (spend.duplicates.length) {
+            h += '<div class="sbc-opt-fb-meta sbc-opt-warn">Mehrfach in der Aufstellung: ' +
+                 spend.duplicates.map(d => escapeHtml(d.name) + ' ' + d.count + '\u00d7 (zusammen ' + fmtCoins(d.total) + ')').join(', ') +
+                 ' - verschiedene Kartenversionen desselben Spielers. fut.gg fuellt damit auf, wenn der Verein zu wenige guenstige Karten hat.</div>';
+        }
         if (x.eaKind && set.requires && own.count >= set.requires) {
             h += '<div class="sbc-opt-summary">Das Set ist mit deinen Karten schon voll - im Spiel bewerten.' + (missing.length ? ' Fuer eine bessere Note kannst du trotzdem die fut.gg-Aufstellung kaufen.' : '') + '</div>';
         }
@@ -10419,8 +10492,10 @@
             h += '<div class="sbc-opt-summary">Alle Spieler der Aufstellung sind schon im Verein - nichts zu kaufen. Im Spiel bewerten.</div>';
         }
         h += '<details class="sbc-opt-details-toggle"><summary>Aufstellung (' + set.players.length + ')</summary>';
+        const dupNames = {}; spend.duplicates.forEach(d => { dupNames[String(d.name).toLowerCase()] = d.count; });
         set.players.forEach(function (p, i) {
-            h += '<div>' + (owned[i] ? '✓ ' : '') + escapeHtml(p.name) + ' <span class="sbc-opt-muted">(' + (p.rating || '?') + (p.version ? ', ' + escapeHtml(p.version) : '') + ')</span> ' +
+            const dup = dupNames[String(p.name || '').toLowerCase()];
+            h += '<div>' + (owned[i] ? '✓ ' : '') + escapeHtml(p.name) + (dup ? ' <span class="sbc-opt-warn">(' + dup + '\u00d7 im Set)</span>' : '') + ' <span class="sbc-opt-muted">(' + (p.rating || '?') + (p.version ? ', ' + escapeHtml(p.version) : '') + ')</span> ' +
                  (owned[i] ? '<span class="sbc-opt-muted">im Verein</span>' : fmtCoins(p.price)) +
                  (p.score != null ? ' <span class="sbc-opt-muted">· Score ' + p.score.toLocaleString('de-DE') + '</span>' : '') + '</div>';
         });
@@ -10485,7 +10560,22 @@
         // v5.51.0: Plan, Markt-Verteilung (wie PaleTools) und Obergrenze je Spieler.
         const lines = built.plan.map(p => p.name + ' (' + (p.rating || '?') + '): Plan ' + fmtCoins(p.planned) + ', bis ' + fmtCoins(p.maxPrice) +
                                           (p.source !== 'live' ? ' (fut.gg-Preis, kein Angebot am Markt)' : (p.est && p.est.dist && p.est.dist.length ? ' [Markt: ' + fmtDist(p.est.dist) + ']' : ''))).join('\n');
-        const frage = 'Gallery-Set "' + ch.meta.name + '": ' + built.plan.length + ' Spieler nach und nach kaufen?\n\n' + lines +
+        // v5.63.0: der Kurs und die Preistreiber gehoeren in die Rueckfrage, nicht
+        // in den Bericht danach (Lille 22.09.: 30.250 von 39.750 Coins fuer zweimal
+        // denselben Spieler, 4.969 je Token gegen 1.375 beim besten Set der Liste).
+        const spendPlan = { count: built.plan.length, total: built.plan.reduce((a, p) => a + p.planned, 0) };
+        const tokensHere = (ch.set && ch.set.tokens != null) ? ch.set.tokens : ch.meta.tokens;
+        const perTokenHere = tokensHere > 0 ? Math.round(spendPlan.total / tokensHere) : null;
+        const prof = gallerySpendProfile(built.plan.map(p => ({ name: p.name, price: p.planned, defId: p.resourceId })), null, tokensHere);
+        const bestOther2 = bestPerTokenOf(galleryLast.ranked, ch.meta.id);
+        const kursText = (perTokenHere != null ? '\n\nKurs: ' + fmtCoins(perTokenHere) + ' je Token (' + tokensHere + ' Tokens)' +
+                            (bestOther2 && bestOther2.perToken < perTokenHere ? ' - "' + bestOther2.name + '" liegt bei ' + fmtCoins(bestOther2.perToken) + ' je Token.' : '') : '') +
+                         (prof.dominant.length ? '\n' + prof.dominant.length + ' Karte(n) machen ' + Math.round(prof.dominantShare * 100) + ' % der Kosten aus: ' +
+                            prof.dominant.map(d => d.name + ' ' + fmtCoins(d.price)).join(', ') + '.' : '') +
+                         (prof.duplicates.length ? '\nMehrfach dabei: ' + prof.duplicates.map(d => d.name + ' ' + d.count + 'x (zusammen ' + fmtCoins(d.total) + ')').join(', ') +
+                            ' - verschiedene Versionen desselben Spielers.' : '');
+        if (STATE.diag.gallery && STATE.diag.gallery.plan) STATE.diag.gallery.plan.spend = { perToken: perTokenHere, tokens: tokensHere || null, dominant: prof.dominant, duplicates: prof.duplicates };
+        const frage = 'Gallery-Set "' + ch.meta.name + '": ' + built.plan.length + ' Spieler nach und nach kaufen?\n\n' + lines + kursText +
                       '\n\nZusammen hoechstens ' + fmtCoins(total) + (coins != null ? ' (Kontostand ' + fmtCoins(coins) + ')' : '') +
                       (noLive ? '\n' + noLive + ' Preis(e) stammen von fut.gg, weil der Markt gerade kein Angebot zeigt.' : '') +
                       // v5.56.0: was NICHT gekauft wird, steht mit Grund in der Rueckfrage.
@@ -10658,61 +10748,80 @@
         try {
             const byDef = {};
             const defIds = Array.from(new Set(records.map(r => r.defId).filter(Boolean)));
-            let throttled = 0, sessionTried = 0;
             diag.throttlePauses = 0;
             let sessionLost = false;
-            for (let k = 0; k < defIds.length; k++) {
-                setSellResult(progressHtml('Aktuelle Angebote holen ... ' + (k + 1) + ' von ' + defIds.length, k + 1, defIds.length));
-                try {
-                    // v5.39.0: das echte guenstigste Angebot (absteigende Obergrenze), nicht die erste Stichprobe.
-                    const low = await marketOffersLowest(defIds[k]);
-                    byDef[defIds[k]] = low.offers.map(o => o.bin);
-                    throttled = 0;
-                } catch (e) {
-                    if (isRateLimit(e && e.status)) {
-                        // v5.41.0: einmal warten statt abbrechen; beim zweiten Mal mit dem Teilergebnis weiter.
-                        throttled++; diag.throttlePauses++;
-                        if (throttled === 1) {
-                            for (let sec = 25; sec > 0; sec -= 5) { setSellResult(progressHtml('EA drosselt die Marktsuche - warte ' + sec + ' s ...', k, defIds.length)); await futbinSleep(5000); }
-                            k--; // dieselbe Karte noch einmal
-                            continue;
+            // v5.63.0 (Rasmus: "die beiden Schritte sind unabhaengig, futbin blockt
+            // uns nicht - kann man die parallelisieren?"): EAs Marktsuche und die
+            // futbin-Verkaeufe laufen ab jetzt GLEICHZEITIG. Sie teilen keine Daten,
+            // und die Bruecke reiht ihre Anfragen selbst in eine Schlange (App:
+            // BridgeWeb.queue, Tampermonkey: GM_xmlhttpRequest) - es gibt also kein
+            // Gedraenge. EAs eigener Takt bleibt unveraendert, nur die Wartezeit auf
+            // futbin faellt weg (aus "nacheinander" wird "das Laengere von beiden").
+            const prog = { ea: 0, fb: 0, fbOn: false, note: null };
+            const showProg = function () {
+                const txt = 'Aktuelle Angebote ' + prog.ea + '/' + defIds.length +
+                            (prog.fbOn ? ' · futbin-Verkaeufe ' + prog.fb + '/' + defIds.length : '') +
+                            (prog.note ? ' · ' + prog.note : '');
+                setSellResult(progressHtml(txt, prog.ea + (prog.fbOn ? prog.fb : 0), defIds.length * (prog.fbOn ? 2 : 1)));
+            };
+            // v5.58.0: Sammel-Flag an den Angeboten FREMDER Karten - hier sind es
+            // Spieler, die wir selbst besitzen. Steht dort "ja", ist das Feld auf
+            // uns bezogen und der Galerie-Stand liesse sich ueberall ableiten.
+            const coll = { yes: 0, no: 0, missing: 0 };
+            const eaTask = (async function () {
+                let throttled = 0, sessionTried = 0;
+                for (let k = 0; k < defIds.length; k++) {
+                    showProg();
+                    try {
+                        // v5.39.0: das echte guenstigste Angebot (absteigende Obergrenze), nicht die erste Stichprobe.
+                        const low = await marketOffersLowest(defIds[k]);
+                        byDef[defIds[k]] = low.offers.map(o => o.bin);
+                        const cs = collectedSummary(low.offers);
+                        coll.yes += cs.yes; coll.no += cs.no; coll.missing += cs.missing;
+                        throttled = 0;
+                        prog.ea++;
+                    } catch (e) {
+                        if (isRateLimit(e && e.status)) {
+                            // v5.41.0: einmal warten statt abbrechen; beim zweiten Mal mit dem Teilergebnis weiter.
+                            throttled++; diag.throttlePauses++;
+                            if (throttled === 1) {
+                                for (let sec = 25; sec > 0; sec -= 5) { prog.note = 'EA drosselt - warte ' + sec + ' s'; showProg(); await futbinSleep(5000); }
+                                prog.note = null;
+                                k--; // dieselbe Karte noch einmal
+                                continue;
+                            }
+                            diag.stopped = 'Rate-Limit bei der Preissuche (Teilergebnis)';
+                            return;
                         }
-                        diag.stopped = 'Rate-Limit bei der Preissuche (Teilergebnis)';
-                        break;
-                    }
-                    // v5.62.0: abgelaufene Sitzung ist KEIN "kein Angebot". Einmal
-                    // erneuern lassen und dieselbe Karte wiederholen, sonst stoppen -
-                    // ein Preis aus einer 401-Antwort waere erfunden.
-                    if (isSessionExpired(e && e.status)) {
-                        sessionTried++;
-                        if (sessionTried === 1) {
-                            setSellResult(progressHtml('EA-Sitzung erneuern ...', k, defIds.length));
-                            await nudgeSession();
-                            await futbinSleep(3000);
-                            k--;
-                            continue;
+                        // v5.62.0: abgelaufene Sitzung ist KEIN "kein Angebot". Einmal
+                        // erneuern lassen und dieselbe Karte wiederholen, sonst stoppen -
+                        // ein Preis aus einer 401-Antwort waere erfunden.
+                        if (isSessionExpired(e && e.status)) {
+                            sessionTried++;
+                            if (sessionTried === 1) {
+                                prog.note = 'EA-Sitzung erneuern'; showProg();
+                                await nudgeSession();
+                                await futbinSleep(3000);
+                                prog.note = null;
+                                k--;
+                                continue;
+                            }
+                            diag.stopped = 'Session abgelaufen';
+                            sessionLost = true;
+                            return;
                         }
-                        diag.stopped = 'Session abgelaufen';
-                        sessionLost = true;
-                        break;
+                        byDef[defIds[k]] = [];
+                        prog.ea++;
                     }
-                    byDef[defIds[k]] = [];
+                    if (k < defIds.length - 1) await futbinSleep(randomBetween(MARKET_STEP_GAP_MIN_MS, MARKET_STEP_GAP_MAX_MS));
                 }
-                if (k < defIds.length - 1) await futbinSleep(randomBetween(MARKET_STEP_GAP_MIN_MS, MARKET_STEP_GAP_MAX_MS));
-            }
-            if (sessionLost) { setSellResult(warnHtml(SESSION_LOST_TEXT)); return; }
-            // v5.39.0: EAs Preisspanne aus dem Pool nachholen, wenn der Datensatz keine hat
-            // (Report 21.09.: McNair fuer 10.250 gelistet, Spanne endete bei 10.000 -> 461).
-            records.forEach(r => {
-                if (r.limits) return;
-                const p = STATE.poolById && STATE.poolById.get(r.itemId);
-                const raw = p && p.raw;
-                if (raw && (raw.marketDataMinPrice > 0 || raw.marketDataMaxPrice > 0)) r.limits = { min: raw.marketDataMinPrice || 0, max: raw.marketDataMaxPrice || 0 };
-            });
+            })();
             // v5.44.0: futbins letzte echte Verkaeufe je Karte (Verkaufsniveau statt nur Untergrenze).
             const futbin = {};
             diag.futbin = { asked: 0, found: 0, sales: 0, errors: 0 };
-            if (bridgeKind()) {
+            const fbTask = (async function () {
+                if (!bridgeKind()) return;
+                prog.fbOn = true;
                 const year = futbinYear(STATE.diag.gameName, window.fut_year);
                 const idCache = futbinIdCacheLoad();
                 const plat = readFutbinSettings().platform === 'pc' ? 'pc' : 'console';
@@ -10720,7 +10829,6 @@
                     const defId = defIds[k];
                     const rec = records.find(r => r.defId === defId) || {};
                     const raw = rec.raw || (STATE.poolById && STATE.poolById.get(rec.itemId) && STATE.poolById.get(rec.itemId).raw) || {};
-                    setSellResult(progressHtml('futbin-Verkaeufe holen ... ' + (k + 1) + ' von ' + defIds.length, k + 1, defIds.length));
                     diag.futbin.asked++;
                     try {
                         let fid = idCache[String(defId)];
@@ -10745,9 +10853,21 @@
                             }
                         }
                     } catch (e) { diag.futbin.errors++; }
+                    prog.fb++; showProg();
                     if (k < defIds.length - 1) await futbinSleep(randomBetween(900, 1500));
                 }
-            }
+            })();
+            await Promise.all([eaTask, fbTask]);
+            diag.collected = coll; // v5.63.0: Sammel-Flag an Angeboten EIGENER Spieler
+            if (sessionLost) { setSellResult(warnHtml(SESSION_LOST_TEXT)); return; }
+            // v5.39.0: EAs Preisspanne aus dem Pool nachholen, wenn der Datensatz keine hat
+            // (Report 21.09.: McNair fuer 10.250 gelistet, Spanne endete bei 10.000 -> 461).
+            records.forEach(r => {
+                if (r.limits) return;
+                const p = STATE.poolById && STATE.poolById.get(r.itemId);
+                const raw = p && p.raw;
+                if (raw && (raw.marketDataMinPrice > 0 || raw.marketDataMaxPrice > 0)) r.limits = { min: raw.marketDataMinPrice || 0, max: raw.marketDataMaxPrice || 0 };
+            });
             sellLastRows = { records: records, byDef: byDef, futbin: futbin, diagKey: diagKey };
             repriceAndRender();
         } catch (e) {

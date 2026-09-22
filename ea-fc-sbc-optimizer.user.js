@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.60.0
+// @version      5.61.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.60.0';
+    const VERSION = '5.61.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -2481,6 +2481,7 @@
         if (added) {
             STATE.pool = Array.from(STATE.poolById.values());
             refreshSbcInfoUI();
+            rememberCollected(players); // v5.61.0: gekaufte/neue Karten zaehlen dauerhaft fuer die Galerie
         }
         return added;
     }
@@ -2985,6 +2986,7 @@
         // Unvollstaendig-Warnung (loadIncomplete) bleibt davon unberuehrt -
         // sie meldet Luecken IM Durchlauf, das Flag meldet, DASS einer lief.
         if (!STATE.cancelLoad) STATE.poolFullLoadDone = true;
+        rememberCollected(STATE.pool); // v5.61.0
         log('Pool geladen:', STATE.pool.length, 'Spieler (Storage:', storage.length,
             ', Unassigned:', unassigned.length, ')' + (STATE.cancelLoad ? ' [abgebrochen]' : ''));
         if (STATE.loadIncomplete || (!storage.length && !STATE.cancelLoad)) {
@@ -8304,7 +8306,7 @@
      */
     const GALLERY_CODE_PREFIX = 'PT1:';
     function galleryStateEncode(state) {
-        const json = JSON.stringify({ v: 1, done: (state && state.done) || [], bought: (state && state.bought) || [] });
+        const json = JSON.stringify({ v: 1, done: (state && state.done) || [], bought: (state && state.bought) || [], collected: (state && state.collected) || [] });
         // btoa kann nur Latin-1, deshalb der Umweg ueber UTF-8 (Namen mit Umlauten).
         return GALLERY_CODE_PREFIX + btoa(unescape(encodeURIComponent(json)));
     }
@@ -8318,7 +8320,8 @@
         let obj;
         try { obj = JSON.parse(json); } catch (e) { return { error: 'Der Code ist unvollstaendig oder beschaedigt.' }; }
         if (!obj || typeof obj !== 'object') return { error: 'Der Code ist unvollstaendig oder beschaedigt.' };
-        return { done: Array.isArray(obj.done) ? obj.done : [], bought: Array.isArray(obj.bought) ? obj.bought : [] };
+        return { done: Array.isArray(obj.done) ? obj.done : [], bought: Array.isArray(obj.bought) ? obj.bought : [],
+                 collected: Array.isArray(obj.collected) ? obj.collected : [] };
     }
     /** Zwei Staende zusammenfuehren: erledigte Sets als Vereinigung, Merkliste ohne Doppel (itemId). */
     function mergeGalleryState(current, incoming) {
@@ -8328,7 +8331,10 @@
         incDone.forEach(id => { if (id != null && !seen.has(String(id))) { done.push(id); seen.add(String(id)); addedDone++; } });
         const curBought = (current && current.bought) || [], incBought = (incoming && incoming.bought) || [];
         const bought = mergeBoughtRecords(curBought, incBought);
-        return { done: done, bought: bought, addedDone: addedDone, addedBought: bought.length - curBought.length };
+        // v5.61.0: gesammelte Spieler wandern mit - das ist der eigentliche Stand.
+        const coll = mergeCollectedRecords((current && current.collected) || [], (incoming && incoming.collected) || []);
+        return { done: done, bought: bought, collected: coll.list, addedDone: addedDone,
+                 addedBought: bought.length - curBought.length, addedCollected: coll.added };
     }
     // v5.56.0: Ausreisser-Schutz. Live 22.09.: Poulsen stand bei fut.gg mit 400,
     // am Markt lagen nur noch FUENF Angebote (8.000 / 9.900 / 3x 10.000) - ein
@@ -8488,8 +8494,54 @@
      * passende Karten im Verein zaehlen (je Spieler einmal - assetId), Basis-
      * Score summieren (ohne Tag-Boni = untere Schranke der Note).
      */
-    function galleryOwnProgress(setMeta, pool) {
-        const out = { count: 0, score: 0, ids: [] };
+    /**
+     * v5.61.0 Gesammelte Spieler merken (Rasmus 22.09.: "es kann ja sein, dass
+     * wir alle Spieler schon verkauft haben"). EA gibt den Sammelstand nicht
+     * her - `isCollected` steht an JEDER eigenen Karte (v5.53), an Konzept-
+     * Karten gar nicht (v5.60, fuenf von fuenf "fehlt"). Also fuehren wir selbst
+     * Buch: was einmal im Verein war, zaehlt fuer die Galerie dauerhaft. Pro
+     * Spieler ein winziger Satz - Definitions-ID, Verein, Liga, Nation, Score,
+     * Rating -, damit ein verkaufter Spieler weiter zum Set-Fortschritt zaehlt
+     * und nicht ein zweites Mal gekauft wird.
+     */
+    function collectedRecordsFromPool(pool) {
+        const out = [], seen = new Set();
+        (pool || []).forEach(p => {
+            if (!p) return;
+            const r = p.raw || {};
+            const d = Number(r.definitionId || r.resourceId || p.assetId || 0);
+            if (!(d > 0) || seen.has(d)) return;
+            seen.add(d);
+            out.push({ d: d, t: Number(r.teamid) || 0, l: Number(r.leagueId) || 0, n: Number(r.nation) || 0,
+                       s: Number(r.gradingScore) || 0, r: Number(p.rating) || 0 });
+        });
+        return out;
+    }
+    /** Zwei Merklisten vereinen (Schluessel: Definitions-ID). Neuere Angaben gewinnen nur, wenn die alten leer sind. */
+    function mergeCollectedRecords(existing, fresh) {
+        const byId = new Map();
+        (existing || []).forEach(x => { if (x && x.d > 0) byId.set(Number(x.d), x); });
+        let added = 0;
+        (fresh || []).forEach(x => {
+            if (!x || !(x.d > 0)) return;
+            const old = byId.get(Number(x.d));
+            if (!old) { byId.set(Number(x.d), x); added++; return; }
+            if (!(old.s > 0) && x.s > 0) byId.set(Number(x.d), x);
+        });
+        return { list: Array.from(byId.values()), added: added };
+    }
+    /** Definitions-IDs der Merkliste als Menge (Strings) - fuer schnelle Abfragen. */
+    function collectedIdSet(records) {
+        const out = new Set();
+        (records || []).forEach(x => { if (x && x.d > 0) out.add(String(x.d)); });
+        return out;
+    }
+    /**
+     * Fortschritt eines Sets: Karten im Verein PLUS frueher gesammelte (verkaufte)
+     * Spieler. Ohne Merkliste bleibt das Verhalten wie vor v5.61.0.
+     */
+    function galleryOwnProgress(setMeta, pool, collected) {
+        const out = { count: 0, score: 0, ids: [], inClub: 0, earlier: 0 };
         if (!setMeta || !setMeta.eaKind || !(setMeta.eaId > 0)) return out;
         const seen = new Set();
         (pool || []).forEach(p => {
@@ -8501,9 +8553,23 @@
             const key = String(p.assetId || r.assetId || r.definitionId || p.id);
             if (seen.has(key)) return;
             seen.add(key);
-            out.count++;
+            out.count++; out.inClub++;
             out.score += Number(r.gradingScore) || 0;
             out.ids.push(p.id);
+        });
+        const inPool = new Set();
+        (pool || []).forEach(p => { if (!p) return; const r = p.raw || {}; const d = Number(r.definitionId || r.resourceId || p.assetId || 0); if (d > 0) inPool.add(d); });
+        (collected || []).forEach(x => {
+            if (!x || !(x.d > 0) || inPool.has(Number(x.d))) return;
+            const hit = setMeta.eaKind === 'club' ? Number(x.t) === setMeta.eaId
+                      : setMeta.eaKind === 'league' ? Number(x.l) === setMeta.eaId
+                      : setMeta.eaKind === 'nation' ? Number(x.n) === setMeta.eaId : false;
+            if (!hit) return;
+            const key = String(x.d);
+            if (seen.has(key)) return;
+            seen.add(key);
+            out.count++; out.earlier++;
+            out.score += Number(x.s) || 0;
         });
         return out;
     }
@@ -10039,6 +10105,18 @@
     const GALLERY_CHECK_MAX = 8;             // v5.34.0: so viele Set-Seiten werden fuer die echte Summe geladen
     const GALLERY_BUY_GAP_MIN_MS = 4000, GALLERY_BUY_GAP_MAX_MS = 8000; // etwas langsamer als bei SBCs (mehr Kaeufe je Lauf)
     const GALLERY_DONE_KEY = 'sbcOptGalleryDone';
+    // v5.61.0: Spieler, die schon einmal im Verein waren = fuer die Galerie gesammelt.
+    const COLLECTED_KEY = 'sbcOptCollectedDefs';
+    function collectedLoad() { try { const a = JSON.parse(localStorage.getItem(COLLECTED_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
+    function collectedSave(list) { try { localStorage.setItem(COLLECTED_KEY, JSON.stringify(list || [])); } catch (e) {} }
+    /** Karten aus dem Pool in die Merkliste aufnehmen; liefert die Zahl der NEUEN Spieler. */
+    function rememberCollected(players) {
+        try {
+            const m = mergeCollectedRecords(collectedLoad(), collectedRecordsFromPool(players));
+            if (m.added) collectedSave(m.list);
+            return m.added;
+        } catch (e) { return 0; }
+    }
     let galleryLast = null;
     let galleryBusy = false;
     function gallerySortMode() { try { const m = localStorage.getItem('sbcOptGallerySort'); return m === 'fertig' || m === 'tokens' ? m : 'guenstig'; } catch (e) { return 'guenstig'; } }
@@ -10077,10 +10155,10 @@
         if (ui.galleryExport && !ui.galleryExport.dataset.wired) {
             ui.galleryExport.dataset.wired = '1';
             ui.galleryExport.addEventListener('click', function () {
-                const code = galleryStateEncode({ done: galleryDoneIds(), bought: galleryBoughtLoad() });
+                const code = galleryStateEncode({ done: galleryDoneIds(), bought: galleryBoughtLoad(), collected: collectedLoad() });
                 if (ui.galleryCode) { ui.galleryCode.value = code; try { ui.galleryCode.focus(); ui.galleryCode.select(); } catch (e) {} }
                 try { if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(code); } catch (e) {}
-                toast(galleryDoneIds().length + ' erledigte Sets, ' + galleryBoughtLoad().length + ' gemerkte Karten - Code steht im Feld.', 'ok');
+                toast(galleryDoneIds().length + ' Sets, ' + galleryBoughtLoad().length + ' Karten, ' + collectedLoad().length + ' gesammelte Spieler - Code steht im Feld.', 'ok');
             });
         }
         if (ui.galleryImport && !ui.galleryImport.dataset.wired) {
@@ -10088,11 +10166,12 @@
             ui.galleryImport.addEventListener('click', function () {
                 const dec = galleryStateDecode(ui.galleryCode ? ui.galleryCode.value : '');
                 if (dec.error) { toast(dec.error, 'error'); return; }
-                const m = mergeGalleryState({ done: galleryDoneIds(), bought: galleryBoughtLoad() }, dec);
+                const m = mergeGalleryState({ done: galleryDoneIds(), bought: galleryBoughtLoad(), collected: collectedLoad() }, dec);
                 try { localStorage.setItem(GALLERY_DONE_KEY, JSON.stringify(m.done)); } catch (e) {}
                 galleryBoughtSave(m.bought);
+                collectedSave(m.collected);
                 if (ui.galleryCode) ui.galleryCode.value = '';
-                toast('Uebernommen: ' + m.addedDone + ' Sets und ' + m.addedBought + ' Karten neu.', 'ok');
+                toast('Uebernommen: ' + m.addedDone + ' Sets, ' + m.addedBought + ' Karten, ' + m.addedCollected + ' gesammelte Spieler neu.', 'ok');
             });
         }
         if (ui.toolsSell && !ui.toolsSell.dataset.wired) { ui.toolsSell.dataset.wired = '1'; ui.toolsSell.addEventListener('click', onTradepileSellClick); }
@@ -10139,7 +10218,9 @@
             diag.coins = coins;
             galleryLast = { sets: sets, ranked: ranked, at: Date.now(), setCache: {}, coins: coins };
             // v5.36.0: eigener Fortschritt je Set aus dem Pool (vor der Sortierung, v5.47.0).
-            ranked.forEach(x => { x.own = galleryOwnProgress(x, STATE.pool); });
+            const collectedNow = collectedLoad(); // v5.61.0: frueher gesammelte Spieler zaehlen mit
+            diag.collected = collectedNow.length;
+            ranked.forEach(x => { x.own = galleryOwnProgress(x, STATE.pool, collectedNow); });
             // v5.34.0: die echten Summen von der Set-Seite. v5.47.0 (Screenshot 21.09.:
             // Birmingham "ab 9.100" als Richtwert, echte Summe 48.100): geprueft
             // werden die Sets, die der Nutzer SIEHT - im Modus "Guenstig" per
@@ -10257,7 +10338,11 @@
             // v5.33.0 (Rasmus): PaleTools-Sperren zaehlen hier NICHT - fuer die
             // Galerie wird nichts verbraucht, die Karte muss nur im Verein sein.
             // Eine gesperrte Karte im Verein ist also "vorhanden", nicht zu kaufen.
-            const owned = matchOwned(set.players.map(p => ({ resourceId: p.defId })), STATE.pool, []);
+            let owned = matchOwned(set.players.map(p => ({ resourceId: p.defId })), STATE.pool, []);
+            // v5.61.0: was frueher schon im Verein war, zaehlt weiter - auch wenn es
+            // laengst verkauft ist. Sonst kauft PitTools denselben Spieler noch einmal.
+            const collSet = collectedIdSet(collectedLoad());
+            owned = owned.map((o, i) => o || (collSet.has(String(set.players[i].defId)) ? { collectedOnly: true, defId: set.players[i].defId } : null));
             galleryLast.chosen = { idx: idx, meta: x, set: set, owned: owned };
             // v5.60.0: Sammel-Flag schon beim OEFFNEN messen - dafuer muss niemand
             // Preise holen oder eine Kauf-Rueckfrage wegklicken. Gefragt werden
@@ -10288,19 +10373,21 @@
     function renderGallerySet(x, set, owned) {
         const missing = set.players.filter((p, i) => !owned[i]);
         const ownedN = set.players.length - missing.length;
+        const earlierN = owned.filter(o => o && o.collectedOnly).length; // v5.61.0
         const sumMissing = missing.reduce((a, p) => a + (p.price || 0), 0);
         // v5.36.0: eigener Fortschritt aus dem Pool (Basis-Score ohne Tag-Boni = untere Schranke).
-        const own = x.own || galleryOwnProgress(x, STATE.pool);
+        const own = x.own || galleryOwnProgress(x, STATE.pool, collectedLoad());
         const ownGrade = gradeForScore(set.grades, own.score);
         const comp = galleryCompletionPlan(set.requires || set.players.length, own.count, set.players, owned);
         if (galleryLast.chosen) { galleryLast.chosen.own = own; galleryLast.chosen.comp = comp; galleryLast.chosen.buyIdx = null; }
         let h = '<div class="sbc-opt-summary"><b>' + escapeHtml(set.name || x.name) + '</b> · Note ' + escapeHtml(set.bestGrade || x.bestGrade || '?') +
                 ' · ' + (set.tokens != null ? set.tokens : x.tokens) + ' Tokens</div>' +
-                (x.eaKind ? '<div class="sbc-opt-fb-meta">Im Verein: <b>' + own.count + '</b>' + (set.requires ? ' von ' + set.requires : '') + ' passende Karten · Basis-Score <b>' +
+                (x.eaKind ? '<div class="sbc-opt-fb-meta">Gesammelt: <b>' + own.count + '</b>' + (set.requires ? ' von ' + set.requires : '') + ' passende Karten' +
+                    (own.earlier ? ' <span class="sbc-opt-muted">(' + own.inClub + ' im Verein, ' + own.earlier + ' frueher)</span>' : '') + ' · Basis-Score <b>' +
                     own.score.toLocaleString('de-DE') + '</b>' + (ownGrade ? ' → mindestens Note <b>' + ownGrade.grade + '</b>' + (ownGrade.tokens ? ' (' + ownGrade.tokens + ' Tokens)' : '') : (set.grades.length ? ' → noch unter Note D' : '')) +
                     (!STATE.pool.length ? ' <span class="sbc-opt-warn">(Verein nicht geladen)</span>' : '') + '</div>' : '') +
                 '<div class="sbc-opt-fb-meta">' + set.players.length + ' Spieler in der guenstigsten Aufstellung' + (set.requires ? ' (Set braucht ' + set.requires + ')' : '') +
-                ' · <b>' + ownedN + '</b> schon im Verein · <b>' + missing.length + '</b> zu kaufen' +
+                ' · <b>' + (ownedN - earlierN) + '</b> im Verein' + (earlierN ? ' · <b>' + earlierN + '</b> frueher gesammelt' : '') + ' · <b>' + missing.length + '</b> zu kaufen' +
                 (set.score != null ? ' · Score ' + set.score.toLocaleString('de-DE') : '') + '</div>' +
                 '<div class="sbc-opt-fb-meta">fut.gg-Preise der fehlenden Karten zusammen <b>' + fmtCoins(sumMissing) + '</b>' +
                 (set.tax != null ? ' · beim Wiederverkauf gehen ~' + fmtCoins(set.tax) + ' Steuer weg' : '') + '</div>';

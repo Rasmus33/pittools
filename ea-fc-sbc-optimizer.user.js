@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.65.0
+// @version      5.66.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.65.0';
+    const VERSION = '5.66.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -8203,6 +8203,42 @@
         return out;
     }
     /** Set-Seite: Kopfdaten (Meta), Noten-Tabelle, guenstigste Aufstellung, Summen. */
+    /**
+     * v5.66.0: fut.gg hat den Index umgebaut (live 22.09. gegen 126 Sets am
+     * Vormittag). Die Startseite zeigt jetzt nur noch ein paar hervorgehobene
+     * Sets plus KATEGORIE-Kacheln ("Explore Premier League / Barclays WSL,
+     * 24 sets" -> /fut-gallery/premier-league/). Die Vereine selbst stehen auf
+     * den Kategorieseiten - und genau die kleinen, billigen Sets fehlten
+     * dadurch (Rasmus: "er findet die kleineren Vereine nicht mehr, sondern
+     * nur noch die viel zu teuren Gallerien").
+     *
+     * Erkennungsmerkmal: ein SET-Link hat zwei Pfadteile
+     * (/fut-gallery/laliga/malaga-cf/), eine KATEGORIE nur einen. Die Zahl im
+     * Text ist die erwartete Anzahl Sets - damit laesst sich hinterher
+     * pruefen, ob wirklich alles geladen wurde.
+     */
+    function parseFutggGalleryCategories(html) {
+        const out = [], seen = new Set();
+        const re = /<a aria-label="Explore ([^"]*)"[^>]*href="(\/fut-gallery\/([a-z0-9-]+)\/)"/g;
+        let m;
+        while ((m = re.exec(String(html || ''))) !== null) {
+            if (seen.has(m[2])) continue;
+            seen.add(m[2]);
+            const label = galleryDecode(m[1]);
+            const n = /,\s*([\d,]+)\s*sets?/i.exec(label);
+            out.push({ name: label.replace(/,\s*[\d,]+\s*sets?$/i, ''), path: m[2], slug: m[3], expected: n ? galleryNum(n[1]) : null });
+        }
+        return out;
+    }
+    /** Mehrere Set-Listen zu einer machen - je Set-ID nur einmal, erste Fassung gewinnt. */
+    function mergeGallerySets(lists) {
+        const byId = new Map();
+        (lists || []).forEach(list => (list || []).forEach(x => {
+            if (!x || x.id == null) return;
+            if (!byId.has(String(x.id))) byId.set(String(x.id), x);
+        }));
+        return Array.from(byId.values());
+    }
     function parseFutggGallerySet(html) {
         const s = String(html || '');
         const out = { name: null, requires: null, requirement: null, bestGrade: null, coinsInHand: null, coinsTotal: null,
@@ -10320,8 +10356,29 @@
             setGalleryResult(progressHtml('Lade Gallery-Sets von fut.gg ...', 0, 1));
             const r = await bridgeFetch(futggGalleryIndexUrl(), 30000);
             if (r.status !== 200) throw new Error('fut.gg antwortet mit HTTP ' + r.status + (r.status === 0 ? ' - Bruecke zu alt? Browser: Bridge-Script 1.1.0, App: 1.14.0' : ''));
-            const sets = parseFutggGalleryIndex(r.text);
+            const lists = [parseFutggGalleryIndex(r.text)];
+            // v5.66.0: die Vereine stehen seit dem fut.gg-Umbau auf den
+            // Kategorieseiten - ohne sie fehlen genau die kleinen, billigen Sets.
+            const cats = parseFutggGalleryCategories(r.text);
+            diag.categories = [];
+            for (let ci = 0; ci < cats.length; ci++) {
+                const cat = cats[ci];
+                setGalleryResult(progressHtml('Lade ' + escapeHtml(cat.name) + ' ... (' + (ci + 1) + ' von ' + cats.length + ')', ci + 1, cats.length));
+                try {
+                    const rc = await bridgeFetch(futggGallerySetUrl(cat.path), 30000);
+                    if (rc.status !== 200) throw new Error('HTTP ' + rc.status);
+                    const got = parseFutggGalleryIndex(rc.text);
+                    lists.push(got);
+                    diag.categories.push({ name: cat.name, path: cat.path, expected: cat.expected, got: got.length });
+                } catch (e) {
+                    diag.categories.push({ name: cat.name, path: cat.path, expected: cat.expected, got: 0, error: String(e && e.message || e) });
+                    diag.errors.push('Kategorie ' + cat.name + ': ' + (e && e.message || e));
+                }
+                await futbinSleep(FUTBIN_FETCH_GAP_MS);
+            }
+            const sets = mergeGallerySets(lists);
             diag.sets = sets.length;
+            diag.setsFromIndex = lists[0].length;
             if (!sets.length) throw new Error('Keine Sets auf der fut.gg-Seite gefunden (Seite geaendert?).');
             const hideDone = !ui.galleryHideDone || ui.galleryHideDone.checked;
             let ranked = rankGallerySets(sets, hideDone ? galleryDoneIds() : [], null);

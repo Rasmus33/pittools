@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.63.0
+// @version      5.64.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.63.0';
+    const VERSION = '5.64.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -8338,11 +8338,18 @@
     // einem Abstand ist der Markt leergekauft (Galerie-Ansturm) oder fut.gg
     // veraltet; in beiden Faellen entscheidet Rasmus selbst.
     const GALLERY_PRICE_GUARD = { factor: 3, minGap: 1000 };
-    function galleryBuyPlan(players, owned, liveBins, tolerance, tiers, guard) {
+    function galleryBuyPlan(players, owned, liveBins, tolerance, tiers, guard, collectedByDef) {
         const g = guard || GALLERY_PRICE_GUARD;
-        const plan = [], skipped = []; let ownedCount = 0;
+        const plan = [], skipped = []; let ownedCount = 0, collectedCount = 0;
         (players || []).forEach((p, i) => {
             if (owned && owned[i]) { ownedCount++; return; }
+            // v5.64.0: EA sagt an den Marktangeboten selbst, ob wir diese Karte
+            // schon gesammelt haben - dann waere ein Kauf verschenktes Geld.
+            if (collectedByDef && collectedByDef[p.defId] === true) {
+                collectedCount++;
+                skipped.push({ defId: p.defId, name: p.name, reason: 'schon gesammelt (EA) - zaehlt bereits fuer die Galerie' });
+                return;
+            }
             const live = liveBins ? liveBins[p.defId] : undefined;
             const planned = live != null ? live : p.price;
             if (!(planned > 0)) { skipped.push({ defId: p.defId, name: p.name, reason: 'kein Preis' }); return; }
@@ -8354,7 +8361,7 @@
             plan.push({ index: i, resourceId: p.defId, name: p.name, rating: p.rating, planned: planned,
                         source: live != null ? 'live' : 'futgg', maxPrice: planMaxPrice(planned, tolerance, tiers) });
         });
-        return { plan: plan, skipped: skipped, ownedCount: ownedCount };
+        return { plan: plan, skipped: skipped, ownedCount: ownedCount, collectedCount: collectedCount };
     }
     /**
      * v5.35.0 Verkaufspreis (Rasmus: "der marktpreis sollte sich daran
@@ -8500,6 +8507,42 @@
      * Rating -, damit ein verkaufter Spieler weiter zum Set-Fortschritt zaehlt
      * und nicht ein zweites Mal gekauft wird.
      */
+    /**
+     * v5.64.0 - die Messung ist durch, und sie faellt zugunsten von Rasmus'
+     * urspruenglicher Idee aus (22.09.): "Pruef, ob die Spieler schon als
+     * isCollected geflaggt sind, auch die, die nicht im Verein sind."
+     *
+     * Beleg aus EINEM Report vom 22.09., beide Seiten in derselben Sitzung:
+     *   Verkaufslauf (14 Spieler, die Rasmus BESITZT):  yes 129, no   0
+     *   Galerie-Kaufplan (14 Spieler, die er NICHT hat): yes   0, no 137
+     * Beides sind Angebote FREMDER Verkaeufer zur selben Karte. Waere das Feld
+     * eine Eigenschaft des Items oder des Verkaeufers, muesste es in beiden
+     * Faellen gleich aussehen (auch ein Verkaeufer hatte die Karte im Verein).
+     * Es ist also auf den ANFRAGENDEN Nutzer bezogen: "hast DU diese Karte
+     * schon gesammelt?" Konzept-Karten tragen es weiterhin nicht (v5.60.0).
+     *
+     * Damit kostet die Auskunft nichts: im Galerie-Kaufplan fragen wir den
+     * Markt ohnehin nach dem Preis JEDER fehlenden Karte - dieselbe Antwort
+     * sagt uns, ob wir sie laengst gesammelt haben. Eine solche Karte wird
+     * nicht noch einmal gekauft (Rasmus 22.09. zu doppelten Kaeufen: "das
+     * kostet echte Coins und ist auf Dauer wirklich sehr sehr teuer").
+     */
+    function collectedFromOffers(summary) {
+        if (!summary) return null;
+        if (summary.yes > 0) return true;
+        if (summary.no > 0) return false;
+        return null; // nur "fehlt" - keine Aussage
+    }
+    /** Merksaetze fuer die eigene Liste aus einer fut.gg-Aufstellung: die Set-Zugehoerigkeit ist bekannt, mehr nicht. */
+    function collectedRecordsFromGallery(setMeta, players) {
+        const kind = setMeta && setMeta.eaKind, id = Number(setMeta && setMeta.eaId) || 0;
+        if (!kind || !(id > 0)) return [];
+        return (players || []).filter(p => p && p.defId > 0).map(p => ({
+            d: Number(p.defId),
+            t: kind === 'club' ? id : 0, l: kind === 'league' ? id : 0, n: kind === 'nation' ? id : 0,
+            s: Number(p.score) || 0, r: Number(p.rating) || 0
+        }));
+    }
     function collectedRecordsFromPool(pool) {
         const out = [], seen = new Set();
         (pool || []).forEach(p => {
@@ -10546,11 +10589,28 @@
         }
         // v5.58.0: EINMAL je Plan einen Konzept-Spieler abklopfen - traegt EAs
         // Konzept-Karte (Spieler, den wir NICHT besitzen) ein Sammel-Flag?
-        const built = galleryBuyPlan(ch.set.players, mask, liveBins, BUY_TOLERANCE, eaPriceTiers());
+        // v5.64.0: aus denselben Marktabfragen faellt ab, welche Karten wir laengst
+        // gesammelt haben (siehe collectedFromOffers) - die kauft PitTools nicht noch einmal.
+        const collectedByDef = {};
+        Object.keys(liveEst).forEach(function (def) {
+            const v = collectedFromOffers(liveEst[def] && liveEst[def].collected);
+            if (v !== null) collectedByDef[def] = v;
+        });
+        const built = galleryBuyPlan(ch.set.players, mask, liveBins, BUY_TOLERANCE, eaPriceTiers(), null, collectedByDef);
+        if (built.collectedCount) {
+            // In die eigene Merkliste, damit der Fortschritt des Sets sie auch ohne
+            // Marktabfrage kennt (und ein anderes Geraet sie per PT1-Code bekommt).
+            const alreadyDefs = ch.set.players.filter(p => p && collectedByDef[p.defId] === true);
+            try { const m = mergeCollectedRecords(collectedLoad(), collectedRecordsFromGallery(ch.meta, alreadyDefs)); if (m.added) collectedSave(m.list); } catch (e) {}
+        }
         built.plan.forEach(p => { p.est = liveEst[p.resourceId] || null; p.futggPrice = (ch.set.players[p.index] || {}).price || null; });
-        if (STATE.diag.gallery) STATE.diag.gallery.plan = { at: Date.now(), plan: built.plan.length, skipped: built.skipped.length, skippedDetail: built.skipped, noLive: built.plan.filter(p => p.source !== 'live').length,
+        if (STATE.diag.gallery) STATE.diag.gallery.plan = { at: Date.now(), plan: built.plan.length, skipped: built.skipped.length, skippedDetail: built.skipped, alreadyCollected: built.collectedCount, noLive: built.plan.filter(p => p.source !== 'live').length,
                                                              players: built.plan.map(p => ({ name: p.name, planned: p.planned, max: p.maxPrice, futgg: p.futggPrice, est: p.est })) };
         if (!built.plan.length) {
+            if (built.collectedCount && built.collectedCount === built.skipped.length) {
+                setGalleryResult(warnHtml('Alle fehlenden Karten dieses Sets hast du laut EA schon einmal gesammelt - sie zaehlen weiter fuer die Galerie. Hier ist nichts zu kaufen; im Spiel bewerten.'));
+                return;
+            }
             setGalleryResult(warnHtml('Kein kaufbarer Spieler.' + (built.skipped.length ? ' Uebersprungen: ' + built.skipped.map(s => escapeHtml(s.name || ('#' + s.defId)) + ' (' + escapeHtml(s.reason) + ')').join(', ') : '')));
             return;
         }

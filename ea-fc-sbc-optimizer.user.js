@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.58.0
+// @version      5.59.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.58.0';
+    const VERSION = '5.59.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -9193,6 +9193,36 @@
         return est;
     }
     /** Konzept-Spieler (Dream Squad) als echte EA-Entity ueber EAs eigene Konzept-Suche. */
+    /**
+     * v5.59.0: Konzept-Sonde fuer MEHRERE Spieler in einer Anfrage. Sie
+     * beantwortet zwei Fragen auf einmal (Rasmus 22.09.: "ein Knopf, der die
+     * vorgeschlagenen Vereine prueft, ob alle 15 Spieler schon geflaggt sind"):
+     * (1) traegt EAs Konzept-Karte ein Sammel-Flag, obwohl wir den Spieler
+     * nicht besitzen? (2) nimmt die Suche mehrere defIds an - davon haengt ab,
+     * ob ein Set eine Anfrage kostet oder fuenfzehn. EAs Preisgrenzen-Endpunkt
+     * (`marketdata/item/pricelimits?defId=a,b,c`) macht es genau so vor.
+     */
+    async function conceptCollectedProbe(resourceIds) {
+        const ids = (resourceIds || []).map(Number).filter(n => n > 0).slice(0, 5);
+        if (!ids.length) return { error: 'keine Spieler zum Pruefen' };
+        if (typeof window.UTSearchCriteriaDTO !== 'function' || !window.services || !window.services.Item ||
+            typeof window.services.Item.searchConceptItems !== 'function') return { error: 'EA-Konzept-Suche nicht verfuegbar' };
+        const crit = new window.UTSearchCriteriaDTO();
+        try { crit.type = window.SearchType ? window.SearchType.PLAYER : 'player'; } catch (e) {}
+        crit.defId = ids;
+        const resp = await obsPromise(window.services.Item.searchConceptItems(crit));
+        if (!responseOk(resp)) return { asked: ids.length, error: 'Status ' + (resp && resp.status) };
+        const data = (resp && (resp.response || resp.data)) || {};
+        const items = data.items || [];
+        const out = { asked: ids.length, got: items.length, items: [], keys: [] };
+        try { if (items[0]) out.keys = Object.keys(items[0]).filter(k => /collect|grad/i.test(k)); } catch (e) {}
+        items.slice(0, 5).forEach(it => {
+            out.items.push({ def: it.definitionId != null ? it.definitionId : null,
+                             isCollected: it.isCollected === undefined ? 'fehlt' : it.isCollected,
+                             gradingScore: it.gradingScore === undefined ? null : it.gradingScore });
+        });
+        return out;
+    }
     async function conceptEntity(resourceId) {
         if (typeof window.UTSearchCriteriaDTO !== 'function' || !window.services || !window.services.Item ||
             typeof window.services.Item.searchConceptItems !== 'function') {
@@ -10333,12 +10363,8 @@
         // v5.58.0: EINMAL je Plan einen Konzept-Spieler abklopfen - traegt EAs
         // Konzept-Karte (Spieler, den wir NICHT besitzen) ein Sammel-Flag?
         try {
-            const probeId = (ch.set.players.find((p, i) => !mask[i]) || {}).defId;
-            if (probeId && STATE.diag.gallery) {
-                const ent = await conceptEntity(probeId);
-                let keys = []; try { keys = Object.keys(ent || {}).filter(k => /collect/i.test(k)); } catch (e) {}
-                STATE.diag.gallery.conceptProbe = { defId: probeId, isCollected: ent ? ent.isCollected : undefined, keys: keys };
-            }
+            const probeIds = ch.set.players.filter((p, i) => !mask[i]).map(p => p.defId).slice(0, 5);
+            if (probeIds.length && STATE.diag.gallery) STATE.diag.gallery.conceptProbe = await conceptCollectedProbe(probeIds);
         } catch (e) { if (STATE.diag.gallery) STATE.diag.gallery.conceptProbe = { error: String(e && e.message || e) }; }
         const built = galleryBuyPlan(ch.set.players, mask, liveBins, BUY_TOLERANCE, eaPriceTiers());
         built.plan.forEach(p => { p.est = liveEst[p.resourceId] || null; p.futggPrice = (ch.set.players[p.index] || {}).price || null; });

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.59.0
+// @version      5.60.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.59.0';
+    const VERSION = '5.60.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -10259,6 +10259,18 @@
             // Eine gesperrte Karte im Verein ist also "vorhanden", nicht zu kaufen.
             const owned = matchOwned(set.players.map(p => ({ resourceId: p.defId })), STATE.pool, []);
             galleryLast.chosen = { idx: idx, meta: x, set: set, owned: owned };
+            // v5.60.0: Sammel-Flag schon beim OEFFNEN messen - dafuer muss niemand
+            // Preise holen oder eine Kauf-Rueckfrage wegklicken. Gefragt werden
+            // Spieler, die gerade NICHT im Verein liegen (nur die sind aussagekraeftig:
+            // waren sie mal gesammelt, muesste EA das wissen).
+            try {
+                const probeIds = set.players.filter((p, i) => !owned[i]).map(p => p.defId).slice(0, 5);
+                if (probeIds.length && STATE.diag.gallery) {
+                    const pr = await conceptCollectedProbe(probeIds);
+                    pr.set = x.name; pr.ownedInClub = owned.filter(Boolean).length;
+                    STATE.diag.gallery.conceptProbe = pr;
+                }
+            } catch (e) { if (STATE.diag.gallery) STATE.diag.gallery.conceptProbe = { error: String(e && e.message || e) }; }
             if (STATE.diag.gallery) STATE.diag.gallery.chosen = { id: x.id, name: x.name, players: set.players.length, owned: owned.filter(Boolean).length, coinsTotal: set.coinsTotal, grade: set.bestGrade, tokens: set.tokens };
             renderGallerySet(x, set, owned);
             setGalleryStep(3);
@@ -10362,10 +10374,6 @@
         }
         // v5.58.0: EINMAL je Plan einen Konzept-Spieler abklopfen - traegt EAs
         // Konzept-Karte (Spieler, den wir NICHT besitzen) ein Sammel-Flag?
-        try {
-            const probeIds = ch.set.players.filter((p, i) => !mask[i]).map(p => p.defId).slice(0, 5);
-            if (probeIds.length && STATE.diag.gallery) STATE.diag.gallery.conceptProbe = await conceptCollectedProbe(probeIds);
-        } catch (e) { if (STATE.diag.gallery) STATE.diag.gallery.conceptProbe = { error: String(e && e.message || e) }; }
         const built = galleryBuyPlan(ch.set.players, mask, liveBins, BUY_TOLERANCE, eaPriceTiers());
         built.plan.forEach(p => { p.est = liveEst[p.resourceId] || null; p.futggPrice = (ch.set.players[p.index] || {}).price || null; });
         if (STATE.diag.gallery) STATE.diag.gallery.plan = { at: Date.now(), plan: built.plan.length, skipped: built.skipped.length, skippedDetail: built.skipped, noLive: built.plan.filter(p => p.source !== 'live').length,

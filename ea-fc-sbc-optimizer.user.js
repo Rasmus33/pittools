@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.56.0
+// @version      5.58.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.56.0';
+    const VERSION = '5.58.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -6324,6 +6324,16 @@
                         <button class="sbc-opt-btn primary sbc-opt-btn-icon" id="sbc-opt-gallery-load"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span>Naechstes Set kaufen</span></button>
                     </div>
                     <div class="sbc-opt-result" id="sbc-opt-gallery-result"></div>
+                    <!-- v5.57.0: Stand zwischen PC und Handy uebertragen (localStorage ist pro Geraet). -->
+                    <details class="sbc-opt-details-toggle" id="sbc-opt-gallery-sync">
+                        <summary>Stand auf anderes Geraet uebertragen</summary>
+                        <div class="sbc-opt-dim">Erledigte Sets und Merkliste liegen pro Geraet. Hier Code erzeugen, auf dem anderen Geraet einfuegen und uebernehmen - zusammengefuehrt, nichts geht verloren.</div>
+                        <textarea id="sbc-opt-gallery-code" rows="3" placeholder="Code hier einfuegen ..." style="width:100%;box-sizing:border-box;margin:8px 0;font-family:monospace;font-size:11px;"></textarea>
+                        <div class="sbc-opt-inline" style="margin:0;">
+                            <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gallery-export" style="margin:0;">Code erzeugen</button>
+                            <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gallery-import" style="margin:0;">Code uebernehmen</button>
+                        </div>
+                    </details>
                     <div class="sbc-opt-debug">Quelle fut.gg (guenstigste Aufstellung je Set). Bewertet wird im Spiel: Galerie → Set → Bewerten. Die Karten zaehlen, sobald sie im Verein waren, und duerfen danach verkauft werden.</div>
                 </div>
                 <!-- REITER RATING: der bisherige Optimizer (Rating-SBCs). -->
@@ -6647,6 +6657,9 @@
             toolsSell: panel.querySelector('#sbc-opt-tools-sell'),
             toolsResult: panel.querySelector('#sbc-opt-tools-result'),
             gallerySellClear: panel.querySelector('#sbc-opt-gallery-sell-clear'),
+            galleryCode: panel.querySelector('#sbc-opt-gallery-code'),
+            galleryExport: panel.querySelector('#sbc-opt-gallery-export'),
+            galleryImport: panel.querySelector('#sbc-opt-gallery-import'),
             poolCacheBox: panel.querySelector('#sbc-opt-poolcache'),
             rarityguard: panel.querySelector('#sbc-opt-rarityguard'),
             raritymode: panel.querySelector('#sbc-opt-raritymode'),
@@ -7861,6 +7874,25 @@
      * einzelne Minimum (ein Ausreisser, der beim Kauf schon weg ist), sondern
      * das ZWEITniedrigste; bei nur einem Angebot dieses.
      */
+    /**
+     * v5.58.0 (Rasmus 22.09.: "du muesstest pruefen, ob die Spieler schon als
+     * isCollected geflaggt sind, auch die, die nicht im Verein sind"): dafuer
+     * muesste EA das Feld auch an FREMDEN Karten liefern - an Marktangeboten
+     * oder Konzept-Spielern. Ob es das tut, und ob der Wert dann auf UNS
+     * bezogen ist, weiss niemand; deshalb erst zaehlen, was in den Angeboten
+     * steht, bevor irgendetwas darauf gebaut wird.
+     */
+    function collectedSummary(offers) {
+        const out = { yes: 0, no: 0, missing: 0 };
+        (offers || []).forEach(o => {
+            const raw = o && o.raw;
+            const v = raw ? raw.isCollected : undefined;
+            if (v === undefined || v === null) out.missing++;
+            else if (v) out.yes++;
+            else out.no++;
+        });
+        return out;
+    }
     function robustMinBin(bins) {
         const arr = (bins || []).map(Number).filter(v => v > 0).sort((a, b) => a - b);
         if (!arr.length) return { min: null, robust: null, count: 0, lowest: [], dist: [] };
@@ -8261,6 +8293,43 @@
         return v.concat(u);
     }
     /** Kaufliste: fehlende Spieler mit Live-Preis (sonst fut.gg-Preis als Notwert) und Obergrenze. */
+    /**
+     * v5.57.0 Stand zwischen Geraeten uebertragen (Rasmus 22.09.: "am Handy habe
+     * ich diese Liste nicht"). EA fuehrt den Galerie-Stand nicht abrufbar - die
+     * Messung aus v5.53 kam mit `isCollected` true bei ALLEN 237 Vereinskarten
+     * zurueck, das Feld heisst also nur "war schon im Verein" und sagt nichts
+     * ueber erledigte Sets. Deshalb ein Code zum Kopieren: klein, ohne fremden
+     * Dienst, ohne Zugangsschluessel. Zusammengefuehrt wird, nie ersetzt -
+     * beide Geraete duerfen etwas wissen, was das andere nicht kennt.
+     */
+    const GALLERY_CODE_PREFIX = 'PT1:';
+    function galleryStateEncode(state) {
+        const json = JSON.stringify({ v: 1, done: (state && state.done) || [], bought: (state && state.bought) || [] });
+        // btoa kann nur Latin-1, deshalb der Umweg ueber UTF-8 (Namen mit Umlauten).
+        return GALLERY_CODE_PREFIX + btoa(unescape(encodeURIComponent(json)));
+    }
+    function galleryStateDecode(code) {
+        const s = String(code == null ? '' : code).trim().replace(/\s+/g, '');
+        if (s.indexOf(GALLERY_CODE_PREFIX) !== 0) return { error: 'Das ist kein PitTools-Code (er beginnt mit ' + GALLERY_CODE_PREFIX + ').' };
+        let json;
+        try {
+            json = decodeURIComponent(escape(atob(s.slice(GALLERY_CODE_PREFIX.length))));
+        } catch (e) { return { error: 'Der Code ist unvollstaendig oder beschaedigt.' }; }
+        let obj;
+        try { obj = JSON.parse(json); } catch (e) { return { error: 'Der Code ist unvollstaendig oder beschaedigt.' }; }
+        if (!obj || typeof obj !== 'object') return { error: 'Der Code ist unvollstaendig oder beschaedigt.' };
+        return { done: Array.isArray(obj.done) ? obj.done : [], bought: Array.isArray(obj.bought) ? obj.bought : [] };
+    }
+    /** Zwei Staende zusammenfuehren: erledigte Sets als Vereinigung, Merkliste ohne Doppel (itemId). */
+    function mergeGalleryState(current, incoming) {
+        const curDone = (current && current.done) || [], incDone = (incoming && incoming.done) || [];
+        const done = curDone.slice(); let addedDone = 0;
+        const seen = new Set(done.map(String));
+        incDone.forEach(id => { if (id != null && !seen.has(String(id))) { done.push(id); seen.add(String(id)); addedDone++; } });
+        const curBought = (current && current.bought) || [], incBought = (incoming && incoming.bought) || [];
+        const bought = mergeBoughtRecords(curBought, incBought);
+        return { done: done, bought: bought, addedDone: addedDone, addedBought: bought.length - curBought.length };
+    }
     // v5.56.0: Ausreisser-Schutz. Live 22.09.: Poulsen stand bei fut.gg mit 400,
     // am Markt lagen nur noch FUENF Angebote (8.000 / 9.900 / 3x 10.000) - ein
     // Set fuer rund 6.000 Coins, und eine einzelne Karte kostete 8.500. Bei so
@@ -9120,6 +9189,7 @@
         const low = await marketOffersLowest(resourceId, opts);
         const est = robustMinBin(low.offers.map(o => o.bin));
         est.complete = low.complete; est.steps = low.steps;
+        est.collected = collectedSummary(low.offers); // v5.58.0: Sammel-Flag an fremden Karten?
         return est;
     }
     /** Konzept-Spieler (Dream Squad) als echte EA-Entity ueber EAs eigene Konzept-Suche. */
@@ -9973,6 +10043,28 @@
             });
         }
         refreshGallerySellBtn();
+        // v5.57.0: Stand als Code erzeugen / uebernehmen (PC <-> Handy).
+        if (ui.galleryExport && !ui.galleryExport.dataset.wired) {
+            ui.galleryExport.dataset.wired = '1';
+            ui.galleryExport.addEventListener('click', function () {
+                const code = galleryStateEncode({ done: galleryDoneIds(), bought: galleryBoughtLoad() });
+                if (ui.galleryCode) { ui.galleryCode.value = code; try { ui.galleryCode.focus(); ui.galleryCode.select(); } catch (e) {} }
+                try { if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(code); } catch (e) {}
+                toast(galleryDoneIds().length + ' erledigte Sets, ' + galleryBoughtLoad().length + ' gemerkte Karten - Code steht im Feld.', 'ok');
+            });
+        }
+        if (ui.galleryImport && !ui.galleryImport.dataset.wired) {
+            ui.galleryImport.dataset.wired = '1';
+            ui.galleryImport.addEventListener('click', function () {
+                const dec = galleryStateDecode(ui.galleryCode ? ui.galleryCode.value : '');
+                if (dec.error) { toast(dec.error, 'error'); return; }
+                const m = mergeGalleryState({ done: galleryDoneIds(), bought: galleryBoughtLoad() }, dec);
+                try { localStorage.setItem(GALLERY_DONE_KEY, JSON.stringify(m.done)); } catch (e) {}
+                galleryBoughtSave(m.bought);
+                if (ui.galleryCode) ui.galleryCode.value = '';
+                toast('Uebernommen: ' + m.addedDone + ' Sets und ' + m.addedBought + ' Karten neu.', 'ok');
+            });
+        }
         if (ui.toolsSell && !ui.toolsSell.dataset.wired) { ui.toolsSell.dataset.wired = '1'; ui.toolsSell.addEventListener('click', onTradepileSellClick); }
         // v5.36.0: Sortierung (localStorage), Wechsel ordnet die geladene Liste ohne Neuladen.
         if (ui.gallerySort && !ui.gallerySort.dataset.wired) {
@@ -10228,7 +10320,7 @@
                 try {
                     const est = await marketMinBin(p.defId);
                     liveBins[p.defId] = est && est.robust != null ? est.robust : null;
-                    liveEst[p.defId] = est ? { min: est.min, robust: est.robust, count: est.count, complete: est.complete, steps: est.steps, fromCache: !!est.fromCache, dist: est.dist || null } : null; // v5.46.0: Report, v5.51.0: Verteilung
+                    liveEst[p.defId] = est ? { min: est.min, robust: est.robust, count: est.count, complete: est.complete, steps: est.steps, fromCache: !!est.fromCache, dist: est.dist || null, collected: est.collected || null } : null; // v5.46.0: Report, v5.51.0: Verteilung, v5.58.0: Sammel-Flag
                 } catch (e) {
                     liveBins[p.defId] = null;
                     if (isRateLimit(e && e.status)) { setGalleryResult(warnHtml('EA drosselt die Marktsuche - spaeter noch einmal.')); return; }
@@ -10238,6 +10330,16 @@
         } finally {
             galleryBusy = false;
         }
+        // v5.58.0: EINMAL je Plan einen Konzept-Spieler abklopfen - traegt EAs
+        // Konzept-Karte (Spieler, den wir NICHT besitzen) ein Sammel-Flag?
+        try {
+            const probeId = (ch.set.players.find((p, i) => !mask[i]) || {}).defId;
+            if (probeId && STATE.diag.gallery) {
+                const ent = await conceptEntity(probeId);
+                let keys = []; try { keys = Object.keys(ent || {}).filter(k => /collect/i.test(k)); } catch (e) {}
+                STATE.diag.gallery.conceptProbe = { defId: probeId, isCollected: ent ? ent.isCollected : undefined, keys: keys };
+            }
+        } catch (e) { if (STATE.diag.gallery) STATE.diag.gallery.conceptProbe = { error: String(e && e.message || e) }; }
         const built = galleryBuyPlan(ch.set.players, mask, liveBins, BUY_TOLERANCE, eaPriceTiers());
         built.plan.forEach(p => { p.est = liveEst[p.resourceId] || null; p.futggPrice = (ch.set.players[p.index] || {}).price || null; });
         if (STATE.diag.gallery) STATE.diag.gallery.plan = { at: Date.now(), plan: built.plan.length, skipped: built.skipped.length, skippedDetail: built.skipped, noLive: built.plan.filter(p => p.source !== 'live').length,

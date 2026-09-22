@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.54.0
+// @version      5.55.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.54.0';
+    const VERSION = '5.55.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -10287,7 +10287,7 @@
                     '<div class="sbc-opt-summary">' + kind + ' <b>' + escapeHtml(ch.meta.name) + '</b>' + (liga && ch.meta.eaKind === 'club' ? ' <span class="sbc-opt-muted">(' + escapeHtml(liga) + ')</span>' : '') +
                     ' komplett gekauft: ' + d.bought + ' Karten, jetzt im Verein' + (ch.set && ch.set.bestGrade ? ' · Ziel-Note ' + escapeHtml(ch.set.bestGrade) : '') +
                     (ch.meta.tokens ? ' · ' + ch.meta.tokens + ' Tokens' : '') + '.</div>' +
-                    '<div>Jetzt im Spiel (Konsole/PC oder Companion App): <b>Galerie → ' + escapeHtml(ch.meta.name) + ' → bewerten</b>. Erst die Token-Gutschrift pruefen, dann die Karten wieder verkaufen (5 % Steuer).</div>' +
+                    '<div>Die Karten zaehlen ab jetzt dauerhaft fuer die Galerie - sie mussten den Verein nur EINMAL beruehrt haben (Rasmus 22.09.). Du kannst sie sofort wieder verkaufen (5 % Steuer) und <b>spaeter</b> im Spiel bewerten: <b>Galerie → ' + escapeHtml(ch.meta.name) + ' → bewerten</b> (Konsole/PC oder Companion App).</div>' +
                     '<button type="button" class="sbc-opt-btn primary" id="sbc-opt-gal-done2">Set als erledigt markieren</button>');
                 const b = el.querySelector('#sbc-opt-gal-done2');
                 if (b) b.addEventListener('click', function () { galleryMarkDone(ch.meta.id); toast('"' + ch.meta.name + '" als erledigt markiert.', 'ok'); onGalleryLoadClick(); });
@@ -10560,7 +10560,7 @@
                 [['0', 'Gleich'], ['tier1', '+1 St.'], ['tier2', '+2 St.'], ['pct5', '+5 %'], ['pct10', '+10 %'], ['pct15', '+15 %']].map(function (o) {
                     return '<button type="button" class="sbc-opt-chip' + (mode === o[0] ? ' on' : '') + '" data-markup="' + o[0] + '">' + o[1] + '</button>';
                 }).join('') + '</div>' +
-                (isGallery ? warnHtml('Erst im Spiel bewerten und die Token-Gutschrift pruefen - danach verkaufen. Gelistet wird fuer 1 Stunde.')
+                (isGallery ? '<div class="sbc-opt-dim">Die Karten bleiben in der Galerie, auch verkauft - bewerten geht spaeter im Spiel. Gelistet wird fuer 1 Stunde.</div>'
                            : '<div class="sbc-opt-dim">Gelistet wird fuer 1 Stunde. Die Karten liegen schon auf der Transferliste, verschoben wird nichts.</div>');
         Object.keys(bySet).forEach(function (setName) {
             h += '<details class="sbc-opt-details-toggle" open><summary>' + escapeHtml(setName) + ' (' + bySet[setName].length + ')</summary>';
@@ -10601,7 +10601,7 @@
         const frage = sellable.length + ' Karten auf den Transfermarkt stellen (1 Stunde, Sofortkauf = Verkaufsniveau' +
                       (mk && mk.tiers ? ' + ' + mk.tiers + ' Stufe(n)' : mk && mk.pct ? ' + ' + Math.round(mk.pct * 100) + ' %' : '') + ')?\n\n' +
                       sellable.slice(0, 12).map(x => x.rec.name + ': ' + fmtCoins(x.price.buyNow)).join('\n') + (sellable.length > 12 ? '\n...' : '') +
-                      '\n\nHast du das Set im Spiel schon bewertet? Danach zaehlen die Karten weiter, aber weg ist weg.';
+                      '\n\nDie Karten bleiben fuer die Galerie gezaehlt (sie waren im Verein) - bewerten kannst du spaeter im Spiel.';
         if (!window.confirm(frage)) return;
         sellBusy = true;
         const diagKey = (sellLastRows && sellLastRows.diagKey) || 'gallerySell';

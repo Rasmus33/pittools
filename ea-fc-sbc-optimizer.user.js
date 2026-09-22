@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.55.0
+// @version      5.56.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.55.0';
+    const VERSION = '5.56.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -8261,13 +8261,25 @@
         return v.concat(u);
     }
     /** Kaufliste: fehlende Spieler mit Live-Preis (sonst fut.gg-Preis als Notwert) und Obergrenze. */
-    function galleryBuyPlan(players, owned, liveBins, tolerance, tiers) {
+    // v5.56.0: Ausreisser-Schutz. Live 22.09.: Poulsen stand bei fut.gg mit 400,
+    // am Markt lagen nur noch FUENF Angebote (8.000 / 9.900 / 3x 10.000) - ein
+    // Set fuer rund 6.000 Coins, und eine einzelne Karte kostete 8.500. Bei so
+    // einem Abstand ist der Markt leergekauft (Galerie-Ansturm) oder fut.gg
+    // veraltet; in beiden Faellen entscheidet Rasmus selbst.
+    const GALLERY_PRICE_GUARD = { factor: 3, minGap: 1000 };
+    function galleryBuyPlan(players, owned, liveBins, tolerance, tiers, guard) {
+        const g = guard || GALLERY_PRICE_GUARD;
         const plan = [], skipped = []; let ownedCount = 0;
         (players || []).forEach((p, i) => {
             if (owned && owned[i]) { ownedCount++; return; }
             const live = liveBins ? liveBins[p.defId] : undefined;
             const planned = live != null ? live : p.price;
             if (!(planned > 0)) { skipped.push({ defId: p.defId, name: p.name, reason: 'kein Preis' }); return; }
+            if (live != null && p.price > 0 && live >= p.price * g.factor && (live - p.price) >= g.minGap) {
+                skipped.push({ defId: p.defId, name: p.name, futgg: p.price, live: live,
+                               reason: 'Markt viel teurer als fut.gg (' + Math.round(live / p.price) + 'x: ' + live + ' statt ' + p.price + ')' });
+                return;
+            }
             plan.push({ index: i, resourceId: p.defId, name: p.name, rating: p.rating, planned: planned,
                         source: live != null ? 'live' : 'futgg', maxPrice: planMaxPrice(planned, tolerance, tiers) });
         });
@@ -8311,7 +8323,11 @@
         }
         if (!(buyNow > 0)) return null;
         const inc = priceTierOf(buyNow, tiers).inc;
-        let start = buyNow - inc;
+        // v5.56.0: der Startpreis muss in SEINER eigenen Preisklasse auf einer
+        // gueltigen Stufe liegen. Live 22.09.: Sofortkauf 10.000 (Stufe 250) minus
+        // 250 = 9.750 - unterhalb von 10.000 gilt aber Schritt 100, und EA lehnte
+        // das Listen mit HTTP 400 ab.
+        let start = roundPriceDown(buyNow - inc, tiers);
         if (limits && limits.min > 0 && start < limits.min) start = limits.min; // Spanne gewinnt
         if (!(start > 0) || start > buyNow) start = buyNow; // EA nimmt Start = Sofortkauf
         const net = Math.floor(buyNow * 0.95);
@@ -10224,9 +10240,12 @@
         }
         const built = galleryBuyPlan(ch.set.players, mask, liveBins, BUY_TOLERANCE, eaPriceTiers());
         built.plan.forEach(p => { p.est = liveEst[p.resourceId] || null; p.futggPrice = (ch.set.players[p.index] || {}).price || null; });
-        if (STATE.diag.gallery) STATE.diag.gallery.plan = { at: Date.now(), plan: built.plan.length, skipped: built.skipped.length, noLive: built.plan.filter(p => p.source !== 'live').length,
+        if (STATE.diag.gallery) STATE.diag.gallery.plan = { at: Date.now(), plan: built.plan.length, skipped: built.skipped.length, skippedDetail: built.skipped, noLive: built.plan.filter(p => p.source !== 'live').length,
                                                              players: built.plan.map(p => ({ name: p.name, planned: p.planned, max: p.maxPrice, futgg: p.futggPrice, est: p.est })) };
-        if (!built.plan.length) { setGalleryResult(warnHtml('Kein kaufbarer Spieler (keine Preise).')); return; }
+        if (!built.plan.length) {
+            setGalleryResult(warnHtml('Kein kaufbarer Spieler.' + (built.skipped.length ? ' Uebersprungen: ' + built.skipped.map(s => escapeHtml(s.name || ('#' + s.defId)) + ' (' + escapeHtml(s.reason) + ')').join(', ') : '')));
+            return;
+        }
         const total = built.plan.reduce((a, p) => a + p.maxPrice, 0);
         const coins = userCoins();
         const noLive = built.plan.filter(p => p.source !== 'live').length;
@@ -10236,6 +10255,8 @@
         const frage = 'Gallery-Set "' + ch.meta.name + '": ' + built.plan.length + ' Spieler nach und nach kaufen?\n\n' + lines +
                       '\n\nZusammen hoechstens ' + fmtCoins(total) + (coins != null ? ' (Kontostand ' + fmtCoins(coins) + ')' : '') +
                       (noLive ? '\n' + noLive + ' Preis(e) stammen von fut.gg, weil der Markt gerade kein Angebot zeigt.' : '') +
+                      // v5.56.0: was NICHT gekauft wird, steht mit Grund in der Rueckfrage.
+                      (built.skipped.length ? '\n\nNicht dabei (selbst entscheiden):\n' + built.skipped.map(s => '- ' + s.name + ': ' + s.reason).join('\n') : '') +
                       '.\nEin Kauf alle 4-8 Sekunden, Abbruch bei Fehlern. Die Karten gehen in den Verein und zaehlen fuer die Galerie.';
         if (!window.confirm(frage)) { renderGallerySet(ch.meta, ch.set, ch.owned); return; }
         if (coins != null && coins < total) {
@@ -10632,7 +10653,7 @@
                     if (st === 461 && x.price.base && x.price.base < x.price.buyNow) {
                         try {
                             const inc2 = priceTierOf(x.price.base, eaPriceTiers()).inc;
-                            const start2 = Math.max(1, Math.min(x.price.start, x.price.base - inc2));
+                            const start2 = Math.max(1, roundPriceDown(Math.min(x.price.start, x.price.base - inc2), eaPriceTiers()));
                             await futbinSleep(1500);
                             await listItemHttp(x.rec.itemId, start2 < x.price.base ? start2 : x.price.base, x.price.base, SELL_DURATION_S, true);
                             step.status = 'gelistet (ohne Aufschlag: ' + x.price.base + ')'; step.retryAt = x.price.base; diag.listed++; fails = 0;

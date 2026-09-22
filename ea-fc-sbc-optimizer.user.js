@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.51.0
+// @version      5.52.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.51.0';
+    const VERSION = '5.52.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -8366,6 +8366,35 @@
         return (existing || []).filter(r => !gone.has(String(r.itemId)));
     }
     /**
+     * v5.52.0: gemerkte Galerie-Karten mit der Wirklichkeit abgleichen (Rasmus:
+     * "in der Liste waren noch 2 Spieler, die ich schon manuell verkauft hatte,
+     * dadurch bricht er ab und verkauft die restlichen nicht"). Eine Karte ist
+     * verkaufbar, wenn sie im VEREIN liegt oder unverkauft/abgelaufen auf der
+     * TRANSFERLISTE (dann ohne Verschieben listen). Aktiv gelistet, verkauft
+     * oder gar nicht mehr da -> raus aus der Merkliste, mit Grund.
+     * clubIds: Set der Item-IDs (String) im Verein; tradepile: EAs auctionInfo.
+     */
+    function reconcileBoughtRecords(records, clubIds, tradepile) {
+        const keep = [], dropped = [];
+        const inTrade = new Map();
+        (Array.isArray(tradepile) ? tradepile : []).forEach(a => {
+            const it = a && a.itemData; if (!it || it.id == null) return;
+            inTrade.set(String(it.id), { state: String(a.tradeState || '').toLowerCase(), it: it });
+        });
+        (records || []).forEach(r => {
+            if (!r || r.itemId == null) return;
+            const id = String(r.itemId);
+            if (clubIds && clubIds.has(id)) { keep.push(Object.assign({}, r, { inTradePile: false })); return; }
+            const t = inTrade.get(id);
+            if (!t) { dropped.push({ itemId: r.itemId, name: r.name, why: 'nicht mehr im Verein (verkauft oder verbaut)' }); return; }
+            if (t.state === 'active') { dropped.push({ itemId: r.itemId, name: r.name, why: 'schon auf dem Markt' }); return; }
+            if (t.state === 'closed') { dropped.push({ itemId: r.itemId, name: r.name, why: 'verkauft (noch auf der Transferliste)' }); return; }
+            const lim = (t.it.marketDataMinPrice > 0 || t.it.marketDataMaxPrice > 0) ? { min: t.it.marketDataMinPrice || 0, max: t.it.marketDataMaxPrice || 0 } : null;
+            keep.push(Object.assign({}, r, { inTradePile: true, limits: r.limits || lim }));
+        });
+        return { keep: keep, dropped: dropped };
+    }
+    /**
      * v5.36.0 Eigener Fortschritt (Rasmus: "ich hab zum beispiel premier league
      * schon 29 von 30 karten. waere das nicht das einfachste, erst mal dieses
      * set zu vervollstaendigen?"). fut.ggs Set-Karten tragen EAs IDs in den
@@ -10266,6 +10295,7 @@
     let sellBusy = false;
     // v5.37.0: die Verkaufs-Ausgabe kann im Galerie-Reiter ODER unter "Mehr" stehen.
     let sellTargetEl = null;
+    let sellPrefixHtml = ''; // v5.52.0: Hinweis ueber der Verkaufs-Vorschau (uebersprungene Karten)
     function setSellResult(html) {
         const el = sellTargetEl || ui.galleryResult;
         if (!el) return;
@@ -10325,7 +10355,32 @@
         if (!sessionReady()) { setGalleryResult(warnHtml('EA-Sitzung noch nicht erfasst - einmal im Spiel klicken, dann erneut.')); return; }
         sellTargetEl = ui.galleryResult;
         STATE.diag.gallerySell = { at: Date.now(), records: records.length, pending: true };
-        await priceAndPreview(records, ui.gallerySell, 'gallerySell');
+        // v5.52.0: erst abgleichen - Verein frisch laden, Transferliste lesen, nur
+        // preisen, was wirklich noch verkaufbar ist (von Hand verkaufte Karten
+        // brachten sonst "PUT item 400" und nach zwei Fehlern den Abbruch).
+        let recon = { keep: records, dropped: [] };
+        setBtnBusy(ui.gallerySell, true, 'Verein abgleichen');
+        try {
+            setSellResult(progressHtml('Verein frisch laden ...', 0, 2));
+            if (!STATE.loading) { try { await onLoadClick(); } catch (e) { reportError('Verkauf: Verein laden', e); } }
+            setSellResult(progressHtml('Transferliste lesen ...', 1, 2));
+            let tp = [];
+            try { const t = await apiGet('tradepile'); tp = (t && Array.isArray(t.auctionInfo)) ? t.auctionInfo : []; }
+            catch (e) { reportError('Verkauf: Transferliste', e); }
+            const clubIds = new Set(Array.from(STATE.poolById.keys()).map(String));
+            recon = reconcileBoughtRecords(records, clubIds, tp);
+            STATE.diag.gallerySell.reconcile = { club: clubIds.size, tradepile: tp.length, keep: recon.keep.length, dropped: recon.dropped };
+            if (recon.dropped.length) galleryBoughtSave(removeBoughtRecords(galleryBoughtLoad(), recon.dropped.map(d => d.itemId)));
+        } catch (e) { reportError('Verkauf: Abgleich', e); }
+        finally { setBtnBusy(ui.gallerySell, false); }
+        if (!recon.keep.length) {
+            setSellResult(warnHtml('Keine der ' + records.length + ' gemerkten Karten ist noch verkaufbar (' + recon.dropped.map(d => escapeHtml(d.name || '?') + ': ' + d.why).join(', ') + '). Merkliste bereinigt.'));
+            return;
+        }
+        sellPrefixHtml = recon.dropped.length
+            ? '<div class="sbc-opt-muted">' + recon.dropped.length + ' gemerkte Karte(n) uebersprungen: ' + recon.dropped.map(d => escapeHtml(d.name || '?') + ' (' + d.why + ')').join(', ') + '. Merkliste bereinigt.</div>'
+            : '';
+        await priceAndPreview(recon.keep, ui.gallerySell, 'gallerySell');
     }
     /** Gemeinsam fuer Galerie-Merkliste und Transferliste: aktuelle Angebote holen, preisen, Vorschau. */
     async function priceAndPreview(records, busyBtn, diagKey) {
@@ -10449,6 +10504,7 @@
         if (sellBusy || buyBusy || galleryBusy) { toast('Es laeuft schon ein Lauf.', 'warn'); return; }
         if (!sessionReady()) { toast('EA-Sitzung noch nicht erfasst - einmal im Spiel klicken, dann erneut.', 'warn'); return; }
         sellTargetEl = ui.toolsResult;
+        sellPrefixHtml = ''; // v5.52.0
         setBtnBusy(ui.toolsSell, true, 'Transferliste lesen');
         let cands = [];
         try {
@@ -10480,7 +10536,7 @@
         const isGallery = sellTargetEl === ui.galleryResult || !sellTargetEl;
         const dg = sellLastRows && STATE.diag[sellLastRows.diagKey];
         const withFb = sellable.filter(x => x.price.futbin && x.price.futbin.sales.length).length;
-        let h = '<div class="sbc-opt-summary">' + sellable.length + ' von ' + rows.length + ' Karten mit aktuellem Angebot' + (withFb ? ' · ' + withFb + ' mit futbin-Verkaeufen' : '') + '</div>' +
+        let h = (sellPrefixHtml || '') + '<div class="sbc-opt-summary">' + sellable.length + ' von ' + rows.length + ' Karten mit aktuellem Angebot' + (withFb ? ' · ' + withFb + ' mit futbin-Verkaeufen' : '') + '</div>' +
                 (dg && dg.stopped ? warnHtml('EA hat die Preissuche gedrosselt - nur die schon gepreisten Karten stehen hier. Die anderen beim naechsten Lauf (Preise bleiben 3 Minuten gemerkt).') : '') +
                 '<div class="sbc-opt-fb-meta">Sofortkauf zusammen <b>' + fmtCoins(gross) + '</b> · nach 5 % Steuer ~<b>' + fmtCoins(Math.floor(gross * 0.95)) + '</b>' +
                 (paidSum ? ' · gekauft fuer ' + fmtCoins(paidSum) : '') + '</div>' +

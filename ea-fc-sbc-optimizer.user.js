@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.61.0
+// @version      5.62.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.61.0';
+    const VERSION = '5.62.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7273,28 +7273,24 @@
     }
     /**
      * Haelt die Einstiegspunkte aktuell. Regeln:
-     *  - Beides NUR im SBC-Bereich (Wunsch von Rasmus - sonst ist der Knopf
-     *    ueberall im Weg). Beim Verlassen geht das Panel zu, damit es nicht
-     *    ueber dem Transfermarkt schwebt.
-     *  - Der fliegende Kreis ist der VERLAESSLICHE Weg und bleibt sichtbar.
-     *    Der Button in der SBC-Leiste kommt zusaetzlich dazu, wo es geht -
-     *    zweimal war ein eingehaengter Button live tot, deshalb wird der Kreis
-     *    nicht mehr automatisch dafuer weggenommen.
+     *  - Der fliegende Kreis ist ab v5.62.0 UEBERALL sichtbar (Rasmus:
+     *    "den PitTools-Knopf jetzt auch immer einblenden und nicht nur bei
+     *    SBCs und Store - durch Galerie und so lohnt das auch im
+     *    Startfenster"). Vorher war er auf SBC- und Store-Ansicht begrenzt,
+     *    weil PitTools nur dort etwas zu tun hatte; Galerie, Verkaufen und
+     *    Transferliste haengen an keiner Ansicht.
+     *  - Der Kreis ist der VERLAESSLICHE Weg. Der Button in der SBC-Leiste
+     *    kommt zusaetzlich dazu, wo es geht - zweimal war ein eingehaengter
+     *    Button live tot, deshalb wird der Kreis nicht mehr automatisch
+     *    dafuer weggenommen. Er bleibt SBC-spezifisch, weil nur dort eine
+     *    Aktionsleiste existiert, deren Aussehen wir erben koennen.
+     *  - Das Panel wird beim Wechsel der Ansicht NICHT mehr zugeklappt: ein
+     *    Verkaufslauf laeuft ueber mehrere Ansichten hinweg weiter, und das
+     *    Zuklappen riss ihn aus dem Blick.
      */
     function syncLauncher() {
         if (!ui.fab || !ui.panel) return;
         let btn = document.getElementById(BTN_ID);
-        // Zusaetzlich zur SBC-Ansicht bleibt der Einstieg auch in der
-        // Store-Ansicht sichtbar (Pack-Opener, Ticket #69) - sonst waere die
-        // Pack-Sektion nie erreichbar, weil Panel/FAB sonst komplett
-        // verschwinden. Der eingehaengte Button in der SBC-Aktionsleiste
-        // bleibt SBC-spezifisch (dort gibt es keine .sbc-button-container).
-        if (!inSbcView() && !inStoreView()) {
-            if (btn && btn.parentNode) btn.parentNode.removeChild(btn);
-            ui.fab.classList.add('sbc-opt-hidden');
-            if (ui.panel.classList.contains('open')) togglePanel();
-            return;
-        }
         ui.fab.classList.remove('sbc-opt-hidden');
         const cont = inSbcView() ? sbcButtonContainer() : null;
         if (cont) {
@@ -9819,6 +9815,18 @@
             return isFinite(n) ? n : null;
         } catch (e) { return null; }
     }
+    /**
+     * v5.62.0: 401 heisst bei EA "expired session". apiGet/apiPut versuchen es
+     * selbst zweimal (Nudge + Cooldown); kommt danach immer noch 401, ist die
+     * Sitzung wirklich weg. Bis v5.61.0 fiel das in den Verkaufslaeufen
+     * lautlos durch: der Fehler wurde als "kein Angebot" gebucht, und der
+     * Lauf meldete "13 ohne Angebot" statt "Sitzung abgelaufen"
+     * (Log 22.09.: 15 Karten, 13x HTTP 401, 2 gepreist, eine gelistet).
+     */
+    function isSessionExpired(status) {
+        return status === 401;
+    }
+    const SESSION_LOST_TEXT = 'EA-Sitzung abgelaufen. Im Spiel einmal navigieren (z.B. Verein oeffnen), dann erneut versuchen - es wurde nichts gelistet.';
     function isRateLimit(status) {
         try { if (window.HttpStatusCode && status === window.HttpStatusCode.RATE_LIMIT) return true; } catch (e) {}
         return status === 429 || status === 426 || status === 512;
@@ -9919,6 +9927,7 @@
                 catch (e) {
                     step.status = 'suche: ' + (e && e.message || e);
                     if (isRateLimit(e && e.status)) { diag.stopped = 'Rate-Limit bei der Suche'; lines.push('⚠ EA drosselt - Lauf gestoppt.'); break; }
+                    if (isSessionExpired(e && e.status)) { diag.stopped = 'Session abgelaufen'; lines.push('⚠ ' + escapeHtml(SESSION_LOST_TEXT)); break; }
                     fails++; lines.push('⚠ ' + escapeHtml(p.name) + ': Suche fehlgeschlagen.');
                     if (fails >= BUY_MAX_CONSECUTIVE_FAILS) { diag.stopped = 'zwei Fehler hintereinander'; break; }
                     await futbinSleep(randomBetween(gapMin, gapMax));
@@ -9973,6 +9982,7 @@
                     } else { why = 'Angebot ohne tradeId'; }
                     if (ok) { denied461 = 0; break; }
                     if (isRateLimit(status)) { step.status = 'Rate-Limit'; diag.stopped = 'Rate-Limit beim Kauf'; lines.push('⚠ EA drosselt - Lauf gestoppt.'); hardStop = true; break; }
+                    if (isSessionExpired(status)) { step.status = 'Session abgelaufen'; diag.stopped = 'Session abgelaufen'; lines.push('⚠ ' + escapeHtml(SESSION_LOST_TEXT)); hardStop = true; break; }
                     if (status === 461 && offer.tradeId != null) {
                         denied461++;
                         if (!diag.ownBidHeaders) { try { diag.ownBidHeaders = Object.keys(apiHeaders()).concat(['Content-Type']); } catch (e) {} }
@@ -10648,8 +10658,9 @@
         try {
             const byDef = {};
             const defIds = Array.from(new Set(records.map(r => r.defId).filter(Boolean)));
-            let throttled = 0;
+            let throttled = 0, sessionTried = 0;
             diag.throttlePauses = 0;
+            let sessionLost = false;
             for (let k = 0; k < defIds.length; k++) {
                 setSellResult(progressHtml('Aktuelle Angebote holen ... ' + (k + 1) + ' von ' + defIds.length, k + 1, defIds.length));
                 try {
@@ -10669,10 +10680,27 @@
                         diag.stopped = 'Rate-Limit bei der Preissuche (Teilergebnis)';
                         break;
                     }
+                    // v5.62.0: abgelaufene Sitzung ist KEIN "kein Angebot". Einmal
+                    // erneuern lassen und dieselbe Karte wiederholen, sonst stoppen -
+                    // ein Preis aus einer 401-Antwort waere erfunden.
+                    if (isSessionExpired(e && e.status)) {
+                        sessionTried++;
+                        if (sessionTried === 1) {
+                            setSellResult(progressHtml('EA-Sitzung erneuern ...', k, defIds.length));
+                            await nudgeSession();
+                            await futbinSleep(3000);
+                            k--;
+                            continue;
+                        }
+                        diag.stopped = 'Session abgelaufen';
+                        sessionLost = true;
+                        break;
+                    }
                     byDef[defIds[k]] = [];
                 }
                 if (k < defIds.length - 1) await futbinSleep(randomBetween(MARKET_STEP_GAP_MIN_MS, MARKET_STEP_GAP_MAX_MS));
             }
+            if (sessionLost) { setSellResult(warnHtml(SESSION_LOST_TEXT)); return; }
             // v5.39.0: EAs Preisspanne aus dem Pool nachholen, wenn der Datensatz keine hat
             // (Report 21.09.: McNair fuer 10.250 gelistet, Spanne endete bei 10.000 -> 461).
             records.forEach(r => {
@@ -10888,6 +10916,8 @@
                     }
                     step.status = 'Fehler: ' + (e && e.message || e);
                     if (isRateLimit(st)) { diag.stopped = 'Rate-Limit'; lines.push('⚠ EA drosselt - Lauf gestoppt.'); break; }
+                    // v5.62.0: abgelaufene Sitzung - jeder weitere Versuch scheitert genauso.
+                    if (isSessionExpired(st)) { diag.stopped = 'Session abgelaufen'; lines.push('⚠ ' + escapeHtml(SESSION_LOST_TEXT)); break; }
                     fails++;
                     lines.push('⚠ ' + escapeHtml(x.rec.name) + ': ' + escapeHtml(String(e && e.message || e)) + (st === 461 || st === 478 ? ' (Transferliste voll?)' : ''));
                     if (fails >= 2) { diag.stopped = 'zwei Fehler hintereinander'; break; }

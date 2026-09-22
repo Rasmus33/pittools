@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.64.0
+// @version      5.65.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.64.0';
+    const VERSION = '5.65.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -8527,6 +8527,40 @@
      * nicht noch einmal gekauft (Rasmus 22.09. zu doppelten Kaeufen: "das
      * kostet echte Coins und ist auf Dauer wirklich sehr sehr teuer").
      */
+    /**
+     * v5.65.0 "Set pruefen" (Rasmus' Entwurf vom 22.09., jetzt moeglich, weil
+     * EAs `isCollected` an Marktangeboten nutzerbezogen ist - siehe v5.64.0):
+     * welche Spieler eines Sets muessen wir ueberhaupt bei EA nachfragen?
+     *
+     * NICHT fragen muessen wir bei Karten im Verein (die sind offensichtlich
+     * gesammelt) und bei Karten, die schon in der eigenen Merkliste stehen.
+     * Jede Frage kostet eine Marktabfrage, und EA drosselt ab etwa zwoelf in
+     * zehn Sekunden - deshalb wird hier gespart, wo es ohne Rateschluss geht.
+     */
+    function galleryCheckTargets(players, owned, collectedIds) {
+        const out = [];
+        (players || []).forEach((p, i) => {
+            if (!p || !(p.defId > 0)) return;
+            if (owned && owned[i]) return;                          // im Verein (oder frueher gesammelt)
+            if (collectedIds && collectedIds.has(String(p.defId))) return; // schon gemerkt
+            out.push(i);
+        });
+        return out;
+    }
+    /**
+     * Ergebnis einer Pruefung zusammenfassen. `known` sind die ohne Abfrage
+     * sicheren (Verein/Merkliste), `results` die Antworten des Marktes
+     * (true/false/null - null heisst "kein Angebot, keine Aussage").
+     */
+    function galleryCheckSummary(total, known, results) {
+        const r = results || [];
+        const yes = r.filter(x => x === true).length;
+        const no = r.filter(x => x === false).length;
+        const unknown = r.filter(x => x !== true && x !== false).length;
+        const collected = (known || 0) + yes;
+        return { total: total || 0, known: known || 0, yes: yes, no: no, unknown: unknown,
+                 collected: collected, complete: (total || 0) > 0 && collected >= total && unknown === 0 && no === 0 };
+    }
     function collectedFromOffers(summary) {
         if (!summary) return null;
         if (summary.yes > 0) return true;
@@ -9352,36 +9386,6 @@
         return est;
     }
     /** Konzept-Spieler (Dream Squad) als echte EA-Entity ueber EAs eigene Konzept-Suche. */
-    /**
-     * v5.59.0: Konzept-Sonde fuer MEHRERE Spieler in einer Anfrage. Sie
-     * beantwortet zwei Fragen auf einmal (Rasmus 22.09.: "ein Knopf, der die
-     * vorgeschlagenen Vereine prueft, ob alle 15 Spieler schon geflaggt sind"):
-     * (1) traegt EAs Konzept-Karte ein Sammel-Flag, obwohl wir den Spieler
-     * nicht besitzen? (2) nimmt die Suche mehrere defIds an - davon haengt ab,
-     * ob ein Set eine Anfrage kostet oder fuenfzehn. EAs Preisgrenzen-Endpunkt
-     * (`marketdata/item/pricelimits?defId=a,b,c`) macht es genau so vor.
-     */
-    async function conceptCollectedProbe(resourceIds) {
-        const ids = (resourceIds || []).map(Number).filter(n => n > 0).slice(0, 5);
-        if (!ids.length) return { error: 'keine Spieler zum Pruefen' };
-        if (typeof window.UTSearchCriteriaDTO !== 'function' || !window.services || !window.services.Item ||
-            typeof window.services.Item.searchConceptItems !== 'function') return { error: 'EA-Konzept-Suche nicht verfuegbar' };
-        const crit = new window.UTSearchCriteriaDTO();
-        try { crit.type = window.SearchType ? window.SearchType.PLAYER : 'player'; } catch (e) {}
-        crit.defId = ids;
-        const resp = await obsPromise(window.services.Item.searchConceptItems(crit));
-        if (!responseOk(resp)) return { asked: ids.length, error: 'Status ' + (resp && resp.status) };
-        const data = (resp && (resp.response || resp.data)) || {};
-        const items = data.items || [];
-        const out = { asked: ids.length, got: items.length, items: [], keys: [] };
-        try { if (items[0]) out.keys = Object.keys(items[0]).filter(k => /collect|grad/i.test(k)); } catch (e) {}
-        items.slice(0, 5).forEach(it => {
-            out.items.push({ def: it.definitionId != null ? it.definitionId : null,
-                             isCollected: it.isCollected === undefined ? 'fehlt' : it.isCollected,
-                             gradingScore: it.gradingScore === undefined ? null : it.gradingScore });
-        });
-        return out;
-    }
     async function conceptEntity(resourceId) {
         if (typeof window.UTSearchCriteriaDTO !== 'function' || !window.services || !window.services.Item ||
             typeof window.services.Item.searchConceptItems !== 'function') {
@@ -10451,18 +10455,12 @@
             const collSet = collectedIdSet(collectedLoad());
             owned = owned.map((o, i) => o || (collSet.has(String(set.players[i].defId)) ? { collectedOnly: true, defId: set.players[i].defId } : null));
             galleryLast.chosen = { idx: idx, meta: x, set: set, owned: owned };
-            // v5.60.0: Sammel-Flag schon beim OEFFNEN messen - dafuer muss niemand
-            // Preise holen oder eine Kauf-Rueckfrage wegklicken. Gefragt werden
-            // Spieler, die gerade NICHT im Verein liegen (nur die sind aussagekraeftig:
-            // waren sie mal gesammelt, muesste EA das wissen).
-            try {
-                const probeIds = set.players.filter((p, i) => !owned[i]).map(p => p.defId).slice(0, 5);
-                if (probeIds.length && STATE.diag.gallery) {
-                    const pr = await conceptCollectedProbe(probeIds);
-                    pr.set = x.name; pr.ownedInClub = owned.filter(Boolean).length;
-                    STATE.diag.gallery.conceptProbe = pr;
-                }
-            } catch (e) { if (STATE.diag.gallery) STATE.diag.gallery.conceptProbe = { error: String(e && e.message || e) }; }
+            // v5.65.0: die Sonde aus v5.59/5.60 ist raus - samt ihrer Funktion. Sie
+            // hat ihre Frage beantwortet (Konzept-Karten tragen `isCollected`
+            // NICHT, fuenf von fuenf "fehlt") und kostete seitdem bei jedem
+            // Oeffnen eine Anfrage fuer immer dieselbe Antwort. Die Auskunft
+            // kommt jetzt vom Markt (v5.64.0) und auf Tastendruck
+            // (Knopf "Sammelstand bei EA pruefen"). Der Befund steht in LEARNINGS.
             if (STATE.diag.gallery) STATE.diag.gallery.chosen = { id: x.id, name: x.name, players: set.players.length, owned: owned.filter(Boolean).length, coinsTotal: set.coinsTotal, grade: set.bestGrade, tokens: set.tokens };
             renderGallerySet(x, set, owned);
             setGalleryStep(3);
@@ -10548,6 +10546,12 @@
             set.grades.forEach(g => { h += '<div>' + g.grade + ': ab ' + (g.score != null ? g.score.toLocaleString('de-DE') : '?') + ' Score → ' + (g.tokens ? g.tokens + ' Tokens' : escapeHtml(g.reward || '–')) + '</div>'; });
             h += '</details>';
         }
+        // v5.65.0: Sammelstand bei EA nachfragen (eine Marktabfrage je unbekanntem Spieler).
+        const checkIdx = galleryCheckTargets(set.players, owned, collectedIdSet(collectedLoad()));
+        if (checkIdx.length) {
+            h += '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-check">Sammelstand bei EA pruefen (' + checkIdx.length + ' Abfragen)</button>' +
+                 '<div class="sbc-opt-dim">Fragt fuer jeden noch unbekannten Spieler den Markt - EAs Antwort verraet, ob du die Karte schon einmal gesammelt hast. Ist das Set damit voll, wird es als erledigt markiert. Dauert rund ' + Math.ceil(checkIdx.length * 2) + ' Sekunden.</div>';
+        }
         h += '<div class="sbc-opt-inline" style="margin-top:8px;">' +
              '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-back" style="margin:0;">Zurueck</button>' +
              '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-done" style="margin:0;">Als erledigt markieren</button></div>';
@@ -10556,10 +10560,95 @@
         if (buy) buy.addEventListener('click', function () { if (galleryLast.chosen) galleryLast.chosen.buyIdx = null; onGalleryBuyClick(); });
         const buyC = ui.galleryResult.querySelector('#sbc-opt-gal-buy-complete');
         if (buyC) buyC.addEventListener('click', function () { if (galleryLast.chosen) galleryLast.chosen.buyIdx = comp.idx.slice(); onGalleryBuyClick(); });
+        const check = ui.galleryResult.querySelector('#sbc-opt-gal-check');
+        if (check) check.addEventListener('click', onGalleryCheckClick);
         const back = ui.galleryResult.querySelector('#sbc-opt-gal-back');
         if (back) back.addEventListener('click', function () { renderGallerySets(galleryLast.ranked); setGalleryStep(2); });
         const done = ui.galleryResult.querySelector('#sbc-opt-gal-done');
         if (done) done.addEventListener('click', function () { galleryMarkDone(x.id); toast('"' + x.name + '" als erledigt markiert.', 'ok'); onGalleryLoadClick(); });
+    }
+    /**
+     * v5.65.0: Sammelstand EINES Sets bei EA nachfragen (Rasmus: "ein Knopf,
+     * der die vorgeschlagenen Galerie-Vereine prueft, ob dort schon alle 15
+     * Spieler als isCollected geflaggt sind - so kann das auf ein Handy oder
+     * einen anderen Browser uebertragen werden").
+     *
+     * Bewusst nur fuer das GEOEFFNETE Set und nur auf Tastendruck: eine
+     * Marktabfrage je unbekanntem Spieler, im selben Takt wie die Preisrunde
+     * (1,4-2,4 s). Fuer acht Vorschlaege waeren das Minuten und ein
+     * Drossel-Risiko - fuer ein Set sind es rund 30 Sekunden.
+     */
+    async function onGalleryCheckClick() {
+        const ch = galleryLast && galleryLast.chosen;
+        if (!ch || !ch.set) return;
+        if (galleryBusy || buyBusy || sellBusy) { toast('Es laeuft schon ein Lauf.', 'warn'); return; }
+        if (!sessionReady()) { toast('EA-Sitzung noch nicht erfasst - einmal im Spiel klicken, dann erneut.', 'warn'); return; }
+        const players = ch.set.players || [];
+        const known = players.filter((p, i) => ch.owned && ch.owned[i]).length;
+        const idx = galleryCheckTargets(players, ch.owned, collectedIdSet(collectedLoad()));
+        if (!idx.length) {
+            setGalleryResult(warnHtml('Nichts nachzufragen - alle Spieler dieser Aufstellung sind im Verein oder schon gemerkt.'));
+            return;
+        }
+        if (!window.confirm('Sammelstand von "' + (ch.set.name || ch.meta.name) + '" bei EA nachfragen?\n\n' +
+                            idx.length + ' Marktabfrage(n), rund ' + Math.ceil(idx.length * 2) + ' Sekunden. ' +
+                            known + ' Spieler sind schon sicher (Verein oder gemerkt).')) return;
+        galleryBusy = true;
+        const diag = { at: Date.now(), set: ch.meta.name, asked: idx.length, known: known, results: [], stopped: null };
+        STATE.diag.galleryCheck = diag;
+        const results = [];
+        const found = [];
+        try {
+            for (let k = 0; k < idx.length; k++) {
+                const p = players[idx[k]];
+                setGalleryResult(progressHtml('Sammelstand pruefen ... ' + (k + 1) + ' von ' + idx.length + ' (' + escapeHtml(p.name) + ')', k + 1, idx.length));
+                let val = null;
+                try {
+                    const offers = await marketOffersHttp(p.defId, 0);
+                    val = collectedFromOffers(collectedSummary(offers));
+                } catch (e) {
+                    const st = e && e.status;
+                    if (isSessionExpired(st)) { diag.stopped = 'Session abgelaufen'; setGalleryResult(warnHtml(SESSION_LOST_TEXT)); return; }
+                    if (isRateLimit(st)) { diag.stopped = 'Rate-Limit'; break; }
+                }
+                results.push(val);
+                diag.results.push({ name: p.name, defId: p.defId, collected: val });
+                if (val === true) found.push(p);
+                if (k < idx.length - 1) await futbinSleep(randomBetween(MARKET_STEP_GAP_MIN_MS, MARKET_STEP_GAP_MAX_MS));
+            }
+            // Gefundene in die eigene Merkliste - damit zaehlen sie ab sofort ohne Abfrage.
+            if (found.length) {
+                try { const m = mergeCollectedRecords(collectedLoad(), collectedRecordsFromGallery(ch.meta, found)); if (m.added) collectedSave(m.list); } catch (e) {}
+            }
+            const sum = galleryCheckSummary(players.length, known, results);
+            diag.summary = sum;
+            // Erledigt heisst: das Set ist mit dem, was wir sicher wissen, voll.
+            const requires = ch.set.requires || players.length;
+            const own = galleryOwnProgress(ch.meta, STATE.pool, collectedLoad());
+            const full = own.count >= requires;
+            if (full) galleryMarkDone(ch.meta.id);
+            diag.marked = full;
+            let h = '<div class="sbc-opt-summary">' + escapeHtml(ch.set.name || ch.meta.name) + ': <b>' + sum.collected + '</b> von ' + sum.total + ' gesammelt</div>' +
+                    '<div class="sbc-opt-fb-meta">' + sum.known + ' sicher (Verein/gemerkt) · ' + sum.yes + ' neu bei EA gefunden · ' + sum.no + ' fehlen' +
+                    (sum.unknown ? ' · ' + sum.unknown + ' ohne Angebot (keine Auskunft)' : '') + '</div>' +
+                    (diag.stopped ? warnHtml('Abgebrochen: ' + escapeHtml(diag.stopped) + ' - Teilergebnis.') : '') +
+                    (full ? '<div class="sbc-opt-summary">Das Set ist voll (' + own.count + ' von ' + requires + ') und wurde als erledigt markiert.</div>'
+                          : '<div class="sbc-opt-fb-meta">Noch nicht voll: ' + own.count + ' von ' + requires + ' - nicht als erledigt markiert.</div>');
+            if (diag.results.filter(r => r.collected === false).length) {
+                h += '<details class="sbc-opt-details-toggle"><summary>Fehlende Spieler</summary>' +
+                     diag.results.filter(r => r.collected === false).map(r => '<div>' + escapeHtml(r.name) + '</div>').join('') + '</details>';
+            }
+            h += '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-check-back">Zurueck zum Set</button>';
+            setGalleryResult(h);
+            const back = ui.galleryResult.querySelector('#sbc-opt-gal-check-back');
+            if (back) back.addEventListener('click', function () { onGalleryPick(ch.idx); });
+            toast('Sammelstand: ' + sum.collected + ' von ' + sum.total + (full ? ' - Set als erledigt markiert.' : ''), full ? 'ok' : 'warn');
+        } catch (e) {
+            reportError('Galerie: Sammelstand pruefen', e);
+            setGalleryResult(warnHtml('Pruefen fehlgeschlagen: ' + escapeHtml(String(e && e.message || e))));
+        } finally {
+            galleryBusy = false;
+        }
     }
     async function onGalleryBuyClick() {
         const ch = galleryLast && galleryLast.chosen;

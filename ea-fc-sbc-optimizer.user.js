@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.1.0
+// @version      6.2.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.1.0';
+    const VERSION = '6.2.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -6047,6 +6047,47 @@
             background: var(--pt-bg-surface); border: 1px solid var(--pt-border-subtle);
             border-radius: var(--pt-radius-md); padding: 10px 12px; margin: 10px 0;
         }
+        /* v6.2.0: Editor-Schritte als Kette - Nummer auf einer Linie links. */
+        .sbc-opt-vl-chain { position: relative; padding-left: 40px; margin: 12px 0 4px; }
+        .sbc-opt-vl-chain::before {
+            content: ''; position: absolute; left: 13px; top: 14px; bottom: 22px;
+            width: 2px; background: var(--pt-border-default);
+        }
+        .sbc-opt-vl-chain .sbc-opt-vl-step { position: relative; margin: 0 0 12px; }
+        .sbc-opt-vl-stepnum {
+            position: absolute; left: -40px; top: 10px; width: 28px; height: 28px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            background: var(--pt-bg-raised); color: var(--pt-fg-default);
+            box-shadow: inset 0 0 0 1px var(--pt-border-strong), 0 0 0 4px var(--pt-bg-base);
+            font-family: var(--pt-font-mono); font-size: 12px; font-weight: var(--pt-weight-semibold);
+        }
+        .sbc-opt-vl-stepadd {
+            position: relative; display: flex; align-items: center; gap: 10px; min-height: 44px;
+            background: transparent; border: none; color: var(--pt-fg-muted); font-family: inherit;
+            font-size: 13px; cursor: pointer; padding: 0; margin-left: -40px;
+        }
+        .sbc-opt-vl-stepadd .plus {
+            width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+            background: var(--pt-accent-soft); color: var(--pt-accent); box-shadow: inset 0 0 0 1px var(--pt-accent-border);
+            font-size: 16px; line-height: 1; box-shadow: inset 0 0 0 1px var(--pt-accent-border), 0 0 0 4px var(--pt-bg-base);
+        }
+        .sbc-opt-vl-stepadd:hover { color: var(--pt-fg-default); }
+        .sbc-opt-vl-stepadd:active .plus { background: var(--pt-state-press); }
+        /* v6.2.0: Rueckgaengig-Leiste nach dem Loeschen einer Vorlage. */
+        #sbc-opt-vl-undo {
+            position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); z-index: var(--pt-z-overlay);
+            display: none; align-items: center; gap: 14px; padding: 6px 6px 6px 16px;
+            background: var(--pt-bg-raised); color: var(--pt-fg-default); border: 1px solid var(--pt-border-default);
+            border-radius: var(--pt-radius-full); box-shadow: var(--pt-shadow-2);
+            font-family: var(--pt-font-sans); font-size: 13px; max-width: calc(100vw - 24px);
+        }
+        #sbc-opt-vl-undo .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        #sbc-opt-vl-undo button {
+            flex: 0 0 auto; min-height: 36px; padding: 0 14px; border: none; border-radius: var(--pt-radius-full);
+            background: var(--pt-accent-soft); color: var(--pt-accent); font-family: inherit;
+            font-size: 13px; font-weight: var(--pt-weight-semibold); cursor: pointer;
+        }
+        #sbc-opt-vl-undo button:active { background: var(--pt-state-press); }
         .sbc-opt-vl-step label {
             display: block; margin: 8px 0 4px; color: var(--pt-fg-muted); font-size: 12px;
         }
@@ -6187,6 +6228,24 @@
         .sbc-opt-tag.ok { background:var(--pt-bg-raised); color:var(--pt-fg-secondary); box-shadow:none; }
         .sbc-opt-tag.best { background:var(--pt-accent-soft); color:var(--pt-accent); box-shadow:none; }
         .sbc-opt-fb-tags { display:flex; gap:4px; flex-wrap:wrap; justify-content:flex-end; }
+        /* v6.2.0: Galerie-Zeile - Fortschritt und Kurs je Token. */
+        .sbc-opt-gal-line { display:flex; align-items:center; gap:10px; margin:8px 0 2px; }
+        /* In der Set-Liste ist .sbc-opt-fb-price ein NAME, kein Preis - neutral und kleiner. */
+        #sbc-opt-gallery-result .sbc-opt-fb-price { font-size:var(--pt-text-lg); color:var(--pt-fg-default); }
+        .sbc-opt-gal-line .bar { flex:1 1 auto; height:4px; border-radius:var(--pt-radius-full); background:var(--pt-bg-raised); overflow:hidden; }
+        .sbc-opt-gal-line .bar-empty { flex:1 1 auto; }
+        .sbc-opt-gal-line .fill { display:block; height:100%; background:var(--pt-accent); border-radius:var(--pt-radius-full); }
+        .sbc-opt-gal-line .v { font-family:var(--pt-font-mono); font-size:11px; color:var(--pt-fg-muted); }
+        .sbc-opt-gal-line .kurs { font-family:var(--pt-font-mono); font-size:12px; color:var(--pt-accent); white-space:nowrap; }
+        /* v6.2.0: Summenzeilen vor dem Listen. */
+        .sbc-opt-receipt { margin:8px 0 10px; padding:4px 12px; border-radius:var(--pt-radius-md); background:var(--pt-bg-sunken); font-size:12px; }
+        .sbc-opt-receipt > div { display:flex; justify-content:space-between; gap:12px; padding:6px 0; }
+        .sbc-opt-receipt > div + div { border-top:1px solid var(--pt-border-subtle); }
+        .sbc-opt-receipt span { color:var(--pt-fg-muted); }
+        .sbc-opt-receipt b { font-family:var(--pt-font-mono); font-weight:var(--pt-weight-medium); color:var(--pt-fg-default); }
+        .sbc-opt-receipt .sum { border-top-color:var(--pt-border-default); }
+        .sbc-opt-receipt .sum span { color:var(--pt-fg-default); font-weight:var(--pt-weight-semibold); }
+        .sbc-opt-receipt .sum b { font-size:14px; font-weight:var(--pt-weight-semibold); }
         .sbc-opt-fb-row { padding:12px; margin:8px 0; border-radius:var(--pt-card-radius); background:var(--pt-bg-sunken); }
         .sbc-opt-fb-row.best { box-shadow: 0 0 0 4px var(--pt-accent-soft); }
         .sbc-opt-fb-actions { display:flex; gap:6px; align-items:stretch; }
@@ -6319,6 +6378,11 @@
             display:inline-block; min-width:22px; font-weight:700; color:var(--pt-fg-default);
         }
         .sbc-opt-batch-card .src { color:var(--pt-fg-subtle); }
+        /* v6.2.0: Storage als eigenes Etikett (lesbar ohne Farbsehen). */
+        .sbc-opt-batch-card .src.storage {
+            color:var(--pt-info-fg); background:var(--pt-info-soft);
+            border-radius:var(--pt-radius-full); padding:1px 7px; font-size:10px; font-weight:var(--pt-weight-semibold);
+        }
         .sbc-opt-batch-card .rar { color:var(--pt-fg-muted); }
         .sbc-opt-batch-card .untr { color:var(--pt-fg-subtle); font-style:italic; }
         .sbc-opt-batch-card.prot .rar { color:var(--pt-warning-fg); font-weight:700; }
@@ -11077,6 +11141,31 @@
             setBtnBusy(ui.galleryLoad, false);
         }
     }
+    /**
+     * v6.2.0: Fortschritt eines Sets fuer die Set-Liste. Bevorzugt die
+     * gesammelten Karten (eigener Pool, EA-Kategorien); sonst fut.ggs Score
+     * gegen die Schwelle. null = nichts Belastbares bekannt (kein Balken).
+     */
+    function galleryProgress(x) {
+        if (x && x.own && x.eaKind && x.items > 0) {
+            const have = Math.max(0, Math.min(x.own.count, x.items));
+            return { pct: Math.round(have / x.items * 100), label: have + '/' + x.items };
+        }
+        if (x && x.score != null && x.threshold > 0) {
+            const pct = Math.max(0, Math.min(100, Math.round(x.score / x.threshold * 100)));
+            return { pct: pct, label: pct + ' %' };
+        }
+        return null;
+    }
+    /** v6.2.0: Kurs je Token als kurzer Wert fuer die Zeile (geprueft: "~", ungeprueft: "ab"). */
+    function galleryKursText(x) {
+        if (!x) return '';
+        // Ohne " Coins": die Zeile ist schmal, "/ Token" sagt, was gemeint ist.
+        const n = function (v) { return fmtCoins(v).replace(/ Coins$/, ''); };
+        if (x.truePerToken != null) return '~' + n(x.truePerToken) + ' / Token';
+        if (x.coins > 0 && x.tokens > 0) return 'ab ' + n(Math.ceil(x.coins / x.tokens)) + ' / Token';
+        return '';
+    }
     function renderGallerySets(ranked) {
         const coins = galleryLast && galleryLast.coins;
         const over = ranked.filter(x => x.overBudget).length;
@@ -11092,6 +11181,16 @@
                  (x.overBudget ? '<span class="sbc-opt-tag" title="teurer als dein Kontostand">zu teuer</span>' : '') +
                  (x.truePerToken != null ? '<span class="sbc-opt-tag ok">geprueft</span>' : '<span class="sbc-opt-tag">ungeprueft</span>') +
                  '<span class="sbc-opt-tag ok">Note ' + escapeHtml(x.bestGrade || '?') + '</span></span></div>' +
+                 (function () {
+                     // v6.2.0: Fortschritt und Kurs auf einen Blick (Muster
+                     // "Sammel-Fortschritt pro Eintrag").
+                     const pr = galleryProgress(x), kurs = galleryKursText(x);
+                     if (!pr && !kurs) return '';
+                     return '<div class="sbc-opt-gal-line">' +
+                         (pr ? '<span class="bar" title="Fortschritt"><span class="fill" style="width:' + pr.pct + '%"></span></span>' +
+                               '<span class="v">' + escapeHtml(pr.label) + '</span>' : '<span class="bar-empty"></span>') +
+                         (kurs ? '<span class="kurs">' + escapeHtml(kurs) + '</span>' : '') + '</div>';
+                 })() +
                  (x.truePerToken != null
                     ? '<div class="sbc-opt-fb-meta"><b>' + fmtCoins(x.total) + '</b> gesamt fuer <b>' + x.tokens + '</b> Tokens' + (x.tokensTotal ? ' von ' + x.tokensTotal : '') + ' · ~' + fmtCoins(x.truePerToken) + ' je Token</div>'
                     : '<div class="sbc-opt-fb-meta">mind. <b>' + fmtCoins(x.coins) + '</b> fuer <b>' + x.tokens + '</b> Tokens' + (x.tokensTotal ? ' von ' + x.tokensTotal : '') + ' <span class="sbc-opt-muted">(fut.gg-Untergrenze, die echte Summe ist meist deutlich hoeher - "Set ansehen" prueft)</span></div>') +
@@ -11815,6 +11914,19 @@
         if (!cands.length) { setSellResult('<div class="sbc-opt-summary">Keine unverkauften Spieler auf der Transferliste.</div>'); return; }
         await priceAndPreview(cands, ui.toolsSell, 'tradepileSell');
     }
+    /**
+     * v6.2.0: Summenzeilen vor dem Listen (Muster "Verkauf pruefen"):
+     * Angebote, EA-Steuer, ggf. Einkauf, Erloes als letzte, fette Zeile.
+     * Dieselbe Rechnung wie vorher (Erloes = floor(Summe * 0.95)).
+     */
+    function sellReceiptHtml(gross, paidSum, paidN) {
+        const net = Math.floor(gross * 0.95);
+        return '<div class="sbc-opt-receipt">' +
+            '<div><span>Sofortkauf zusammen</span><b>' + fmtCoins(gross) + '</b></div>' +
+            '<div><span>EA-Steuer 5 %</span><b class="sbc-opt-loss">\u2212' + fmtCoins(gross - net) + '</b></div>' +
+            (paidSum ? '<div><span>Einkauf (' + paidN + ' Karte' + (paidN === 1 ? '' : 'n') + ')</span><b>' + fmtCoins(paidSum) + '</b></div>' : '') +
+            '<div class="sum"><span>Erl\u00f6s nach Steuer</span><b>' + fmtCoins(net) + '</b></div></div>';
+    }
     function renderSellPreview(rows, sellable, byMode) {
         const bySet = {};
         rows.forEach(x => { const k = x.rec.setName || 'Ohne Set'; (bySet[k] = bySet[k] || []).push(x); });
@@ -11829,8 +11941,7 @@
         const withFb = sellable.filter(x => x.price.futbin && x.price.futbin.sales.length).length;
         let h = (sellPrefixHtml || '') + '<div class="sbc-opt-summary">' + sellable.length + ' von ' + rows.length + ' Karten mit aktuellem Angebot' + (withFb ? ' · ' + withFb + ' mit futbin-Verkaeufen' : '') + '</div>' +
                 (dg && dg.stopped ? warnHtml('EA hat die Preissuche gedrosselt - nur die schon gepreisten Karten stehen hier. Die anderen beim naechsten Lauf (Preise bleiben 3 Minuten gemerkt).') : '') +
-                '<div class="sbc-opt-fb-meta">Sofortkauf zusammen <b>' + fmtCoins(gross) + '</b> · nach 5 % Steuer ~<b>' + fmtCoins(Math.floor(gross * 0.95)) + '</b>' +
-                (paidSum ? ' · gekauft fuer ' + fmtCoins(paidSum) : '') + '</div>' +
+                sellReceiptHtml(gross, paidSum, withPaid.length) +
                 // v5.67.0: das Ergebnis GROSS und farbig - gruen bei Plus, rot bei Minus.
                 (withPaid.length
                     ? '<div class="sbc-opt-net ' + (profitSum >= 0 ? 'gain' : 'loss') + '">' +
@@ -14668,6 +14779,43 @@
         } catch (e) {}
         return out;
     }
+    /** v6.2.0: Leiste "Vorlage geloescht - Rueckgaengig" (8 s). Lebt ausserhalb
+     *  des Overlays, weil renderVorlagen() dessen Inhalt jedes Mal neu setzt. */
+    let vorlagenUndo = null;
+    const VORLAGEN_UNDO_MS = 8000;
+    function vorlagenReinsert(items, item, idx) {
+        if (!item || items.some(function (v) { return v.id === item.id; })) return items;
+        const at = Math.max(0, Math.min(Number(idx) || 0, items.length));
+        items.splice(at, 0, item);
+        return items;
+    }
+    function showVorlagenUndo(item, idx) {
+        let bar = document.getElementById('sbc-opt-vl-undo');
+        if (!bar) {
+            bar = document.createElement('div');
+            bar.id = 'sbc-opt-vl-undo';
+            bar.setAttribute('role', 'status');
+            bar.innerHTML = '<span class="t"></span><button type="button">R\u00fcckg\u00e4ngig</button>';
+            bar.querySelector('button').addEventListener('click', function () {
+                const u = vorlagenUndo;
+                hideVorlagenUndo();
+                if (!u) return;
+                vorlagenSave(vorlagenReinsert(vorlagenLoad(), u.item, u.idx));
+                renderVorlagen();
+            });
+            document.body.appendChild(bar);
+        }
+        if (vorlagenUndo && vorlagenUndo.timer) clearTimeout(vorlagenUndo.timer);
+        vorlagenUndo = { item: item, idx: idx, timer: setTimeout(hideVorlagenUndo, VORLAGEN_UNDO_MS) };
+        bar.querySelector('.t').textContent = 'Vorlage \u201e' + (item && item.name || '') + '\u201c gel\u00f6scht';
+        bar.style.display = 'flex';
+    }
+    function hideVorlagenUndo() {
+        if (vorlagenUndo && vorlagenUndo.timer) clearTimeout(vorlagenUndo.timer);
+        vorlagenUndo = null;
+        const bar = document.getElementById('sbc-opt-vl-undo');
+        if (bar) bar.style.display = 'none';
+    }
     function renderVorlagen() {
         if (!ui.vorlagenOverlay) return;
         let inner;
@@ -14807,10 +14955,15 @@
             return;
         case 'vl-del':
             if (idx < 0) return;
-            if (!window.confirm('Vorlage "' + items[idx].name + '" l\u00f6schen?')) return;
-            items.splice(idx, 1);
-            vorlagenSave(items);
-            renderVorlagen();
+            // v6.2.0: loeschen sofort, dafuer ein paar Sekunden "Rueckgaengig"
+            // (Muster "Rueckgaengig statt Rueckfrage"). Nur fuer Vorlagen -
+            // Abgeben, Abstossen und Packs oeffnen behalten ihre Freigabe.
+            (function () {
+                const removed = items.splice(idx, 1)[0];
+                vorlagenSave(items);
+                renderVorlagen();
+                showVorlagenUndo(removed, idx);
+            })();
             return;
         case 'vl-step-add':
             if (!vorlagenView.draft) return;
@@ -15834,9 +15987,12 @@
             (setTitles || []).map(function (t) {
                 return '<option value="' + escapeHtml(t) + '">';
             }).join('') + '</datalist>';
+        // v6.2.0: Schritte als Kette (Nummer an einer Linie, "+" am Ende).
+        h += '<div class="sbc-opt-vl-chain">';
         draft.steps.forEach(function (st, i) {
             h += '<div class="sbc-opt-vl-step">' +
-                '<div class="sbc-opt-vl-steprow"><b>' + (i + 1) + '.</b>' +
+                '<span class="sbc-opt-vl-stepnum" aria-hidden="true">' + (i + 1) + '</span>' +
+                '<div class="sbc-opt-vl-steprow">' +
                 '<select class="sbc-opt-vl-input" data-f="type" data-i="' + i + '">' +
                 '<option value="batch"' + (st.type !== 'reihe' ? ' selected' : '') +
                 '>Mehrfach (eine SBC N\u00d7)</option>' +
@@ -15858,11 +16014,12 @@
                 '">Aktuelle Panel-Einstellungen \u00fcbernehmen</button>' +
                 '</div>';
         });
+        h += '<button class="sbc-opt-vl-stepadd" data-act="vl-step-add" aria-label="Schritt hinzuf\u00fcgen">' +
+            '<span class="plus" aria-hidden="true">+</span>Schritt hinzuf\u00fcgen</button></div>';
         h += '<label class="sbc-opt-chiplabel" style="margin-top:10px;">Schnellwahl-Anzahlen (z.B. 3, 5, 10)</label>' +
             '<input type="text" id="sbc-opt-vl-anzahlchips" class="sbc-opt-vl-input" value="' +
             escapeHtml((draft.anzahlChips || [3, 5, 10]).join(', ')) + '">';
-        h += '<button class="sbc-opt-btn ghost" data-act="vl-step-add">+ Schritt</button>' +
-            '<div class="sbc-opt-vl-hint">Das Profil friert die Panel-Einstellungen ' +
+        h += '<div class="sbc-opt-vl-hint">Das Profil friert die Panel-Einstellungen ' +
             '(Min-Rating, \u00dcberschuss, Rarity-Schutz \u2026) f\u00fcr diesen ' +
             'Schritt ein \u2013 erst im Panel einstellen, dann \u00fcbernehmen.</div>' +
             '<div class="sbc-opt-vl-tools">' +
@@ -15938,7 +16095,7 @@
                 const prot = !!(p.groups && p.groups.indexOf(83) > -1);
                 detailHtml += '<div class="sbc-opt-batch-card' + (prot ? ' prot' : '') + '">' +
                     '<span class="r">' + p.rating + '</span> ' + escapeHtml(displayName(p)) +
-                    ' <span class="src">' + (p.isStorage ? 'Storage' : 'Verein') + '</span>' +
+                    ' <span class="src' + (p.isStorage ? ' storage' : '') + '">' + (p.isStorage ? 'Storage' : 'Verein') + '</span>' +
                     ' <span class="rar">' + escapeHtml(rarityLabel(p)) + '</span>' +
                     (p.untradeable ? ' <span class="untr">unverkäuflich</span>' : '') + '</div>';
             }

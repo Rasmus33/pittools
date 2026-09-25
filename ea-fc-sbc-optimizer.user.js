@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      5.67.0
+// @version      6.0.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '5.67.0';
+    const VERSION = '6.0.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -5360,49 +5360,165 @@
         // aendert sich dadurch nicht.
         const css = `
         :root {
-            /* Marke */
-            --pt-accent:#00e0b8;      /* Akzent: Zahlen, Titel, Fokus */
-            --pt-accent-soft:rgba(0,224,184,.14); /* Akzent-Tint: Plakette, Fokus-Ring, aktiver Schritt */
-            --pt-accent-glow:rgba(0,224,184,.28); /* Schein unter der Hauptaktion */
-            --pt-bg-glass:rgba(15,22,32,.94);     /* Panel mit Glas-Effekt (backdrop-filter) */
-            --pt-accent-2:#0077ff;    /* zweiter Marken-Ton, nur Verlaeufe */
-            --pt-on-accent:#001018;   /* Text AUF dem Akzent */
-            /* Bedeutungen */
-            --pt-sel:#2b6cb0;         /* AUSGEWAEHLT (Segment, Kachel-Knopf) */
-            --pt-sel-hi:#3179c4;
-            --pt-plan:#6b46c1;        /* Planen (hebt sich von Diagnose ab) */
-            --pt-plan-hi:#7b53d8;
-            --pt-danger:#c0392b;      /* unumkehrbar: abgeben, verwerten */
-            --pt-danger-hi:#d4452f;
-            --pt-warn:#ffcf4d;
-            --pt-warn-2:#ffb454;
-            --pt-bad:#ff6b6b;
-            --pt-bad-2:#ff5470;
-            --pt-bad-soft:rgba(255,107,107,.12); /* Verlust-Tint (v5.67.0) */
-            /* Flaechen, von dunkel nach hell */
-            --pt-sunken:#0b1219;      /* Eingabefeld, Vertiefung */
-            --pt-bg:#0f1620;          /* Panel */
-            --pt-surface:#131e2b;     /* Kasten IM Panel */
-            --pt-raised:#1c2938;      /* Knopf "ghost" */
-            --pt-raised-hi:#25384c;   /* raised unter dem Finger */
-            --pt-hover:#16283a;       /* Zeile/Segment unter dem Finger */
+            /* v6.0.0: vier Ebenen - Primitive, Semantik, Skalen, Komponente.
+               Komponenten lesen NUR Semantik/Skalen/Komponente, nie Primitive.
+               Backticks sind hier tabu: das CSS steckt in einem Template-Literal. */
+            /* ---------- 1 · PRIMITIVE ---------- */
+            --pt-ink-950: #070B10;
+            --pt-ink-900: #0C1219;
+            --pt-ink-850: #111922;
+            --pt-ink-800: #17212C;
+            --pt-ink-750: #1D2936;
+            --pt-ink-700: #263444;
+            --pt-ink-600: #324357;
+            --pt-ink-500: #4A5E76;
+            --pt-ink-400: #7B8FA6;
+            --pt-ink-300: #9DAFC2;
+            --pt-ink-200: #C6D2DE;
+            --pt-ink-100: #E9EFF5;
+
+            --pt-teal-300: #6FF3D8;
+            --pt-teal-400: #00E0B8;
+            --pt-teal-500: #00BF9C;
+            --pt-teal-950: #00140F;
+
+            --pt-blue-300: #8CC2FF;
+            --pt-blue-400: #4C9AFF;
+            --pt-blue-600: #1F5FBF;
+            --pt-blue-500: #2B6FD1;
+
+            --pt-violet-300: #C4B5FF;
+            --pt-violet-400: #8B6EF0;
+            --pt-violet-500: #7C5CE6;
+
+            --pt-red-300: #FF9B9B;
+            --pt-red-400: #FF7A7A;
+            --pt-red-500: #DA3E44;
+            --pt-red-600: #CF3339;
+
+            --pt-amber-300: #FFD978;
+            --pt-amber-400: #FFC53D;
+
+            --pt-white: #FFFFFF;
+
+            /* ---------- 2 · SEMANTIK ---------- */
+            /* Flaechen, von tief nach hoch */
+            --pt-bg-sunken: var(--pt-ink-950);        /* Eingabefeld, Vertiefung */
+            --pt-bg-base: var(--pt-ink-900);          /* Panel, Fenster */
+            --pt-bg-glass: rgb(12 18 25 / .88);       /* Panel mit backdrop-filter */
+            --pt-bg-surface: var(--pt-ink-850);       /* Karte IM Panel */
+            --pt-bg-raised: var(--pt-ink-800);        /* Knopf ghost, aktives Segment */
+            --pt-bg-raised-hover: var(--pt-ink-750);
+            --pt-bg-scrim: rgb(3 6 10 / .64);         /* hinter Vollbild-Dialogen */
+
+            /* Text */
+            --pt-fg-default: var(--pt-ink-100);
+            --pt-fg-secondary: var(--pt-ink-200);
+            --pt-fg-muted: var(--pt-ink-300);         /* Beschriftung */
+            --pt-fg-subtle: var(--pt-ink-400);        /* Nebeninfo, min. 4.5:1 auf surface */
+            --pt-fg-on-accent: var(--pt-teal-950);
+            --pt-fg-on-solid: var(--pt-white);        /* auf plan/danger/info-Flaechen */
+
             /* Linien */
-            --pt-line:#1f2b3a;        /* Trennlinie, Kasten-Rahmen */
-            --pt-line-soft:#1b2735;   /* leiseste Linie: Zeilen IN einem Kasten */
-            --pt-line-2:#24405f;      /* Feld-Rahmen (deutlicher) */
-            --pt-line-3:#2f4a68;      /* Rahmen unter dem Finger */
-            /* Text, drei Rollen statt vier zufaelliger Grautoene */
-            --pt-text:#e6edf3;
-            --pt-text-2:#cfe0f2;      /* Sekundaertext auf Knoepfen/Karten */
-            --pt-muted:#9db2c8;       /* Beschriftungen */
-            --pt-faint:#8299b0;       /* Nebeninfos (war #7d93ab: zu dunkel) */
-            /* Masse */
-            --pt-r-s:6px;             /* klein: Feld, Chip, Plakette */
-            --pt-r-m:8px;             /* mittel: Kasten, Knopf */
-            --pt-r-l:14px;            /* gross: Panel, Fenster */
-            --pt-tap:40px;            /* Trefferflaeche einer Hauptaktion */
-            --pt-shadow:0 8px 40px rgba(0,0,0,.6);
-            --pt-font:'Segoe UI', Roboto, system-ui, sans-serif;
+            --pt-border-subtle: rgb(255 255 255 / .06);
+            --pt-border-default: var(--pt-ink-700);
+            --pt-border-strong: var(--pt-ink-600);
+
+            /* Marke: Akzent nur fuer Hauptaktion, Kennzahl, Fokus */
+            --pt-accent: var(--pt-teal-400);
+            --pt-accent-hover: var(--pt-teal-300);
+            --pt-accent-press: var(--pt-teal-500);
+            --pt-accent-soft: rgb(0 224 184 / .12);
+            --pt-accent-border: rgb(0 224 184 / .36);
+
+            /* Bedeutungen */
+            --pt-info: var(--pt-blue-600);            /* Vorlagen, Storage */
+            --pt-info-hover: var(--pt-blue-500);
+            --pt-info-fg: var(--pt-blue-300);
+            --pt-info-soft: rgb(76 154 255 / .14);
+            --pt-info-border: rgb(76 154 255 / .3);
+            --pt-plan: var(--pt-violet-500);          /* Planen / Vorschau */
+            --pt-plan-hover: var(--pt-violet-400);
+            --pt-plan-fg: var(--pt-violet-300);
+            --pt-plan-soft: rgb(124 92 230 / .16);
+            --pt-danger: var(--pt-red-600);           /* unumkehrbar: abgeben, verwerten */
+            --pt-danger-hover: var(--pt-red-500);
+            --pt-danger-fg: var(--pt-red-400);
+            --pt-danger-soft: rgb(255 122 122 / .12);
+            --pt-danger-border: rgb(255 122 122 / .36);
+            --pt-warning-fg: var(--pt-amber-400);
+            --pt-warning-soft: rgb(255 197 61 / .12);
+            --pt-warning-border: rgb(255 197 61 / .36);
+            --pt-gain-fg: var(--pt-accent);
+            --pt-loss-fg: var(--pt-danger-fg);
+
+            /* Zustands-Schichten: ueber JEDE Flaeche legbar */
+            --pt-state-hover: rgb(255 255 255 / .05);
+            --pt-state-press: rgb(255 255 255 / .09);
+            --pt-state-disabled-opacity: .45;
+            --pt-focus-ring: 0 0 0 2px var(--pt-bg-base), 0 0 0 4px var(--pt-accent);
+
+            /* ---------- 3 · SKALEN ---------- */
+            --pt-space-0-5: 2px;
+            --pt-space-1: 4px;
+            --pt-space-2: 8px;
+            --pt-space-3: 12px;
+            --pt-space-4: 16px;
+            --pt-space-5: 20px;
+            --pt-space-6: 24px;
+            --pt-space-8: 32px;
+            --pt-space-10: 40px;
+
+            --pt-radius-xs: 4px;
+            --pt-radius-sm: 8px;
+            --pt-radius-md: 12px;
+            --pt-radius-lg: 16px;
+            --pt-radius-xl: 22px;
+            --pt-radius-full: 999px;
+
+            --pt-font-sans: 'Geist', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+            --pt-font-mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+            --pt-text-2xs: 10px;
+            --pt-text-xs: 11px;
+            --pt-text-sm: 12px;
+            --pt-text-md: 13px;
+            --pt-text-lg: 15px;
+            --pt-text-xl: 18px;
+            --pt-text-2xl: 22px;
+            --pt-text-3xl: 30px;
+            --pt-weight-regular: 400;
+            --pt-weight-medium: 500;
+            --pt-weight-semibold: 600;
+            --pt-weight-bold: 700;
+            --pt-leading-tight: 1.2;
+            --pt-leading-normal: 1.45;
+            --pt-tracking-caps: .08em;
+
+            --pt-shadow-1: 0 1px 2px rgb(0 0 0 / .4);
+            --pt-shadow-2: 0 4px 12px rgb(0 0 0 / .35), 0 1px 3px rgb(0 0 0 / .3);
+            --pt-shadow-3: 0 24px 64px rgb(0 0 0 / .55), 0 8px 20px rgb(0 0 0 / .35);
+            --pt-highlight: inset 0 1px 0 rgb(255 255 255 / .05);
+            --pt-glow-accent: 0 8px 24px rgb(0 224 184 / .22);
+            --pt-blur-glass: 16px;
+
+            --pt-dur-fast: 120ms;
+            --pt-dur-base: 180ms;
+            --pt-dur-slow: 260ms;
+            --pt-ease-out: cubic-bezier(.2, .8, .2, 1);
+
+            /* ---------- 4 · KOMPONENTEN ---------- */
+            --pt-tap: 44px;                           /* Hauptaktion, Reiter */
+            --pt-control-h: 40px;                     /* Feld, Segment */
+            --pt-control-h-sm: 32px;                  /* kleine Knoepfe in Zeilen */
+            --pt-panel-w: 360px;
+            --pt-panel-radius: var(--pt-radius-xl);
+            --pt-panel-pad: var(--pt-space-4);
+            --pt-card-radius: var(--pt-radius-lg);
+            --pt-card-pad: var(--pt-space-3);
+            --pt-btn-radius: var(--pt-radius-md);
+            --pt-field-radius: var(--pt-radius-sm);
+            --pt-z-panel: 999999;
+            --pt-z-overlay: 1000000;
         }
         /* ------------------------------------------------------------------
            EINSTIEG: FAB und der Knopf in EAs Aktionsleiste
@@ -5410,11 +5526,11 @@
         #sbc-opt-fab {
             position: fixed; right: 22px; bottom: 22px; z-index: 999999;
             width: 56px; height: 56px; border-radius: 50%;
-            background: linear-gradient(135deg,var(--pt-accent),var(--pt-accent-2));
-            color: var(--pt-on-accent); font-size: 26px; border: none; cursor: grab;
-            box-shadow: 0 4px 18px rgba(0,0,0,.5); display: flex;
+            background: var(--pt-bg-base);
+            color: var(--pt-fg-default); font-size: 26px; border: none; cursor: grab;
+            box-shadow: var(--pt-shadow-2), 0 0 0 2px var(--pt-accent), 0 0 0 6px var(--pt-accent-soft); display: flex;
             align-items: center; justify-content: center;
-            transition: transform .15s ease; padding: 0; overflow: hidden;
+            transition: transform var(--pt-dur-base) var(--pt-ease-out); padding: 0; overflow: hidden;
             /* Ohne touch-action:none scrollt Android die Seite statt zu ziehen. */
             touch-action: none;
         }
@@ -5422,7 +5538,7 @@
         #sbc-opt-fab:active { transform: scale(.96); }
         #sbc-opt-fab.sbc-opt-dragging { cursor: grabbing; transform: scale(1.12); opacity: .9; }
         #sbc-opt-fab img {
-            width: 38px; height: 38px; border-radius: 50%;
+            width: 48px; height: 48px; border-radius: 50%;
             pointer-events: none; display: block;
         }
         #sbc-opt-fab.sbc-opt-hidden { display: none; }
@@ -5452,34 +5568,36 @@
             /* v5.31.0: Glas statt Vollton - das Spielfeld scheint leicht durch,
                das Panel wirkt als Ebene darueber, nicht als Block. Ohne
                backdrop-filter (alte WebViews) bleibt es 94 % deckend. */
-            background: var(--pt-bg-glass); color: var(--pt-text);
-            -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
-            border: 1px solid var(--pt-line);
-            border-radius: var(--pt-r-l); box-shadow: var(--pt-shadow);
-            font-family: var(--pt-font); font-size: 13px;
+            background: var(--pt-bg-glass); color: var(--pt-fg-default);
+            -webkit-backdrop-filter: blur(var(--pt-blur-glass)); backdrop-filter: blur(var(--pt-blur-glass));
+            border: 1px solid var(--pt-border-subtle);
+            border-radius: var(--pt-radius-xl); box-shadow: var(--pt-shadow-3);
+            font-family: var(--pt-font-sans); font-size: var(--pt-text-md);
+            font-variant-numeric: tabular-nums;
             display: none; padding: 0;
             /* Ohne das zeichnet Android eine helle Scrollbar in ein dunkles
                Panel. */
             scrollbar-width: thin;
-            scrollbar-color: var(--pt-line-2) transparent;
+            scrollbar-color: var(--pt-border-default) transparent;
         }
         #sbc-opt-panel::-webkit-scrollbar { width: 10px; }
         #sbc-opt-panel::-webkit-scrollbar-track { background: transparent; }
         #sbc-opt-panel::-webkit-scrollbar-thumb {
-            background: var(--pt-line-2); border-radius: 6px;
-            border: 3px solid var(--pt-bg);
+            background: var(--pt-border-default); border-radius: 6px;
+            border: 3px solid var(--pt-bg-base);
         }
-        #sbc-opt-panel.open { display: block; animation: pt-pop .16s ease; }
+        #sbc-opt-panel.open { display: block; animation: pt-pop var(--pt-dur-slow) var(--pt-ease-out); }
         /* Dezentes Einblenden statt Aufpoppen: Deckkraft plus 6px Hub aus der
            Richtung des FABs. Unter prefers-reduced-motion abgeschaltet. */
         @keyframes pt-pop {
-            from { opacity: 0; transform: translateY(6px); }
+            from { opacity: 0; transform: translateY(8px) scale(.98); }
             to   { opacity: 1; transform: none; }
         }
         .sbc-opt-header {
-            background: linear-gradient(135deg,var(--pt-accent),var(--pt-accent-2));
-            color:var(--pt-on-accent); font-weight:700; font-size:15px;
-            padding:12px 16px; border-radius:var(--pt-r-l) var(--pt-r-l) 0 0;
+            /* v6.0.0: kein Verlauf mehr - der Akzent gehoert der Hauptaktion. */
+            background: var(--pt-bg-base); border-bottom: 1px solid var(--pt-border-subtle);
+            color:var(--pt-fg-default); font-weight:var(--pt-weight-semibold); font-size:var(--pt-text-lg);
+            padding:8px 12px 8px 16px; border-radius:var(--pt-radius-xl) var(--pt-radius-xl) 0 0;
             display:flex; justify-content:space-between; align-items:center;
             cursor:move; user-select:none; touch-action:none;
             /* Klebt beim Scrollen oben - der Zuklapp-Knopf und der Ziehgriff
@@ -5487,21 +5605,27 @@
             position: sticky; top: 0; z-index: 2;
         }
         .sbc-opt-header img.sbc-opt-logo {
-            width:18px; height:18px; border-radius:50%;
-            vertical-align:-4px; margin-right:6px;
+            width:28px; height:28px; border-radius:50%;
+            vertical-align:-9px; margin-right:10px;
+            box-shadow: 0 0 0 1.5px var(--pt-accent);
+        }
+        .sbc-opt-header .sbc-opt-ver {
+            font-family: var(--pt-font-mono); font-size: var(--pt-text-xs); font-weight: var(--pt-weight-regular);
+            color: var(--pt-fg-muted); background: var(--pt-bg-raised);
+            border-radius: var(--pt-radius-full); padding: 2px 8px; margin-left: 6px; vertical-align: 1px;
         }
         #sbc-opt-close {
             /* Vorher ein nackter Text von ~12px. Ein Zuklapp-Knopf ist die
                Aktion, die man am Handy am haeufigsten trifft (oder verfehlt).
                34px Flaeche; der negative Rand haelt die Kopfzeile auf ihrer
                bisherigen Hoehe - nur die TREFFERflaeche waechst. */
-            width:34px; height:34px; margin:-5px -7px -5px 0; border-radius:50%;
+            width:44px; height:44px; margin:-4px -4px -4px 0; border-radius:50%;
             display:flex; align-items:center; justify-content:center;
-            font-size:15px; line-height:1; flex:0 0 auto;
-            transition: background .12s ease;
+            font-size:15px; line-height:1; flex:0 0 auto; color: var(--pt-fg-muted);
+            transition: background var(--pt-dur-fast) ease, color var(--pt-dur-fast) ease;
         }
-        #sbc-opt-close:hover { background: rgba(0,0,0,.18); }
-        #sbc-opt-close:active { background: rgba(0,0,0,.3); }
+        #sbc-opt-close:hover { background: var(--pt-state-hover); color: var(--pt-fg-default); }
+        #sbc-opt-close:active { background: var(--pt-state-press); }
         /* Guertel zum Hosentraeger oben: was trotzdem zu breit wird, wird
            abgeschnitten statt die ganze Seite seitlich scrollen zu lassen. */
         .sbc-opt-body { padding: 14px 16px; overflow-x: hidden; }
@@ -5510,59 +5634,62 @@
            Batch-Team-Details (Ticket #73) - eine Stelle statt zweier
            synchron zu haltender Kopien. */
         .sbc-opt-details-toggle summary {
-            cursor: pointer; color: var(--pt-muted); font-weight: 600;
-            padding: 10px 12px; background: var(--pt-surface);
-            border: 1px solid var(--pt-line);
-            border-radius: var(--pt-r-m); user-select: none; list-style: none;
-            transition: background .12s ease, border-color .12s ease;
+            cursor: pointer; color: var(--pt-fg-muted); font-weight: 600;
+            padding: 10px 12px; background: var(--pt-bg-surface);
+            border: 1px solid var(--pt-border-subtle);
+            border-radius: var(--pt-radius-md); user-select: none; list-style: none;
+            transition: background var(--pt-dur-fast) ease, border-color var(--pt-dur-fast) ease;
         }
         .sbc-opt-details-toggle summary:hover {
-            background: var(--pt-hover); border-color: var(--pt-line-3);
+            background: var(--pt-state-hover); border-color: var(--pt-border-strong);
         }
         .sbc-opt-details-toggle summary::-webkit-details-marker { display: none; }
         .sbc-opt-details-toggle summary::before { content: '▸ '; color: var(--pt-accent); }
         .sbc-opt-details-toggle[open] summary::before { content: '▾ '; }
         .sbc-opt-details-toggle[open] summary { margin-bottom: 10px; }
         .sbc-opt-info {
-            background:var(--pt-surface); border:1px solid var(--pt-line);
-            border-radius:var(--pt-r-m);
+            background:var(--pt-bg-surface); border:1px solid var(--pt-border-subtle);
+            border-radius:var(--pt-radius-md);
             padding:10px 12px; margin-bottom:12px; line-height:1.6;
         }
-        .sbc-opt-info b { color:var(--pt-accent); }
+        .sbc-opt-info b { color:var(--pt-fg-default); }
+        /* v6.0.0: nur die Zahl, nach der gesucht wird, traegt den Akzent. */
+        #sbc-opt-target { color:var(--pt-accent); font-family:var(--pt-font-mono); font-size:var(--pt-text-2xl); font-weight:var(--pt-weight-medium); line-height:1.1; }
+        #sbc-opt-poolcount { font-family:var(--pt-font-mono); font-weight:var(--pt-weight-medium); }
         /* v5.31.0: Kennzahl-Kacheln */
         .sbc-opt-stats { display:grid; grid-template-columns:1fr 1fr; gap:6px; padding:8px; line-height:1.35; }
-        .sbc-opt-stat { background:var(--pt-sunken); border-radius:var(--pt-r-s); padding:6px 9px; min-width:0; }
-        .sbc-opt-stat .k { display:block; font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--pt-faint); margin-bottom:1px; }
-        .sbc-opt-stat b { display:block; font-size:13px; font-weight:700; overflow-wrap:anywhere; }
+        .sbc-opt-stat { background:var(--pt-bg-sunken); border-radius:var(--pt-radius-md); padding:8px 12px; min-width:0; }
+        .sbc-opt-stat .k { display:block; font-size:var(--pt-text-2xs); text-transform:uppercase; letter-spacing:var(--pt-tracking-caps); color:var(--pt-fg-subtle); margin-bottom:1px; }
+        .sbc-opt-stat b { display:block; font-size:var(--pt-text-md); font-weight:var(--pt-weight-semibold); overflow-wrap:anywhere; }
         .sbc-opt-stat-wide { grid-column:1 / -1; }
         .sbc-opt-stats .sbc-opt-debug { margin-top:0; padding:0 2px; }
         /* Karte: gruppiert die Eingaben einer Aktion */
         .sbc-opt-card {
-            background:var(--pt-surface); border:1px solid var(--pt-line); border-radius:var(--pt-r-m);
-            padding:12px; margin:0 0 12px;
+            background:var(--pt-bg-surface); border:1px solid var(--pt-border-subtle); border-radius:var(--pt-card-radius);
+            padding:var(--pt-card-pad); margin:0 0 12px;
         }
         .sbc-opt-card .sbc-opt-btn:last-child { margin-bottom:0; }
         /* Schalter (v5.31.0): Checkbox bleibt das Element, ist nur unsichtbar */
         .sbc-opt-switch { display:flex; align-items:center; gap:10px; cursor:pointer; margin:2px 0 12px; }
         .sbc-opt-switch input { position:absolute; opacity:0; width:0; height:0; margin:0; }
         .sbc-opt-switch .track {
-            flex:0 0 38px; width:38px; height:22px; border-radius:11px; position:relative;
-            background:var(--pt-raised); box-shadow: inset 0 0 0 1px var(--pt-line-2);
-            transition: background .15s ease;
+            flex:0 0 40px; width:40px; height:24px; border-radius:var(--pt-radius-full); position:relative;
+            background:var(--pt-bg-raised); box-shadow: inset 0 0 0 1px var(--pt-border-default);
+            transition: background var(--pt-dur-base) var(--pt-ease-out);
         }
         .sbc-opt-switch .track::after {
-            content:''; position:absolute; top:3px; left:3px; width:16px; height:16px; border-radius:50%;
-            background:var(--pt-text); transition: transform .15s ease;
+            content:''; position:absolute; top:3px; left:3px; width:18px; height:18px; border-radius:50%;
+            background:var(--pt-fg-muted); transition: transform var(--pt-dur-base) var(--pt-ease-out);
         }
         .sbc-opt-switch input:checked + .track { background:var(--pt-accent); box-shadow:none; }
-        .sbc-opt-switch input:checked + .track::after { transform: translateX(16px); background:var(--pt-on-accent); }
+        .sbc-opt-switch input:checked + .track::after { transform: translateX(16px); background:var(--pt-fg-on-accent); }
         .sbc-opt-switch input:focus-visible + .track { outline: 2px solid var(--pt-accent); outline-offset: 2px; }
-        .sbc-opt-switch .txt { font-size:13px; color:var(--pt-text); line-height:1.3; }
-        .sbc-opt-switch .txt small { display:block; font-size:11px; color:var(--pt-faint); }
+        .sbc-opt-switch .txt { font-size:13px; color:var(--pt-fg-default); line-height:1.3; }
+        .sbc-opt-switch .txt small { display:block; font-size:11px; color:var(--pt-fg-subtle); }
         /* Knopf mit Icon */
         .sbc-opt-btn-icon { display:flex; align-items:center; justify-content:center; gap:8px; }
         .sbc-opt-btn-icon svg { width:16px; height:16px; flex:0 0 auto; }
-        .sbc-opt-btn.primary { box-shadow: 0 6px 18px var(--pt-accent-glow); }
+        .sbc-opt-btn.primary { box-shadow: var(--pt-glow-accent); }
         /* Beschaeftigt (v5.31.0): Spinner rechts vom Text, kein zweiter Tipp moeglich */
         .sbc-opt-btn.is-busy { pointer-events:none; opacity:.85; }
         .sbc-opt-btn.is-busy::after {
@@ -5572,47 +5699,47 @@
         }
         @keyframes pt-spin { to { transform: rotate(360deg); } }
         /* Fortschrittsbalken fuer Marktabfragen / Kader laden */
-        .sbc-opt-bar { height:4px; background:var(--pt-line); border-radius:2px; overflow:hidden; margin-top:8px; }
-        .sbc-opt-bar-fill { height:100%; width:0; background:linear-gradient(90deg,var(--pt-accent),var(--pt-accent-2)); transition: width .2s ease; }
+        .sbc-opt-bar { height:4px; background:var(--pt-bg-raised); border-radius:var(--pt-radius-full); overflow:hidden; margin-top:8px; }
+        .sbc-opt-bar-fill { height:100%; width:0; background:var(--pt-accent); border-radius:var(--pt-radius-full); transition: width var(--pt-dur-slow) var(--pt-ease-out); }
         /* Leerzustand */
         .sbc-opt-result.sbc-opt-result-empty {
-            background:transparent; border:1px dashed var(--pt-line-2); text-align:center;
-            color:var(--pt-faint); padding:16px 12px; font-size:12px; line-height:1.5;
+            background:transparent; border:1px solid var(--pt-border-default); text-align:center;
+            color:var(--pt-fg-subtle); padding:16px 12px; font-size:12px; line-height:1.5;
         }
-        .sbc-opt-result-empty svg { width:28px; height:28px; display:block; margin:0 auto 6px; color:var(--pt-muted); }
-        .sbc-opt-tab-btn svg { width:16px; height:16px; vertical-align:-3px; margin-right:6px; }
-        #sbc-opt-availability { font-size:12px; margin-top:4px; color:var(--pt-muted); }
+        .sbc-opt-result-empty svg { width:28px; height:28px; display:block; margin:0 auto 6px; color:var(--pt-fg-muted); }
+        .sbc-opt-tab-btn svg { width:16px; height:16px; flex:0 0 auto; }
+        #sbc-opt-availability { font-size:12px; margin-top:4px; color:var(--pt-fg-muted); }
         /* Gleiche Warnfarbe wie .sbc-opt-warn/Toast-Warnungen - kein neues
            Farbschema fuer "verfuegbar < gefordert". */
-        #sbc-opt-availability .low { color:var(--pt-warn); font-weight:700; }
-        .sbc-opt-debug { color:var(--pt-faint); font-size:11px; margin-top:4px; }
+        #sbc-opt-availability .low { color:var(--pt-warning-fg); font-weight:700; }
+        .sbc-opt-debug { color:var(--pt-fg-subtle); font-size:11px; margin-top:4px; }
         /* Seltenheit in der Zieh-Liste: dieselbe gedaempfte Farbe wie die
            uebrigen Nebeninfos, damit Name + Rating fuehrend bleiben. */
-        .sbc-opt-dim { color:var(--pt-faint); }
+        .sbc-opt-dim { color:var(--pt-fg-subtle); }
         /* Rollen-Klassen statt Farben im Markup: sonst waeren die Tokens
            nur die halbe Wahrheit - sieben inline-Farben standen weiter im
            HTML, drei davon in dem zu dunklen Grauton. */
-        .sbc-opt-muted { color:var(--pt-muted); }
+        .sbc-opt-muted { color:var(--pt-fg-muted); }
         /* ------------------------------------------------------------------
            FELDER
            ------------------------------------------------------------------ */
         .sbc-opt-row { margin-bottom:12px; }
-        .sbc-opt-row label { display:block; margin-bottom:4px; color:var(--pt-muted); font-size:12px; }
+        .sbc-opt-row label { display:block; margin-bottom:4px; color:var(--pt-fg-muted); font-size:12px; }
         /* Feld-Optik fuer ALLE Felder im Panel. Vorher hing die Regel an
            .sbc-opt-row - das Pack-Dropdown steht in einem .sbc-opt-inline und
            blieb deshalb ein natives weisses Select (Rasmus: "ultra haesslich").
            Ein Selektor statt zweier, die synchron zu halten waeren. */
         #sbc-opt-panel input[type=number], #sbc-opt-panel input[type=text],
         #sbc-opt-panel select {
-            width:100%; background:var(--pt-sunken); color:var(--pt-text);
-            border:1px solid var(--pt-line-2); border-radius:var(--pt-r-s);
-            padding:8px 10px; font-size:13px;
+            width:100%; background:var(--pt-bg-sunken); color:var(--pt-fg-default);
+            border:1px solid var(--pt-border-default); border-radius:var(--pt-field-radius);
+            padding:8px 12px; font-size:var(--pt-text-md); min-height:var(--pt-control-h);
             font-family:inherit; box-sizing:border-box;
-            transition: border-color .12s ease, box-shadow .12s ease;
+            transition: border-color var(--pt-dur-fast) ease, box-shadow var(--pt-dur-fast) ease;
         }
         #sbc-opt-panel input:focus, #sbc-opt-panel select:focus {
             outline:none; border-color:var(--pt-accent);
-            box-shadow: 0 0 0 3px rgba(0,224,184,.16);
+            box-shadow: 0 0 0 3px var(--pt-accent-soft);
         }
         /* Ein <select> ist nur bis auf den Aufklapp-Pfeil stylebar - der wird
            deshalb abgeschaltet und selbst gezeichnet. color-scheme:dark
@@ -5627,7 +5754,7 @@
             background-repeat:no-repeat;
             background-position:right 10px center;
         }
-        #sbc-opt-panel select option { background:var(--pt-sunken); color:var(--pt-text); }
+        #sbc-opt-panel select option { background:var(--pt-bg-sunken); color:var(--pt-fg-default); }
         /* Die Hoch/Runter-Spinner in den Zahlenfeldern sind seit der
            Schnellwahl (v4.93.0) nur Rauschen - die Felder sind der Notausgang,
            getippt wird auf die Chips. GETRENNTE Regeln: ein unbekannter
@@ -5659,8 +5786,8 @@
         .sbc-opt-toggle { display:flex; align-items:center; gap:8px; cursor:pointer; }
         .sbc-opt-toggle input { width:auto; }
         .sbc-opt-group-title {
-            color:var(--pt-accent); font-size:11px; font-weight:700; text-transform:uppercase;
-            letter-spacing:.04em; margin:16px 0 8px;
+            color:var(--pt-fg-default); font-size:var(--pt-text-md); font-weight:var(--pt-weight-semibold);
+            margin:16px 0 8px;
         }
         .sbc-opt-group-title:first-of-type { margin-top:0; }
         .sbc-opt-compact { display:flex; align-items:center; gap:8px; }
@@ -5670,30 +5797,44 @@
            KNOEPFE
            ------------------------------------------------------------------ */
         .sbc-opt-btn {
-            width:100%; border:none; border-radius:var(--pt-r-m);
+            width:100%; border:none; border-radius:var(--pt-radius-md);
             /* min-height statt nur padding: 40px ist die Groesse, die am Handy
                zuverlaessig zu treffen ist. Vorher waren es ~37px. */
             min-height:var(--pt-tap); padding:10px 12px;
-            font-weight:700; font-size:13px; font-family:inherit;
+            font-weight:var(--pt-weight-semibold); font-size:var(--pt-text-md); font-family:inherit;
+            border-radius:var(--pt-btn-radius);
             cursor:pointer; margin-top:8px;
-            transition: filter .12s ease, transform .06s ease;
+            transition: background var(--pt-dur-fast) ease, box-shadow var(--pt-dur-fast) ease, transform .06s ease;
         }
         /* DRUCK-FEEDBACK. Am Handy gibt es kein :hover - ohne :active hat ein
            Tap ueberhaupt keine Rueckmeldung, und man tippt zweimal. */
-        .sbc-opt-btn:hover:not(:disabled) { filter: brightness(1.1); }
-        .sbc-opt-btn:active:not(:disabled) { transform: translateY(1px); filter: brightness(.94); }
-        .sbc-opt-btn.primary { background:var(--pt-accent); color:var(--pt-on-accent); }
-        .sbc-opt-btn.blue { background:var(--pt-accent-2); color:#fff; }
+        /* v6.0.0: Zustaende als Tokens statt filter:brightness(). Die
+           Grundregel faengt Varianten ohne eigene Farbe ab (ein nacktes
+           .sbc-opt-btn gibt es, z.B. "Speichern" bei den Presets). */
+        .sbc-opt-btn { background:var(--pt-bg-raised); color:var(--pt-fg-secondary); }
+        .sbc-opt-btn:hover:not(:disabled) { box-shadow: inset 0 0 0 100px var(--pt-state-hover); }
+        .sbc-opt-btn:active:not(:disabled) { transform: translateY(1px); box-shadow: inset 0 0 0 100px var(--pt-state-press); }
+        .sbc-opt-btn.primary { background:var(--pt-accent); color:var(--pt-fg-on-accent); }
+        .sbc-opt-btn.primary:hover:not(:disabled) { background:var(--pt-accent-hover); box-shadow: var(--pt-glow-accent); }
+        .sbc-opt-btn.primary:active:not(:disabled) { background:var(--pt-accent-press); box-shadow: none; }
+        .sbc-opt-btn.blue { background:var(--pt-info); color:var(--pt-fg-on-solid); }
+        .sbc-opt-btn.blue:hover:not(:disabled) { background:var(--pt-info-hover); box-shadow:none; }
         .sbc-opt-btn.ghost {
-            background:var(--pt-raised); color:var(--pt-text-2);
-            box-shadow: inset 0 0 0 1px var(--pt-line);
+            background:var(--pt-bg-raised); color:var(--pt-fg-secondary);
+            box-shadow: inset 0 0 0 1px var(--pt-border-subtle);
+        }
+        .sbc-opt-btn.ghost:hover:not(:disabled) {
+            background:var(--pt-bg-raised-hover); color:var(--pt-fg-default);
+            box-shadow: inset 0 0 0 1px var(--pt-border-default);
         }
         /* "Teams planen" hebt sich von "Diagnose" ab (Rasmus): der
            Diagnose-Knopf ist ghost, beide standen vorher gleich da. */
-        .sbc-opt-btn.plan { background:var(--pt-plan); color:#f2edff; }
+        .sbc-opt-btn.plan { background:var(--pt-plan); color:var(--pt-fg-on-solid); }
+        .sbc-opt-btn.plan:hover:not(:disabled) { background:var(--pt-plan-hover); box-shadow:none; }
         /* Rot: gibt SBCs endgültig ab, das ist nicht rückholbar. */
-        .sbc-opt-btn.danger { background:var(--pt-danger); color:#fff; }
-        .sbc-opt-btn:disabled { opacity:.5; cursor:not-allowed; }
+        .sbc-opt-btn.danger { background:var(--pt-danger); color:var(--pt-fg-on-solid); }
+        .sbc-opt-btn.danger:hover:not(:disabled) { background:var(--pt-danger-hover); box-shadow:none; }
+        .sbc-opt-btn:disabled { opacity:var(--pt-state-disabled-opacity); cursor:not-allowed; }
         /* Fokus NUR bei Tastatur (:focus-visible) - ein Ring nach jedem
            Fingertipp waere Laerm. */
         #sbc-opt-panel :focus-visible, #sbc-opt-fab:focus-visible,
@@ -5705,29 +5846,32 @@
            ------------------------------------------------------------------ */
         .sbc-opt-queuerow {
             display:flex; align-items:center; gap:10px; cursor:pointer;
-            padding:9px 10px; margin-bottom:5px; border-radius:var(--pt-r-s);
-            background:var(--pt-sunken); border:1px solid var(--pt-line);
-            transition: background .12s ease, border-color .12s ease;
+            padding:10px 12px; margin-bottom:6px; border-radius:var(--pt-radius-md);
+            background:var(--pt-bg-sunken); border:1px solid var(--pt-border-subtle);
+            transition: background var(--pt-dur-fast) ease, border-color var(--pt-dur-fast) ease;
         }
-        .sbc-opt-queuerow:hover { border-color:var(--pt-line-3); background:var(--pt-hover); }
+        .sbc-opt-queuerow:hover { border-color:var(--pt-border-strong); background:var(--pt-bg-raised-hover); }
+        /* v6.0.0: angehakt sichtbar machen - Rand und Plakette im Akzent. */
+        .sbc-opt-queuerow:has(input:checked) { border-color:var(--pt-accent-border); }
+        .sbc-opt-queuerow:has(input:checked) .ovr { background:var(--pt-accent-soft); }
         .sbc-opt-queuerow input { width:auto; flex:0 0 auto; margin:0; }
         /* Das Ziel-OVR ist die Zahl, nach der Rasmus die SBC sucht - sie steht
            deshalb als Plakette vorn, wie im Spiel. */
         .sbc-opt-queuerow .ovr {
             flex:0 0 auto; min-width:32px; text-align:center;
-            background:var(--pt-raised); border-radius:var(--pt-r-s); padding:3px 6px;
-            font-weight:700; font-size:12px; color:var(--pt-accent);
+            background:var(--pt-bg-raised); border-radius:var(--pt-radius-xs); padding:3px 7px;
+            font-family:var(--pt-font-mono); font-weight:var(--pt-weight-semibold); font-size:12px; color:var(--pt-accent);
         }
         .sbc-opt-queuerow .nm {
             flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
-            white-space:nowrap; font-size:12px; color:var(--pt-text);
+            white-space:nowrap; font-size:var(--pt-text-md); color:var(--pt-fg-default);
         }
-        .sbc-opt-queuerow .st { flex:0 0 auto; font-size:11px; color:var(--pt-faint); }
+        .sbc-opt-queuerow .st { flex:0 0 auto; font-size:11px; color:var(--pt-fg-subtle); }
         /* Erledigte Challenges bleiben SICHTBAR (sonst waere unklar, warum die
            Liste kuerzer ist als im Spiel), aber gedaempft und nicht angehakt. */
         .sbc-opt-queuerow.done { opacity:.5; cursor:default; }
-        .sbc-opt-queuerow.done:hover { border-color:var(--pt-line); background:var(--pt-sunken); }
-        .sbc-opt-queuerow.done .ovr { color:var(--pt-faint); }
+        .sbc-opt-queuerow.done:hover { border-color:var(--pt-border-subtle); background:var(--pt-bg-sunken); }
+        .sbc-opt-queuerow.done .ovr { color:var(--pt-fg-subtle); }
         /* ------------------------------------------------------------------
            FORTSCHRITT
            ------------------------------------------------------------------ */
@@ -5736,30 +5880,30 @@
         /* ---- Vorlagen: eigene Vollbild-Oberflaeche (v5.10.0) ---- */
         #sbc-opt-vorlagen {
             position: fixed; inset: 0; z-index: 999999; display: none;
-            background: rgba(0,0,0,.62); overflow-y: auto;
+            background: var(--pt-bg-scrim); overflow-y: auto;
             -webkit-overflow-scrolling: touch;
-            font-family: var(--pt-font); font-size: 13px; color: var(--pt-text);
+            font-family: var(--pt-font-sans); font-size: 13px; color: var(--pt-fg-default);
         }
         .sbc-opt-vl-box {
             margin: 20px auto 40px; width: min(560px, calc(100vw - 20px));
-            background: var(--pt-bg); border: 1px solid var(--pt-line-2);
-            border-radius: var(--pt-r-l); box-shadow: var(--pt-shadow);
-            padding: 14px 14px 18px;
+            background: var(--pt-bg-base); border: 1px solid var(--pt-border-subtle);
+            border-radius: var(--pt-radius-xl); box-shadow: var(--pt-shadow-3);
+            padding: 16px 20px 20px;
         }
         .sbc-opt-vl-head {
             display: flex; justify-content: space-between; align-items: center;
-            font-size: 16px; font-weight: 700; color: var(--pt-accent);
-            margin-bottom: 10px;
+            font-size: 17px; font-weight: var(--pt-weight-semibold); color: var(--pt-fg-default);
+            margin-bottom: 12px;
         }
         .sbc-opt-vl-x {
-            background: none; border: none; color: var(--pt-muted);
+            background: none; border: none; color: var(--pt-fg-muted);
             font-size: 20px; min-width: 44px; min-height: 44px; cursor: pointer;
             margin: -6px -10px -6px 0;
         }
-        .sbc-opt-vl-x:active { color: var(--pt-text); }
+        .sbc-opt-vl-x:active { color: var(--pt-fg-default); }
         .sbc-opt-vl-card {
-            background: var(--pt-surface); border: 1px solid var(--pt-line);
-            border-radius: var(--pt-r-m); padding: 10px 12px; margin-bottom: 10px;
+            background: var(--pt-bg-surface); border: 1px solid var(--pt-border-subtle);
+            border-radius: var(--pt-card-radius); padding: 12px; margin-bottom: 10px;
         }
         .sbc-opt-vl-cardkopf {
             display: flex; justify-content: space-between; align-items: center;
@@ -5771,7 +5915,7 @@
         }
         .sbc-opt-vl-cardkopf .sbc-opt-btn { width: auto; flex: 0 0 auto;
             margin-top: 0; padding: 8px 16px; }
-        .sbc-opt-vl-sum { color: var(--pt-text-2); margin-top: 6px; }
+        .sbc-opt-vl-sum { color: var(--pt-fg-secondary); margin-top: 6px; }
         .sbc-opt-vl-card.aus { opacity: .55; }
         .sbc-opt-vl-anzahl {
             display: flex; gap: 2px; margin-left: auto; margin-right: 8px;
@@ -5781,64 +5925,64 @@
             min-height: 24px; padding: 2px 9px; font-size: 11px;
             flex: 0 0 auto; min-width: 0;
         }
-        .sbc-opt-vl-avail { color: var(--pt-warn); font-size: 12px; margin-top: 4px; }
-        .sbc-opt-vl-last { color: var(--pt-muted); margin-top: 4px; font-size: 12px; }
+        .sbc-opt-vl-avail { color: var(--pt-warning-fg); font-size: 12px; margin-top: 4px; }
+        .sbc-opt-vl-last { color: var(--pt-fg-muted); margin-top: 4px; font-size: 12px; }
         .sbc-opt-vl-tools { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
         .sbc-opt-vl-tools .sbc-opt-btn { width: auto; flex: 1 1 auto; }
         .sbc-opt-vl-leer {
-            background: var(--pt-surface); border: 1px solid var(--pt-line);
-            border-radius: var(--pt-r-m); padding: 12px; color: var(--pt-text-2);
+            background: var(--pt-bg-surface); border: 1px solid var(--pt-border-subtle);
+            border-radius: var(--pt-radius-md); padding: 12px; color: var(--pt-fg-secondary);
             line-height: 1.5; margin-bottom: 10px;
         }
         .sbc-opt-vl-step {
-            background: var(--pt-surface); border: 1px solid var(--pt-line);
-            border-radius: var(--pt-r-m); padding: 10px 12px; margin: 10px 0;
+            background: var(--pt-bg-surface); border: 1px solid var(--pt-border-subtle);
+            border-radius: var(--pt-radius-md); padding: 10px 12px; margin: 10px 0;
         }
         .sbc-opt-vl-step label {
-            display: block; margin: 8px 0 4px; color: var(--pt-muted); font-size: 12px;
+            display: block; margin: 8px 0 4px; color: var(--pt-fg-muted); font-size: 12px;
         }
         .sbc-opt-vl-steprow { display: flex; gap: 6px; align-items: center; }
         .sbc-opt-vl-steprow select { flex: 1 1 auto; min-width: 0; }
         .sbc-opt-vl-mini { width: 44px !important; flex: 0 0 auto !important;
             margin-top: 0 !important; padding: 8px 0 !important; }
         .sbc-opt-vl-input {
-            width: 100%; box-sizing: border-box; background: var(--pt-sunken);
-            color: var(--pt-text); border: 1px solid var(--pt-line-2);
-            border-radius: var(--pt-r-s); padding: 9px 10px; font-size: 13px;
+            width: 100%; box-sizing: border-box; background: var(--pt-bg-sunken);
+            color: var(--pt-fg-default); border: 1px solid var(--pt-border-default);
+            border-radius: var(--pt-field-radius); padding: 9px 12px; font-size: 13px;
             font-family: inherit; min-height: var(--pt-tap);
         }
         .sbc-opt-vl-input:focus-visible {
             outline: 2px solid var(--pt-accent); outline-offset: 1px;
         }
         .sbc-opt-vl-zahl { width: 110px; }
-        .sbc-opt-vl-profil { margin-top: 8px; color: var(--pt-text-2); }
+        .sbc-opt-vl-profil { margin-top: 8px; color: var(--pt-fg-secondary); }
         .sbc-opt-vl-profil span { color: var(--pt-accent); }
-        .sbc-opt-vl-hint { color: var(--pt-muted); font-size: 12px;
+        .sbc-opt-vl-hint { color: var(--pt-fg-muted); font-size: 12px;
             line-height: 1.5; margin-top: 10px; }
-        .sbc-opt-vl-quota { color: var(--pt-muted); margin-bottom: 8px; }
+        .sbc-opt-vl-quota { color: var(--pt-fg-muted); margin-bottom: 8px; }
         .sbc-opt-vl-log {
-            padding: 7px 10px; border-radius: var(--pt-r-s);
-            background: var(--pt-surface); border: 1px solid var(--pt-line-soft);
+            padding: 7px 10px; border-radius: var(--pt-radius-sm);
+            background: var(--pt-bg-surface); border: 1px solid var(--pt-border-subtle);
             margin-bottom: 6px; line-height: 1.45; overflow-wrap: break-word;
         }
-        .sbc-opt-vl-log.kopf { border-color: var(--pt-line-2); font-weight: 700; }
+        .sbc-opt-vl-log.kopf { border-color: var(--pt-border-default); font-weight: 700; }
         .sbc-opt-vl-log.ok { color: var(--pt-accent); }
-        .sbc-opt-vl-log.warn { color: var(--pt-warn); }
-        .sbc-opt-vl-log.bad { color: var(--pt-bad); }
+        .sbc-opt-vl-log.warn { color: var(--pt-warning-fg); }
+        .sbc-opt-vl-log.bad { color: var(--pt-danger-fg); }
         .sbc-opt-vl-pause {
-            border: 1px solid var(--pt-warn); border-radius: var(--pt-r-m);
-            padding: 10px 12px; margin-top: 8px; background: var(--pt-surface);
+            border: 1px solid var(--pt-warning-fg); border-radius: var(--pt-radius-md);
+            padding: 10px 12px; margin-top: 8px; background: var(--pt-bg-surface);
         }
         .sbc-opt-vl-pausekopf { font-weight: 700; margin-bottom: 8px;
-            color: var(--pt-warn); line-height: 1.4; }
+            color: var(--pt-warning-fg); line-height: 1.4; }
         /* Minimierter Vorlagen-Lauf: schlanke Leiste OBEN, Spiel sichtbar. */
         #sbc-opt-vl-topbar {
             position: fixed; top: 8px; left: 50%; transform: translateX(-50%);
             z-index: 999999; display: none; align-items: center; gap: 8px;
-            background: var(--pt-bg); border: 1px solid var(--pt-line-2);
-            border-radius: var(--pt-r-m); padding: 6px 8px 6px 12px;
-            max-width: calc(100vw - 12px); box-shadow: var(--pt-shadow);
-            font-family: var(--pt-font); font-size: 12px; color: var(--pt-text);
+            background: var(--pt-bg-base); border: 1px solid var(--pt-border-default);
+            border-radius: var(--pt-radius-full); padding: 6px 6px 6px 14px;
+            max-width: calc(100vw - 12px); box-shadow: var(--pt-shadow-2);
+            font-family: var(--pt-font-sans); font-size: 12px; color: var(--pt-fg-default);
         }
         #sbc-opt-vl-topbar .t {
             overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -5846,52 +5990,55 @@
         }
         #sbc-opt-vl-topbar .sbc-opt-btn {
             width: auto; flex: 0 0 auto; margin-top: 0;
-            padding: 6px 10px; min-height: 34px;
+            padding: 6px 12px; min-height: 34px; border-radius: var(--pt-radius-full);
         }
         #sbc-opt-progress {
             position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%);
             z-index: 1000000; display: none; pointer-events: none;
-            background: var(--pt-bg); color: var(--pt-text);
-            border: 1px solid var(--pt-line-2);
-            border-radius: var(--pt-r-l); box-shadow: 0 10px 50px rgba(0,0,0,.7);
-            padding: 18px 22px; min-width: 300px; max-width: calc(100vw - 32px);
-            text-align: center; font-family: var(--pt-font);
+            background: var(--pt-bg-base); color: var(--pt-fg-default);
+            border: 1px solid var(--pt-border-default);
+            border-radius: var(--pt-radius-xl); box-shadow: var(--pt-shadow-3);
+            padding: 20px 22px; min-width: 300px; max-width: calc(100vw - 32px);
+            text-align: center; font-family: var(--pt-font-sans); font-variant-numeric: tabular-nums;
         }
         #sbc-opt-progress.open { display: block; }
         #sbc-opt-progress .p-title {
-            font-size: 17px; font-weight: 700; color: var(--pt-accent); margin-bottom: 2px;
+            font-size: 16px; font-weight: var(--pt-weight-semibold); color: var(--pt-fg-default); margin-bottom: 2px;
         }
-        #sbc-opt-progress .p-step { font-size: 13px; color: var(--pt-muted); margin-bottom: 12px; }
+        #sbc-opt-progress .p-step { font-size: 13px; color: var(--pt-fg-muted); margin-bottom: 12px; }
         #sbc-opt-progress .p-bar {
-            height: 8px; background: var(--pt-raised); border-radius: 5px; overflow: hidden;
+            height: 6px; background: var(--pt-bg-raised); border-radius: var(--pt-radius-full); overflow: hidden;
         }
         #sbc-opt-progress .p-fill {
-            height: 100%; width: 0%; border-radius: 5px;
-            background: linear-gradient(90deg,var(--pt-accent),var(--pt-accent-2));
-            transition: width .3s ease;
+            height: 100%; width: 0%; border-radius: var(--pt-radius-full);
+            background: var(--pt-accent);
+            transition: width var(--pt-dur-slow) var(--pt-ease-out);
         }
-        #sbc-opt-progress .p-done { font-size: 12px; color: var(--pt-faint); margin-top: 10px; }
+        #sbc-opt-progress .p-done { font-family: var(--pt-font-mono); font-size: 11px; color: var(--pt-fg-subtle); margin-top: 10px; }
         /* ------------------------------------------------------------------
            BATCH / REIHE: Abschnitte, Vorschau, Team-Details
            ------------------------------------------------------------------ */
-        .sbc-opt-batch { margin-top:14px; padding-top:12px; border-top:1px solid var(--pt-line); }
+        .sbc-opt-batch { margin-top:14px; padding-top:12px; border-top:1px solid var(--pt-border-subtle); }
         /* v5.28.0: Reiter Kaufen / Rating / Mehr - dieselbe Leiste wie die
            Segment-Schalter, nur hoeher (Hauptnavigation, Trefferflaeche tap). */
         .sbc-opt-tabs {
             display:flex; gap:3px; margin:0 0 12px; align-items:stretch;
-            background:var(--pt-sunken); border:1px solid var(--pt-line-2);
-            border-radius:9px; padding:3px;
+            background:var(--pt-bg-sunken); border:1px solid var(--pt-border-subtle);
+            border-radius:var(--pt-radius-md); padding:3px;
         }
         .sbc-opt-tab-btn {
-            flex:1 1 0; min-width:0; background:transparent; color:var(--pt-muted);
-            border:none; border-radius:var(--pt-r-s); padding:0 6px; min-height:var(--pt-tap);
-            font-size:13px; font-weight:700; font-family:inherit; cursor:pointer;
-            transition:background .12s ease, color .12s ease;
+            flex:1 1 0; min-width:0; background:transparent; color:var(--pt-fg-muted);
+            border:none; border-radius:10px; padding:0 6px; min-height:var(--pt-tap);
+            display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px;
+            font-size:var(--pt-text-sm); font-weight:var(--pt-weight-semibold); font-family:inherit; cursor:pointer;
+            transition:background var(--pt-dur-base) var(--pt-ease-out), color var(--pt-dur-fast) ease;
         }
-        .sbc-opt-tab-btn:hover { background:var(--pt-hover); color:var(--pt-text); }
+        .sbc-opt-tab-btn:hover { background:var(--pt-state-hover); color:var(--pt-fg-default); }
         .sbc-opt-tab-btn:active { transform: translateY(1px); }
-        .sbc-opt-tab-btn.on { background:var(--pt-sel); color:var(--pt-text); }
-        .sbc-opt-tab-btn.on:hover { background:var(--pt-sel-hi); }
+        /* v6.0.0: Auswahl neutral angehoben - Blau bedeutet nur noch Info. */
+        .sbc-opt-tab-btn.on { background:var(--pt-bg-raised); color:var(--pt-fg-default); box-shadow: var(--pt-shadow-1), var(--pt-highlight); }
+        .sbc-opt-tab-btn.on:hover { background:var(--pt-bg-raised-hover); }
+        .sbc-opt-tab-btn.on svg { color:var(--pt-accent); }
         .sbc-opt-tab:not(.on) { display:none; }
         /* Zeilen der Info-Box, die nur den Rating-Optimizer betreffen. */
         #sbc-opt-panel[data-tab="kaufen"] .sbc-opt-only-rating,
@@ -5903,35 +6050,36 @@
         .sbc-opt-flow { display:flex; align-items:flex-start; margin:2px 0 14px; }
         .sbc-opt-flow .step { flex:1 1 0; min-width:0; position:relative; text-align:center; }
         .sbc-opt-flow .step .dot {
-            width:24px; height:24px; border-radius:50%; display:flex; align-items:center; justify-content:center;
-            margin:0 auto 4px; font-size:11px; font-weight:700; position:relative; z-index:1;
-            background:var(--pt-raised); color:var(--pt-muted); box-shadow: inset 0 0 0 1px var(--pt-line-2);
-            transition: background .15s ease, box-shadow .15s ease;
+            width:28px; height:28px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+            margin:0 auto 6px; font-family:var(--pt-font-mono); font-size:12px; font-weight:var(--pt-weight-semibold); position:relative; z-index:1;
+            background:var(--pt-bg-raised); color:var(--pt-fg-subtle); box-shadow: inset 0 0 0 1px var(--pt-border-default);
+            transition: background var(--pt-dur-base) ease, box-shadow var(--pt-dur-base) ease;
         }
-        .sbc-opt-flow .step .lbl { display:block; font-size:10.5px; color:var(--pt-faint); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .sbc-opt-flow .step .lbl { display:block; font-size:var(--pt-text-xs); color:var(--pt-fg-subtle); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
         .sbc-opt-flow .step:not(:last-child)::after {
-            content:''; position:absolute; top:11px; left:calc(50% + 14px); right:calc(-50% + 14px); height:2px; background:var(--pt-line);
+            content:''; position:absolute; top:13px; left:calc(50% + 18px); right:calc(-50% + 18px); height:2px; background:var(--pt-border-default);
         }
-        .sbc-opt-flow .step.on .dot { background:var(--pt-accent); color:var(--pt-on-accent); box-shadow: 0 0 0 4px var(--pt-accent-soft); }
-        .sbc-opt-flow .step.on .lbl { color:var(--pt-text); font-weight:700; }
-        .sbc-opt-flow .step.done .dot { background:var(--pt-sel); color:var(--pt-text); box-shadow:none; font-size:0; }
+        .sbc-opt-flow .step.on .dot { background:var(--pt-accent); color:var(--pt-fg-on-accent); box-shadow: 0 0 0 4px var(--pt-accent-soft); }
+        .sbc-opt-flow .step.on .lbl { color:var(--pt-fg-default); font-weight:var(--pt-weight-semibold); }
+        .sbc-opt-flow .step.done .dot { background:var(--pt-accent-soft); color:var(--pt-accent); box-shadow:none; font-size:0; }
         .sbc-opt-flow .step.done .dot::after { content:'✓'; font-size:12px; }
-        .sbc-opt-flow .step.done .lbl { color:var(--pt-muted); }
-        .sbc-opt-flow .step.done::after { background:var(--pt-sel); }
+        .sbc-opt-flow .step.done .lbl { color:var(--pt-fg-muted); }
+        .sbc-opt-flow .step.done::after { background:var(--pt-accent-border); }
         /* Loesungs-Karten (v5.29.0): Preis zuerst, Details klein, ab der vierten eingeklappt */
         .sbc-opt-fb-top { display:flex; justify-content:space-between; align-items:center; gap:8px; }
-        .sbc-opt-fb-price { font-size:16px; font-weight:700; color:var(--pt-accent); }
-        .sbc-opt-fb-meta { color:var(--pt-muted); font-size:11px; margin-top:2px; line-height:1.45; }
-        .sbc-opt-fb-meta b { color:var(--pt-text); font-weight:600; }
+        .sbc-opt-fb-price { font-size:18px; font-weight:var(--pt-weight-semibold); color:var(--pt-accent); }
+        .sbc-opt-fb-meta { color:var(--pt-fg-muted); font-size:11px; margin-top:2px; line-height:1.45; }
+        .sbc-opt-fb-meta b { color:var(--pt-fg-default); font-weight:600; }
         .sbc-opt-tag {
-            font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.3px;
-            padding:2px 6px; border-radius:var(--pt-r-s); background:var(--pt-raised); color:var(--pt-muted); white-space:nowrap;
+            font-size:var(--pt-text-2xs); font-weight:var(--pt-weight-semibold); text-transform:uppercase; letter-spacing:.06em;
+            padding:3px 8px; border-radius:var(--pt-radius-full); background:transparent; color:var(--pt-fg-muted); white-space:nowrap;
+            box-shadow: inset 0 0 0 1px var(--pt-border-default);
         }
-        .sbc-opt-tag.ok { background:var(--pt-sel); color:var(--pt-text); }
-        .sbc-opt-tag.best { background:var(--pt-accent-soft); color:var(--pt-accent); }
+        .sbc-opt-tag.ok { background:var(--pt-bg-raised); color:var(--pt-fg-secondary); box-shadow:none; }
+        .sbc-opt-tag.best { background:var(--pt-accent-soft); color:var(--pt-accent); box-shadow:none; }
         .sbc-opt-fb-tags { display:flex; gap:4px; flex-wrap:wrap; justify-content:flex-end; }
-        .sbc-opt-fb-row { padding:10px; margin:8px 0; border-radius:var(--pt-r-m); background:var(--pt-sunken); }
-        .sbc-opt-fb-row.best { box-shadow: 0 0 0 1px var(--pt-accent-soft); }
+        .sbc-opt-fb-row { padding:12px; margin:8px 0; border-radius:var(--pt-card-radius); background:var(--pt-bg-sunken); }
+        .sbc-opt-fb-row.best { box-shadow: 0 0 0 4px var(--pt-accent-soft); }
         .sbc-opt-fb-actions { display:flex; gap:6px; align-items:stretch; }
         .sbc-opt-fb-actions .sbc-opt-btn { margin:6px 0 0; }
         .sbc-opt-fb-actions .sbc-opt-btn.small { flex:0 0 auto; width:auto; padding:8px 10px; font-size:12px; }
@@ -5943,11 +6091,11 @@
            Plan existiert, waere er nur eine leere Trennlinie. */
         #sbc-opt-planresult.sbc-opt-hidden { display:none; }
         #sbc-opt-batch-preview, #sbc-opt-batch-detail-body {
-            background:var(--pt-surface); border:1px solid var(--pt-line);
-            border-radius:var(--pt-r-m);
+            background:var(--pt-bg-surface); border:1px solid var(--pt-border-subtle);
+            border-radius:var(--pt-radius-md);
             padding:10px 12px; margin-top:8px; font-size:12px; line-height:1.5;
             max-height:340px; overflow-y:auto; overscroll-behavior: contain;
-            scrollbar-width: thin; scrollbar-color: var(--pt-line-2) transparent;
+            scrollbar-width: thin; scrollbar-color: var(--pt-border-default) transparent;
         }
         /* Chromium ignoriert scrollbar-width (Firefox-Eigenschaft) - ohne
            die webkit-Regeln zeichnet es in die Kaesten seine Standard-Leiste,
@@ -5958,15 +6106,15 @@
         #sbc-opt-batch-detail-body::-webkit-scrollbar-track { background: transparent; }
         #sbc-opt-batch-preview::-webkit-scrollbar-thumb,
         #sbc-opt-batch-detail-body::-webkit-scrollbar-thumb {
-            background: var(--pt-line-2); border-radius: 6px;
-            border: 3px solid var(--pt-surface);
+            background: var(--pt-border-default); border-radius: 6px;
+            border: 3px solid var(--pt-bg-surface);
         }
         #sbc-opt-batch-details { margin-top:8px; }
-        .sbc-opt-batch-round { padding:4px 0; border-bottom:1px solid var(--pt-line-soft); }
+        .sbc-opt-batch-round { padding:4px 0; border-bottom:1px solid var(--pt-border-subtle); }
         .sbc-opt-batch-round:last-child { border-bottom:none; }
         .sbc-opt-batch-round b { color:var(--pt-accent); }
-        .sbc-opt-batch-warn { color:var(--pt-warn-2); }
-        .sbc-opt-batch-bad { color:var(--pt-bad); }
+        .sbc-opt-batch-warn { color:var(--pt-warning-fg); }
+        .sbc-opt-batch-bad { color:var(--pt-danger-fg); }
         /* Knopf an EAs Pack-Kachel. Bewusst erkennbar ANDERS als EAs eigene
            Knoepfe (unsere Akzentfarbe), damit niemand ihn mit "Open"
            verwechselt - er oeffnet ALLE Packs des Typs. */
@@ -5983,24 +6131,24 @@
                ist Absicht, nicht Kosmetik: der Knopf oeffnet ALLE Packs eines
                Typs. */
             display:block; margin:0; width:auto;
-            background:transparent; color:#8fc3f0;
-            border:1px solid #2f5878; border-radius:var(--pt-r-s);
-            padding:4px 9px; font-size:11px; font-weight:600;
-            font-family:var(--pt-font); line-height:1.3;
+            background:transparent; color:var(--pt-info-fg);
+            border:1px solid var(--pt-info-border); border-radius:var(--pt-radius-sm);
+            padding:5px 10px; font-size:11px; font-weight:var(--pt-weight-semibold);
+            font-family:var(--pt-font-sans); line-height:1.3;
             cursor:pointer; opacity:.75;
-            transition: opacity .12s ease, background .12s ease, transform .06s ease;
+            transition: opacity var(--pt-dur-fast) ease, background var(--pt-dur-fast) ease, transform .06s ease;
         }
         .sbc-opt-tilebtn:hover:not(:disabled) {
-            opacity:1; background:var(--pt-sel); color:#fff; border-color:#3d8ad6;
+            opacity:1; background:var(--pt-info-soft); color:var(--pt-fg-default); border-color:var(--pt-info-fg);
         }
         /* ABSTOSSEN ist unumkehrbar - der Knopf sieht anders aus als der
            harmlose daneben, damit man sie nicht verwechselt. */
-        .sbc-opt-tilebtn.danger { color:#f0a19a; border-color:#7a3a33; }
+        .sbc-opt-tilebtn.danger { color:var(--pt-danger-fg); border-color:var(--pt-danger-border); }
         .sbc-opt-tilebtn.danger:hover:not(:disabled) {
-            background:var(--pt-danger); color:#fff; border-color:#d4452f;
+            background:var(--pt-danger); color:var(--pt-fg-on-solid); border-color:var(--pt-danger-hover);
         }
         .sbc-opt-tilebtn:active:not(:disabled) { transform: translateY(1px); }
-        .sbc-opt-tilebtn:disabled { opacity:.5; cursor:not-allowed; }
+        .sbc-opt-tilebtn:disabled { opacity:var(--pt-state-disabled-opacity); cursor:not-allowed; }
         /* ------------------------------------------------------------------
            SEGMENT-SCHALTER
            ------------------------------------------------------------------ */
@@ -6011,102 +6159,106 @@
            nebeneinander stehen. */
         .sbc-opt-chips {
             display:flex; gap:3px; margin:0 0 10px; align-items:stretch;
-            background:var(--pt-sunken); border:1px solid var(--pt-line-2);
-            border-radius:9px; padding:3px;
+            background:var(--pt-bg-sunken); border:1px solid var(--pt-border-subtle);
+            border-radius:var(--pt-radius-md); padding:3px;
         }
         /* Leer (noch nicht gerendert) soll die Leiste nicht als leerer Kasten
            herumstehen. */
         .sbc-opt-chips:empty { display:none; }
         .sbc-opt-chip {
-            flex:1 1 0; min-width:0; background:transparent; color:var(--pt-muted);
-            border:none; border-radius:var(--pt-r-s); padding:0 6px; min-height:34px;
-            font-size:13px; font-weight:600; font-family:inherit;
-            cursor:pointer; line-height:34px; text-align:center;
-            transition:background .12s ease, color .12s ease;
+            flex:1 1 0; min-width:0; background:transparent; color:var(--pt-fg-muted);
+            border:none; border-radius:9px; padding:4px 6px; min-height:38px;
+            font-size:var(--pt-text-md); font-weight:var(--pt-weight-semibold); font-family:inherit;
+            /* Flex statt line-height:38px - ein zweizeiliger Wert
+               ("Konsole (PS/Xbox)") wurde sonst 76px hoch. */
+            display:flex; flex-direction:column; align-items:center; justify-content:center;
+            cursor:pointer; line-height:1.2; text-align:center;
+            transition:background var(--pt-dur-base) var(--pt-ease-out), color var(--pt-dur-fast) ease;
         }
-        .sbc-opt-chip:hover { background:var(--pt-hover); color:var(--pt-text); }
+        .sbc-opt-chip:hover { background:var(--pt-state-hover); color:var(--pt-fg-default); }
         .sbc-opt-chip:active { transform: translateY(1px); }
-        .sbc-opt-chip.on { background:var(--pt-sel); color:#fff; }
-        .sbc-opt-chip.on:hover { background:var(--pt-sel-hi); }
+        .sbc-opt-chip.on { background:var(--pt-bg-raised); color:var(--pt-fg-default); box-shadow: var(--pt-shadow-1), var(--pt-highlight); }
+        .sbc-opt-chip.on:hover { background:var(--pt-bg-raised-hover); }
         /* ✎ ist der Notausgang, nicht die Hauptsache: schmal und gedaempft,
            aber am Ende DERSELBEN Leiste - nicht als vierter Wert. */
         .sbc-opt-chip.edit {
             /* .65 statt .5: am Handy gibt es kein Hover, das den Knopf
                aufhellt - mit .5 war der Notausgang kaum zu finden. */
-            flex:0 0 34px; opacity:.65; font-size:12px;
-            border-left:1px solid var(--pt-line-soft); border-radius:0 var(--pt-r-s) var(--pt-r-s) 0;
+            flex:0 0 38px; opacity:.65; font-size:12px;
+            border-left:1px solid var(--pt-border-subtle); border-radius:0 var(--pt-radius-sm) var(--pt-radius-sm) 0;
         }
-        .sbc-opt-chip.edit:hover { opacity:1; background:var(--pt-hover); }
+        .sbc-opt-chip.edit:hover { opacity:1; background:var(--pt-state-hover); }
         .sbc-opt-chipedit { display:none; gap:6px; margin:0 0 10px; }
         .sbc-opt-chipedit input { flex:1; }
         .sbc-opt-chipedit .sbc-opt-btn {
-            margin:0; width:auto; flex:0 0 auto; padding:8px 14px; min-height:38px;
+            margin:0; width:auto; flex:0 0 auto; padding:8px 14px; min-height:var(--pt-control-h);
         }
         /* Beschriftung ueber dem Schalter: eigene Zeile, damit sie nicht
            neben einem Feld auf zwei Zeilen umbricht. */
         .sbc-opt-chiplabel {
-            display:block; margin:0 0 6px; color:var(--pt-muted); font-size:12px;
+            display:block; margin:0 0 6px; color:var(--pt-fg-muted); font-size:12px;
         }
         /* ------------------------------------------------------------------
            KARTEN-LISTEN
            ------------------------------------------------------------------ */
         .sbc-opt-batch-cards { margin:4px 0 2px; }
         .sbc-opt-batch-card {
-            font-size:11px; color:var(--pt-text-2); padding:2px 0;
+            font-size:11px; color:var(--pt-fg-secondary); padding:2px 0;
             white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
         }
         .sbc-opt-batch-card .r {
-            display:inline-block; min-width:22px; font-weight:700; color:var(--pt-text);
+            display:inline-block; min-width:22px; font-weight:700; color:var(--pt-fg-default);
         }
-        .sbc-opt-batch-card .src { color:var(--pt-faint); }
-        .sbc-opt-batch-card .rar { color:var(--pt-muted); }
-        .sbc-opt-batch-card .untr { color:var(--pt-faint); font-style:italic; }
-        .sbc-opt-batch-card.prot .rar { color:var(--pt-warn-2); font-weight:700; }
+        .sbc-opt-batch-card .src { color:var(--pt-fg-subtle); }
+        .sbc-opt-batch-card .rar { color:var(--pt-fg-muted); }
+        .sbc-opt-batch-card .untr { color:var(--pt-fg-subtle); font-style:italic; }
+        .sbc-opt-batch-card.prot .rar { color:var(--pt-warning-fg); font-weight:700; }
         .sbc-opt-result {
             /* surface wie die Batch-Vorschau: gleiche Rolle (Ergebnis-Kasten),
                gleiche Flaeche. sunken ist fuer EINGABEN reserviert. */
-            margin-top:12px; background:var(--pt-surface); border:1px solid var(--pt-line);
-            border-radius:var(--pt-r-m); padding:10px; display:none;
+            margin-top:12px; background:var(--pt-bg-surface); border:1px solid var(--pt-border-subtle);
+            border-radius:var(--pt-radius-md); padding:10px; display:none;
         }
         .sbc-opt-result.show { display:block; }
         /* Futbin-Kandidaten (v5.16.0): eine Zeile pro Loesung, Empfehlung
            mit Akzent-Rand; Knopf in voller Breite fuer den Daumen. */
         .sbc-opt-fb-row {
-            border:1px solid var(--pt-line); border-radius:var(--pt-r-s);
-            padding:6px 8px; margin:6px 0; font-size:12px;
+            border:1px solid var(--pt-border-subtle); border-radius:var(--pt-card-radius);
+            padding:12px; margin:8px 0; font-size:12px;
         }
-        .sbc-opt-fb-row.best { border-color:var(--pt-accent); }
+        .sbc-opt-fb-row.best { border-color:var(--pt-accent-border); }
         .sbc-opt-fb-row .sbc-opt-btn { margin:6px 0 0; }
         .sbc-opt-player {
             display:flex; justify-content:space-between; align-items:center;
-            padding:5px 2px; border-bottom:1px solid var(--pt-line-soft);
+            padding:5px 2px; border-bottom:1px solid var(--pt-border-subtle);
         }
         .sbc-opt-player:last-child { border-bottom:none; }
         .sbc-opt-badge {
-            background:var(--pt-accent); color:var(--pt-on-accent); font-weight:700;
-            border-radius:5px; padding:2px 8px; font-size:12px; min-width:26px; text-align:center;
+            background:var(--pt-accent-soft); color:var(--pt-accent); font-weight:var(--pt-weight-semibold);
+            font-family:var(--pt-font-mono);
+            border-radius:var(--pt-radius-xs); padding:3px 8px; font-size:12px; min-width:26px; text-align:center;
         }
-        .sbc-opt-badge.special { background:var(--pt-warn); }
-        .sbc-opt-badge.storage { outline:2px solid var(--pt-accent-2); }
+        .sbc-opt-badge.special { background:var(--pt-warning-soft); color:var(--pt-warning-fg); }
+        .sbc-opt-badge.storage { box-shadow: inset 0 0 0 1.5px var(--pt-info-fg); }
         .sbc-opt-summary { margin:10px 0 4px; font-size:14px; }
         .sbc-opt-summary b { color:var(--pt-accent); }
-        .sbc-opt-warn { color:var(--pt-warn); font-size:12px; margin-top:6px; }
+        .sbc-opt-warn { color:var(--pt-warning-fg); font-size:12px; margin-top:6px; }
         /* v5.38.0: Gewinn/Verlust nach Steuer in der Verkaufs-Vorschau */
         .sbc-opt-gain { color:var(--pt-accent); font-weight:700; }
-        .sbc-opt-loss { color:var(--pt-bad); font-weight:700; }
+        .sbc-opt-loss { color:var(--pt-danger-fg); font-weight:700; }
         /* v5.67.0: das Ergebnis eines Verkaufslaufs muss ins Auge springen. */
         .sbc-opt-net { display:flex; flex-direction:column; gap:2px; margin:10px 0; padding:10px 12px;
-                       border-radius:var(--pt-r-m); border:1px solid var(--pt-line); background:var(--pt-surface); }
-        .sbc-opt-net.gain { border-color:var(--pt-accent); background:var(--pt-accent-soft); }
-        .sbc-opt-net.loss { border-color:var(--pt-bad); background:var(--pt-bad-soft); }
-        .sbc-opt-net-label { font-size:11px; letter-spacing:.04em; text-transform:uppercase; color:var(--pt-muted); }
-        .sbc-opt-net-value { font-size:26px; font-weight:800; line-height:1.1; color:var(--pt-text); }
+                       border-radius:var(--pt-card-radius); border:1px solid var(--pt-border-subtle); background:var(--pt-bg-surface); }
+        .sbc-opt-net.gain { border-color:var(--pt-accent-border); background:var(--pt-accent-soft); }
+        .sbc-opt-net.loss { border-color:var(--pt-danger-border); background:var(--pt-danger-soft); }
+        .sbc-opt-net-label { font-size:var(--pt-text-2xs); letter-spacing:var(--pt-tracking-caps); text-transform:uppercase; color:var(--pt-fg-muted); }
+        .sbc-opt-net-value { font-family:var(--pt-font-mono); font-size:var(--pt-text-3xl); font-weight:var(--pt-weight-medium); line-height:1.05; color:var(--pt-fg-default); }
         .sbc-opt-net.gain .sbc-opt-net-value { color:var(--pt-accent); }
-        .sbc-opt-net.loss .sbc-opt-net-value { color:var(--pt-bad); }
-        .sbc-opt-net-sub { font-size:11px; color:var(--pt-faint); }
+        .sbc-opt-net.loss .sbc-opt-net-value { color:var(--pt-danger-fg); }
+        .sbc-opt-net-sub { font-size:11px; color:var(--pt-fg-subtle); }
         .sbc-opt-chip-net { display:block; font-size:10px; font-weight:700; opacity:.9; }
         .sbc-opt-chip-net.gain { color:var(--pt-accent); }
-        .sbc-opt-chip-net.loss { color:var(--pt-bad); }
+        .sbc-opt-chip-net.loss { color:var(--pt-danger-fg); }
         /* ------------------------------------------------------------------
            RATING-KOSTEN-TABELLE
            ------------------------------------------------------------------ */
@@ -6117,24 +6269,24 @@
             display:grid; grid-template-columns: 16px 1fr 1fr 1fr 32px; gap:4px;
             align-items:center; margin-bottom:4px;
         }
-        .sbc-opt-bandhead span { color:var(--pt-faint); font-size:11px; }
+        .sbc-opt-bandhead span { color:var(--pt-fg-subtle); font-size:11px; }
         .sbc-opt-bandrow input {
-            width:100%; background:var(--pt-sunken); color:var(--pt-text);
-            border:1px solid var(--pt-line-2); border-radius:var(--pt-r-s);
+            width:100%; background:var(--pt-bg-sunken); color:var(--pt-fg-default);
+            border:1px solid var(--pt-border-default); border-radius:var(--pt-radius-sm);
             padding:6px; font-size:12px;
         }
         .sbc-opt-bandrow button {
-            background:var(--pt-raised); color:var(--pt-bad-2); border:none;
-            border-radius:var(--pt-r-s);
+            background:var(--pt-bg-raised); color:var(--pt-danger-fg); border:none;
+            border-radius:var(--pt-radius-sm);
             cursor:pointer; padding:8px 0; font-size:12px; font-family:inherit;
         }
-        .sbc-opt-bandrow button:hover { background:var(--pt-raised-hi); }
+        .sbc-opt-bandrow button:hover { background:var(--pt-bg-raised-hover); }
         .sbc-opt-bandrow .sbc-opt-draghandle {
-            color:var(--pt-faint); cursor:grab; user-select:none; text-align:center;
+            color:var(--pt-fg-subtle); cursor:grab; user-select:none; text-align:center;
             font-size:13px; line-height:1;
         }
-        .sbc-opt-bandrow.sbc-opt-dragover { outline:2px dashed var(--pt-accent); border-radius:var(--pt-r-s); }
-        .sbc-opt-bandrow.sbc-opt-bandinvalid { outline:2px solid var(--pt-bad-2); border-radius:var(--pt-r-s); }
+        .sbc-opt-bandrow.sbc-opt-dragover { outline:2px dashed var(--pt-accent); border-radius:var(--pt-radius-sm); }
+        .sbc-opt-bandrow.sbc-opt-bandinvalid { outline:2px solid var(--pt-danger-fg); border-radius:var(--pt-radius-sm); }
         /* ------------------------------------------------------------------
            TOASTS
            ------------------------------------------------------------------ */
@@ -6146,21 +6298,33 @@
             pointer-events: none;
         }
         .sbc-opt-toast {
-            background:var(--pt-surface); color:var(--pt-text); border:1px solid var(--pt-line-2);
-            border-left:4px solid var(--pt-accent); padding:11px 16px; border-radius:var(--pt-r-m);
-            font-family:var(--pt-font); font-size:13px; box-shadow:0 4px 20px rgba(0,0,0,.5);
+            /* v6.0.0: Typ als Punkt vorn plus getoenter Rand, keine dicke
+               Farbkante mehr. Der Punkt ist ein Pseudo-Element - toast()
+               setzt textContent und wuerde ein echtes Kind wegwischen. */
+            display:flex; align-items:baseline; gap:10px;
+            background:var(--pt-bg-raised); color:var(--pt-fg-default); border:1px solid var(--pt-border-subtle);
+            padding:12px 16px 12px 14px; border-radius:var(--pt-radius-md);
+            font-family:var(--pt-font-sans); font-size:13px; box-shadow:var(--pt-shadow-2);
             max-width:min(80vw, 460px); line-height:1.45;
         }
-        .sbc-opt-toast.error { border-left-color:var(--pt-bad-2); }
-        .sbc-opt-toast.warn { border-left-color:var(--pt-warn); }
+        .sbc-opt-toast::before {
+            content:''; flex:0 0 8px; width:8px; height:8px; border-radius:50%;
+            background:var(--pt-accent); box-shadow:0 0 0 4px var(--pt-accent-soft);
+            transform: translateY(-1px);
+        }
+        .sbc-opt-toast.error { border-color:var(--pt-danger-border); }
+        .sbc-opt-toast.error::before { background:var(--pt-danger-fg); box-shadow:0 0 0 4px var(--pt-danger-soft); }
+        .sbc-opt-toast.warn { border-color:var(--pt-warning-border); }
+        .sbc-opt-toast.warn::before { background:var(--pt-warning-fg); box-shadow:0 0 0 4px var(--pt-warning-soft); }
         /* ------------------------------------------------------------------
            RUHE-EINSTELLUNG DES GERAETS RESPEKTIEREN
            ------------------------------------------------------------------ */
         /* Sehr schmale Schirme: Reiter nur mit Text. (Steht hier unten, weil der
            :active-Test das CSS nur bis zum ersten @media liest.) */
-        @media (max-width: 460px) { .sbc-opt-tab-btn svg { display:none; } }
+        @media (max-width: 359px) { .sbc-opt-tab-btn svg { display:none; } }
         .sbc-opt-tab-btn { padding:0 4px; }
         @media (prefers-reduced-motion: reduce) {
+            :root { --pt-dur-fast: 0ms; --pt-dur-base: 0ms; --pt-dur-slow: 0ms; }
             #sbc-opt-panel.open { animation: none; }
             #sbc-opt-fab, .sbc-opt-btn, .sbc-opt-chip, .sbc-opt-queuerow,
             .sbc-opt-tilebtn, #sbc-opt-progress .p-fill,
@@ -6241,7 +6405,7 @@
         panel.id = 'sbc-opt-panel';
         panel.innerHTML = `
             <div class="sbc-opt-header">
-                <span><img class="sbc-opt-logo" src="` + ICON_URI + `" alt="">PitTools <span style="font-size:11px;font-weight:400;opacity:.75;">v` + VERSION + `</span></span>
+                <span><img class="sbc-opt-logo" src="` + ICON_URI + `" alt="">PitTools <span class="sbc-opt-ver">` + VERSION + `</span></span>
                 <span id="sbc-opt-close" style="cursor:pointer;">✕</span>
             </div>
             <div class="sbc-opt-body">

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.0.0
+// @version      6.1.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.0.0';
+    const VERSION = '6.1.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -5675,6 +5675,26 @@
         .sbc-opt-stat b { display:block; font-size:var(--pt-text-md); font-weight:var(--pt-weight-semibold); overflow-wrap:anywhere; }
         .sbc-opt-stat-wide { grid-column:1 / -1; }
         .sbc-opt-stats .sbc-opt-debug { margin-top:0; padding:0 2px; }
+        /* v6.1.0: Statuszeile ueber den Kacheln; die Kacheln klappen auf Tipp
+           auf. Unter "Mehr" bleiben sie offen (dort steht die Technikzeile). */
+        .sbc-opt-infobar {
+            width:100%; display:flex; align-items:center; gap:10px; margin:0 0 12px;
+            min-height:var(--pt-control-h); padding:8px 12px; box-sizing:border-box;
+            background:var(--pt-bg-sunken); color:var(--pt-fg-muted);
+            border:1px solid var(--pt-border-subtle); border-radius:var(--pt-radius-md);
+            font-family:inherit; font-size:var(--pt-text-sm); text-align:left; cursor:pointer;
+            transition: background var(--pt-dur-fast) ease;
+        }
+        .sbc-opt-infobar:hover { background:var(--pt-state-hover); }
+        .sbc-opt-infobar:active { background:var(--pt-state-press); }
+        .sbc-opt-infobar-txt { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .sbc-opt-infobar-txt b { color:var(--pt-fg-default); font-family:var(--pt-font-mono); font-weight:var(--pt-weight-medium); }
+        .sbc-opt-infobar-txt .warn { color:var(--pt-warning-fg); font-weight:var(--pt-weight-semibold); }
+        .sbc-opt-infobar-more { flex:0 0 auto; font-size:var(--pt-text-xs); color:var(--pt-fg-subtle); }
+        .sbc-opt-infobar-more::after { content:' ▾'; }
+        #sbc-opt-panel[data-info="open"] .sbc-opt-infobar-more::after { content:' ▴'; }
+        #sbc-opt-panel[data-info="closed"] #sbc-opt-info { display:none; }
+        #sbc-opt-panel[data-info="closed"][data-tab="mehr"] #sbc-opt-info { display:grid; }
         /* Karte: gruppiert die Eingaben einer Aktion */
         .sbc-opt-card {
             background:var(--pt-bg-surface); border:1px solid var(--pt-border-subtle); border-radius:var(--pt-card-radius);
@@ -5795,6 +5815,41 @@
            der Notausgang, wenn das automatische Laden scheitert. Das
            inline-gesetzte width:auto blockiert min-width nicht. */
         #sbc-opt-queue-refresh, #sbc-opt-pack-refresh { min-width:44px; }
+        /* v6.1.0: geladener Verein = Statuszeile statt grosser Knopf. */
+        .sbc-opt-btn.ghost.is-loaded {
+            min-height:34px; padding:6px 12px; font-size:var(--pt-text-sm);
+            font-weight:var(--pt-weight-medium); color:var(--pt-fg-muted); background:transparent;
+        }
+        /* v6.1.0: Hauptaktion greift (noch) nicht - gedaempft plus Grund. */
+        .sbc-opt-btn.primary.is-blocked { background:var(--pt-bg-raised); color:var(--pt-fg-muted); box-shadow:inset 0 0 0 1px var(--pt-border-default); }
+        .sbc-opt-runhint { margin:6px 2px 0; font-size:var(--pt-text-sm); color:var(--pt-fg-subtle); }
+        /* v6.1.0: Mehrere erledigen - ein Bereich, der Umschalter blendet um. */
+        .sbc-opt-multi { margin-top:14px; padding-top:12px; border-top:1px solid var(--pt-border-subtle); }
+        .sbc-opt-multi .sbc-opt-batch { margin-top:4px; padding-top:0; border-top:none; }
+        .sbc-opt-multi:not(.has-queue) #sbc-opt-multi-modes .sbc-opt-chip[data-mode="reihe"] { display:none; }
+        .sbc-opt-multi:not([data-mode="reihe"]) #sbc-opt-queuesection { display:none; }
+        .sbc-opt-multi:not([data-mode="batch"]) #sbc-opt-batchsection { display:none; }
+        .sbc-opt-multi:not([data-mode="vorlagen"]) #sbc-opt-vorlagensection { display:none; }
+        /* v6.1.0: Pack-Opener im Store als hervorgehobene Karte oben. */
+        #sbc-opt-panel[data-store] #sbc-opt-packsection {
+            margin:0 0 14px; padding:12px; border:1px solid var(--pt-accent-border);
+            border-radius:var(--pt-card-radius); background:var(--pt-bg-surface);
+        }
+        /* v6.1.0: Naechster Schritt - klebt unten, solange der echte Knopf
+           ausser Sicht ist (wireNextBar). */
+        .sbc-opt-nextbar { position:sticky; bottom:12px; z-index:1; margin-top:12px; }
+        .sbc-opt-nextbar[hidden] { display:none; }
+        .sbc-opt-nextbtn { display:flex; flex-direction:column; align-items:center; gap:1px; line-height:1.2;
+            box-shadow: var(--pt-glow-accent), 0 12px 0 0 var(--pt-bg-base); }
+        .sbc-opt-nextbtn small { font-size:var(--pt-text-2xs); font-weight:var(--pt-weight-medium); letter-spacing:var(--pt-tracking-caps); text-transform:uppercase; opacity:.75; }
+        /* v6.1.0: Freigabe im Panel (showBatchConfirm). */
+        .sbc-opt-confirm { margin-top:10px; padding:12px; border-radius:var(--pt-card-radius);
+            background:var(--pt-bg-surface); border:1px solid var(--pt-danger-border); }
+        .sbc-opt-confirm[hidden] { display:none; }
+        .sbc-opt-confirm-title { font-size:var(--pt-text-lg); font-weight:var(--pt-weight-semibold); color:var(--pt-fg-default); margin-bottom:6px; }
+        .sbc-opt-confirm-body { font-size:var(--pt-text-sm); color:var(--pt-fg-muted); line-height:1.5; white-space:pre-line; max-height:220px; overflow-y:auto; }
+        .sbc-opt-confirm-actions { display:grid; grid-template-columns:1fr 1.4fr; gap:8px; margin-top:10px; }
+        .sbc-opt-confirm-actions .sbc-opt-btn { margin-top:0; }
         .sbc-opt-toggle { display:flex; align-items:center; gap:8px; cursor:pointer; }
         .sbc-opt-toggle input { width:auto; }
         .sbc-opt-group-title {
@@ -6445,6 +6500,219 @@
         setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity .4s'; }, ms);
         setTimeout(() => { try { wrap.removeChild(t); } catch (e) {} }, ms + 500);
     }
+    // ================= v6.1.0: UX-Helfer =================
+    // Alle rein additiv: sie lesen den bestehenden Zustand und blenden um,
+    // keiner ersetzt einen Handler. Aufrufe sind billig und idempotent.
+
+    /** Kurzfassung der Info-Box in EINER Zeile (Statuszeile ueber den Kacheln). */
+    function infoSummaryParts(tab, st) {
+        const parts = [];
+        const ratingTab = tab !== 'kaufen' && tab !== 'mehr' && tab !== 'galerie';
+        if (ratingTab && st.target) parts.push({ k: 'Ziel', v: String(st.target), num: true });
+        if (ratingTab && st.rarity && st.rarity !== 'keine') parts.push({ k: '', v: st.rarity });
+        parts.push({ k: 'Verein', v: String(st.pool), num: true });
+        if (st.status) parts.push({ k: '', v: st.status });
+        return parts;
+    }
+    function renderInfoSummary() {
+        const el = document.getElementById('sbc-opt-infobar-txt');
+        if (!el) return;
+        const panel = document.getElementById('sbc-opt-panel');
+        const tab = panel ? panel.getAttribute('data-tab') : '';
+        const parts = infoSummaryParts(tab, {
+            target: STATE.sbc && STATE.sbc.targetOVR,
+            rarity: ui.rarity ? ui.rarity.textContent : '',
+            pool: STATE.pool ? STATE.pool.length : 0,
+            status: ui.status ? ui.status.textContent : ''
+        });
+        const low = ui.availability && ui.availability.querySelector('.low');
+        const html = (low ? '<span class="warn">zu wenig Vorgabe-Karten</span> · ' : '') +
+            parts.map(function (p) {
+                return (p.k ? escapeHtml(p.k) + ' ' : '') +
+                    (p.num ? '<b>' + escapeHtml(p.v) + '</b>' : escapeHtml(p.v));
+            }).join(' · ');
+        if (el.innerHTML !== html) el.innerHTML = html;
+    }
+    function setInfoOpen(open, remember) {
+        const panel = document.getElementById('sbc-opt-panel');
+        const bar = document.getElementById('sbc-opt-infobar');
+        if (panel) panel.setAttribute('data-info', open ? 'open' : 'closed');
+        if (bar) bar.setAttribute('aria-expanded', open ? 'true' : 'false');
+        if (remember) { try { localStorage.setItem('sbcOptInfoOpen', open ? '1' : '0'); } catch (e) {} }
+    }
+
+    /** "Spieler laden" ist nach dem ersten Laden nur noch eine Statuszeile. */
+    function syncLoadBtn() {
+        if (!ui.load || STATE.loading) return;
+        const n = STATE.pool ? STATE.pool.length : 0;
+        ui.load.classList.toggle('is-loaded', n > 0);
+        const txt = n > 0 ? '↻ Verein neu laden (' + n + ')' : 'Spieler laden';
+        // Nur bei echter Aenderung schreiben: der Knopf wird beobachtet
+        // (initUxHelpers), jedes Setzen waere eine neue Mutation - Endlosschleife.
+        if (ui.load.textContent !== txt) ui.load.textContent = txt;
+    }
+
+    /**
+     * Warum "Optimieren + Eintragen" (noch) nichts tun wird - als Hinweis
+     * unter dem Knopf. Der Knopf bleibt bewusst klickbar: onRunClick sucht
+     * beim Tipp selbst noch nach Vorgaben (ensureSetChallenges), eine harte
+     * Sperre wuerde genau diesen Weg abschneiden.
+     */
+    function runBlockReason(st) {
+        if (st.loading) return 'Verein lädt noch …';
+        if (!st.hasSbc) return 'Öffne zuerst eine SBC-Challenge im Spiel.';
+        if (!st.pool) return 'Zuerst den Verein laden (Knopf oben).';
+        return null;
+    }
+    function renderRunHint() {
+        const hint = document.getElementById('sbc-opt-runhint');
+        if (!hint || !ui.run) return;
+        const sbc = STATE.sbc || {};
+        const why = runBlockReason({
+            loading: !!STATE.loading,
+            hasSbc: !!(sbc.targetOVR || (sbc.playerLevelConstraints || []).length ||
+                (sbc.rarityConstraints || []).length || (sbc.qualityConstraints || []).length),
+            pool: STATE.pool ? STATE.pool.length : 0
+        });
+        hint.hidden = !why;
+        if (hint.textContent !== (why || '')) hint.textContent = why || '';
+        ui.run.classList.toggle('is-blocked', !!why);
+    }
+
+    /** Pack-Opener: im Store oben (vor den Reitern), sonst an seinem Platz am Ende. */
+    function placePackSection() {
+        const sec = document.getElementById('sbc-opt-packsection');
+        const panel = document.getElementById('sbc-opt-panel');
+        if (!sec || !panel) return;
+        const inStore = !sec.classList.contains('sbc-opt-hidden');
+        const body = sec.parentNode, tabs = panel.querySelector('#sbc-opt-tabs');
+        panel.toggleAttribute('data-store', !!inStore);
+        if (!body || !tabs || tabs.parentNode !== body) return;
+        if (inStore && sec.nextSibling !== tabs) body.insertBefore(sec, tabs);
+        else if (!inStore && body.lastElementChild !== sec) body.appendChild(sec);
+    }
+
+    /** "Mehrere erledigen": welcher Weg ist sichtbar? */
+    let multiModePicked = null;
+    function multiModeFor(picked, queueAvailable) {
+        if (picked === 'vorlagen' || picked === 'batch') return picked;
+        if (picked === 'reihe') return queueAvailable ? 'reihe' : 'batch';
+        return queueAvailable ? 'reihe' : 'batch';
+    }
+    function syncMultiModes() {
+        const box = document.getElementById('sbc-opt-multi');
+        const queue = document.getElementById('sbc-opt-queuesection');
+        if (!box || !queue) return;
+        const queueOk = !queue.classList.contains('sbc-opt-hidden');
+        const mode = multiModeFor(multiModePicked, queueOk);
+        box.setAttribute('data-mode', mode);
+        box.classList.toggle('has-queue', queueOk);
+        Array.from(box.querySelectorAll('#sbc-opt-multi-modes .sbc-opt-chip')).forEach(function (b) {
+            const on = b.getAttribute('data-mode') === mode;
+            b.classList.toggle('on', on);
+            b.setAttribute('aria-pressed', on ? 'true' : 'false');
+        });
+    }
+
+    /**
+     * Naechster Schritt: eine fixierte Leiste, die den ersten sichtbaren
+     * Hauptknopf (.sbc-opt-btn.primary) im Ergebnis-Kasten ausloest - aber
+     * nur, solange der selbst aus dem Blick gescrollt ist. Kein eigener
+     * Ablauf: der Klick geht an den echten Knopf.
+     */
+    const nextBarRefreshers = [];
+    function nextBarTarget(resultEl) {
+        const list = Array.from(resultEl.querySelectorAll('.sbc-opt-btn.primary'));
+        for (const b of list) {
+            if (b.disabled || b.classList.contains('is-busy')) continue;
+            if (b.offsetParent === null) continue;
+            return b;
+        }
+        return null;
+    }
+    function wireNextBar(bar, resultEl, root) {
+        if (!bar || !resultEl) return;
+        const btn = bar.querySelector('button');
+        const label = btn && btn.querySelector('span');
+        if (!btn || !label) return;
+        let target = null, targetVisible = false, io = null;
+        const render = function () {
+            bar.hidden = !(target && !targetVisible);
+            if (target) label.textContent = target.textContent.trim();
+        };
+        const refresh = function () {
+            const t = nextBarTarget(resultEl);
+            if (t !== target) {
+                if (io && target) io.unobserve(target);
+                target = t; targetVisible = false;
+                if (io && t) io.observe(t);
+            }
+            render();
+        };
+        if (typeof IntersectionObserver === 'function') {
+            io = new IntersectionObserver(function (entries) {
+                entries.forEach(function (e) { if (e.target === target) targetVisible = e.isIntersecting; });
+                render();
+            }, { root: root || null, threshold: 0.6 });
+        }
+        if (typeof MutationObserver === 'function') {
+            new MutationObserver(refresh).observe(resultEl, { childList: true, subtree: true,
+                attributes: true, attributeFilter: ['class', 'disabled', 'style'] });
+        }
+        btn.addEventListener('click', function () { if (target && !target.disabled) target.click(); });
+        nextBarRefreshers.push(refresh);
+        refresh();
+    }
+
+    function initUxHelpers(panel) {
+        const bar = panel.querySelector('#sbc-opt-infobar');
+        if (bar) {
+            let open = false;
+            try { open = localStorage.getItem('sbcOptInfoOpen') === '1'; } catch (e) {}
+            setInfoOpen(open, false);
+            bar.addEventListener('click', function () {
+                setInfoOpen(panel.getAttribute('data-info') !== 'open', true);
+            });
+        }
+        const modes = panel.querySelector('#sbc-opt-multi-modes');
+        if (modes) modes.addEventListener('click', function (ev) {
+            const b = ev.target.closest('.sbc-opt-chip');
+            if (!b) return;
+            multiModePicked = b.getAttribute('data-mode');
+            syncMultiModes();
+        });
+        wireNextBar(panel.querySelector('#sbc-opt-futbin-next'), panel.querySelector('#sbc-opt-futbin-result'), panel);
+        wireNextBar(panel.querySelector('#sbc-opt-gallery-next'), panel.querySelector('#sbc-opt-gallery-result'), panel);
+        // Beobachten statt einhaengen: die bestehenden Schreiber (setStatus,
+        // refreshSbcInfoUI, setTab, syncQueueSection, syncPackSection,
+        // onLoadClick) bleiben unveraendert - die Helfer folgen dem, was sie
+        // ins DOM schreiben. Ein Durchlauf pro Mikro-Task, egal wie viele
+        // Aenderungen (beim Club-Laden schreibt refreshSbcInfoUI pro Seite).
+        if (typeof MutationObserver !== 'function') return;
+        let queued = false;
+        const runAll = function () {
+            queued = false;
+            try { renderInfoSummary(); } catch (e) {}
+            try { syncLoadBtn(); } catch (e) {}
+            try { renderRunHint(); } catch (e) {}
+            try { syncMultiModes(); } catch (e) {}
+            try { placePackSection(); } catch (e) {}
+            nextBarRefreshers.forEach(function (f) { try { f(); } catch (e) {} });
+        };
+        const schedule = function () { if (!queued) { queued = true; Promise.resolve().then(runAll); } };
+        const mo = new MutationObserver(schedule);
+        const info = panel.querySelector('#sbc-opt-info');
+        if (info) mo.observe(info, { childList: true, subtree: true, characterData: true });
+        mo.observe(panel, { attributes: true, attributeFilter: ['data-tab'] });
+        ['#sbc-opt-queuesection', '#sbc-opt-packsection'].forEach(function (q) {
+            const el = panel.querySelector(q);
+            if (el) mo.observe(el, { attributes: true, attributeFilter: ['class'] });
+        });
+        const load = panel.querySelector('#sbc-opt-load');
+        if (load) mo.observe(load, { childList: true, characterData: true, subtree: true });
+        runAll();
+    }
+
     /**
      * v6.0.0: die Stufen-Auswahlen unter "Erweiterte Einstellungen" (Aus /
      * Leicht / Normal / Stark) werden als Segment-Schalter gezeigt -
@@ -6528,6 +6796,14 @@
                 <!-- v5.31.0: Kennzahl-Kacheln statt Textzeilen (Beschriftung
                      klein oben, Wert darunter). Rating-Kacheln nur im Rating-
                      Reiter, die Technikzeile nur unter "Mehr". -->
+                <!-- v6.1.0: Statuszeile statt dauerhaft offener Kacheln. Die
+                     Kacheln bleiben (alle IDs, alle Schreiber unveraendert),
+                     sie klappen nur auf Tipp auf; renderInfoSummary() fasst
+                     die wichtigsten Werte in einer Zeile zusammen. -->
+                <button type="button" class="sbc-opt-infobar" id="sbc-opt-infobar" aria-expanded="false" aria-controls="sbc-opt-info">
+                    <span class="sbc-opt-infobar-txt" id="sbc-opt-infobar-txt">bereit</span>
+                    <span class="sbc-opt-infobar-more">Details</span>
+                </button>
                 <div class="sbc-opt-info sbc-opt-stats" id="sbc-opt-info">
                     <div class="sbc-opt-stat sbc-opt-only-rating"><span class="k">Ziel-OVR</span><b id="sbc-opt-target">–</b></div>
                     <div class="sbc-opt-stat sbc-opt-only-rating"><span class="k">Vorgaben</span><b id="sbc-opt-rarity">keine</b></div>
@@ -6584,6 +6860,11 @@
                     <button class="sbc-opt-btn ghost" id="sbc-opt-futbin-buyconcepts" style="margin-top:0;">Konzept-Spieler im Kader nachkaufen</button>
                     <div class="sbc-opt-debug" style="margin-top:-4px;">Fuer Kader, die schon Konzept-Spieler enthalten (z.B. nach Neuladen oder von Hand eingesetzt).</div>
                 </div>
+                <!-- v6.1.0: Naechster Schritt (wireNextBar) - loest den Hauptknopf im
+                     Ergebnis aus, sobald der aus dem Blick gescrollt ist. -->
+                <div class="sbc-opt-nextbar" id="sbc-opt-futbin-next" hidden>
+                    <button type="button" class="sbc-opt-btn primary sbc-opt-nextbtn"><small>Nächster Schritt</small><span></span></button>
+                </div>
                 </div>
                 <!-- REITER GALERIE (v5.32.0): FUT-Gallery-Sets von fut.gg kaufen. -->
                 <div class="sbc-opt-tab" id="sbc-opt-tab-galerie" role="tabpanel">
@@ -6624,14 +6905,17 @@
                         </div>
                     </details>
                     <div class="sbc-opt-debug">Quelle fut.gg (guenstigste Aufstellung je Set). Bewertet wird im Spiel: Galerie → Set → Bewerten. Die Karten zaehlen, sobald sie im Verein waren, und duerfen danach verkauft werden.</div>
+                    <div class="sbc-opt-nextbar" id="sbc-opt-gallery-next" hidden>
+                        <button type="button" class="sbc-opt-btn primary sbc-opt-nextbtn"><small>Nächster Schritt</small><span></span></button>
+                    </div>
                 </div>
                 <!-- REITER RATING: der bisherige Optimizer (Rating-SBCs). -->
                 <div class="sbc-opt-tab" id="sbc-opt-tab-rating" role="tabpanel">
-                <!-- VORLAGEN: gespeicherte Auto-Laeufe, eigene Vollbild-
-                     Oberflaeche. Erster Knopf im Rating-Reiter und BLAU (Rasmus,
-                     28.08.: "ganz oben ... einfach 'Vorlagen' reicht"). -->
-                <button class="sbc-opt-btn blue" id="sbc-opt-vorlagen-btn" style="margin-top:0;">Vorlagen</button>
-                <button class="sbc-opt-btn ghost" id="sbc-opt-load">Spieler laden</button>
+                <!-- v6.1.0: der Vorlagen-Knopf steht im Bereich "Mehrere
+                     erledigen" (unten) - Rasmus, 25.09.: die drei Mehrfach-Wege
+                     gehoeren zusammen. "Spieler laden" ist nach dem ersten
+                     Laden nur noch eine Statuszeile (syncLoadBtn). -->
+                <button class="sbc-opt-btn ghost" id="sbc-opt-load" style="margin-top:0;">Spieler laden</button>
                 <div class="sbc-opt-row" style="margin-bottom:0;">
                     <label class="sbc-opt-chiplabel">Min. Rating pro Spieler</label>
                     <div class="sbc-opt-chips" id="sbc-opt-minrating-chips"></div>
@@ -6783,7 +7067,21 @@
                 </div>
                 </details>
                 <button class="sbc-opt-btn primary" id="sbc-opt-run">Optimieren + Eintragen</button>
+                <!-- v6.1.0: warum die Hauptaktion (noch) nicht greift - Hinweis
+                     statt Fehler-Toast nach dem Tipp (runBlockReason). -->
+                <div class="sbc-opt-runhint" id="sbc-opt-runhint" hidden></div>
                 <div class="sbc-opt-result" id="sbc-opt-result"></div>
+                <!-- v6.1.0: MEHRERE ERLEDIGEN - Reihe, Batch und Vorlagen in EINEM
+                     Bereich mit Umschalter (syncMultiModes). Die drei
+                     Abschnitte behalten ihre IDs und Handler; der Umschalter
+                     blendet nur um. -->
+                <div class="sbc-opt-multi" id="sbc-opt-multi" data-mode="batch">
+                    <div class="sbc-opt-group-title" style="margin-top:0;">Mehrere erledigen</div>
+                    <div class="sbc-opt-chips" id="sbc-opt-multi-modes" role="group" aria-label="Art">
+                        <button type="button" class="sbc-opt-chip" data-mode="reihe">Dieses Set</button>
+                        <button type="button" class="sbc-opt-chip on" data-mode="batch">Diese SBC N&#215;</button>
+                        <button type="button" class="sbc-opt-chip" data-mode="vorlagen">Vorlagen</button>
+                    </div>
                 <!-- SBC-REIHE: verschiedene Challenges EINES Sets nacheinander.
                      Nur sichtbar, wenn das offene Set mehr als eine Challenge
                      hat (syncQueueSection()). Vorschau, Plan-Check und die
@@ -6804,7 +7102,7 @@
                 </div>
                 <!-- BATCH: dieselbe SBC mehrfach. Zwei Schritte - erst planen und
                      ansehen, dann EINE Freigabe für den ganzen Lauf. -->
-                <div class="sbc-opt-batch">
+                <div class="sbc-opt-batch" id="sbc-opt-batchsection">
                     <label class="sbc-opt-chiplabel">SBC mehrfach abschließen</label>
                     <div class="sbc-opt-chips" id="sbc-opt-batch-chips"></div>
                     <div class="sbc-opt-chipedit sbc-opt-inline" id="sbc-opt-batch-edit">
@@ -6815,6 +7113,13 @@
                     <input type="number" id="sbc-opt-batch-count" value="5" min="1" max="10"
                            style="margin-bottom:10px;">
                     <button class="sbc-opt-btn plan" id="sbc-opt-batch-plan">Teams planen (Vorschau)</button>
+                </div>
+                <!-- VORLAGEN: gespeicherte Auto-Laeufe, eigene Vollbild-
+                     Oberflaeche (Rasmus, 28.08.: "einfach 'Vorlagen' reicht"). -->
+                <div class="sbc-opt-batch" id="sbc-opt-vorlagensection">
+                    <div class="sbc-opt-debug" style="margin:0 0 4px;">Gespeicherte Abläufe, die mehrere SBCs nacheinander erledigen - abgegeben wird nur bei 100 % Confidence.</div>
+                    <button class="sbc-opt-btn blue" id="sbc-opt-vorlagen-btn">Vorlagen</button>
+                </div>
                 </div>
                 <!-- VORSCHAU + FREIGABE fuer BEIDE Plan-Sorten (Batch und
                      SBC-Reihe). Steht bewusst UNTER beiden Abschnitten: die
@@ -6827,6 +7132,16 @@
                     <button class="sbc-opt-btn danger" id="sbc-opt-batch-run" style="display:none;">
                         Alle eintragen + abgeben
                     </button>
+                    <!-- v6.1.0: Freigabe im Panel statt window.confirm - Frage,
+                         Zusammenfassung, dann Abbrechen / Ja (showBatchConfirm). -->
+                    <div class="sbc-opt-confirm" id="sbc-opt-batch-confirm" hidden>
+                        <div class="sbc-opt-confirm-title" id="sbc-opt-batch-confirm-title"></div>
+                        <div class="sbc-opt-confirm-body" id="sbc-opt-batch-confirm-body"></div>
+                        <div class="sbc-opt-confirm-actions">
+                            <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-batch-confirm-no">Abbrechen</button>
+                            <button type="button" class="sbc-opt-btn danger" id="sbc-opt-batch-confirm-yes">Ja, alle abgeben</button>
+                        </div>
+                    </div>
                     <details id="sbc-opt-batch-details" class="sbc-opt-details-toggle" style="display:none;">
                         <summary id="sbc-opt-batch-detail-summary">Teams im Detail (0)</summary>
                         <div id="sbc-opt-batch-detail-body"></div>
@@ -6882,6 +7197,7 @@
         `;
         document.body.appendChild(panel);
         enhanceSelectSegments(panel);
+        initUxHelpers(panel);
         // Fortschritts-Overlay: bewusst ausserhalb des Panels, damit es auch
         // sichtbar ist, wenn das Panel zu ist.
         const prog = document.createElement('div');
@@ -6977,6 +7293,7 @@
             batchPlan: panel.querySelector('#sbc-opt-batch-plan'),
             batchPreview: panel.querySelector('#sbc-opt-batch-preview'),
             batchRun: panel.querySelector('#sbc-opt-batch-run'),
+            batchConfirm: panel.querySelector('#sbc-opt-batch-confirm'),
             batchDetails: panel.querySelector('#sbc-opt-batch-details'),
             batchDetailSummary: panel.querySelector('#sbc-opt-batch-detail-summary'),
             batchDetailBody: panel.querySelector('#sbc-opt-batch-detail-body'),
@@ -7035,6 +7352,12 @@
         });
         ui.batchPlan.addEventListener('click', onBatchPlanClick);
         ui.batchRun.addEventListener('click', onBatchRunClick);
+        (function () {
+            const y = panel.querySelector('#sbc-opt-batch-confirm-yes');
+            const n = panel.querySelector('#sbc-opt-batch-confirm-no');
+            if (y) y.addEventListener('click', onBatchConfirmYes);
+            if (n) n.addEventListener('click', onBatchConfirmNo);
+        })();
         ui.queueRefresh.addEventListener('click', function () {
             queueTriedSet = null;
             queueLoadError = null;
@@ -15681,6 +16004,8 @@
         }
         box.innerHTML = html;
         if (ui.planResult) ui.planResult.classList.remove('sbc-opt-hidden');
+        // v6.1.0: neue Vorschau = alte Freigabe-Frage ist veraltet.
+        if (ui.batchConfirm) ui.batchConfirm.hidden = true;
         ui.batchRun.style.display = plan.planned ? 'block' : 'none';
         ui.batchRun.disabled = false;
         ui.batchRun.textContent = 'Alle ' + plan.planned + ' eintragen + abgeben';
@@ -15785,9 +16110,51 @@
                           ' (OVR ' + r.ovr + ')';
                }).join('\n') + '\n\n')
             : (n + ' SBC(s) werden eingetragen UND endgültig abgegeben.\n\n');
-        if (!window.confirm(whatText +
-                'Die verbauten Karten sind danach weg. Fortfahren?' + quotaWarn)) return;
+        // v6.1.0: Freigabe im Panel statt window.confirm (Rasmus, 25.09.:
+        // Zusammenfassung, dann Abbrechen / Ja). Texte unveraendert; der Lauf
+        // startet NUR ueber "Ja" und nur fuer genau diesen Plan.
+        showBatchConfirm(plan, isQueue
+            ? n + ' SBCs dieses Sets eintragen und abgeben?'
+            : n + ' Teams eintragen und abgeben?',
+            whatText + 'Die verbauten Karten sind danach weg.' + quotaWarn);
+    }
+    /**
+     * Freigabe-Kasten unter der Vorschau (v6.1.0). Der Lauf startet nur, wenn
+     * beim "Ja" noch GENAU dieser Plan aktiv ist - wurde zwischendurch neu
+     * geplant, ist die gezeigte Zusammenfassung veraltet und es passiert
+     * nichts ausser einem Hinweis.
+     */
+    let batchConfirmPlan = null;
+    function showBatchConfirm(plan, title, body) {
+        const box = ui.batchConfirm;
+        if (!box) {
+            // Ohne Kasten (sollte nicht vorkommen): die alte Rueckfrage.
+            if (window.confirm(title + '\n\n' + body)) executePlan(plan);
+            return;
+        }
+        batchConfirmPlan = plan;
+        document.getElementById('sbc-opt-batch-confirm-title').textContent = title;
+        document.getElementById('sbc-opt-batch-confirm-body').textContent = body;
+        box.hidden = false;
+        if (ui.batchRun) ui.batchRun.style.display = 'none';
+        try { box.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) {}
+    }
+    function hideBatchConfirm() {
+        batchConfirmPlan = null;
+        if (ui.batchConfirm) ui.batchConfirm.hidden = true;
+    }
+    async function onBatchConfirmYes() {
+        const plan = batchConfirmPlan;
+        hideBatchConfirm();
+        if (!plan || plan !== STATE.batch) {
+            toast('Der Plan hat sich geändert - bitte die neue Vorschau prüfen.', 'warn');
+            return;
+        }
         await executePlan(plan);
+    }
+    function onBatchConfirmNo() {
+        hideBatchConfirm();
+        if (ui.batchRun && STATE.batch && STATE.batch.planned) ui.batchRun.style.display = 'block';
     }
     /**
      * Der LAUF hinter der Freigabe (wortgleich aus onBatchRunClick gezogen,

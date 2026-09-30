@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.3.1
+// @version      6.3.2
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.3.1';
+    const VERSION = '6.3.2';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -8337,6 +8337,7 @@
     // ========================================================================
     // [FUTBIN-BEGIN]
     const FUTBIN_HOST = 'https://www.futbin.com';
+    const FUTGG_HOST = 'https://www.fut.gg';
     /** Spieljahr fuer futbin-URLs: "fc27" -> "27"; sonst aus window.fut_year. */
     function futbinYear(gameName, futYear) {
         const m = String(gameName || '').match(/^fc(\d\d)$/i);
@@ -8434,6 +8435,69 @@
         diag.communityRows = (String(fallback.text || '').match(/href="\/\d\d\/squad\/\d+\/sbc"/g) || []).length;
         diag.communityMatched = matched.length;
         return matched;
+    }
+    // FUT.GG fuehrt EAs Challenge-ID direkt in seiner API. Das ist wichtig,
+    // weil ein Futbin-Filter leer sein kann, obwohl die Challenge bei FUT.GG
+    // bereits samt Loesung da ist (live: Challenge 49, 30.09.2026).
+    function futggChallengeUrl(year, challengeId) {
+        return FUTGG_HOST + '/api/fut/sbc/' + String(year) + '/challenge/' + String(challengeId) + '/';
+    }
+    function futggSquadUrl(uuid) { return FUTGG_HOST + '/api/squads/' + encodeURIComponent(String(uuid)) + '/'; }
+    function futggPlayersUrl(year, ids) {
+        return FUTGG_HOST + '/api/fut/' + String(year) + '/player-items/?ids=' + encodeURIComponent((ids || []).join(','));
+    }
+    function parseFutggSolution(challengeText, squadText, playersText, challengeId, platform) {
+        let meta, squadData, playerData;
+        try { meta = JSON.parse(challengeText).data; squadData = JSON.parse(squadText).data; playerData = JSON.parse(playersText).data; } catch (e) { return null; }
+        const ch = (meta && meta.challenges || []).find(x => Number(x && x.eaId) === Number(challengeId));
+        const positions = squadData && squadData.data && squadData.data.activeGroupPositions;
+        if (!ch || !Array.isArray(positions) || !Array.isArray(playerData)) return null;
+        const byId = new Map(playerData.map(x => [Number(x && x.eaId), x]));
+        const players = [];
+        for (const x of positions) {
+            if (!x || String(x.group).toUpperCase() !== 'FIELD' || !(Number(x.playerEaId) > 0)) continue;
+            const p = byId.get(Number(x.playerEaId));
+            if (!p || !(Number(p.eaId) > 0) || !(Number(p.overall) > 0) || !p.position) return null;
+            players.push({ lid: String(x.positionIdx), slotPosition: null, cardPosition: String(p.position),
+                resourceId: Number(p.eaId), futbinId: null, name: p.cardName || p.commonName || null,
+                rating: Number(p.overall), pricePs: null, pricePc: null, cardLevel: null,
+                isRare: false, isEvolution: !!p.isEvolutionPlayerItem });
+        }
+        const solutionUrl = platform === 'pc' ? (ch.cheapestSolutionPcUrl || ch.cheapestSolutionUrl) :
+            (ch.cheapestSolutionUrl || ch.cheapestSolutionPcUrl);
+        const uuidMatch = String(solutionUrl || '').match(/\/squad-builder\/([^/?#]+)\//);
+        if (players.length !== 11 || !uuidMatch) return null;
+        return { source: 'futgg', squadId: uuidMatch[1], year: String(meta.game || ''), label: ch.name || meta.name || 'FUT.GG-Lösung',
+            ai: true, tagCheapest: true, tagNew: false, age: null, likes: null,
+            pricePs: Number(ch.cheapestSolutionPrice) || null, pricePc: Number(ch.cheapestSolutionPricePc) || null,
+            thumbResourceId: null, listRank: 0, squad: { formation: null, players: players } };
+    }
+    async function loadFutggSolution(year, challengeId, platform, fetchPage, diag) {
+        const request = async (url, kind) => {
+            const r = await fetchPage(url);
+            (diag.futggRequests || (diag.futggRequests = [])).push({ url: url, status: r.status, kind: kind });
+            if (r.status !== 200) throw new Error('fut.gg antwortet mit HTTP ' + r.status);
+            return r.text;
+        };
+        const metaText = await request(futggChallengeUrl(year, challengeId), 'challenge');
+        let meta;
+        try { meta = JSON.parse(metaText).data; } catch (e) { throw new Error('fut.gg-Challenge nicht lesbar'); }
+        const ch = (meta && meta.challenges || []).find(x => Number(x && x.eaId) === Number(challengeId));
+        const solutionUrl = ch && (platform === 'pc' ? (ch.cheapestSolutionPcUrl || ch.cheapestSolutionUrl) :
+            (ch.cheapestSolutionUrl || ch.cheapestSolutionPcUrl));
+        const match = String(solutionUrl || '').match(/\/squad-builder\/([^/?#]+)\//);
+        if (!match) return [];
+        const squadText = await request(futggSquadUrl(match[1]), 'squad');
+        let positions;
+        try { positions = JSON.parse(squadText).data.data.activeGroupPositions; } catch (e) { throw new Error('fut.gg-Kader nicht lesbar'); }
+        const ids = (positions || []).filter(x => x && String(x.group).toUpperCase() === 'FIELD' && Number(x.playerEaId) > 0)
+            .map(x => Number(x.playerEaId));
+        if (ids.length !== 11) throw new Error('fut.gg-Kader hat ' + ids.length + ' Feldspieler statt 11');
+        const playersText = await request(futggPlayersUrl(year, ids), 'players');
+        const row = parseFutggSolution(metaText, squadText, playersText, challengeId, platform);
+        if (!row) throw new Error('fut.gg-Lösung nicht vollständig lesbar');
+        diag.source = 'futgg'; diag.url = futggChallengeUrl(year, challengeId); diag.futggSolution = row.squadId;
+        return [row];
     }
     /** Balancierte {...}/[...]-Spanne ab Index j (Strings mit Escapes beachtet). */
     function scanBalanced(t, j) {
@@ -10473,11 +10537,20 @@
             const url = futbinChallengeUrl(year, cid);
             diag.url = url;
             setFutbinStep(1);
-            setFutbinResult('<div class="sbc-opt-dim">Lade Lösungsliste von futbin (Challenge ' + escapeHtml(String(cid)) + ') ...</div>');
-            const list = await loadFutbinSolutions(year, cid, u => bridgeFetch(u, 30000), diag);
+            setFutbinResult('<div class="sbc-opt-dim">Lade Lösungen (Futbin, danach FUT.GG falls nötig) für Challenge ' + escapeHtml(String(cid)) + ' ...</div>');
+            let list = [], futbinError = null;
+            try { list = await loadFutbinSolutions(year, cid, u => bridgeFetch(u, 30000), diag); }
+            catch (e) { futbinError = e; diag.futbinError = String(e && e.message || e); }
+            if (!list.length) {
+                try { list = await loadFutggSolution(year, cid, s.platform, u => bridgeFetch(u, 30000), diag); }
+                catch (e) {
+                    diag.futggError = String(e && e.message || e);
+                    if (futbinError) throw new Error('Futbin: ' + diag.futbinError + ' | FUT.GG: ' + diag.futggError);
+                }
+            }
             diag.listCount = list.length;
             if (!list.length) {
-                setFutbinResult(warnHtml('Futbin liefert für diese Challenge (ID ' + cid + ') keine passenden Lösungen. Challenge-Seite und Community-Liste wurden geprüft. Fremde Challenges werden nicht übernommen (Report: futbin).'));
+                setFutbinResult(warnHtml('Weder Futbin noch FUT.GG liefern für diese Challenge (ID ' + cid + ') eine lesbare Lösung. Fremde Futbin-Challenges werden nicht übernommen (Report: futbin).'));
                 return;
             }
             const priceOf = x => futbinPrice({ pricePs: x.pricePs, pricePc: x.pricePc }, s.platform);
@@ -10497,9 +10570,12 @@
                 const row = picks[i];
                 setFutbinResult(progressHtml('Lade Kader ' + (i + 1) + ' von ' + picks.length + ' ...', i, picks.length));
                 try {
-                    const r = await bridgeFetch(futbinSquadUrl(year, row.squadId), 40000);
-                    if (r.status !== 200) throw new Error('HTTP ' + r.status);
-                    const squad = parseFutbinSquad(r.text);
+                    let squad = row.squad || null;
+                    if (!squad) {
+                        const r = await bridgeFetch(futbinSquadUrl(year, row.squadId), 40000);
+                        if (r.status !== 200) throw new Error('HTTP ' + r.status);
+                        squad = parseFutbinSquad(r.text);
+                    }
                     // v5.26.0: Pflicht-Slots (Custom Brick) haben in futbins
                     // Loesung keinen Spieler - 10 statt 11 ist dann korrekt.
                     const bricks = (STATE.sbc.customBricks || []).length;
@@ -10510,7 +10586,7 @@
                     cands.push({
                         row: row, squad: squad, owned: owned, eval: ev, listRank: row.listRank,
                         listPrice: priceOf(row),
-                        adjCost: s.market ? ev.cost : crowdAdjustedCost(ev.cost, row.listRank, FUTBIN_SKIP_TOP, 1.15),
+                        adjCost: row.source === 'futgg' ? priceOf(row) : (s.market ? ev.cost : crowdAdjustedCost(ev.cost, row.listRank, FUTBIN_SKIP_TOP, 1.15)),
                         formationOk: eaFormation ? formationMatches(squad.formation, eaFormation) : null,
                         liveCost: null, liveUnknown: 0, livePruned: false
                     });
@@ -10520,7 +10596,10 @@
             if (!cands.length) throw new Error('Kein Kader lesbar. ' + diag.errors.join(' | '));
             let ranked = rankCandidates(cands, 'adjCost');
             let marketStats = null;
-            if (s.market) {
+            // FUT.GG nennt nur die Gesamt-Kosten. Fuer sichere Kaufobergrenzen
+            // werden seine Einzelkarten daher immer gegen EAs Markt geprüft.
+            const marketEnabled = s.market || cands.some(c => c.row.source === 'futgg');
+            if (marketEnabled) {
                 const cache = new Map();
                 // Obergrenze fuer die Anzeige: alle verschiedenen fehlenden Karten der pruefbaren Kandidaten.
                 const distinct = new Set();
@@ -10577,7 +10656,7 @@
                 diag.marketStats = marketStats;
                 ranked = rankCandidates(ranked.slice(0, checked), 'liveCost').concat(rest);
             }
-            futbinLast = { ranked: ranked, platform: s.platform, market: s.market, year: year, marketStats: marketStats };
+            futbinLast = { ranked: ranked, platform: s.platform, market: marketEnabled, year: year, marketStats: marketStats };
             diag.candidates = ranked.map(c => ({
                 squadId: c.row.squadId, ai: c.row.ai, listRank: c.listRank, listPrice: c.listPrice,
                 cost: c.eval.cost, adjCost: c.adjCost, liveCost: c.liveCost, liveUnknown: c.liveUnknown,
@@ -10602,9 +10681,10 @@
                  '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-futbin-load">Verein laden, dann erneut suchen</button>';
         }
         const checkedN = marketStats ? marketStats.checked : Math.min(FUTBIN_MARKET_TOP, ranked.length);
+        const marketActive = !!marketStats;
         h += '<div class="sbc-opt-summary">' + ranked.length + ' Lösungen · ' +
              (s.platform === 'pc' ? 'PC' : 'Konsole') + ' · ' +
-             (s.market ? checkedN + ' am EA-Markt geprüft' : 'ohne Marktcheck (+15 % auf Platz 1-' + FUTBIN_SKIP_TOP + ')') + '</div>';
+             (marketActive ? checkedN + ' am EA-Markt geprüft' : 'ohne Marktcheck (+15 % auf Platz 1-' + FUTBIN_SKIP_TOP + ')') + '</div>';
         if (marketStats && marketStats.cheapUnchecked > 0) {
             h += warnHtml(marketStats.cheapUnchecked + ' weitere Lösung' + (marketStats.cheapUnchecked === 1 ? ' ist' : 'en sind') +
                           ' laut futbin billiger als die Empfehlung, aber nicht am Markt geprüft (Obergrenze ' + FUTBIN_MARKET_MAX +
@@ -10618,12 +10698,12 @@
             const live = c.liveCost != null;
             const tag = live ? '<span class="sbc-opt-tag ok">live geprüft</span>'
                       : c.livePruned ? '<span class="sbc-opt-tag">teurer als Empfehlung</span>'
-                      : '<span class="sbc-opt-tag">futbin-Schätzung</span>';
+                      : '<span class="sbc-opt-tag">' + (c.row.source === 'futgg' ? 'FUT.GG-Schätzung' : 'futbin-Schätzung') + '</span>';
             h += '<div class="sbc-opt-fb-row' + (i === 0 ? ' best' : '') + (i >= FUTBIN_SHOW_OPEN ? ' sbc-opt-fb-more' : '') + '">' +
                  '<div class="sbc-opt-fb-top"><span class="sbc-opt-fb-price">' + fmtCoins(cost) + '</span>' +
                  '<span class="sbc-opt-fb-tags">' + (i === 0 ? '<span class="sbc-opt-tag best">Empfehlung</span>' : '') + tag + '</span></div>' +
-                 '<div class="sbc-opt-fb-meta">' + (i + 1) + '. ' + (c.row.ai ? 'FUTBIN AI' : 'Community') +
-                 ' #' + escapeHtml(String(c.row.squadId)) + ' · Platz ' + (c.listRank + 1) + ' · Liste ' + fmtCoins(c.listPrice) +
+                 '<div class="sbc-opt-fb-meta">' + (i + 1) + '. ' + (c.row.source === 'futgg' ? 'FUT.GG' : (c.row.ai ? 'FUTBIN AI' : 'Futbin Community')) +
+                 ' #' + escapeHtml(String(c.row.squadId)) + (c.row.source === 'futgg' ? ' · günstigste Lösung ' : ' · Platz ' + (c.listRank + 1) + ' · Liste ') + fmtCoins(c.listPrice) +
                  (c.squad.formation ? ' · ' + escapeHtml(String(c.squad.formation)) : '') + '</div>' +
                  '<div class="sbc-opt-fb-meta">eigene Karten <b>' + c.eval.ownedCount + '</b> · zu kaufen <b>' + c.eval.missing + '</b>' +
                  (live && c.liveUnknown ? ' · ' + c.liveUnknown + ' ohne Angebot (futbin-Preis)' : '') + '</div>' +
@@ -10648,7 +10728,7 @@
         const c = futbinLast && futbinLast.ranked[idx];
         if (!c) return;
         try {
-            setStatus('trage Futbin-Lösung ein...');
+            setStatus('trage ' + (c.row.source === 'futgg' ? 'FUT.GG-' : 'Futbin-') + 'Lösung ein...');
             const res = await insertFutbinSolution(c.squad, c.owned);
             let h = '<div class="sbc-opt-summary">Eingetragen: ' + res.placed + ' Spieler (' + res.ownedPlaced + ' eigene, ' +
                     res.conceptPlaced + ' Konzept)</div>' +
@@ -10675,7 +10755,7 @@
                 const price = pl.liveBin != null ? pl.liveBin : futbinPrice(pl, futbinLast.platform);
                 const src = pl.liveBin != null
                     ? 'Markt: ' + (pl.liveDist && pl.liveDist.length ? fmtDist(pl.liveDist) : '2. Angebot von ' + (pl.liveOffers != null ? pl.liveOffers : '?'))
-                    : 'futbin' + (pl.liveOffers === 0 ? ', kein Angebot gesehen' : '');
+                    : (c.row.source === 'futgg' ? 'FUT.GG, kein Live-Angebot gesehen' : 'futbin' + (pl.liveOffers === 0 ? ', kein Angebot gesehen' : ''));
                 list += '<div>' + escapeHtml(pl.name || ('#' + pl.resourceId)) + ' <span class="sbc-opt-muted">(' + (pl.rating || '?') + ', ' +
                         escapeHtml(pl.cardPosition || pl.slotPosition || '?') + ')</span> ' + fmtCoins(price) +
                         ' <span class="sbc-opt-muted">(' + escapeHtml(src) + ')</span></div>';

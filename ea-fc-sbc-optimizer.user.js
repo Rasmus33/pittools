@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.3.0
+// @version      6.3.1
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.3.0';
+    const VERSION = '6.3.1';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -8396,6 +8396,45 @@
         }
         return out;
     }
+    // Die Community-Seite hat andere Spalten. Ein unbekannter Filter wird
+    // von futbin IGNORIERT: nur explizit passende Challenge/Jahr-Links nehmen.
+    function parseFutbinCommunitySolutions(html, year, challengeId) {
+        const out = [];
+        for (const row of String(html || '').match(/<tr[\s>][\s\S]*?<\/tr>/gi) || []) {
+            const challenge = row.match(/href="\/(\d\d)\/squad-building-challenges\/[^/"\s]+\/(\d+)\//);
+            const squad = row.match(/href="\/(\d\d)\/squad\/(\d+)\/sbc"/);
+            if (!challenge || !squad || challenge[1] !== String(year) || squad[1] !== String(year) ||
+                challenge[2] !== String(challengeId)) continue;
+            const cells = (row.match(/<td[\s>][\s\S]*?<\/td>/gi) || []).map(stripTags);
+            if (cells.length !== 7) continue;
+            out.push({ squadId: squad[2], year: squad[1], label: cells[2] || 'Community Squad ' + squad[2],
+                ai: false, tagCheapest: false, tagNew: false, age: null, likes: null,
+                pricePs: parseCoins(cells[3]), pricePc: parseCoins(cells[4]), thumbResourceId: null, listRank: out.length });
+        }
+        return out;
+    }
+    async function loadFutbinSolutions(year, challengeId, fetchPage, diag) {
+        diag.requests = [];
+        const direct = futbinChallengeUrl(year, challengeId);
+        async function request(url, source) {
+            diag.url = url;
+            diag.source = source;
+            const response = await fetchPage(url);
+            diag.requests.push({ url: url, status: response.status });
+            return response;
+        }
+        const first = await request(direct, 'challenge');
+        if (first.status !== 200 && first.status !== 404) throw new Error('futbin antwortet mit HTTP ' + first.status);
+        const list = first.status === 200 ? parseFutbinSolutionList(first.text) : [];
+        if (list.length) return list;
+        const fallback = await request(FUTBIN_HOST + '/' + year + '/squad-building-challenges/squads?challenge=' +
+            encodeURIComponent(String(challengeId)), 'community');
+        if (fallback.status !== 200) throw new Error('futbin antwortet mit HTTP ' + fallback.status);
+        const matched = parseFutbinCommunitySolutions(fallback.text, year, challengeId);
+        diag.communityRows = (String(fallback.text || '').match(/href="\/\d\d\/squad\/\d+\/sbc"/g) || []).length;
+        diag.communityMatched = matched.length;
+        return matched;
+    }
     /** Balancierte {...}/[...]-Spanne ab Index j (Strings mit Escapes beachtet). */
     function scanBalanced(t, j) {
         let depth = 0, inStr = false;
@@ -8435,7 +8474,7 @@
      */
     function parseFutbinSquad(html) {
         const sq = extractJsonAfterKey(html, 'squadData');
-        if (!sq || !Array.isArray(sq.squad)) return null;
+        if (!sq || !Array.isArray(sq.squad)) return parseFutbinHtmlSquad(html);
         const fd = extractJsonAfterKey(html, 'formationData');
         const slotPos = {};
         let formation = null;
@@ -8473,6 +8512,54 @@
             lid = null;
         }
         return { formation: formation, players: players };
+    }
+    // Neuer servergerenderter Kader (30.09.2026). Nur Feldkarten, keine
+    // Empfehlungen/Bank. SLOT-Position bewusst unbekannt: Eintragen ordnet
+    // seit v5.28 ausschliesslich nach EAs Kartenpositionen zu.
+    function parseFutbinHtmlSquad(html) {
+        const source = String(html || '');
+        const field = source.match(/<div\b[^>]*class="[^"]*\bfield-structure-([\d-]+)\b[^"]*"[^>]*>/);
+        if (!field) return null;
+        // Auf das Feld begrenzen, damit Bank/Empfehlungen keine Karten liefern.
+        const tail = source.slice(field.index);
+        let depth = 0, end = 0;
+        for (const tag of tail.matchAll(/<\/?div\b[^>]*>/g)) {
+            depth += /^<\//.test(tag[0]) ? -1 : 1;
+            if (depth === 0) { end = tag.index + tag[0].length; break; }
+        }
+        if (!end) return null;
+        const text = tail.slice(0, end);
+        const slots = Array.from(text.matchAll(/<div\b[^>]*\bid="(cardlid\d+)"[^>]*>/g));
+        const seen = new Set(), players = [];
+        function classText(block, name) {
+            const re = new RegExp('<(?:div|span)\\b[^>]*class="[^"]*\\b' + name + '\\b[^"]*"[^>]*>([\\s\\S]*?)<\\/(?:div|span)>');
+            const m = block.match(re);
+            return m ? stripTags(m[1]) : null;
+        }
+        function price(value) {
+            const compact = String(value || '').trim().match(/^(\d+(?:\.\d+)?)\s*([KM])$/i);
+            return compact ? Math.round(Number(compact[1]) * (/k/i.test(compact[2]) ? 1000 : 1000000)) : parseCoins(value);
+        }
+        for (let i = 0; i < slots.length; i++) {
+            if (seen.has(slots[i][1])) return null;
+            seen.add(slots[i][1]);
+            const block = text.slice(slots[i].index, i + 1 < slots.length ? slots[i + 1].index : text.length);
+            const image = block.match(/<img\b[^>]*class="[^"]*\bplayercard-\d+-base-img\b[^"]*"[^>]*>/);
+            const imageSrc = image && image[0].match(/\bsrc="([^"]+)"/);
+            const resource = imageSrc && imageSrc[1].match(/players\/(\d+)\.png(?:[?]|$)/);
+            const rating = Number(classText(block, 'playercard-\\d+-rating'));
+            const position = classText(block, 'playercard-\\d+-position');
+            // Nicht still einzelne unlesbare Spieler aus einem Kader streichen.
+            if (!resource || !rating || !position) return null;
+            const prices = Array.from(block.matchAll(/<span\b[^>]*class="[^"]*\bprice-segment\b[^"]*"[^>]*>([\s\S]*?)<\/span>/g));
+            const link = block.match(/href="\/\d\d\/player\/(\d+)\//);
+            players.push({ lid: slots[i][1], slotPosition: null, cardPosition: position,
+                resourceId: Number(resource[1]), futbinId: link ? Number(link[1]) : null,
+                name: classText(block, 'playercard-\\d+-name'), rating: rating,
+                pricePs: price(prices[0] && stripTags(prices[0][1])), pricePc: price(prices[1] && stripTags(prices[1][1])),
+                cardLevel: null, isRare: false, isEvolution: false });
+        }
+        return players.length ? { formation: field[1], players: players } : null;
     }
     /** Preis einer futbin-Karte auf der gewaehlten Plattform (ps|pc). */
     function futbinPrice(pl, platform) {
@@ -10387,12 +10474,10 @@
             diag.url = url;
             setFutbinStep(1);
             setFutbinResult('<div class="sbc-opt-dim">Lade Lösungsliste von futbin (Challenge ' + escapeHtml(String(cid)) + ') ...</div>');
-            const listResp = await bridgeFetch(url, 30000);
-            if (listResp.status !== 200) throw new Error('futbin antwortet mit HTTP ' + listResp.status);
-            const list = parseFutbinSolutionList(listResp.text);
+            const list = await loadFutbinSolutions(year, cid, u => bridgeFetch(u, 30000), diag);
             diag.listCount = list.length;
             if (!list.length) {
-                setFutbinResult(warnHtml('futbin hat für diese Challenge (ID ' + cid + ') keine Lösungen - oder die Seite hat sich geändert (Report: futbin).'));
+                setFutbinResult(warnHtml('Futbin liefert für diese Challenge (ID ' + cid + ') keine passenden Lösungen. Challenge-Seite und Community-Liste wurden geprüft. Fremde Challenges werden nicht übernommen (Report: futbin).'));
                 return;
             }
             const priceOf = x => futbinPrice({ pricePs: x.pricePs, pricePc: x.pricePc }, s.platform);

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.3.2
+// @version      5.68.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.3.2';
+    const VERSION = '5.68.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -2368,7 +2368,7 @@
             skippedKeys++;
             if (!STATE.locksSkipReported) {
                 STATE.locksSkipReported = true;
-                reportError('readPaletoolsLocks: Key übersprungen (' + k + ')', e);
+                reportError('readPaletoolsLocks: Key uebersprungen (' + k + ')', e);
             }
         }
         try {
@@ -2855,7 +2855,7 @@
                 // warn() landet im App-Log-Ringpuffer - der bestehende Toast
                 // (loadPool/onRunClick) bleibt zusaetzlich unveraendert bestehen.
                 STATE.diag.clubLoad.loadIncomplete = true;
-                warn('Club-Laden dauerhaft fehlgeschlagen ab Seite', page, '- Pool bleibt unvollständig.');
+                warn('Club-Laden dauerhaft fehlgeschlagen ab Seite', page, '- Pool bleibt unvollstaendig.');
                 break;
             }
             gotAny = true;
@@ -2871,7 +2871,7 @@
                 count = items.length;
                 calibrated = true;
                 STATE.diag.clubLoad.pageSize = count;
-                log('Club-Seitengröße von EA gekappt auf ' + count + ' - damit weiter.');
+                log('Club-Seitengroesse von EA gekappt auf ' + count + ' - damit weiter.');
             }
             calibrated = true;
             if (total === Infinity && items.length < count) total = start + items.length;
@@ -3579,7 +3579,7 @@
                             if (rest > 0) { t.count++; rest--; }
                         }
                         warnings.push('Gemischte Vorgabe: EA nennt nur ' + stated +
-                            ' von ' + N + ' Spielern - Rest gleichmäßig verteilt (' +
+                            ' von ' + N + ' Spielern - Rest gleichmaessig verteilt (' +
                             tiers.map(t => t.count + 'x ' + t.label).join(' + ') +
                             '). Passt das nicht, bitte Diagnose schicken.');
                     }
@@ -4089,7 +4089,7 @@
                 if (prof) prof.trials += Math.min(comboCount, RARITY_WINDOW_TRIAL_CAP);
                 if (comboCount === 0) return 0;
                 if (comboCount > RARITY_WINDOW_TRIAL_CAP) {
-                    warnings.push('Fensterbewusste Vorgaben-Wahl übersprungen (zu viele Kandidaten) - Kosten-Reihenfolge verwendet.');
+                    warnings.push('Fensterbewusste Vorgaben-Wahl uebersprungen (zu viele Kandidaten) - Kosten-Reihenfolge verwendet.');
                     return 0;
                 }
                 // Geteilter Band-Cache ist nur sicher, wenn KEINER der Kandidaten
@@ -4233,8 +4233,8 @@
                             .filter(p => freeCard(p) && p.rating >= t.lo && p.rating <= t.hi)
                             .sort(makeFillCmp(costOf, reserveCmp))[0];
                         if (!cand) {
-                            return { ok: false, reason: 'Qualitäts-Vorgabe "' + t.count + 'x ' +
-                                t.label + '" nicht erfüllbar - nur ' + have +
+                            return { ok: false, reason: 'Qualitaets-Vorgabe "' + t.count + 'x ' +
+                                t.label + '" nicht erfuellbar - nur ' + have +
                                 ' passende Karte(n) im Pool.', warnings: warnings };
                         }
                         reserve(cand);
@@ -4377,7 +4377,7 @@
                     // bleibt in jedem Fall stehen.
                     if (!cands.length && rareCap < 99) {
                         warnings.push('Keine Rare-Karte bis Rating ' + rareCap +
-                            ' mehr frei - Grenze wird für diese SBC gelockert.');
+                            ' mehr frei - Grenze wird fuer diese SBC gelockert.');
                         cands = reservationCandidates(poolAll, rc, cfg,
                             { freeCard: freeCard, inQualityBand: inQualityBand, lo: lowMin, hi: 99 });
                     }
@@ -4945,7 +4945,7 @@
             return 'Das Eintragen wurde abgelehnt (' + msg + '), und die Abfrage der ' +
                 'aktuellen SBC-Instanz hat EA ebenfalls abgewiesen (' + lookupFailed +
                 '). Es ist also NICHT gesagt, dass die Instanz verbraucht ist - wir ' +
-                'konnten es nur nicht prüfen.' + q +
+                'konnten es nur nicht pruefen.' + q +
                 (batchProgress
                     ? ' — ' + batchProgress.done + ' von ' + batchProgress.total + ' geschafft.'
                     : '');
@@ -4964,8 +4964,8 @@
             return 'EA kennt diese Challenge noch (Status ' + ns.status +
                 (ns.repeatable ? ', wiederholbar' : '') + '), das Eintragen wurde aber mit ' +
                 msg.replace(/^.*?((?:404|475)).*$/, '$1') + ' abgelehnt. Das ist NICHT ' +
-                'die verbrauchte Instanz. Bitte die SBC im Spiel einmal schließen und neu ' +
-                'öffnen; bleibt es dabei, Diagnose schicken (Feld staleRecover)' + q +
+                'die verbrauchte Instanz. Bitte die SBC im Spiel einmal schliessen und neu ' +
+                'oeffnen; bleibt es dabei, Diagnose schicken (Feld staleRecover)' + q +
                 (batchProgress
                     ? ' — ' + batchProgress.done + ' von ' + batchProgress.total + ' geschafft.'
                     : '.');
@@ -4978,7 +4978,7 @@
         }
         return 'Die SBC-Instanz ist veraltet (Status aus ' + msg + ') und ' +
             'liess sich nicht eindeutig ersetzen. Wiederholbare SBCs bekommen pro ' +
-            'Durchlauf eine neue ID - bitte die SBC im Spiel einmal schließen und ' +
+            'Durchlauf eine neue ID - bitte die SBC im Spiel einmal schliessen und ' +
             'neu öffnen, dann erneut optimieren.' + q;
     }
     // Server-Messung fuer das SBC-Kontingent - absichtlich nur an DREI Stellen:
@@ -5064,7 +5064,7 @@
                 if (ns0 && ns0.status != null &&
                     !/COMPLETE|CLOSED|EXPIRED/i.test(String(ns0.status))) {
                     if (tries === 0) {
-                        log('Instanz läuft laut EA noch (' + ns0.status +
+                        log('Instanz laeuft laut EA noch (' + ns0.status +
                             ') - Session erneuern und einmal nachlegen.');
                         STATE.diag.staleSessionRetry = (STATE.diag.staleSessionRetry || 0) + 1;
                         await nudgeSession();
@@ -5108,11 +5108,11 @@
             STATE.diag.lastEligible = eligible;
             throw new Error('EA hat das Eintragen abgelehnt (403).' +
                 (eligible === false
-                    ? ' Die App hält den Squad nicht für abgabefähig - im Spiel steht ' +
+                    ? ' Die App haelt den Squad nicht fuer abgabefaehig - im Spiel steht ' +
                       'noch eine Vorgabe rot, die der Solver nicht abdeckt (nur Rating und ' +
-                      'Rarity werden erfüllt).'
-                    : ' Meist ist die geöffnete Instanz nicht mehr aktuell - SBC im Spiel ' +
-                      'einmal schließen und neu öffnen, dann erneut optimieren.'));
+                      'Rarity werden erfuellt).'
+                    : ' Meist ist die geoeffnete Instanz nicht mehr aktuell - SBC im Spiel ' +
+                      'einmal schliessen und neu oeffnen, dann erneut optimieren.'));
         }
         throw lastErr || new Error('Eintragen fehlgeschlagen (Server bestätigt ' + Math.max(0, confirmed) + '/' + need + ').');
     }
@@ -5360,165 +5360,49 @@
         // aendert sich dadurch nicht.
         const css = `
         :root {
-            /* v6.0.0: vier Ebenen - Primitive, Semantik, Skalen, Komponente.
-               Komponenten lesen NUR Semantik/Skalen/Komponente, nie Primitive.
-               Backticks sind hier tabu: das CSS steckt in einem Template-Literal. */
-            /* ---------- 1 · PRIMITIVE ---------- */
-            --pt-ink-950: #070B10;
-            --pt-ink-900: #0C1219;
-            --pt-ink-850: #111922;
-            --pt-ink-800: #17212C;
-            --pt-ink-750: #1D2936;
-            --pt-ink-700: #263444;
-            --pt-ink-600: #324357;
-            --pt-ink-500: #4A5E76;
-            --pt-ink-400: #7B8FA6;
-            --pt-ink-300: #9DAFC2;
-            --pt-ink-200: #C6D2DE;
-            --pt-ink-100: #E9EFF5;
-
-            --pt-teal-300: #6FF3D8;
-            --pt-teal-400: #00E0B8;
-            --pt-teal-500: #00BF9C;
-            --pt-teal-950: #00140F;
-
-            --pt-blue-300: #8CC2FF;
-            --pt-blue-400: #4C9AFF;
-            --pt-blue-600: #1F5FBF;
-            --pt-blue-500: #2B6FD1;
-
-            --pt-violet-300: #C4B5FF;
-            --pt-violet-400: #8B6EF0;
-            --pt-violet-500: #7C5CE6;
-
-            --pt-red-300: #FF9B9B;
-            --pt-red-400: #FF7A7A;
-            --pt-red-500: #DA3E44;
-            --pt-red-600: #CF3339;
-
-            --pt-amber-300: #FFD978;
-            --pt-amber-400: #FFC53D;
-
-            --pt-white: #FFFFFF;
-
-            /* ---------- 2 · SEMANTIK ---------- */
-            /* Flaechen, von tief nach hoch */
-            --pt-bg-sunken: var(--pt-ink-950);        /* Eingabefeld, Vertiefung */
-            --pt-bg-base: var(--pt-ink-900);          /* Panel, Fenster */
-            --pt-bg-glass: rgb(12 18 25 / .88);       /* Panel mit backdrop-filter */
-            --pt-bg-surface: var(--pt-ink-850);       /* Karte IM Panel */
-            --pt-bg-raised: var(--pt-ink-800);        /* Knopf ghost, aktives Segment */
-            --pt-bg-raised-hover: var(--pt-ink-750);
-            --pt-bg-scrim: rgb(3 6 10 / .64);         /* hinter Vollbild-Dialogen */
-
-            /* Text */
-            --pt-fg-default: var(--pt-ink-100);
-            --pt-fg-secondary: var(--pt-ink-200);
-            --pt-fg-muted: var(--pt-ink-300);         /* Beschriftung */
-            --pt-fg-subtle: var(--pt-ink-400);        /* Nebeninfo, min. 4.5:1 auf surface */
-            --pt-fg-on-accent: var(--pt-teal-950);
-            --pt-fg-on-solid: var(--pt-white);        /* auf plan/danger/info-Flaechen */
-
-            /* Linien */
-            --pt-border-subtle: rgb(255 255 255 / .06);
-            --pt-border-default: var(--pt-ink-700);
-            --pt-border-strong: var(--pt-ink-600);
-
-            /* Marke: Akzent nur fuer Hauptaktion, Kennzahl, Fokus */
-            --pt-accent: var(--pt-teal-400);
-            --pt-accent-hover: var(--pt-teal-300);
-            --pt-accent-press: var(--pt-teal-500);
-            --pt-accent-soft: rgb(0 224 184 / .12);
-            --pt-accent-border: rgb(0 224 184 / .36);
-
+            /* Marke */
+            --pt-accent:#00e0b8;      /* Akzent: Zahlen, Titel, Fokus */
+            --pt-accent-soft:rgba(0,224,184,.14); /* Akzent-Tint: Plakette, Fokus-Ring, aktiver Schritt */
+            --pt-accent-glow:rgba(0,224,184,.28); /* Schein unter der Hauptaktion */
+            --pt-bg-glass:rgba(15,22,32,.94);     /* Panel mit Glas-Effekt (backdrop-filter) */
+            --pt-accent-2:#0077ff;    /* zweiter Marken-Ton, nur Verlaeufe */
+            --pt-on-accent:#001018;   /* Text AUF dem Akzent */
             /* Bedeutungen */
-            --pt-info: var(--pt-blue-600);            /* Vorlagen, Storage */
-            --pt-info-hover: var(--pt-blue-500);
-            --pt-info-fg: var(--pt-blue-300);
-            --pt-info-soft: rgb(76 154 255 / .14);
-            --pt-info-border: rgb(76 154 255 / .3);
-            --pt-plan: var(--pt-violet-500);          /* Planen / Vorschau */
-            --pt-plan-hover: var(--pt-violet-400);
-            --pt-plan-fg: var(--pt-violet-300);
-            --pt-plan-soft: rgb(124 92 230 / .16);
-            --pt-danger: var(--pt-red-600);           /* unumkehrbar: abgeben, verwerten */
-            --pt-danger-hover: var(--pt-red-500);
-            --pt-danger-fg: var(--pt-red-400);
-            --pt-danger-soft: rgb(255 122 122 / .12);
-            --pt-danger-border: rgb(255 122 122 / .36);
-            --pt-warning-fg: var(--pt-amber-400);
-            --pt-warning-soft: rgb(255 197 61 / .12);
-            --pt-warning-border: rgb(255 197 61 / .36);
-            --pt-gain-fg: var(--pt-accent);
-            --pt-loss-fg: var(--pt-danger-fg);
-
-            /* Zustands-Schichten: ueber JEDE Flaeche legbar */
-            --pt-state-hover: rgb(255 255 255 / .05);
-            --pt-state-press: rgb(255 255 255 / .09);
-            --pt-state-disabled-opacity: .45;
-            --pt-focus-ring: 0 0 0 2px var(--pt-bg-base), 0 0 0 4px var(--pt-accent);
-
-            /* ---------- 3 · SKALEN ---------- */
-            --pt-space-0-5: 2px;
-            --pt-space-1: 4px;
-            --pt-space-2: 8px;
-            --pt-space-3: 12px;
-            --pt-space-4: 16px;
-            --pt-space-5: 20px;
-            --pt-space-6: 24px;
-            --pt-space-8: 32px;
-            --pt-space-10: 40px;
-
-            --pt-radius-xs: 4px;
-            --pt-radius-sm: 8px;
-            --pt-radius-md: 12px;
-            --pt-radius-lg: 16px;
-            --pt-radius-xl: 22px;
-            --pt-radius-full: 999px;
-
-            --pt-font-sans: 'Geist', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-            --pt-font-mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
-            --pt-text-2xs: 10px;
-            --pt-text-xs: 11px;
-            --pt-text-sm: 12px;
-            --pt-text-md: 13px;
-            --pt-text-lg: 15px;
-            --pt-text-xl: 18px;
-            --pt-text-2xl: 22px;
-            --pt-text-3xl: 30px;
-            --pt-weight-regular: 400;
-            --pt-weight-medium: 500;
-            --pt-weight-semibold: 600;
-            --pt-weight-bold: 700;
-            --pt-leading-tight: 1.2;
-            --pt-leading-normal: 1.45;
-            --pt-tracking-caps: .08em;
-
-            --pt-shadow-1: 0 1px 2px rgb(0 0 0 / .4);
-            --pt-shadow-2: 0 4px 12px rgb(0 0 0 / .35), 0 1px 3px rgb(0 0 0 / .3);
-            --pt-shadow-3: 0 24px 64px rgb(0 0 0 / .55), 0 8px 20px rgb(0 0 0 / .35);
-            --pt-highlight: inset 0 1px 0 rgb(255 255 255 / .05);
-            --pt-glow-accent: 0 8px 24px rgb(0 224 184 / .22);
-            --pt-blur-glass: 16px;
-
-            --pt-dur-fast: 120ms;
-            --pt-dur-base: 180ms;
-            --pt-dur-slow: 260ms;
-            --pt-ease-out: cubic-bezier(.2, .8, .2, 1);
-
-            /* ---------- 4 · KOMPONENTEN ---------- */
-            --pt-tap: 44px;                           /* Hauptaktion, Reiter */
-            --pt-control-h: 40px;                     /* Feld, Segment */
-            --pt-control-h-sm: 32px;                  /* kleine Knoepfe in Zeilen */
-            --pt-panel-w: 360px;
-            --pt-panel-radius: var(--pt-radius-xl);
-            --pt-panel-pad: var(--pt-space-4);
-            --pt-card-radius: var(--pt-radius-lg);
-            --pt-card-pad: var(--pt-space-3);
-            --pt-btn-radius: var(--pt-radius-md);
-            --pt-field-radius: var(--pt-radius-sm);
-            --pt-z-panel: 999999;
-            --pt-z-overlay: 1000000;
+            --pt-sel:#2b6cb0;         /* AUSGEWAEHLT (Segment, Kachel-Knopf) */
+            --pt-sel-hi:#3179c4;
+            --pt-plan:#6b46c1;        /* Planen (hebt sich von Diagnose ab) */
+            --pt-plan-hi:#7b53d8;
+            --pt-danger:#c0392b;      /* unumkehrbar: abgeben, verwerten */
+            --pt-danger-hi:#d4452f;
+            --pt-warn:#ffcf4d;
+            --pt-warn-2:#ffb454;
+            --pt-bad:#ff6b6b;
+            --pt-bad-2:#ff5470;
+            --pt-bad-soft:rgba(255,107,107,.12); /* Verlust-Tint (v5.67.0) */
+            /* Flaechen, von dunkel nach hell */
+            --pt-sunken:#0b1219;      /* Eingabefeld, Vertiefung */
+            --pt-bg:#0f1620;          /* Panel */
+            --pt-surface:#131e2b;     /* Kasten IM Panel */
+            --pt-raised:#1c2938;      /* Knopf "ghost" */
+            --pt-raised-hi:#25384c;   /* raised unter dem Finger */
+            --pt-hover:#16283a;       /* Zeile/Segment unter dem Finger */
+            /* Linien */
+            --pt-line:#1f2b3a;        /* Trennlinie, Kasten-Rahmen */
+            --pt-line-soft:#1b2735;   /* leiseste Linie: Zeilen IN einem Kasten */
+            --pt-line-2:#24405f;      /* Feld-Rahmen (deutlicher) */
+            --pt-line-3:#2f4a68;      /* Rahmen unter dem Finger */
+            /* Text, drei Rollen statt vier zufaelliger Grautoene */
+            --pt-text:#e6edf3;
+            --pt-text-2:#cfe0f2;      /* Sekundaertext auf Knoepfen/Karten */
+            --pt-muted:#9db2c8;       /* Beschriftungen */
+            --pt-faint:#8299b0;       /* Nebeninfos (war #7d93ab: zu dunkel) */
+            /* Masse */
+            --pt-r-s:6px;             /* klein: Feld, Chip, Plakette */
+            --pt-r-m:8px;             /* mittel: Kasten, Knopf */
+            --pt-r-l:14px;            /* gross: Panel, Fenster */
+            --pt-tap:40px;            /* Trefferflaeche einer Hauptaktion */
+            --pt-shadow:0 8px 40px rgba(0,0,0,.6);
+            --pt-font:'Segoe UI', Roboto, system-ui, sans-serif;
         }
         /* ------------------------------------------------------------------
            EINSTIEG: FAB und der Knopf in EAs Aktionsleiste
@@ -5526,11 +5410,11 @@
         #sbc-opt-fab {
             position: fixed; right: 22px; bottom: 22px; z-index: 999999;
             width: 56px; height: 56px; border-radius: 50%;
-            background: var(--pt-bg-base);
-            color: var(--pt-fg-default); font-size: 26px; border: none; cursor: grab;
-            box-shadow: var(--pt-shadow-2), 0 0 0 2px var(--pt-accent), 0 0 0 6px var(--pt-accent-soft); display: flex;
+            background: linear-gradient(135deg,var(--pt-accent),var(--pt-accent-2));
+            color: var(--pt-on-accent); font-size: 26px; border: none; cursor: grab;
+            box-shadow: 0 4px 18px rgba(0,0,0,.5); display: flex;
             align-items: center; justify-content: center;
-            transition: transform var(--pt-dur-base) var(--pt-ease-out); padding: 0; overflow: hidden;
+            transition: transform .15s ease; padding: 0; overflow: hidden;
             /* Ohne touch-action:none scrollt Android die Seite statt zu ziehen. */
             touch-action: none;
         }
@@ -5538,7 +5422,7 @@
         #sbc-opt-fab:active { transform: scale(.96); }
         #sbc-opt-fab.sbc-opt-dragging { cursor: grabbing; transform: scale(1.12); opacity: .9; }
         #sbc-opt-fab img {
-            width: 48px; height: 48px; border-radius: 50%;
+            width: 38px; height: 38px; border-radius: 50%;
             pointer-events: none; display: block;
         }
         #sbc-opt-fab.sbc-opt-hidden { display: none; }
@@ -5568,36 +5452,34 @@
             /* v5.31.0: Glas statt Vollton - das Spielfeld scheint leicht durch,
                das Panel wirkt als Ebene darueber, nicht als Block. Ohne
                backdrop-filter (alte WebViews) bleibt es 94 % deckend. */
-            background: var(--pt-bg-glass); color: var(--pt-fg-default);
-            -webkit-backdrop-filter: blur(var(--pt-blur-glass)); backdrop-filter: blur(var(--pt-blur-glass));
-            border: 1px solid var(--pt-border-subtle);
-            border-radius: var(--pt-radius-xl); box-shadow: var(--pt-shadow-3);
-            font-family: var(--pt-font-sans); font-size: var(--pt-text-md);
-            font-variant-numeric: tabular-nums;
+            background: var(--pt-bg-glass); color: var(--pt-text);
+            -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+            border: 1px solid var(--pt-line);
+            border-radius: var(--pt-r-l); box-shadow: var(--pt-shadow);
+            font-family: var(--pt-font); font-size: 13px;
             display: none; padding: 0;
             /* Ohne das zeichnet Android eine helle Scrollbar in ein dunkles
                Panel. */
             scrollbar-width: thin;
-            scrollbar-color: var(--pt-border-default) transparent;
+            scrollbar-color: var(--pt-line-2) transparent;
         }
         #sbc-opt-panel::-webkit-scrollbar { width: 10px; }
         #sbc-opt-panel::-webkit-scrollbar-track { background: transparent; }
         #sbc-opt-panel::-webkit-scrollbar-thumb {
-            background: var(--pt-border-default); border-radius: 6px;
-            border: 3px solid var(--pt-bg-base);
+            background: var(--pt-line-2); border-radius: 6px;
+            border: 3px solid var(--pt-bg);
         }
-        #sbc-opt-panel.open { display: block; animation: pt-pop var(--pt-dur-slow) var(--pt-ease-out); }
+        #sbc-opt-panel.open { display: block; animation: pt-pop .16s ease; }
         /* Dezentes Einblenden statt Aufpoppen: Deckkraft plus 6px Hub aus der
            Richtung des FABs. Unter prefers-reduced-motion abgeschaltet. */
         @keyframes pt-pop {
-            from { opacity: 0; transform: translateY(8px) scale(.98); }
+            from { opacity: 0; transform: translateY(6px); }
             to   { opacity: 1; transform: none; }
         }
         .sbc-opt-header {
-            /* v6.0.0: kein Verlauf mehr - der Akzent gehoert der Hauptaktion. */
-            background: var(--pt-bg-base); border-bottom: 1px solid var(--pt-border-subtle);
-            color:var(--pt-fg-default); font-weight:var(--pt-weight-semibold); font-size:var(--pt-text-lg);
-            padding:8px 12px 8px 16px; border-radius:var(--pt-radius-xl) var(--pt-radius-xl) 0 0;
+            background: linear-gradient(135deg,var(--pt-accent),var(--pt-accent-2));
+            color:var(--pt-on-accent); font-weight:700; font-size:15px;
+            padding:12px 16px; border-radius:var(--pt-r-l) var(--pt-r-l) 0 0;
             display:flex; justify-content:space-between; align-items:center;
             cursor:move; user-select:none; touch-action:none;
             /* Klebt beim Scrollen oben - der Zuklapp-Knopf und der Ziehgriff
@@ -5605,137 +5487,82 @@
             position: sticky; top: 0; z-index: 2;
         }
         .sbc-opt-header img.sbc-opt-logo {
-            width:28px; height:28px; border-radius:50%;
-            vertical-align:-9px; margin-right:10px;
-            box-shadow: 0 0 0 1.5px var(--pt-accent);
-        }
-        .sbc-opt-header .sbc-opt-ver {
-            font-family: var(--pt-font-mono); font-size: var(--pt-text-xs); font-weight: var(--pt-weight-regular);
-            color: var(--pt-fg-muted); background: var(--pt-bg-raised);
-            border-radius: var(--pt-radius-full); padding: 2px 8px; margin-left: 6px; vertical-align: 1px;
+            width:18px; height:18px; border-radius:50%;
+            vertical-align:-4px; margin-right:6px;
         }
         #sbc-opt-close {
             /* Vorher ein nackter Text von ~12px. Ein Zuklapp-Knopf ist die
                Aktion, die man am Handy am haeufigsten trifft (oder verfehlt).
                34px Flaeche; der negative Rand haelt die Kopfzeile auf ihrer
                bisherigen Hoehe - nur die TREFFERflaeche waechst. */
-            width:44px; height:44px; margin:-4px -4px -4px 0; border-radius:50%;
+            width:34px; height:34px; margin:-5px -7px -5px 0; border-radius:50%;
             display:flex; align-items:center; justify-content:center;
-            font-size:15px; line-height:1; flex:0 0 auto; color: var(--pt-fg-muted);
-            transition: background var(--pt-dur-fast) ease, color var(--pt-dur-fast) ease;
+            font-size:15px; line-height:1; flex:0 0 auto;
+            transition: background .12s ease;
         }
-        #sbc-opt-close:hover { background: var(--pt-state-hover); color: var(--pt-fg-default); }
-        #sbc-opt-close:active { background: var(--pt-state-press); }
+        #sbc-opt-close:hover { background: rgba(0,0,0,.18); }
+        #sbc-opt-close:active { background: rgba(0,0,0,.3); }
         /* Guertel zum Hosentraeger oben: was trotzdem zu breit wird, wird
            abgeschnitten statt die ganze Seite seitlich scrollen zu lassen. */
-        /* v6.0.0: clip statt hidden, wo es geht - overflow-x:hidden macht den
-           Rumpf zum Scroll-Container, und dann klebt #sbc-opt-run (sticky)
-           an einem Kasten, der nie scrollt. hidden bleibt als Rueckfall fuer
-           alte WebViews ohne clip. */
-        .sbc-opt-body { padding: 14px 16px; overflow-x: hidden; overflow-x: clip; }
-        /* v6.0.0: die Hauptaktion bleibt unten stehen, solange sie beim
-           Scrollen noch nicht erreicht ist (Muster aus Trading-Apps, siehe
-           Design-Canvas). Reine CSS-Loesung: Position im Markup und damit
-           die Reihenfolge der Aktionen bleiben unveraendert. */
-        #sbc-opt-run { position: sticky; bottom: 12px; z-index: 1;
-            /* Der zweite Schatten fuellt die 12px bis zum Panel-Rand, sonst
-               scheint dort der Inhalt durch, der unter dem Knopf scrollt. */
-            box-shadow: var(--pt-glow-accent), 0 12px 0 0 var(--pt-bg-base); }
+        .sbc-opt-body { padding: 14px 16px; overflow-x: hidden; }
         #sbc-opt-advanced { margin: 4px 0 10px; }
         /* Gemeinsame Aufklapp-Optik fuer "Erweiterte Einstellungen" UND die
            Batch-Team-Details (Ticket #73) - eine Stelle statt zweier
            synchron zu haltender Kopien. */
         .sbc-opt-details-toggle summary {
-            cursor: pointer; color: var(--pt-fg-muted); font-weight: 600;
-            padding: 10px 12px; background: var(--pt-bg-surface);
-            border: 1px solid var(--pt-border-subtle);
-            border-radius: var(--pt-radius-md); user-select: none; list-style: none;
-            transition: background var(--pt-dur-fast) ease, border-color var(--pt-dur-fast) ease;
+            cursor: pointer; color: var(--pt-muted); font-weight: 600;
+            padding: 10px 12px; background: var(--pt-surface);
+            border: 1px solid var(--pt-line);
+            border-radius: var(--pt-r-m); user-select: none; list-style: none;
+            transition: background .12s ease, border-color .12s ease;
         }
         .sbc-opt-details-toggle summary:hover {
-            background: var(--pt-state-hover); border-color: var(--pt-border-strong);
+            background: var(--pt-hover); border-color: var(--pt-line-3);
         }
         .sbc-opt-details-toggle summary::-webkit-details-marker { display: none; }
         .sbc-opt-details-toggle summary::before { content: '▸ '; color: var(--pt-accent); }
         .sbc-opt-details-toggle[open] summary::before { content: '▾ '; }
         .sbc-opt-details-toggle[open] summary { margin-bottom: 10px; }
         .sbc-opt-info {
-            background:var(--pt-bg-surface); border:1px solid var(--pt-border-subtle);
-            border-radius:var(--pt-radius-md);
+            background:var(--pt-surface); border:1px solid var(--pt-line);
+            border-radius:var(--pt-r-m);
             padding:10px 12px; margin-bottom:12px; line-height:1.6;
         }
-        .sbc-opt-info b { color:var(--pt-fg-default); }
-        /* v6.0.0: nur die Zahl, nach der gesucht wird, traegt den Akzent. */
-        #sbc-opt-target { color:var(--pt-accent); font-family:var(--pt-font-mono); font-size:var(--pt-text-2xl); font-weight:var(--pt-weight-medium); line-height:1.1; }
-        #sbc-opt-poolcount { font-family:var(--pt-font-mono); font-weight:var(--pt-weight-medium); }
+        .sbc-opt-info b { color:var(--pt-accent); }
         /* v5.31.0: Kennzahl-Kacheln */
         .sbc-opt-stats { display:grid; grid-template-columns:1fr 1fr; gap:6px; padding:8px; line-height:1.35; }
-        .sbc-opt-stat { background:var(--pt-bg-sunken); border-radius:var(--pt-radius-md); padding:8px 12px; min-width:0; }
-        .sbc-opt-stat .k { display:block; font-size:var(--pt-text-2xs); text-transform:uppercase; letter-spacing:var(--pt-tracking-caps); color:var(--pt-fg-subtle); margin-bottom:1px; }
-        .sbc-opt-stat b { display:block; font-size:var(--pt-text-md); font-weight:var(--pt-weight-semibold); overflow-wrap:anywhere; }
+        .sbc-opt-stat { background:var(--pt-sunken); border-radius:var(--pt-r-s); padding:6px 9px; min-width:0; }
+        .sbc-opt-stat .k { display:block; font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--pt-faint); margin-bottom:1px; }
+        .sbc-opt-stat b { display:block; font-size:13px; font-weight:700; overflow-wrap:anywhere; }
         .sbc-opt-stat-wide { grid-column:1 / -1; }
         .sbc-opt-stats .sbc-opt-debug { margin-top:0; padding:0 2px; }
-        /* v6.1.0: Statuszeile ueber den Kacheln; die Kacheln klappen auf Tipp
-           auf. Unter "Mehr" bleiben sie offen (dort steht die Technikzeile). */
-        .sbc-opt-infobar {
-            width:100%; display:flex; align-items:center; gap:10px; margin:0 0 12px;
-            min-height:var(--pt-control-h); padding:8px 12px; box-sizing:border-box;
-            background:var(--pt-bg-sunken); color:var(--pt-fg-muted);
-            border:1px solid var(--pt-border-subtle); border-radius:var(--pt-radius-md);
-            font-family:inherit; font-size:var(--pt-text-sm); text-align:left; cursor:pointer;
-            transition: background var(--pt-dur-fast) ease;
-        }
-        .sbc-opt-infobar:hover { background:var(--pt-state-hover); }
-        .sbc-opt-infobar:active { background:var(--pt-state-press); }
-        .sbc-opt-infobar-txt { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-        .sbc-opt-infobar-txt b { color:var(--pt-fg-default); font-family:var(--pt-font-mono); font-weight:var(--pt-weight-medium); }
-        .sbc-opt-infobar-txt .warn { color:var(--pt-warning-fg); font-weight:var(--pt-weight-semibold); }
-        .sbc-opt-infobar-more { flex:0 0 auto; font-size:var(--pt-text-xs); color:var(--pt-fg-subtle); }
-        .sbc-opt-infobar-more::after { content:' ▾'; }
-        #sbc-opt-panel[data-info="open"] .sbc-opt-infobar-more::after { content:' ▴'; }
-        #sbc-opt-panel[data-info="closed"] #sbc-opt-info { display:none; }
-        #sbc-opt-panel[data-info="closed"][data-tab="mehr"] #sbc-opt-info { display:grid; }
-        /* v6.3.0: unter "Mehr" stehen Verein/Status schon in der Statuszeile -
-           dort zeigt die Info-Box nur die Technikzeile. */
-        #sbc-opt-panel[data-tab="mehr"] #sbc-opt-info .sbc-opt-stat { display:none; }
-        /* v6.3.0: "Min. Rating" klebte direkt unter "Spieler laden". */
-        #sbc-opt-load + .sbc-opt-row { margin-top:14px; }
-        .sbc-opt-bridge-link {
-            display:flex; flex-direction:column; gap:2px; margin:-4px 0 14px; padding:10px 12px;
-            border-radius:var(--pt-radius-md); background:var(--pt-warning-soft);
-            border:1px solid var(--pt-warning-border); color:var(--pt-warning-fg);
-            font-size:var(--pt-text-md); font-weight:var(--pt-weight-semibold); text-decoration:none;
-        }
-        .sbc-opt-bridge-link[hidden] { display:none; }
-        .sbc-opt-bridge-link small { color:var(--pt-fg-muted); font-size:var(--pt-text-xs); font-weight:var(--pt-weight-regular); }
-        .sbc-opt-bridge-link:active { background:var(--pt-state-press); }
         /* Karte: gruppiert die Eingaben einer Aktion */
         .sbc-opt-card {
-            background:var(--pt-bg-surface); border:1px solid var(--pt-border-subtle); border-radius:var(--pt-card-radius);
-            padding:var(--pt-card-pad); margin:0 0 12px;
+            background:var(--pt-surface); border:1px solid var(--pt-line); border-radius:var(--pt-r-m);
+            padding:12px; margin:0 0 12px;
         }
         .sbc-opt-card .sbc-opt-btn:last-child { margin-bottom:0; }
         /* Schalter (v5.31.0): Checkbox bleibt das Element, ist nur unsichtbar */
         .sbc-opt-switch { display:flex; align-items:center; gap:10px; cursor:pointer; margin:2px 0 12px; }
         .sbc-opt-switch input { position:absolute; opacity:0; width:0; height:0; margin:0; }
         .sbc-opt-switch .track {
-            flex:0 0 40px; width:40px; height:24px; border-radius:var(--pt-radius-full); position:relative;
-            background:var(--pt-bg-raised); box-shadow: inset 0 0 0 1px var(--pt-border-default);
-            transition: background var(--pt-dur-base) var(--pt-ease-out);
+            flex:0 0 38px; width:38px; height:22px; border-radius:11px; position:relative;
+            background:var(--pt-raised); box-shadow: inset 0 0 0 1px var(--pt-line-2);
+            transition: background .15s ease;
         }
         .sbc-opt-switch .track::after {
-            content:''; position:absolute; top:3px; left:3px; width:18px; height:18px; border-radius:50%;
-            background:var(--pt-fg-muted); transition: transform var(--pt-dur-base) var(--pt-ease-out);
+            content:''; position:absolute; top:3px; left:3px; width:16px; height:16px; border-radius:50%;
+            background:var(--pt-text); transition: transform .15s ease;
         }
         .sbc-opt-switch input:checked + .track { background:var(--pt-accent); box-shadow:none; }
-        .sbc-opt-switch input:checked + .track::after { transform: translateX(16px); background:var(--pt-fg-on-accent); }
+        .sbc-opt-switch input:checked + .track::after { transform: translateX(16px); background:var(--pt-on-accent); }
         .sbc-opt-switch input:focus-visible + .track { outline: 2px solid var(--pt-accent); outline-offset: 2px; }
-        .sbc-opt-switch .txt { font-size:13px; color:var(--pt-fg-default); line-height:1.3; }
-        .sbc-opt-switch .txt small { display:block; font-size:11px; color:var(--pt-fg-subtle); }
+        .sbc-opt-switch .txt { font-size:13px; color:var(--pt-text); line-height:1.3; }
+        .sbc-opt-switch .txt small { display:block; font-size:11px; color:var(--pt-faint); }
         /* Knopf mit Icon */
         .sbc-opt-btn-icon { display:flex; align-items:center; justify-content:center; gap:8px; }
         .sbc-opt-btn-icon svg { width:16px; height:16px; flex:0 0 auto; }
-        .sbc-opt-btn.primary { box-shadow: var(--pt-glow-accent); }
+        .sbc-opt-btn.primary { box-shadow: 0 6px 18px var(--pt-accent-glow); }
         /* Beschaeftigt (v5.31.0): Spinner rechts vom Text, kein zweiter Tipp moeglich */
         .sbc-opt-btn.is-busy { pointer-events:none; opacity:.85; }
         .sbc-opt-btn.is-busy::after {
@@ -5745,47 +5572,47 @@
         }
         @keyframes pt-spin { to { transform: rotate(360deg); } }
         /* Fortschrittsbalken fuer Marktabfragen / Kader laden */
-        .sbc-opt-bar { height:4px; background:var(--pt-bg-raised); border-radius:var(--pt-radius-full); overflow:hidden; margin-top:8px; }
-        .sbc-opt-bar-fill { height:100%; width:0; background:var(--pt-accent); border-radius:var(--pt-radius-full); transition: width var(--pt-dur-slow) var(--pt-ease-out); }
+        .sbc-opt-bar { height:4px; background:var(--pt-line); border-radius:2px; overflow:hidden; margin-top:8px; }
+        .sbc-opt-bar-fill { height:100%; width:0; background:linear-gradient(90deg,var(--pt-accent),var(--pt-accent-2)); transition: width .2s ease; }
         /* Leerzustand */
         .sbc-opt-result.sbc-opt-result-empty {
-            background:transparent; border:1px solid var(--pt-border-default); text-align:center;
-            color:var(--pt-fg-subtle); padding:16px 12px; font-size:12px; line-height:1.5;
+            background:transparent; border:1px dashed var(--pt-line-2); text-align:center;
+            color:var(--pt-faint); padding:16px 12px; font-size:12px; line-height:1.5;
         }
-        .sbc-opt-result-empty svg { width:28px; height:28px; display:block; margin:0 auto 6px; color:var(--pt-fg-muted); }
-        .sbc-opt-tab-btn svg { width:16px; height:16px; flex:0 0 auto; }
-        #sbc-opt-availability { font-size:12px; margin-top:4px; color:var(--pt-fg-muted); }
+        .sbc-opt-result-empty svg { width:28px; height:28px; display:block; margin:0 auto 6px; color:var(--pt-muted); }
+        .sbc-opt-tab-btn svg { width:16px; height:16px; vertical-align:-3px; margin-right:6px; }
+        #sbc-opt-availability { font-size:12px; margin-top:4px; color:var(--pt-muted); }
         /* Gleiche Warnfarbe wie .sbc-opt-warn/Toast-Warnungen - kein neues
            Farbschema fuer "verfuegbar < gefordert". */
-        #sbc-opt-availability .low { color:var(--pt-warning-fg); font-weight:700; }
-        .sbc-opt-debug { color:var(--pt-fg-subtle); font-size:11px; margin-top:4px; }
+        #sbc-opt-availability .low { color:var(--pt-warn); font-weight:700; }
+        .sbc-opt-debug { color:var(--pt-faint); font-size:11px; margin-top:4px; }
         /* Seltenheit in der Zieh-Liste: dieselbe gedaempfte Farbe wie die
            uebrigen Nebeninfos, damit Name + Rating fuehrend bleiben. */
-        .sbc-opt-dim { color:var(--pt-fg-subtle); }
+        .sbc-opt-dim { color:var(--pt-faint); }
         /* Rollen-Klassen statt Farben im Markup: sonst waeren die Tokens
            nur die halbe Wahrheit - sieben inline-Farben standen weiter im
            HTML, drei davon in dem zu dunklen Grauton. */
-        .sbc-opt-muted { color:var(--pt-fg-muted); }
+        .sbc-opt-muted { color:var(--pt-muted); }
         /* ------------------------------------------------------------------
            FELDER
            ------------------------------------------------------------------ */
         .sbc-opt-row { margin-bottom:12px; }
-        .sbc-opt-row label { display:block; margin-bottom:4px; color:var(--pt-fg-muted); font-size:12px; }
+        .sbc-opt-row label { display:block; margin-bottom:4px; color:var(--pt-muted); font-size:12px; }
         /* Feld-Optik fuer ALLE Felder im Panel. Vorher hing die Regel an
            .sbc-opt-row - das Pack-Dropdown steht in einem .sbc-opt-inline und
            blieb deshalb ein natives weisses Select (Rasmus: "ultra haesslich").
            Ein Selektor statt zweier, die synchron zu halten waeren. */
         #sbc-opt-panel input[type=number], #sbc-opt-panel input[type=text],
         #sbc-opt-panel select {
-            width:100%; background:var(--pt-bg-sunken); color:var(--pt-fg-default);
-            border:1px solid var(--pt-border-default); border-radius:var(--pt-field-radius);
-            padding:8px 12px; font-size:var(--pt-text-md); min-height:var(--pt-control-h);
+            width:100%; background:var(--pt-sunken); color:var(--pt-text);
+            border:1px solid var(--pt-line-2); border-radius:var(--pt-r-s);
+            padding:8px 10px; font-size:13px;
             font-family:inherit; box-sizing:border-box;
-            transition: border-color var(--pt-dur-fast) ease, box-shadow var(--pt-dur-fast) ease;
+            transition: border-color .12s ease, box-shadow .12s ease;
         }
         #sbc-opt-panel input:focus, #sbc-opt-panel select:focus {
             outline:none; border-color:var(--pt-accent);
-            box-shadow: 0 0 0 3px var(--pt-accent-soft);
+            box-shadow: 0 0 0 3px rgba(0,224,184,.16);
         }
         /* Ein <select> ist nur bis auf den Aufklapp-Pfeil stylebar - der wird
            deshalb abgeschaltet und selbst gezeichnet. color-scheme:dark
@@ -5800,7 +5627,7 @@
             background-repeat:no-repeat;
             background-position:right 10px center;
         }
-        #sbc-opt-panel select option { background:var(--pt-bg-sunken); color:var(--pt-fg-default); }
+        #sbc-opt-panel select option { background:var(--pt-sunken); color:var(--pt-text); }
         /* Die Hoch/Runter-Spinner in den Zahlenfeldern sind seit der
            Schnellwahl (v4.93.0) nur Rauschen - die Felder sind der Notausgang,
            getippt wird auf die Chips. GETRENNTE Regeln: ein unbekannter
@@ -5829,100 +5656,44 @@
            der Notausgang, wenn das automatische Laden scheitert. Das
            inline-gesetzte width:auto blockiert min-width nicht. */
         #sbc-opt-queue-refresh, #sbc-opt-pack-refresh { min-width:44px; }
-        /* v6.1.0: geladener Verein = Statuszeile statt grosser Knopf. */
-        .sbc-opt-btn.ghost.is-loaded {
-            min-height:34px; padding:6px 12px; font-size:var(--pt-text-sm);
-            font-weight:var(--pt-weight-medium); color:var(--pt-fg-muted); background:transparent;
-        }
-        /* v6.1.0: Hauptaktion greift (noch) nicht - gedaempft plus Grund. */
-        .sbc-opt-btn.primary.is-blocked { background:var(--pt-bg-raised); color:var(--pt-fg-muted); box-shadow:inset 0 0 0 1px var(--pt-border-default); }
-        .sbc-opt-runhint { margin:6px 2px 0; font-size:var(--pt-text-sm); color:var(--pt-fg-subtle); }
-        /* v6.1.0: Mehrere erledigen - ein Bereich, der Umschalter blendet um. */
-        .sbc-opt-multi { margin-top:14px; padding-top:12px; border-top:1px solid var(--pt-border-subtle); }
-        .sbc-opt-multi .sbc-opt-batch { margin-top:4px; padding-top:0; border-top:none; }
-        .sbc-opt-multi:not(.has-queue) #sbc-opt-multi-modes .sbc-opt-chip[data-mode="reihe"] { display:none; }
-        .sbc-opt-multi:not([data-mode="reihe"]) #sbc-opt-queuesection { display:none; }
-        .sbc-opt-multi:not([data-mode="batch"]) #sbc-opt-batchsection { display:none; }
-        .sbc-opt-multi:not([data-mode="vorlagen"]) #sbc-opt-vorlagensection { display:none; }
-        /* v6.1.0: Pack-Opener im Store als hervorgehobene Karte oben. */
-        #sbc-opt-panel[data-store] #sbc-opt-packsection {
-            margin:0 0 14px; padding:12px; border:1px solid var(--pt-accent-border);
-            border-radius:var(--pt-card-radius); background:var(--pt-bg-surface);
-        }
-        /* v6.1.0: Naechster Schritt - klebt unten, solange der echte Knopf
-           ausser Sicht ist (wireNextBar). */
-        .sbc-opt-nextbar { position:sticky; bottom:12px; z-index:1; margin-top:12px; }
-        .sbc-opt-nextbar[hidden] { display:none; }
-        .sbc-opt-nextbtn { display:flex; flex-direction:column; align-items:center; gap:1px; line-height:1.2;
-            box-shadow: var(--pt-glow-accent), 0 12px 0 0 var(--pt-bg-base); }
-        .sbc-opt-nextbtn small { font-size:var(--pt-text-2xs); font-weight:var(--pt-weight-medium); letter-spacing:var(--pt-tracking-caps); text-transform:uppercase; opacity:.75; }
-        /* v6.1.0: Freigabe im Panel (showBatchConfirm). */
-        .sbc-opt-confirm { margin-top:10px; padding:12px; border-radius:var(--pt-card-radius);
-            background:var(--pt-bg-surface); border:1px solid var(--pt-danger-border); }
-        .sbc-opt-confirm[hidden] { display:none; }
-        .sbc-opt-confirm-title { font-size:var(--pt-text-lg); font-weight:var(--pt-weight-semibold); color:var(--pt-fg-default); margin-bottom:6px; }
-        .sbc-opt-confirm-body { font-size:var(--pt-text-sm); color:var(--pt-fg-muted); line-height:1.5; white-space:pre-line; max-height:220px; overflow-y:auto; }
-        .sbc-opt-confirm-actions { display:grid; grid-template-columns:1fr 1.4fr; gap:8px; margin-top:10px; }
-        .sbc-opt-confirm-actions .sbc-opt-btn { margin-top:0; }
         .sbc-opt-toggle { display:flex; align-items:center; gap:8px; cursor:pointer; }
         .sbc-opt-toggle input { width:auto; }
         .sbc-opt-group-title {
-            color:var(--pt-fg-default); font-size:var(--pt-text-md); font-weight:var(--pt-weight-semibold);
-            margin:16px 0 8px;
+            color:var(--pt-accent); font-size:11px; font-weight:700; text-transform:uppercase;
+            letter-spacing:.04em; margin:16px 0 8px;
         }
         .sbc-opt-group-title:first-of-type { margin-top:0; }
         .sbc-opt-compact { display:flex; align-items:center; gap:8px; }
         .sbc-opt-compact label { flex:1; margin-bottom:0; }
         .sbc-opt-compact select { width:auto; min-width:110px; }
-        /* v6.0.0: Stufen-Zeile mit Segment-Schalter (enhanceSelectSegments):
-           Beschriftung auf eigener Zeile, das Quell-<select> versteckt. */
-        .sbc-opt-compact.sbc-opt-segrow { display:block; }
-        .sbc-opt-compact.sbc-opt-segrow label { display:block; margin-bottom:6px; }
-        #sbc-opt-panel select.sbc-opt-segment-src { display:none; }
-        .sbc-opt-chips.sbc-opt-chips-sm { margin:0; }
-        .sbc-opt-chips-sm .sbc-opt-chip { min-height:34px; line-height:1.2; font-size:var(--pt-text-sm); }
         /* ------------------------------------------------------------------
            KNOEPFE
            ------------------------------------------------------------------ */
         .sbc-opt-btn {
-            width:100%; border:none; border-radius:var(--pt-radius-md);
+            width:100%; border:none; border-radius:var(--pt-r-m);
             /* min-height statt nur padding: 40px ist die Groesse, die am Handy
                zuverlaessig zu treffen ist. Vorher waren es ~37px. */
             min-height:var(--pt-tap); padding:10px 12px;
-            font-weight:var(--pt-weight-semibold); font-size:var(--pt-text-md); font-family:inherit;
-            border-radius:var(--pt-btn-radius);
+            font-weight:700; font-size:13px; font-family:inherit;
             cursor:pointer; margin-top:8px;
-            transition: background var(--pt-dur-fast) ease, box-shadow var(--pt-dur-fast) ease, transform .06s ease;
+            transition: filter .12s ease, transform .06s ease;
         }
         /* DRUCK-FEEDBACK. Am Handy gibt es kein :hover - ohne :active hat ein
            Tap ueberhaupt keine Rueckmeldung, und man tippt zweimal. */
-        /* v6.0.0: Zustaende als Tokens statt filter:brightness(). Die
-           Grundregel faengt Varianten ohne eigene Farbe ab (ein nacktes
-           .sbc-opt-btn gibt es, z.B. "Speichern" bei den Presets). */
-        .sbc-opt-btn { background:var(--pt-bg-raised); color:var(--pt-fg-secondary); }
-        .sbc-opt-btn:hover:not(:disabled) { box-shadow: inset 0 0 0 100px var(--pt-state-hover); }
-        .sbc-opt-btn:active:not(:disabled) { transform: translateY(1px); box-shadow: inset 0 0 0 100px var(--pt-state-press); }
-        .sbc-opt-btn.primary { background:var(--pt-accent); color:var(--pt-fg-on-accent); }
-        .sbc-opt-btn.primary:hover:not(:disabled) { background:var(--pt-accent-hover); box-shadow: var(--pt-glow-accent); }
-        .sbc-opt-btn.primary:active:not(:disabled) { background:var(--pt-accent-press); box-shadow: none; }
-        .sbc-opt-btn.blue { background:var(--pt-info); color:var(--pt-fg-on-solid); }
-        .sbc-opt-btn.blue:hover:not(:disabled) { background:var(--pt-info-hover); box-shadow:none; }
+        .sbc-opt-btn:hover:not(:disabled) { filter: brightness(1.1); }
+        .sbc-opt-btn:active:not(:disabled) { transform: translateY(1px); filter: brightness(.94); }
+        .sbc-opt-btn.primary { background:var(--pt-accent); color:var(--pt-on-accent); }
+        .sbc-opt-btn.blue { background:var(--pt-accent-2); color:#fff; }
         .sbc-opt-btn.ghost {
-            background:var(--pt-bg-raised); color:var(--pt-fg-secondary);
-            box-shadow: inset 0 0 0 1px var(--pt-border-subtle);
-        }
-        .sbc-opt-btn.ghost:hover:not(:disabled) {
-            background:var(--pt-bg-raised-hover); color:var(--pt-fg-default);
-            box-shadow: inset 0 0 0 1px var(--pt-border-default);
+            background:var(--pt-raised); color:var(--pt-text-2);
+            box-shadow: inset 0 0 0 1px var(--pt-line);
         }
         /* "Teams planen" hebt sich von "Diagnose" ab (Rasmus): der
            Diagnose-Knopf ist ghost, beide standen vorher gleich da. */
-        .sbc-opt-btn.plan { background:var(--pt-plan); color:var(--pt-fg-on-solid); }
-        .sbc-opt-btn.plan:hover:not(:disabled) { background:var(--pt-plan-hover); box-shadow:none; }
+        .sbc-opt-btn.plan { background:var(--pt-plan); color:#f2edff; }
         /* Rot: gibt SBCs endgültig ab, das ist nicht rückholbar. */
-        .sbc-opt-btn.danger { background:var(--pt-danger); color:var(--pt-fg-on-solid); }
-        .sbc-opt-btn.danger:hover:not(:disabled) { background:var(--pt-danger-hover); box-shadow:none; }
-        .sbc-opt-btn:disabled { opacity:var(--pt-state-disabled-opacity); cursor:not-allowed; }
+        .sbc-opt-btn.danger { background:var(--pt-danger); color:#fff; }
+        .sbc-opt-btn:disabled { opacity:.5; cursor:not-allowed; }
         /* Fokus NUR bei Tastatur (:focus-visible) - ein Ring nach jedem
            Fingertipp waere Laerm. */
         #sbc-opt-panel :focus-visible, #sbc-opt-fab:focus-visible,
@@ -5934,32 +5705,29 @@
            ------------------------------------------------------------------ */
         .sbc-opt-queuerow {
             display:flex; align-items:center; gap:10px; cursor:pointer;
-            padding:10px 12px; margin-bottom:6px; border-radius:var(--pt-radius-md);
-            background:var(--pt-bg-sunken); border:1px solid var(--pt-border-subtle);
-            transition: background var(--pt-dur-fast) ease, border-color var(--pt-dur-fast) ease;
+            padding:9px 10px; margin-bottom:5px; border-radius:var(--pt-r-s);
+            background:var(--pt-sunken); border:1px solid var(--pt-line);
+            transition: background .12s ease, border-color .12s ease;
         }
-        .sbc-opt-queuerow:hover { border-color:var(--pt-border-strong); background:var(--pt-bg-raised-hover); }
-        /* v6.0.0: angehakt sichtbar machen - Rand und Plakette im Akzent. */
-        .sbc-opt-queuerow:has(input:checked) { border-color:var(--pt-accent-border); }
-        .sbc-opt-queuerow:has(input:checked) .ovr { background:var(--pt-accent-soft); }
+        .sbc-opt-queuerow:hover { border-color:var(--pt-line-3); background:var(--pt-hover); }
         .sbc-opt-queuerow input { width:auto; flex:0 0 auto; margin:0; }
         /* Das Ziel-OVR ist die Zahl, nach der Rasmus die SBC sucht - sie steht
            deshalb als Plakette vorn, wie im Spiel. */
         .sbc-opt-queuerow .ovr {
             flex:0 0 auto; min-width:32px; text-align:center;
-            background:var(--pt-bg-raised); border-radius:var(--pt-radius-xs); padding:3px 7px;
-            font-family:var(--pt-font-mono); font-weight:var(--pt-weight-semibold); font-size:12px; color:var(--pt-accent);
+            background:var(--pt-raised); border-radius:var(--pt-r-s); padding:3px 6px;
+            font-weight:700; font-size:12px; color:var(--pt-accent);
         }
         .sbc-opt-queuerow .nm {
             flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
-            white-space:nowrap; font-size:var(--pt-text-md); color:var(--pt-fg-default);
+            white-space:nowrap; font-size:12px; color:var(--pt-text);
         }
-        .sbc-opt-queuerow .st { flex:0 0 auto; font-size:11px; color:var(--pt-fg-subtle); }
+        .sbc-opt-queuerow .st { flex:0 0 auto; font-size:11px; color:var(--pt-faint); }
         /* Erledigte Challenges bleiben SICHTBAR (sonst waere unklar, warum die
            Liste kuerzer ist als im Spiel), aber gedaempft und nicht angehakt. */
         .sbc-opt-queuerow.done { opacity:.5; cursor:default; }
-        .sbc-opt-queuerow.done:hover { border-color:var(--pt-border-subtle); background:var(--pt-bg-sunken); }
-        .sbc-opt-queuerow.done .ovr { color:var(--pt-fg-subtle); }
+        .sbc-opt-queuerow.done:hover { border-color:var(--pt-line); background:var(--pt-sunken); }
+        .sbc-opt-queuerow.done .ovr { color:var(--pt-faint); }
         /* ------------------------------------------------------------------
            FORTSCHRITT
            ------------------------------------------------------------------ */
@@ -5968,78 +5736,43 @@
         /* ---- Vorlagen: eigene Vollbild-Oberflaeche (v5.10.0) ---- */
         #sbc-opt-vorlagen {
             position: fixed; inset: 0; z-index: 999999; display: none;
-            background: var(--pt-bg-scrim); overflow-y: auto;
+            background: rgba(0,0,0,.62); overflow-y: auto;
             -webkit-overflow-scrolling: touch;
-            font-family: var(--pt-font-sans); font-size: 13px; color: var(--pt-fg-default);
+            font-family: var(--pt-font); font-size: 13px; color: var(--pt-text);
         }
         .sbc-opt-vl-box {
             margin: 20px auto 40px; width: min(560px, calc(100vw - 20px));
-            /* v6.0.0: ohne border-box ragte der Kasten um Padding + Rand
-               (bis 42px) ueber den rechten Rand schmaler Schirme. */
-            box-sizing: border-box;
-            background: var(--pt-bg-base); border: 1px solid var(--pt-border-subtle);
-            border-radius: var(--pt-radius-xl); box-shadow: var(--pt-shadow-3);
-            padding: 16px 20px 20px;
+            background: var(--pt-bg); border: 1px solid var(--pt-line-2);
+            border-radius: var(--pt-r-l); box-shadow: var(--pt-shadow);
+            padding: 14px 14px 18px;
         }
         .sbc-opt-vl-head {
             display: flex; justify-content: space-between; align-items: center;
-            font-size: 17px; font-weight: var(--pt-weight-semibold); color: var(--pt-fg-default);
-            margin-bottom: 12px;
+            font-size: 16px; font-weight: 700; color: var(--pt-accent);
+            margin-bottom: 10px;
         }
         .sbc-opt-vl-x {
-            background: none; border: none; color: var(--pt-fg-muted);
+            background: none; border: none; color: var(--pt-muted);
             font-size: 20px; min-width: 44px; min-height: 44px; cursor: pointer;
             margin: -6px -10px -6px 0;
         }
-        .sbc-opt-vl-x:active { color: var(--pt-fg-default); }
+        .sbc-opt-vl-x:active { color: var(--pt-text); }
         .sbc-opt-vl-card {
-            background: var(--pt-bg-surface); border: 1px solid var(--pt-border-subtle);
-            border-radius: var(--pt-card-radius); padding: 12px; margin-bottom: 10px;
+            background: var(--pt-surface); border: 1px solid var(--pt-line);
+            border-radius: var(--pt-r-m); padding: 10px 12px; margin-bottom: 10px;
         }
         .sbc-opt-vl-cardkopf {
             display: flex; justify-content: space-between; align-items: center;
-            gap: 8px; font-size: 14px; min-width: 0;
-            /* v6.0.0: bricht erst um, wenn der Name keine 96px mehr haette
-               (schmale Schirme) - sonst bleiben Chips und Start in der Zeile. */
-            flex-wrap: wrap;
+            gap: 8px; font-size: 14px;
         }
         .sbc-opt-vl-cardkopf b {
             overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-            min-width: 96px; flex: 1 1 auto;
+            min-width: 0; flex: 0 1 auto;
         }
         .sbc-opt-vl-cardkopf .sbc-opt-btn { width: auto; flex: 0 0 auto;
             margin-top: 0; padding: 8px 16px; }
-        .sbc-opt-vl-sum { color: var(--pt-fg-secondary); margin-top: 6px; }
+        .sbc-opt-vl-sum { color: var(--pt-text-2); margin-top: 6px; }
         .sbc-opt-vl-card.aus { opacity: .55; }
-        /* v6.0.0: Menue der Vorlagen-Karte (oben rechts auf der Karte). */
-        .sbc-opt-vl-menu { position: relative; flex: 0 0 auto; margin: -2px -4px -2px 0; }
-        .sbc-opt-vl-menu > summary {
-            list-style: none; cursor: pointer; user-select: none;
-            width: 40px; height: 40px; border-radius: var(--pt-radius-sm);
-            display: flex; align-items: center; justify-content: center;
-            color: var(--pt-fg-muted); font-size: 18px; line-height: 1;
-            transition: background var(--pt-dur-fast) ease, color var(--pt-dur-fast) ease;
-        }
-        .sbc-opt-vl-menu > summary::-webkit-details-marker { display: none; }
-        .sbc-opt-vl-menu > summary:hover, .sbc-opt-vl-menu[open] > summary {
-            background: var(--pt-bg-raised); color: var(--pt-fg-default);
-        }
-        .sbc-opt-vl-menu > summary:active { background: var(--pt-state-press); }
-        .sbc-opt-vl-menu-list {
-            position: absolute; top: 44px; right: 0; z-index: 3; min-width: 184px;
-            display: flex; flex-direction: column; padding: 4px;
-            background: var(--pt-bg-raised); border: 1px solid var(--pt-border-default);
-            border-radius: var(--pt-radius-md); box-shadow: var(--pt-shadow-3);
-        }
-        .sbc-opt-vl-menu-item {
-            min-height: 40px; padding: 0 12px; border: none; border-radius: var(--pt-radius-sm);
-            background: transparent; color: var(--pt-fg-default); text-align: left;
-            font-family: inherit; font-size: 13px; cursor: pointer;
-        }
-        .sbc-opt-vl-menu-item:hover { background: var(--pt-state-hover); }
-        .sbc-opt-vl-menu-item:active { background: var(--pt-state-press); }
-        .sbc-opt-vl-menu-item.danger { color: var(--pt-danger-fg); }
-        .sbc-opt-vl-menu-item:focus-visible { outline: 2px solid var(--pt-accent); outline-offset: -2px; }
         .sbc-opt-vl-anzahl {
             display: flex; gap: 2px; margin-left: auto; margin-right: 8px;
             flex: 0 0 auto; padding: 2px;
@@ -6048,105 +5781,64 @@
             min-height: 24px; padding: 2px 9px; font-size: 11px;
             flex: 0 0 auto; min-width: 0;
         }
-        .sbc-opt-vl-avail { color: var(--pt-warning-fg); font-size: 12px; margin-top: 4px; }
-        .sbc-opt-vl-last { color: var(--pt-fg-muted); margin-top: 4px; font-size: 12px; }
+        .sbc-opt-vl-avail { color: var(--pt-warn); font-size: 12px; margin-top: 4px; }
+        .sbc-opt-vl-last { color: var(--pt-muted); margin-top: 4px; font-size: 12px; }
         .sbc-opt-vl-tools { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
         .sbc-opt-vl-tools .sbc-opt-btn { width: auto; flex: 1 1 auto; }
         .sbc-opt-vl-leer {
-            background: var(--pt-bg-surface); border: 1px solid var(--pt-border-subtle);
-            border-radius: var(--pt-radius-md); padding: 12px; color: var(--pt-fg-secondary);
+            background: var(--pt-surface); border: 1px solid var(--pt-line);
+            border-radius: var(--pt-r-m); padding: 12px; color: var(--pt-text-2);
             line-height: 1.5; margin-bottom: 10px;
         }
         .sbc-opt-vl-step {
-            background: var(--pt-bg-surface); border: 1px solid var(--pt-border-subtle);
-            border-radius: var(--pt-radius-md); padding: 10px 12px; margin: 10px 0;
+            background: var(--pt-surface); border: 1px solid var(--pt-line);
+            border-radius: var(--pt-r-m); padding: 10px 12px; margin: 10px 0;
         }
-        /* v6.2.0: Editor-Schritte als Kette - Nummer auf einer Linie links. */
-        .sbc-opt-vl-chain { position: relative; padding-left: 40px; margin: 12px 0 4px; }
-        .sbc-opt-vl-chain::before {
-            content: ''; position: absolute; left: 13px; top: 14px; bottom: 22px;
-            width: 2px; background: var(--pt-border-default);
-        }
-        .sbc-opt-vl-chain .sbc-opt-vl-step { position: relative; margin: 0 0 12px; }
-        .sbc-opt-vl-stepnum {
-            position: absolute; left: -40px; top: 10px; width: 28px; height: 28px; border-radius: 50%;
-            display: flex; align-items: center; justify-content: center;
-            background: var(--pt-bg-raised); color: var(--pt-fg-default);
-            box-shadow: inset 0 0 0 1px var(--pt-border-strong), 0 0 0 4px var(--pt-bg-base);
-            font-family: var(--pt-font-mono); font-size: 12px; font-weight: var(--pt-weight-semibold);
-        }
-        .sbc-opt-vl-stepadd {
-            position: relative; display: flex; align-items: center; gap: 10px; min-height: 44px;
-            background: transparent; border: none; color: var(--pt-fg-muted); font-family: inherit;
-            font-size: 13px; cursor: pointer; padding: 0; margin-left: -40px;
-        }
-        .sbc-opt-vl-stepadd .plus {
-            width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
-            background: var(--pt-accent-soft); color: var(--pt-accent); box-shadow: inset 0 0 0 1px var(--pt-accent-border);
-            font-size: 16px; line-height: 1; box-shadow: inset 0 0 0 1px var(--pt-accent-border), 0 0 0 4px var(--pt-bg-base);
-        }
-        .sbc-opt-vl-stepadd:hover { color: var(--pt-fg-default); }
-        .sbc-opt-vl-stepadd:active .plus { background: var(--pt-state-press); }
-        /* v6.2.0: Rueckgaengig-Leiste nach dem Loeschen einer Vorlage. */
-        #sbc-opt-vl-undo {
-            position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); z-index: var(--pt-z-overlay);
-            display: none; align-items: center; gap: 14px; padding: 6px 6px 6px 16px;
-            background: var(--pt-bg-raised); color: var(--pt-fg-default); border: 1px solid var(--pt-border-default);
-            border-radius: var(--pt-radius-full); box-shadow: var(--pt-shadow-2);
-            font-family: var(--pt-font-sans); font-size: 13px; max-width: calc(100vw - 24px);
-        }
-        #sbc-opt-vl-undo .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        #sbc-opt-vl-undo button {
-            flex: 0 0 auto; min-height: 36px; padding: 0 14px; border: none; border-radius: var(--pt-radius-full);
-            background: var(--pt-accent-soft); color: var(--pt-accent); font-family: inherit;
-            font-size: 13px; font-weight: var(--pt-weight-semibold); cursor: pointer;
-        }
-        #sbc-opt-vl-undo button:active { background: var(--pt-state-press); }
         .sbc-opt-vl-step label {
-            display: block; margin: 8px 0 4px; color: var(--pt-fg-muted); font-size: 12px;
+            display: block; margin: 8px 0 4px; color: var(--pt-muted); font-size: 12px;
         }
         .sbc-opt-vl-steprow { display: flex; gap: 6px; align-items: center; }
-        .sbc-opt-vl-steprow select { flex: 1 1 auto; min-width: 0; padding-left: 10px; padding-right: 4px; }
+        .sbc-opt-vl-steprow select { flex: 1 1 auto; min-width: 0; }
         .sbc-opt-vl-mini { width: 44px !important; flex: 0 0 auto !important;
             margin-top: 0 !important; padding: 8px 0 !important; }
         .sbc-opt-vl-input {
-            width: 100%; box-sizing: border-box; background: var(--pt-bg-sunken);
-            color: var(--pt-fg-default); border: 1px solid var(--pt-border-default);
-            border-radius: var(--pt-field-radius); padding: 9px 12px; font-size: 13px;
+            width: 100%; box-sizing: border-box; background: var(--pt-sunken);
+            color: var(--pt-text); border: 1px solid var(--pt-line-2);
+            border-radius: var(--pt-r-s); padding: 9px 10px; font-size: 13px;
             font-family: inherit; min-height: var(--pt-tap);
         }
         .sbc-opt-vl-input:focus-visible {
             outline: 2px solid var(--pt-accent); outline-offset: 1px;
         }
         .sbc-opt-vl-zahl { width: 110px; }
-        .sbc-opt-vl-profil { margin-top: 8px; color: var(--pt-fg-secondary); }
+        .sbc-opt-vl-profil { margin-top: 8px; color: var(--pt-text-2); }
         .sbc-opt-vl-profil span { color: var(--pt-accent); }
-        .sbc-opt-vl-hint { color: var(--pt-fg-muted); font-size: 12px;
+        .sbc-opt-vl-hint { color: var(--pt-muted); font-size: 12px;
             line-height: 1.5; margin-top: 10px; }
-        .sbc-opt-vl-quota { color: var(--pt-fg-muted); margin-bottom: 8px; }
+        .sbc-opt-vl-quota { color: var(--pt-muted); margin-bottom: 8px; }
         .sbc-opt-vl-log {
-            padding: 7px 10px; border-radius: var(--pt-radius-sm);
-            background: var(--pt-bg-surface); border: 1px solid var(--pt-border-subtle);
+            padding: 7px 10px; border-radius: var(--pt-r-s);
+            background: var(--pt-surface); border: 1px solid var(--pt-line-soft);
             margin-bottom: 6px; line-height: 1.45; overflow-wrap: break-word;
         }
-        .sbc-opt-vl-log.kopf { border-color: var(--pt-border-default); font-weight: 700; }
+        .sbc-opt-vl-log.kopf { border-color: var(--pt-line-2); font-weight: 700; }
         .sbc-opt-vl-log.ok { color: var(--pt-accent); }
-        .sbc-opt-vl-log.warn { color: var(--pt-warning-fg); }
-        .sbc-opt-vl-log.bad { color: var(--pt-danger-fg); }
+        .sbc-opt-vl-log.warn { color: var(--pt-warn); }
+        .sbc-opt-vl-log.bad { color: var(--pt-bad); }
         .sbc-opt-vl-pause {
-            border: 1px solid var(--pt-warning-fg); border-radius: var(--pt-radius-md);
-            padding: 10px 12px; margin-top: 8px; background: var(--pt-bg-surface);
+            border: 1px solid var(--pt-warn); border-radius: var(--pt-r-m);
+            padding: 10px 12px; margin-top: 8px; background: var(--pt-surface);
         }
         .sbc-opt-vl-pausekopf { font-weight: 700; margin-bottom: 8px;
-            color: var(--pt-warning-fg); line-height: 1.4; }
+            color: var(--pt-warn); line-height: 1.4; }
         /* Minimierter Vorlagen-Lauf: schlanke Leiste OBEN, Spiel sichtbar. */
         #sbc-opt-vl-topbar {
             position: fixed; top: 8px; left: 50%; transform: translateX(-50%);
             z-index: 999999; display: none; align-items: center; gap: 8px;
-            background: var(--pt-bg-base); border: 1px solid var(--pt-border-default);
-            border-radius: var(--pt-radius-full); padding: 6px 6px 6px 14px;
-            max-width: calc(100vw - 12px); box-shadow: var(--pt-shadow-2);
-            font-family: var(--pt-font-sans); font-size: 12px; color: var(--pt-fg-default);
+            background: var(--pt-bg); border: 1px solid var(--pt-line-2);
+            border-radius: var(--pt-r-m); padding: 6px 8px 6px 12px;
+            max-width: calc(100vw - 12px); box-shadow: var(--pt-shadow);
+            font-family: var(--pt-font); font-size: 12px; color: var(--pt-text);
         }
         #sbc-opt-vl-topbar .t {
             overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -6154,55 +5846,52 @@
         }
         #sbc-opt-vl-topbar .sbc-opt-btn {
             width: auto; flex: 0 0 auto; margin-top: 0;
-            padding: 6px 12px; min-height: 34px; border-radius: var(--pt-radius-full);
+            padding: 6px 10px; min-height: 34px;
         }
         #sbc-opt-progress {
             position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%);
             z-index: 1000000; display: none; pointer-events: none;
-            background: var(--pt-bg-base); color: var(--pt-fg-default);
-            border: 1px solid var(--pt-border-default);
-            border-radius: var(--pt-radius-xl); box-shadow: var(--pt-shadow-3);
-            padding: 20px 22px; min-width: 300px; max-width: calc(100vw - 32px);
-            text-align: center; font-family: var(--pt-font-sans); font-variant-numeric: tabular-nums;
+            background: var(--pt-bg); color: var(--pt-text);
+            border: 1px solid var(--pt-line-2);
+            border-radius: var(--pt-r-l); box-shadow: 0 10px 50px rgba(0,0,0,.7);
+            padding: 18px 22px; min-width: 300px; max-width: calc(100vw - 32px);
+            text-align: center; font-family: var(--pt-font);
         }
         #sbc-opt-progress.open { display: block; }
         #sbc-opt-progress .p-title {
-            font-size: 16px; font-weight: var(--pt-weight-semibold); color: var(--pt-fg-default); margin-bottom: 2px;
+            font-size: 17px; font-weight: 700; color: var(--pt-accent); margin-bottom: 2px;
         }
-        #sbc-opt-progress .p-step { font-size: 13px; color: var(--pt-fg-muted); margin-bottom: 12px; }
+        #sbc-opt-progress .p-step { font-size: 13px; color: var(--pt-muted); margin-bottom: 12px; }
         #sbc-opt-progress .p-bar {
-            height: 6px; background: var(--pt-bg-raised); border-radius: var(--pt-radius-full); overflow: hidden;
+            height: 8px; background: var(--pt-raised); border-radius: 5px; overflow: hidden;
         }
         #sbc-opt-progress .p-fill {
-            height: 100%; width: 0%; border-radius: var(--pt-radius-full);
-            background: var(--pt-accent);
-            transition: width var(--pt-dur-slow) var(--pt-ease-out);
+            height: 100%; width: 0%; border-radius: 5px;
+            background: linear-gradient(90deg,var(--pt-accent),var(--pt-accent-2));
+            transition: width .3s ease;
         }
-        #sbc-opt-progress .p-done { font-family: var(--pt-font-mono); font-size: 11px; color: var(--pt-fg-subtle); margin-top: 10px; }
+        #sbc-opt-progress .p-done { font-size: 12px; color: var(--pt-faint); margin-top: 10px; }
         /* ------------------------------------------------------------------
            BATCH / REIHE: Abschnitte, Vorschau, Team-Details
            ------------------------------------------------------------------ */
-        .sbc-opt-batch { margin-top:14px; padding-top:12px; border-top:1px solid var(--pt-border-subtle); }
+        .sbc-opt-batch { margin-top:14px; padding-top:12px; border-top:1px solid var(--pt-line); }
         /* v5.28.0: Reiter Kaufen / Rating / Mehr - dieselbe Leiste wie die
            Segment-Schalter, nur hoeher (Hauptnavigation, Trefferflaeche tap). */
         .sbc-opt-tabs {
             display:flex; gap:3px; margin:0 0 12px; align-items:stretch;
-            background:var(--pt-bg-sunken); border:1px solid var(--pt-border-subtle);
-            border-radius:var(--pt-radius-md); padding:3px;
+            background:var(--pt-sunken); border:1px solid var(--pt-line-2);
+            border-radius:9px; padding:3px;
         }
         .sbc-opt-tab-btn {
-            flex:1 1 0; min-width:0; background:transparent; color:var(--pt-fg-muted);
-            border:none; border-radius:10px; padding:0 6px; min-height:var(--pt-tap);
-            display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px;
-            font-size:var(--pt-text-sm); font-weight:var(--pt-weight-semibold); font-family:inherit; cursor:pointer;
-            transition:background var(--pt-dur-base) var(--pt-ease-out), color var(--pt-dur-fast) ease;
+            flex:1 1 0; min-width:0; background:transparent; color:var(--pt-muted);
+            border:none; border-radius:var(--pt-r-s); padding:0 6px; min-height:var(--pt-tap);
+            font-size:13px; font-weight:700; font-family:inherit; cursor:pointer;
+            transition:background .12s ease, color .12s ease;
         }
-        .sbc-opt-tab-btn:hover { background:var(--pt-state-hover); color:var(--pt-fg-default); }
+        .sbc-opt-tab-btn:hover { background:var(--pt-hover); color:var(--pt-text); }
         .sbc-opt-tab-btn:active { transform: translateY(1px); }
-        /* v6.0.0: Auswahl neutral angehoben - Blau bedeutet nur noch Info. */
-        .sbc-opt-tab-btn.on { background:var(--pt-bg-raised); color:var(--pt-fg-default); box-shadow: var(--pt-shadow-1), var(--pt-highlight); }
-        .sbc-opt-tab-btn.on:hover { background:var(--pt-bg-raised-hover); }
-        .sbc-opt-tab-btn.on svg { color:var(--pt-accent); }
+        .sbc-opt-tab-btn.on { background:var(--pt-sel); color:var(--pt-text); }
+        .sbc-opt-tab-btn.on:hover { background:var(--pt-sel-hi); }
         .sbc-opt-tab:not(.on) { display:none; }
         /* Zeilen der Info-Box, die nur den Rating-Optimizer betreffen. */
         #sbc-opt-panel[data-tab="kaufen"] .sbc-opt-only-rating,
@@ -6214,54 +5903,35 @@
         .sbc-opt-flow { display:flex; align-items:flex-start; margin:2px 0 14px; }
         .sbc-opt-flow .step { flex:1 1 0; min-width:0; position:relative; text-align:center; }
         .sbc-opt-flow .step .dot {
-            width:28px; height:28px; border-radius:50%; display:flex; align-items:center; justify-content:center;
-            margin:0 auto 6px; font-family:var(--pt-font-mono); font-size:12px; font-weight:var(--pt-weight-semibold); position:relative; z-index:1;
-            background:var(--pt-bg-raised); color:var(--pt-fg-subtle); box-shadow: inset 0 0 0 1px var(--pt-border-default);
-            transition: background var(--pt-dur-base) ease, box-shadow var(--pt-dur-base) ease;
+            width:24px; height:24px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+            margin:0 auto 4px; font-size:11px; font-weight:700; position:relative; z-index:1;
+            background:var(--pt-raised); color:var(--pt-muted); box-shadow: inset 0 0 0 1px var(--pt-line-2);
+            transition: background .15s ease, box-shadow .15s ease;
         }
-        .sbc-opt-flow .step .lbl { display:block; font-size:var(--pt-text-xs); color:var(--pt-fg-subtle); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .sbc-opt-flow .step .lbl { display:block; font-size:10.5px; color:var(--pt-faint); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
         .sbc-opt-flow .step:not(:last-child)::after {
-            content:''; position:absolute; top:13px; left:calc(50% + 18px); right:calc(-50% + 18px); height:2px; background:var(--pt-border-default);
+            content:''; position:absolute; top:11px; left:calc(50% + 14px); right:calc(-50% + 14px); height:2px; background:var(--pt-line);
         }
-        .sbc-opt-flow .step.on .dot { background:var(--pt-accent); color:var(--pt-fg-on-accent); box-shadow: 0 0 0 4px var(--pt-accent-soft); }
-        .sbc-opt-flow .step.on .lbl { color:var(--pt-fg-default); font-weight:var(--pt-weight-semibold); }
-        .sbc-opt-flow .step.done .dot { background:var(--pt-accent-soft); color:var(--pt-accent); box-shadow:none; font-size:0; }
+        .sbc-opt-flow .step.on .dot { background:var(--pt-accent); color:var(--pt-on-accent); box-shadow: 0 0 0 4px var(--pt-accent-soft); }
+        .sbc-opt-flow .step.on .lbl { color:var(--pt-text); font-weight:700; }
+        .sbc-opt-flow .step.done .dot { background:var(--pt-sel); color:var(--pt-text); box-shadow:none; font-size:0; }
         .sbc-opt-flow .step.done .dot::after { content:'✓'; font-size:12px; }
-        .sbc-opt-flow .step.done .lbl { color:var(--pt-fg-muted); }
-        .sbc-opt-flow .step.done::after { background:var(--pt-accent-border); }
+        .sbc-opt-flow .step.done .lbl { color:var(--pt-muted); }
+        .sbc-opt-flow .step.done::after { background:var(--pt-sel); }
         /* Loesungs-Karten (v5.29.0): Preis zuerst, Details klein, ab der vierten eingeklappt */
         .sbc-opt-fb-top { display:flex; justify-content:space-between; align-items:center; gap:8px; }
-        .sbc-opt-fb-price { font-size:18px; font-weight:var(--pt-weight-semibold); color:var(--pt-accent); }
-        .sbc-opt-fb-meta { color:var(--pt-fg-muted); font-size:11px; margin-top:2px; line-height:1.45; }
-        .sbc-opt-fb-meta b { color:var(--pt-fg-default); font-weight:600; }
+        .sbc-opt-fb-price { font-size:16px; font-weight:700; color:var(--pt-accent); }
+        .sbc-opt-fb-meta { color:var(--pt-muted); font-size:11px; margin-top:2px; line-height:1.45; }
+        .sbc-opt-fb-meta b { color:var(--pt-text); font-weight:600; }
         .sbc-opt-tag {
-            font-size:var(--pt-text-2xs); font-weight:var(--pt-weight-semibold); text-transform:uppercase; letter-spacing:.06em;
-            padding:3px 8px; border-radius:var(--pt-radius-full); background:transparent; color:var(--pt-fg-muted); white-space:nowrap;
-            box-shadow: inset 0 0 0 1px var(--pt-border-default);
+            font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.3px;
+            padding:2px 6px; border-radius:var(--pt-r-s); background:var(--pt-raised); color:var(--pt-muted); white-space:nowrap;
         }
-        .sbc-opt-tag.ok { background:var(--pt-bg-raised); color:var(--pt-fg-secondary); box-shadow:none; }
-        .sbc-opt-tag.best { background:var(--pt-accent-soft); color:var(--pt-accent); box-shadow:none; }
+        .sbc-opt-tag.ok { background:var(--pt-sel); color:var(--pt-text); }
+        .sbc-opt-tag.best { background:var(--pt-accent-soft); color:var(--pt-accent); }
         .sbc-opt-fb-tags { display:flex; gap:4px; flex-wrap:wrap; justify-content:flex-end; }
-        /* v6.2.0: Galerie-Zeile - Fortschritt und Kurs je Token. */
-        .sbc-opt-gal-line { display:flex; align-items:center; gap:10px; margin:8px 0 2px; }
-        /* In der Set-Liste ist .sbc-opt-fb-price ein NAME, kein Preis - neutral und kleiner. */
-        #sbc-opt-gallery-result .sbc-opt-fb-price { font-size:var(--pt-text-lg); color:var(--pt-fg-default); }
-        .sbc-opt-gal-line .bar { flex:1 1 auto; height:4px; border-radius:var(--pt-radius-full); background:var(--pt-bg-raised); overflow:hidden; }
-        .sbc-opt-gal-line .bar-empty { flex:1 1 auto; }
-        .sbc-opt-gal-line .fill { display:block; height:100%; background:var(--pt-accent); border-radius:var(--pt-radius-full); }
-        .sbc-opt-gal-line .v { font-family:var(--pt-font-mono); font-size:11px; color:var(--pt-fg-muted); }
-        .sbc-opt-gal-line .kurs { font-family:var(--pt-font-mono); font-size:12px; color:var(--pt-accent); white-space:nowrap; }
-        /* v6.2.0: Summenzeilen vor dem Listen. */
-        .sbc-opt-receipt { margin:8px 0 10px; padding:4px 12px; border-radius:var(--pt-radius-md); background:var(--pt-bg-sunken); font-size:12px; }
-        .sbc-opt-receipt > div { display:flex; justify-content:space-between; gap:12px; padding:6px 0; }
-        .sbc-opt-receipt > div + div { border-top:1px solid var(--pt-border-subtle); }
-        .sbc-opt-receipt span { color:var(--pt-fg-muted); }
-        .sbc-opt-receipt b { font-family:var(--pt-font-mono); font-weight:var(--pt-weight-medium); color:var(--pt-fg-default); }
-        .sbc-opt-receipt .sum { border-top-color:var(--pt-border-default); }
-        .sbc-opt-receipt .sum span { color:var(--pt-fg-default); font-weight:var(--pt-weight-semibold); }
-        .sbc-opt-receipt .sum b { font-size:14px; font-weight:var(--pt-weight-semibold); }
-        .sbc-opt-fb-row { padding:12px; margin:8px 0; border-radius:var(--pt-card-radius); background:var(--pt-bg-sunken); }
-        .sbc-opt-fb-row.best { box-shadow: 0 0 0 4px var(--pt-accent-soft); }
+        .sbc-opt-fb-row { padding:10px; margin:8px 0; border-radius:var(--pt-r-m); background:var(--pt-sunken); }
+        .sbc-opt-fb-row.best { box-shadow: 0 0 0 1px var(--pt-accent-soft); }
         .sbc-opt-fb-actions { display:flex; gap:6px; align-items:stretch; }
         .sbc-opt-fb-actions .sbc-opt-btn { margin:6px 0 0; }
         .sbc-opt-fb-actions .sbc-opt-btn.small { flex:0 0 auto; width:auto; padding:8px 10px; font-size:12px; }
@@ -6273,11 +5943,11 @@
            Plan existiert, waere er nur eine leere Trennlinie. */
         #sbc-opt-planresult.sbc-opt-hidden { display:none; }
         #sbc-opt-batch-preview, #sbc-opt-batch-detail-body {
-            background:var(--pt-bg-surface); border:1px solid var(--pt-border-subtle);
-            border-radius:var(--pt-radius-md);
+            background:var(--pt-surface); border:1px solid var(--pt-line);
+            border-radius:var(--pt-r-m);
             padding:10px 12px; margin-top:8px; font-size:12px; line-height:1.5;
             max-height:340px; overflow-y:auto; overscroll-behavior: contain;
-            scrollbar-width: thin; scrollbar-color: var(--pt-border-default) transparent;
+            scrollbar-width: thin; scrollbar-color: var(--pt-line-2) transparent;
         }
         /* Chromium ignoriert scrollbar-width (Firefox-Eigenschaft) - ohne
            die webkit-Regeln zeichnet es in die Kaesten seine Standard-Leiste,
@@ -6288,15 +5958,15 @@
         #sbc-opt-batch-detail-body::-webkit-scrollbar-track { background: transparent; }
         #sbc-opt-batch-preview::-webkit-scrollbar-thumb,
         #sbc-opt-batch-detail-body::-webkit-scrollbar-thumb {
-            background: var(--pt-border-default); border-radius: 6px;
-            border: 3px solid var(--pt-bg-surface);
+            background: var(--pt-line-2); border-radius: 6px;
+            border: 3px solid var(--pt-surface);
         }
         #sbc-opt-batch-details { margin-top:8px; }
-        .sbc-opt-batch-round { padding:4px 0; border-bottom:1px solid var(--pt-border-subtle); }
+        .sbc-opt-batch-round { padding:4px 0; border-bottom:1px solid var(--pt-line-soft); }
         .sbc-opt-batch-round:last-child { border-bottom:none; }
         .sbc-opt-batch-round b { color:var(--pt-accent); }
-        .sbc-opt-batch-warn { color:var(--pt-warning-fg); }
-        .sbc-opt-batch-bad { color:var(--pt-danger-fg); }
+        .sbc-opt-batch-warn { color:var(--pt-warn-2); }
+        .sbc-opt-batch-bad { color:var(--pt-bad); }
         /* Knopf an EAs Pack-Kachel. Bewusst erkennbar ANDERS als EAs eigene
            Knoepfe (unsere Akzentfarbe), damit niemand ihn mit "Open"
            verwechselt - er oeffnet ALLE Packs des Typs. */
@@ -6313,24 +5983,24 @@
                ist Absicht, nicht Kosmetik: der Knopf oeffnet ALLE Packs eines
                Typs. */
             display:block; margin:0; width:auto;
-            background:transparent; color:var(--pt-info-fg);
-            border:1px solid var(--pt-info-border); border-radius:var(--pt-radius-sm);
-            padding:5px 10px; font-size:11px; font-weight:var(--pt-weight-semibold);
-            font-family:var(--pt-font-sans); line-height:1.3;
+            background:transparent; color:#8fc3f0;
+            border:1px solid #2f5878; border-radius:var(--pt-r-s);
+            padding:4px 9px; font-size:11px; font-weight:600;
+            font-family:var(--pt-font); line-height:1.3;
             cursor:pointer; opacity:.75;
-            transition: opacity var(--pt-dur-fast) ease, background var(--pt-dur-fast) ease, transform .06s ease;
+            transition: opacity .12s ease, background .12s ease, transform .06s ease;
         }
         .sbc-opt-tilebtn:hover:not(:disabled) {
-            opacity:1; background:var(--pt-info-soft); color:var(--pt-fg-default); border-color:var(--pt-info-fg);
+            opacity:1; background:var(--pt-sel); color:#fff; border-color:#3d8ad6;
         }
         /* ABSTOSSEN ist unumkehrbar - der Knopf sieht anders aus als der
            harmlose daneben, damit man sie nicht verwechselt. */
-        .sbc-opt-tilebtn.danger { color:var(--pt-danger-fg); border-color:var(--pt-danger-border); }
+        .sbc-opt-tilebtn.danger { color:#f0a19a; border-color:#7a3a33; }
         .sbc-opt-tilebtn.danger:hover:not(:disabled) {
-            background:var(--pt-danger); color:var(--pt-fg-on-solid); border-color:var(--pt-danger-hover);
+            background:var(--pt-danger); color:#fff; border-color:#d4452f;
         }
         .sbc-opt-tilebtn:active:not(:disabled) { transform: translateY(1px); }
-        .sbc-opt-tilebtn:disabled { opacity:var(--pt-state-disabled-opacity); cursor:not-allowed; }
+        .sbc-opt-tilebtn:disabled { opacity:.5; cursor:not-allowed; }
         /* ------------------------------------------------------------------
            SEGMENT-SCHALTER
            ------------------------------------------------------------------ */
@@ -6341,104 +6011,102 @@
            nebeneinander stehen. */
         .sbc-opt-chips {
             display:flex; gap:3px; margin:0 0 10px; align-items:stretch;
-            background:var(--pt-bg-sunken); border:1px solid var(--pt-border-subtle);
-            border-radius:var(--pt-radius-md); padding:3px;
+            background:var(--pt-sunken); border:1px solid var(--pt-line-2);
+            border-radius:9px; padding:3px;
         }
         /* Leer (noch nicht gerendert) soll die Leiste nicht als leerer Kasten
            herumstehen. */
         .sbc-opt-chips:empty { display:none; }
         .sbc-opt-chip {
-            flex:1 1 0; min-width:0; background:transparent; color:var(--pt-fg-muted);
-            border:none; border-radius:9px; padding:4px 6px; min-height:38px;
-            font-size:var(--pt-text-md); font-weight:var(--pt-weight-semibold); font-family:inherit;
-            /* Flex statt line-height:38px - ein zweizeiliger Wert
-               ("Konsole (PS/Xbox)") wurde sonst 76px hoch. */
-            display:flex; flex-direction:column; align-items:center; justify-content:center;
-            cursor:pointer; line-height:1.2; text-align:center;
-            transition:background var(--pt-dur-base) var(--pt-ease-out), color var(--pt-dur-fast) ease;
+            flex:1 1 0; min-width:0; background:transparent; color:var(--pt-muted);
+            border:none; border-radius:var(--pt-r-s); padding:0 6px; min-height:34px;
+            font-size:13px; font-weight:600; font-family:inherit;
+            cursor:pointer; line-height:34px; text-align:center;
+            transition:background .12s ease, color .12s ease;
         }
-        .sbc-opt-chip:hover { background:var(--pt-state-hover); color:var(--pt-fg-default); }
+        .sbc-opt-chip:hover { background:var(--pt-hover); color:var(--pt-text); }
         .sbc-opt-chip:active { transform: translateY(1px); }
-        .sbc-opt-chip.on { background:var(--pt-bg-raised); color:var(--pt-fg-default); box-shadow: var(--pt-shadow-1), var(--pt-highlight); }
-        .sbc-opt-chip.on:hover { background:var(--pt-bg-raised-hover); }
+        .sbc-opt-chip.on { background:var(--pt-sel); color:#fff; }
+        .sbc-opt-chip.on:hover { background:var(--pt-sel-hi); }
         /* ✎ ist der Notausgang, nicht die Hauptsache: schmal und gedaempft,
            aber am Ende DERSELBEN Leiste - nicht als vierter Wert. */
         .sbc-opt-chip.edit {
             /* .65 statt .5: am Handy gibt es kein Hover, das den Knopf
                aufhellt - mit .5 war der Notausgang kaum zu finden. */
-            flex:0 0 38px; opacity:.65; font-size:12px;
-            border-left:1px solid var(--pt-border-subtle); border-radius:0 var(--pt-radius-sm) var(--pt-radius-sm) 0;
+            flex:0 0 34px; opacity:.65; font-size:12px;
+            border-left:1px solid var(--pt-line-soft); border-radius:0 var(--pt-r-s) var(--pt-r-s) 0;
         }
-        .sbc-opt-chip.edit:hover { opacity:1; background:var(--pt-state-hover); }
+        .sbc-opt-chip.edit:hover { opacity:1; background:var(--pt-hover); }
         .sbc-opt-chipedit { display:none; gap:6px; margin:0 0 10px; }
         .sbc-opt-chipedit input { flex:1; }
         .sbc-opt-chipedit .sbc-opt-btn {
-            margin:0; width:auto; flex:0 0 auto; padding:8px 14px; min-height:var(--pt-control-h);
+            margin:0; width:auto; flex:0 0 auto; padding:8px 14px; min-height:38px;
         }
         /* Beschriftung ueber dem Schalter: eigene Zeile, damit sie nicht
            neben einem Feld auf zwei Zeilen umbricht. */
         .sbc-opt-chiplabel {
-            display:block; margin:0 0 6px; color:var(--pt-fg-muted); font-size:12px;
+            display:block; margin:0 0 6px; color:var(--pt-muted); font-size:12px;
         }
         /* ------------------------------------------------------------------
            KARTEN-LISTEN
            ------------------------------------------------------------------ */
         .sbc-opt-batch-cards { margin:4px 0 2px; }
         .sbc-opt-batch-card {
-            font-size:11px; color:var(--pt-fg-secondary); padding:2px 0;
+            font-size:11px; color:var(--pt-text-2); padding:2px 0;
             white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
         }
         .sbc-opt-batch-card .r {
-            display:inline-block; min-width:22px; font-weight:700; color:var(--pt-fg-default);
+            display:inline-block; min-width:22px; font-weight:700; color:var(--pt-text);
         }
-        .sbc-opt-batch-card .src { color:var(--pt-fg-subtle); }
-        /* v6.2.0: Storage als eigenes Etikett (lesbar ohne Farbsehen). */
-        .sbc-opt-batch-card .src.storage {
-            color:var(--pt-info-fg); background:var(--pt-info-soft);
-            border-radius:var(--pt-radius-full); padding:1px 7px; font-size:10px; font-weight:var(--pt-weight-semibold);
-        }
-        .sbc-opt-batch-card .rar { color:var(--pt-fg-muted); }
-        .sbc-opt-batch-card .untr { color:var(--pt-fg-subtle); font-style:italic; }
-        .sbc-opt-batch-card.prot .rar { color:var(--pt-warning-fg); font-weight:700; }
+        .sbc-opt-batch-card .src { color:var(--pt-faint); }
+        .sbc-opt-batch-card .rar { color:var(--pt-muted); }
+        .sbc-opt-batch-card .untr { color:var(--pt-faint); font-style:italic; }
+        .sbc-opt-batch-card.prot .rar { color:var(--pt-warn-2); font-weight:700; }
         .sbc-opt-result {
             /* surface wie die Batch-Vorschau: gleiche Rolle (Ergebnis-Kasten),
                gleiche Flaeche. sunken ist fuer EINGABEN reserviert. */
-            margin-top:12px; background:var(--pt-bg-surface); border:1px solid var(--pt-border-subtle);
-            border-radius:var(--pt-radius-md); padding:10px; display:none;
+            margin-top:12px; background:var(--pt-surface); border:1px solid var(--pt-line);
+            border-radius:var(--pt-r-m); padding:10px; display:none;
         }
         .sbc-opt-result.show { display:block; }
         /* Futbin-Kandidaten (v5.16.0): eine Zeile pro Loesung, Empfehlung
            mit Akzent-Rand; Knopf in voller Breite fuer den Daumen. */
         .sbc-opt-fb-row {
-            border:1px solid var(--pt-border-subtle); border-radius:var(--pt-card-radius);
-            padding:12px; margin:8px 0; font-size:12px;
+            border:1px solid var(--pt-line); border-radius:var(--pt-r-s);
+            padding:6px 8px; margin:6px 0; font-size:12px;
         }
-        .sbc-opt-fb-row.best { border-color:var(--pt-accent-border); }
+        .sbc-opt-fb-row.best { border-color:var(--pt-accent); }
         .sbc-opt-fb-row .sbc-opt-btn { margin:6px 0 0; }
         .sbc-opt-player {
             display:flex; justify-content:space-between; align-items:center;
-            padding:5px 2px; border-bottom:1px solid var(--pt-border-subtle);
+            padding:5px 2px; border-bottom:1px solid var(--pt-line-soft);
         }
         .sbc-opt-player:last-child { border-bottom:none; }
+        .sbc-opt-badge {
+            background:var(--pt-accent); color:var(--pt-on-accent); font-weight:700;
+            border-radius:5px; padding:2px 8px; font-size:12px; min-width:26px; text-align:center;
+        }
+        .sbc-opt-badge.special { background:var(--pt-warn); }
+        .sbc-opt-badge.storage { outline:2px solid var(--pt-accent-2); }
         .sbc-opt-summary { margin:10px 0 4px; font-size:14px; }
         .sbc-opt-summary b { color:var(--pt-accent); }
-        .sbc-opt-warn { color:var(--pt-warning-fg); font-size:12px; margin-top:6px; }
+        .sbc-opt-warn { color:var(--pt-warn); font-size:12px; margin-top:6px; }
         /* v5.38.0: Gewinn/Verlust nach Steuer in der Verkaufs-Vorschau */
         .sbc-opt-gain { color:var(--pt-accent); font-weight:700; }
-        .sbc-opt-loss { color:var(--pt-danger-fg); font-weight:700; }
+        .sbc-opt-loss { color:var(--pt-bad); font-weight:700; }
         /* v5.67.0: das Ergebnis eines Verkaufslaufs muss ins Auge springen. */
         .sbc-opt-net { display:flex; flex-direction:column; gap:2px; margin:10px 0; padding:10px 12px;
-                       border-radius:var(--pt-card-radius); border:1px solid var(--pt-border-subtle); background:var(--pt-bg-surface); }
-        .sbc-opt-net.gain { border-color:var(--pt-accent-border); background:var(--pt-accent-soft); }
-        .sbc-opt-net.loss { border-color:var(--pt-danger-border); background:var(--pt-danger-soft); }
-        .sbc-opt-net-label { font-size:var(--pt-text-2xs); letter-spacing:var(--pt-tracking-caps); text-transform:uppercase; color:var(--pt-fg-muted); }
-        .sbc-opt-net-value { font-family:var(--pt-font-mono); font-size:var(--pt-text-3xl); font-weight:var(--pt-weight-medium); line-height:1.05; color:var(--pt-fg-default); }
+                       border-radius:var(--pt-r-m); border:1px solid var(--pt-line); background:var(--pt-surface); }
+        .sbc-opt-net.gain { border-color:var(--pt-accent); background:var(--pt-accent-soft); }
+        .sbc-opt-net.loss { border-color:var(--pt-bad); background:var(--pt-bad-soft); }
+        .sbc-opt-net-label { font-size:11px; letter-spacing:.04em; text-transform:uppercase; color:var(--pt-muted); }
+        .sbc-opt-net-value { font-size:26px; font-weight:800; line-height:1.1; color:var(--pt-text); }
         .sbc-opt-net.gain .sbc-opt-net-value { color:var(--pt-accent); }
-        .sbc-opt-net.loss .sbc-opt-net-value { color:var(--pt-danger-fg); }
-        .sbc-opt-net-sub { font-size:11px; color:var(--pt-fg-subtle); }
+        .sbc-opt-net.loss .sbc-opt-net-value { color:var(--pt-bad); }
+        .sbc-opt-net-sub { font-size:11px; color:var(--pt-faint); }
         .sbc-opt-chip-net { display:block; font-size:10px; font-weight:700; opacity:.9; }
         .sbc-opt-chip-net.gain { color:var(--pt-accent); }
-        .sbc-opt-chip-net.loss { color:var(--pt-danger-fg); }
+        .sbc-opt-chip-net.loss { color:var(--pt-bad); }
         /* ------------------------------------------------------------------
            RATING-KOSTEN-TABELLE
            ------------------------------------------------------------------ */
@@ -6449,24 +6117,24 @@
             display:grid; grid-template-columns: 16px 1fr 1fr 1fr 32px; gap:4px;
             align-items:center; margin-bottom:4px;
         }
-        .sbc-opt-bandhead span { color:var(--pt-fg-subtle); font-size:11px; }
+        .sbc-opt-bandhead span { color:var(--pt-faint); font-size:11px; }
         .sbc-opt-bandrow input {
-            width:100%; background:var(--pt-bg-sunken); color:var(--pt-fg-default);
-            border:1px solid var(--pt-border-default); border-radius:var(--pt-radius-sm);
+            width:100%; background:var(--pt-sunken); color:var(--pt-text);
+            border:1px solid var(--pt-line-2); border-radius:var(--pt-r-s);
             padding:6px; font-size:12px;
         }
         .sbc-opt-bandrow button {
-            background:var(--pt-bg-raised); color:var(--pt-danger-fg); border:none;
-            border-radius:var(--pt-radius-sm);
+            background:var(--pt-raised); color:var(--pt-bad-2); border:none;
+            border-radius:var(--pt-r-s);
             cursor:pointer; padding:8px 0; font-size:12px; font-family:inherit;
         }
-        .sbc-opt-bandrow button:hover { background:var(--pt-bg-raised-hover); }
+        .sbc-opt-bandrow button:hover { background:var(--pt-raised-hi); }
         .sbc-opt-bandrow .sbc-opt-draghandle {
-            color:var(--pt-fg-subtle); cursor:grab; user-select:none; text-align:center;
+            color:var(--pt-faint); cursor:grab; user-select:none; text-align:center;
             font-size:13px; line-height:1;
         }
-        .sbc-opt-bandrow.sbc-opt-dragover { outline:2px dashed var(--pt-accent); border-radius:var(--pt-radius-sm); }
-        .sbc-opt-bandrow.sbc-opt-bandinvalid { outline:2px solid var(--pt-danger-fg); border-radius:var(--pt-radius-sm); }
+        .sbc-opt-bandrow.sbc-opt-dragover { outline:2px dashed var(--pt-accent); border-radius:var(--pt-r-s); }
+        .sbc-opt-bandrow.sbc-opt-bandinvalid { outline:2px solid var(--pt-bad-2); border-radius:var(--pt-r-s); }
         /* ------------------------------------------------------------------
            TOASTS
            ------------------------------------------------------------------ */
@@ -6478,33 +6146,21 @@
             pointer-events: none;
         }
         .sbc-opt-toast {
-            /* v6.0.0: Typ als Punkt vorn plus getoenter Rand, keine dicke
-               Farbkante mehr. Der Punkt ist ein Pseudo-Element - toast()
-               setzt textContent und wuerde ein echtes Kind wegwischen. */
-            display:flex; align-items:baseline; gap:10px;
-            background:var(--pt-bg-raised); color:var(--pt-fg-default); border:1px solid var(--pt-border-subtle);
-            padding:12px 16px 12px 14px; border-radius:var(--pt-radius-md);
-            font-family:var(--pt-font-sans); font-size:13px; box-shadow:var(--pt-shadow-2);
+            background:var(--pt-surface); color:var(--pt-text); border:1px solid var(--pt-line-2);
+            border-left:4px solid var(--pt-accent); padding:11px 16px; border-radius:var(--pt-r-m);
+            font-family:var(--pt-font); font-size:13px; box-shadow:0 4px 20px rgba(0,0,0,.5);
             max-width:min(80vw, 460px); line-height:1.45;
         }
-        .sbc-opt-toast::before {
-            content:''; flex:0 0 8px; width:8px; height:8px; border-radius:50%;
-            background:var(--pt-accent); box-shadow:0 0 0 4px var(--pt-accent-soft);
-            transform: translateY(-1px);
-        }
-        .sbc-opt-toast.error { border-color:var(--pt-danger-border); }
-        .sbc-opt-toast.error::before { background:var(--pt-danger-fg); box-shadow:0 0 0 4px var(--pt-danger-soft); }
-        .sbc-opt-toast.warn { border-color:var(--pt-warning-border); }
-        .sbc-opt-toast.warn::before { background:var(--pt-warning-fg); box-shadow:0 0 0 4px var(--pt-warning-soft); }
+        .sbc-opt-toast.error { border-left-color:var(--pt-bad-2); }
+        .sbc-opt-toast.warn { border-left-color:var(--pt-warn); }
         /* ------------------------------------------------------------------
            RUHE-EINSTELLUNG DES GERAETS RESPEKTIEREN
            ------------------------------------------------------------------ */
         /* Sehr schmale Schirme: Reiter nur mit Text. (Steht hier unten, weil der
            :active-Test das CSS nur bis zum ersten @media liest.) */
-        @media (max-width: 359px) { .sbc-opt-tab-btn svg { display:none; } }
+        @media (max-width: 460px) { .sbc-opt-tab-btn svg { display:none; } }
         .sbc-opt-tab-btn { padding:0 4px; }
         @media (prefers-reduced-motion: reduce) {
-            :root { --pt-dur-fast: 0ms; --pt-dur-base: 0ms; --pt-dur-slow: 0ms; }
             #sbc-opt-panel.open { animation: none; }
             #sbc-opt-fab, .sbc-opt-btn, .sbc-opt-chip, .sbc-opt-queuerow,
             .sbc-opt-tilebtn, #sbc-opt-progress .p-fill,
@@ -6571,282 +6227,6 @@
         setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity .4s'; }, ms);
         setTimeout(() => { try { wrap.removeChild(t); } catch (e) {} }, ms + 500);
     }
-    // ================= v6.1.0: UX-Helfer =================
-    // Alle rein additiv: sie lesen den bestehenden Zustand und blenden um,
-    // keiner ersetzt einen Handler. Aufrufe sind billig und idempotent.
-
-    /** Kurzfassung der Info-Box in EINER Zeile (Statuszeile ueber den Kacheln). */
-    function infoSummaryParts(tab, st) {
-        const parts = [];
-        const ratingTab = tab !== 'kaufen' && tab !== 'mehr' && tab !== 'galerie';
-        if (ratingTab && st.target) parts.push({ k: 'Ziel', v: String(st.target), num: true });
-        if (ratingTab && st.rarity && st.rarity !== 'keine') parts.push({ k: '', v: st.rarity });
-        parts.push({ k: 'Verein', v: String(st.pool), num: true });
-        if (st.status) parts.push({ k: '', v: st.status });
-        return parts;
-    }
-    function renderInfoSummary() {
-        const el = document.getElementById('sbc-opt-infobar-txt');
-        if (!el) return;
-        const panel = document.getElementById('sbc-opt-panel');
-        const tab = panel ? panel.getAttribute('data-tab') : '';
-        const parts = infoSummaryParts(tab, {
-            target: STATE.sbc && STATE.sbc.targetOVR,
-            rarity: ui.rarity ? ui.rarity.textContent : '',
-            pool: STATE.pool ? STATE.pool.length : 0,
-            status: ui.status ? ui.status.textContent : ''
-        });
-        const low = ui.availability && ui.availability.querySelector('.low');
-        const html = (low ? '<span class="warn">zu wenig Vorgabe-Karten</span> · ' : '') +
-            parts.map(function (p) {
-                return (p.k ? escapeHtml(p.k) + ' ' : '') +
-                    (p.num ? '<b>' + escapeHtml(p.v) + '</b>' : escapeHtml(p.v));
-            }).join(' · ');
-        if (el.innerHTML !== html) el.innerHTML = html;
-    }
-    function setInfoOpen(open, remember) {
-        const panel = document.getElementById('sbc-opt-panel');
-        const bar = document.getElementById('sbc-opt-infobar');
-        if (panel) panel.setAttribute('data-info', open ? 'open' : 'closed');
-        if (bar) bar.setAttribute('aria-expanded', open ? 'true' : 'false');
-        if (remember) { try { localStorage.setItem('sbcOptInfoOpen', open ? '1' : '0'); } catch (e) {} }
-    }
-
-    /** "Spieler laden" ist nach dem ersten Laden nur noch eine Statuszeile. */
-    function syncLoadBtn() {
-        if (!ui.load || STATE.loading) return;
-        const n = STATE.pool ? STATE.pool.length : 0;
-        ui.load.classList.toggle('is-loaded', n > 0);
-        const txt = n > 0 ? '↻ Verein neu laden (' + n + ')' : 'Spieler laden';
-        // Nur bei echter Aenderung schreiben: der Knopf wird beobachtet
-        // (initUxHelpers), jedes Setzen waere eine neue Mutation - Endlosschleife.
-        if (ui.load.textContent !== txt) ui.load.textContent = txt;
-    }
-
-    /**
-     * Warum "Optimieren + Eintragen" (noch) nichts tun wird - als Hinweis
-     * unter dem Knopf. Der Knopf bleibt bewusst klickbar: onRunClick sucht
-     * beim Tipp selbst noch nach Vorgaben (ensureSetChallenges), eine harte
-     * Sperre wuerde genau diesen Weg abschneiden.
-     */
-    function runBlockReason(st) {
-        if (st.loading) return 'Verein lädt noch …';
-        if (!st.hasSbc) return 'Öffne zuerst eine SBC-Challenge im Spiel.';
-        if (!st.pool) return 'Zuerst den Verein laden (Knopf oben).';
-        return null;
-    }
-    function renderRunHint() {
-        const hint = document.getElementById('sbc-opt-runhint');
-        if (!hint || !ui.run) return;
-        const sbc = STATE.sbc || {};
-        const why = runBlockReason({
-            loading: !!STATE.loading,
-            hasSbc: !!(sbc.targetOVR || (sbc.playerLevelConstraints || []).length ||
-                (sbc.rarityConstraints || []).length || (sbc.qualityConstraints || []).length),
-            pool: STATE.pool ? STATE.pool.length : 0
-        });
-        hint.hidden = !why;
-        if (hint.textContent !== (why || '')) hint.textContent = why || '';
-        ui.run.classList.toggle('is-blocked', !!why);
-    }
-
-    /** Pack-Opener: im Store oben (vor den Reitern), sonst an seinem Platz am Ende. */
-    function placePackSection() {
-        const sec = document.getElementById('sbc-opt-packsection');
-        const panel = document.getElementById('sbc-opt-panel');
-        if (!sec || !panel) return;
-        const inStore = !sec.classList.contains('sbc-opt-hidden');
-        const body = sec.parentNode, tabs = panel.querySelector('#sbc-opt-tabs');
-        panel.toggleAttribute('data-store', !!inStore);
-        if (!body || !tabs || tabs.parentNode !== body) return;
-        if (inStore && sec.nextSibling !== tabs) body.insertBefore(sec, tabs);
-        else if (!inStore && body.lastElementChild !== sec) body.appendChild(sec);
-    }
-
-    /** "Mehrere erledigen": welcher Weg ist sichtbar? */
-    let multiModePicked = null;
-    function multiModeFor(picked, queueAvailable) {
-        if (picked === 'vorlagen' || picked === 'batch') return picked;
-        if (picked === 'reihe') return queueAvailable ? 'reihe' : 'batch';
-        return queueAvailable ? 'reihe' : 'batch';
-    }
-    function syncMultiModes() {
-        const box = document.getElementById('sbc-opt-multi');
-        const queue = document.getElementById('sbc-opt-queuesection');
-        if (!box || !queue) return;
-        const queueOk = !queue.classList.contains('sbc-opt-hidden');
-        const mode = multiModeFor(multiModePicked, queueOk);
-        box.setAttribute('data-mode', mode);
-        box.classList.toggle('has-queue', queueOk);
-        Array.from(box.querySelectorAll('#sbc-opt-multi-modes .sbc-opt-chip')).forEach(function (b) {
-            const on = b.getAttribute('data-mode') === mode;
-            b.classList.toggle('on', on);
-            b.setAttribute('aria-pressed', on ? 'true' : 'false');
-        });
-    }
-
-    /**
-     * Naechster Schritt: eine fixierte Leiste, die den ersten sichtbaren
-     * Hauptknopf (.sbc-opt-btn.primary) im Ergebnis-Kasten ausloest - aber
-     * nur, solange der selbst aus dem Blick gescrollt ist. Kein eigener
-     * Ablauf: der Klick geht an den echten Knopf.
-     */
-    const nextBarRefreshers = [];
-    function nextBarTarget(resultEl) {
-        const list = Array.from(resultEl.querySelectorAll('.sbc-opt-btn.primary'));
-        for (const b of list) {
-            if (b.disabled || b.classList.contains('is-busy')) continue;
-            if (b.offsetParent === null) continue;
-            return b;
-        }
-        return null;
-    }
-    function wireNextBar(bar, resultEl, root) {
-        if (!bar || !resultEl) return;
-        const btn = bar.querySelector('button');
-        const label = btn && btn.querySelector('span');
-        if (!btn || !label) return;
-        let target = null, targetVisible = false, io = null;
-        const render = function () {
-            bar.hidden = !(target && !targetVisible);
-            if (target) label.textContent = target.textContent.trim();
-        };
-        const refresh = function () {
-            const t = nextBarTarget(resultEl);
-            if (t !== target) {
-                if (io && target) io.unobserve(target);
-                target = t; targetVisible = false;
-                if (io && t) io.observe(t);
-            }
-            render();
-        };
-        if (typeof IntersectionObserver === 'function') {
-            io = new IntersectionObserver(function (entries) {
-                entries.forEach(function (e) { if (e.target === target) targetVisible = e.isIntersecting; });
-                render();
-            }, { root: root || null, threshold: 0.6 });
-        }
-        if (typeof MutationObserver === 'function') {
-            new MutationObserver(refresh).observe(resultEl, { childList: true, subtree: true,
-                attributes: true, attributeFilter: ['class', 'disabled', 'style'] });
-        }
-        btn.addEventListener('click', function () { if (target && !target.disabled) target.click(); });
-        nextBarRefreshers.push(refresh);
-        refresh();
-    }
-
-    /** v6.3.0: Installations-Link nur, wenn es keine Bruecke gibt. */
-    function syncBridgeLink() {
-        const a = document.getElementById('sbc-opt-bridge-install');
-        if (!a) return;
-        const none = !bridgeKind();
-        if (a.hidden === none) a.hidden = !none;
-    }
-    function initUxHelpers(panel) {
-        const bar = panel.querySelector('#sbc-opt-infobar');
-        if (bar) {
-            let open = false;
-            try { open = localStorage.getItem('sbcOptInfoOpen') === '1'; } catch (e) {}
-            setInfoOpen(open, false);
-            bar.addEventListener('click', function () {
-                setInfoOpen(panel.getAttribute('data-info') !== 'open', true);
-            });
-        }
-        const modes = panel.querySelector('#sbc-opt-multi-modes');
-        if (modes) modes.addEventListener('click', function (ev) {
-            const b = ev.target.closest('.sbc-opt-chip');
-            if (!b) return;
-            multiModePicked = b.getAttribute('data-mode');
-            syncMultiModes();
-        });
-        wireNextBar(panel.querySelector('#sbc-opt-futbin-next'), panel.querySelector('#sbc-opt-futbin-result'), panel);
-        wireNextBar(panel.querySelector('#sbc-opt-gallery-next'), panel.querySelector('#sbc-opt-gallery-result'), panel);
-        // Beobachten statt einhaengen: die bestehenden Schreiber (setStatus,
-        // refreshSbcInfoUI, setTab, syncQueueSection, syncPackSection,
-        // onLoadClick) bleiben unveraendert - die Helfer folgen dem, was sie
-        // ins DOM schreiben. Ein Durchlauf pro Mikro-Task, egal wie viele
-        // Aenderungen (beim Club-Laden schreibt refreshSbcInfoUI pro Seite).
-        if (typeof MutationObserver !== 'function') return;
-        let queued = false;
-        const runAll = function () {
-            queued = false;
-            try { renderInfoSummary(); } catch (e) {}
-            try { syncLoadBtn(); } catch (e) {}
-            try { renderRunHint(); } catch (e) {}
-            try { syncMultiModes(); } catch (e) {}
-            try { placePackSection(); } catch (e) {}
-            try { syncBridgeLink(); } catch (e) {}
-            nextBarRefreshers.forEach(function (f) { try { f(); } catch (e) {} });
-        };
-        const schedule = function () { if (!queued) { queued = true; Promise.resolve().then(runAll); } };
-        const mo = new MutationObserver(schedule);
-        const info = panel.querySelector('#sbc-opt-info');
-        if (info) mo.observe(info, { childList: true, subtree: true, characterData: true });
-        mo.observe(panel, { attributes: true, attributeFilter: ['data-tab'] });
-        ['#sbc-opt-queuesection', '#sbc-opt-packsection'].forEach(function (q) {
-            const el = panel.querySelector(q);
-            if (el) mo.observe(el, { attributes: true, attributeFilter: ['class'] });
-        });
-        const load = panel.querySelector('#sbc-opt-load');
-        if (load) mo.observe(load, { childList: true, characterData: true, subtree: true });
-        runAll();
-    }
-
-    /**
-     * v6.0.0: die Stufen-Auswahlen unter "Erweiterte Einstellungen" (Aus /
-     * Leicht / Normal / Stark) werden als Segment-Schalter gezeigt -
-     * Produkt-Regel "Schnellwahl als Segment, kein Dropdown (versteckt die
-     * Auswahl)". ADDITIV: das <select> bleibt das Element, das readConfig()
-     * liest; es wird nur versteckt, und ein Tipp setzt seinen Wert und
-     * feuert 'change' wie eine Hand-Auswahl. Der Rarity-Modus bleibt ein
-     * Dropdown (drei lange Texte passen in keine Leiste).
-     * Kurztext = Optionstext bis zur Klammer ("Aus (nur Waste zählt)" -> "Aus"),
-     * der volle Text steht im title.
-     */
-    const SEGMENT_SELECT_IDS = ['sbc-opt-scarcity', 'sbc-opt-rarityguard', 'sbc-opt-totwsoft',
-        'sbc-opt-specialsoft', 'sbc-opt-storagebonus', 'sbc-opt-untradeable'];
-    function segmentShortLabel(text) {
-        const t = String(text == null ? '' : text).trim();
-        const i = t.indexOf(' (');
-        return i > 0 ? t.slice(0, i) : t;
-    }
-    function enhanceSelectSegments(root) {
-        SEGMENT_SELECT_IDS.forEach(function (id) {
-            const sel = root.querySelector('#' + id);
-            if (!sel || sel.dataset.ptSegment) return;
-            sel.dataset.ptSegment = '1';
-            const box = document.createElement('div');
-            box.className = 'sbc-opt-chips sbc-opt-chips-sm';
-            box.setAttribute('role', 'group');
-            const sync = function () {
-                Array.from(box.children).forEach(function (b) {
-                    const on = b.getAttribute('data-value') === sel.value;
-                    b.classList.toggle('on', on);
-                    b.setAttribute('aria-pressed', on ? 'true' : 'false');
-                });
-            };
-            Array.from(sel.options).forEach(function (o) {
-                const b = document.createElement('button');
-                b.type = 'button';
-                b.className = 'sbc-opt-chip';
-                b.setAttribute('data-value', o.value);
-                b.textContent = segmentShortLabel(o.textContent);
-                b.title = o.textContent;
-                b.addEventListener('click', function () {
-                    if (sel.value === o.value) return;
-                    sel.value = o.value;
-                    sel.dispatchEvent(new Event('change', { bubbles: true }));
-                });
-                box.appendChild(b);
-            });
-            sel.addEventListener('change', sync);
-            sel.classList.add('sbc-opt-segment-src');
-            sel.parentNode.insertBefore(box, sel.nextSibling);
-            const row = sel.closest('.sbc-opt-row');
-            if (row) row.classList.add('sbc-opt-segrow');
-            sync();
-        });
-    }
     function buildPanel() {
         const fab = document.createElement('button');
         fab.id = 'sbc-opt-fab';
@@ -6861,7 +6241,7 @@
         panel.id = 'sbc-opt-panel';
         panel.innerHTML = `
             <div class="sbc-opt-header">
-                <span><img class="sbc-opt-logo" src="` + ICON_URI + `" alt="">PitTools <span class="sbc-opt-ver">` + VERSION + `</span></span>
+                <span><img class="sbc-opt-logo" src="` + ICON_URI + `" alt="">PitTools <span style="font-size:11px;font-weight:400;opacity:.75;">v` + VERSION + `</span></span>
                 <span id="sbc-opt-close" style="cursor:pointer;">✕</span>
             </div>
             <div class="sbc-opt-body">
@@ -6875,14 +6255,6 @@
                 <!-- v5.31.0: Kennzahl-Kacheln statt Textzeilen (Beschriftung
                      klein oben, Wert darunter). Rating-Kacheln nur im Rating-
                      Reiter, die Technikzeile nur unter "Mehr". -->
-                <!-- v6.1.0: Statuszeile statt dauerhaft offener Kacheln. Die
-                     Kacheln bleiben (alle IDs, alle Schreiber unveraendert),
-                     sie klappen nur auf Tipp auf; renderInfoSummary() fasst
-                     die wichtigsten Werte in einer Zeile zusammen. -->
-                <button type="button" class="sbc-opt-infobar" id="sbc-opt-infobar" aria-expanded="false" aria-controls="sbc-opt-info">
-                    <span class="sbc-opt-infobar-txt" id="sbc-opt-infobar-txt">bereit</span>
-                    <span class="sbc-opt-infobar-more">Details</span>
-                </button>
                 <div class="sbc-opt-info sbc-opt-stats" id="sbc-opt-info">
                     <div class="sbc-opt-stat sbc-opt-only-rating"><span class="k">Ziel-OVR</span><b id="sbc-opt-target">–</b></div>
                     <div class="sbc-opt-stat sbc-opt-only-rating"><span class="k">Vorgaben</span><b id="sbc-opt-rarity">keine</b></div>
@@ -6902,8 +6274,8 @@
                     <button type="button" class="sbc-opt-tab-btn" data-tab="mehr" role="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/><circle cx="5" cy="12" r="1.5"/></svg>Mehr</button>
                 </div>
                 <!-- REITER KAUFEN: FUTBIN-LOESUNG (v5.16.0) fuer SBCs, die man
-                     zusammenkauft. Holt die Community-Lösungen der offenen
-                     Challenge über die Brücke, gleicht mit dem Verein ab, prüft
+                     zusammenkauft. Holt die Community-Loesungen der offenen
+                     Challenge ueber die Bruecke, gleicht mit dem Verein ab, prueft
                      am Markt, traegt eigene Karten echt und fehlende als Konzept-
                      Spieler ein, kauft die fehlenden schrittweise nach. -->
                 <div class="sbc-opt-tab" id="sbc-opt-tab-kaufen" role="tabpanel">
@@ -6912,21 +6284,21 @@
                          erledigte sind gedaempft (setFutbinStep). -->
                     <div class="sbc-opt-flow" id="sbc-opt-futbin-flow">
                         <div class="step on" data-step="1"><span class="dot">1</span><span class="lbl">Suchen</span></div>
-                        <div class="step" data-step="2"><span class="dot">2</span><span class="lbl">Einfügen</span></div>
+                        <div class="step" data-step="2"><span class="dot">2</span><span class="lbl">Einfuegen</span></div>
                         <div class="step" data-step="3"><span class="dot">3</span><span class="lbl">Kaufen</span></div>
                         <div class="step" data-step="4"><span class="dot">4</span><span class="lbl">Abgeben</span></div>
                     </div>
                     <div class="sbc-opt-card">
-                        <label class="sbc-opt-chiplabel">Preise für</label>
+                        <label class="sbc-opt-chiplabel">Preise fuer</label>
                         <div class="sbc-opt-chips" id="sbc-opt-futbin-platform"></div>
                         <!-- v5.31.0: Schalter statt Haekchen - die Checkbox bleibt
                              das Element (ID, .checked), nur die Optik ist neu. -->
                         <label class="sbc-opt-switch">
                             <input type="checkbox" id="sbc-opt-futbin-market" checked>
                             <span class="track" aria-hidden="true"></span>
-                            <span class="txt">Live-Preise am EA-Markt prüfen<small>empfohlen · dauert ein paar Sekunden pro Karte</small></span>
+                            <span class="txt">Live-Preise am EA-Markt pruefen<small>empfohlen · dauert ein paar Sekunden pro Karte</small></span>
                         </label>
-                        <button class="sbc-opt-btn primary sbc-opt-btn-icon" id="sbc-opt-futbin-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><span>Futbin-Lösungen suchen</span></button>
+                        <button class="sbc-opt-btn primary sbc-opt-btn-icon" id="sbc-opt-futbin-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><span>Futbin-Loesungen suchen</span></button>
                     </div>
                     <!-- v5.30.0: das Ergebnis steht DIREKT unter der Hauptaktion;
                          die Nebenaktion (Nachkaufen) kommt danach. -->
@@ -6937,19 +6309,14 @@
                          dann derselbe schrittweise Kauf-Lauf. -->
                     <div class="sbc-opt-group-title sbc-opt-secondary">Ohne futbin</div>
                     <button class="sbc-opt-btn ghost" id="sbc-opt-futbin-buyconcepts" style="margin-top:0;">Konzept-Spieler im Kader nachkaufen</button>
-                    <div class="sbc-opt-debug" style="margin-top:-4px;">Für Kader, die schon Konzept-Spieler enthalten (z.B. nach Neuladen oder von Hand eingesetzt).</div>
-                </div>
-                <!-- v6.1.0: Naechster Schritt (wireNextBar) - loest den Hauptknopf im
-                     Ergebnis aus, sobald der aus dem Blick gescrollt ist. -->
-                <div class="sbc-opt-nextbar" id="sbc-opt-futbin-next" hidden>
-                    <button type="button" class="sbc-opt-btn primary sbc-opt-nextbtn"><small>Nächster Schritt</small><span></span></button>
+                    <div class="sbc-opt-debug" style="margin-top:-4px;">Fuer Kader, die schon Konzept-Spieler enthalten (z.B. nach Neuladen oder von Hand eingesetzt).</div>
                 </div>
                 </div>
                 <!-- REITER GALERIE (v5.32.0): FUT-Gallery-Sets von fut.gg kaufen. -->
                 <div class="sbc-opt-tab" id="sbc-opt-tab-galerie" role="tabpanel">
                     <div class="sbc-opt-flow" id="sbc-opt-gallery-flow">
                         <div class="step on" data-step="1"><span class="dot">1</span><span class="lbl">Sets laden</span></div>
-                        <div class="step" data-step="2"><span class="dot">2</span><span class="lbl">Set wählen</span></div>
+                        <div class="step" data-step="2"><span class="dot">2</span><span class="lbl">Set waehlen</span></div>
                         <div class="step" data-step="3"><span class="dot">3</span><span class="lbl">Kaufen</span></div>
                         <div class="step" data-step="4"><span class="dot">4</span><span class="lbl">Bewerten</span></div>
                     </div>
@@ -6966,35 +6333,32 @@
                         </div>
                         <label class="sbc-opt-chiplabel">Reihenfolge der Sets</label>
                         <div class="sbc-opt-chips" id="sbc-opt-gallery-sort">
-                            <button type="button" class="sbc-opt-chip on" data-sort="guenstig">Günstigste Tokens</button>
+                            <button type="button" class="sbc-opt-chip on" data-sort="guenstig">Guenstigste Tokens</button>
                             <button type="button" class="sbc-opt-chip" data-sort="fertig">Fast fertig</button>
                             <button type="button" class="sbc-opt-chip" data-sort="tokens">Meiste Tokens</button>
                         </div>
-                        <button class="sbc-opt-btn primary sbc-opt-btn-icon" id="sbc-opt-gallery-load"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span>Nächstes Set kaufen</span></button>
+                        <button class="sbc-opt-btn primary sbc-opt-btn-icon" id="sbc-opt-gallery-load"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span>Naechstes Set kaufen</span></button>
                     </div>
                     <div class="sbc-opt-result" id="sbc-opt-gallery-result"></div>
                     <!-- v5.57.0: Stand zwischen PC und Handy uebertragen (localStorage ist pro Geraet). -->
                     <details class="sbc-opt-details-toggle" id="sbc-opt-gallery-sync">
-                        <summary>Stand auf anderes Gerät übertragen</summary>
-                        <div class="sbc-opt-dim">Erledigte Sets und Merkliste liegen pro Gerät. Hier Code erzeugen, auf dem anderen Gerät einfügen und übernehmen - zusammengeführt, nichts geht verloren.</div>
-                        <textarea id="sbc-opt-gallery-code" rows="3" placeholder="Code hier einfügen ..." style="width:100%;box-sizing:border-box;margin:8px 0;font-family:monospace;font-size:11px;"></textarea>
+                        <summary>Stand auf anderes Geraet uebertragen</summary>
+                        <div class="sbc-opt-dim">Erledigte Sets und Merkliste liegen pro Geraet. Hier Code erzeugen, auf dem anderen Geraet einfuegen und uebernehmen - zusammengefuehrt, nichts geht verloren.</div>
+                        <textarea id="sbc-opt-gallery-code" rows="3" placeholder="Code hier einfuegen ..." style="width:100%;box-sizing:border-box;margin:8px 0;font-family:monospace;font-size:11px;"></textarea>
                         <div class="sbc-opt-inline" style="margin:0;">
                             <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gallery-export" style="margin:0;">Code erzeugen</button>
-                            <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gallery-import" style="margin:0;">Code übernehmen</button>
+                            <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gallery-import" style="margin:0;">Code uebernehmen</button>
                         </div>
                     </details>
-                    <div class="sbc-opt-debug">Quelle fut.gg (günstigste Aufstellung je Set). Bewertet wird im Spiel: Galerie → Set → Bewerten. Die Karten zählen, sobald sie im Verein waren, und dürfen danach verkauft werden.</div>
-                    <div class="sbc-opt-nextbar" id="sbc-opt-gallery-next" hidden>
-                        <button type="button" class="sbc-opt-btn primary sbc-opt-nextbtn"><small>Nächster Schritt</small><span></span></button>
-                    </div>
+                    <div class="sbc-opt-debug">Quelle fut.gg (guenstigste Aufstellung je Set). Bewertet wird im Spiel: Galerie → Set → Bewerten. Die Karten zaehlen, sobald sie im Verein waren, und duerfen danach verkauft werden.</div>
                 </div>
                 <!-- REITER RATING: der bisherige Optimizer (Rating-SBCs). -->
                 <div class="sbc-opt-tab" id="sbc-opt-tab-rating" role="tabpanel">
-                <!-- v6.1.0: der Vorlagen-Knopf steht im Bereich "Mehrere
-                     erledigen" (unten) - Rasmus, 25.09.: die drei Mehrfach-Wege
-                     gehoeren zusammen. "Spieler laden" ist nach dem ersten
-                     Laden nur noch eine Statuszeile (syncLoadBtn). -->
-                <button class="sbc-opt-btn ghost" id="sbc-opt-load" style="margin-top:0;">Spieler laden</button>
+                <!-- VORLAGEN: gespeicherte Auto-Laeufe, eigene Vollbild-
+                     Oberflaeche. Erster Knopf im Rating-Reiter und BLAU (Rasmus,
+                     28.08.: "ganz oben ... einfach 'Vorlagen' reicht"). -->
+                <button class="sbc-opt-btn blue" id="sbc-opt-vorlagen-btn" style="margin-top:0;">Vorlagen</button>
+                <button class="sbc-opt-btn ghost" id="sbc-opt-load">Spieler laden</button>
                 <div class="sbc-opt-row" style="margin-bottom:0;">
                     <label class="sbc-opt-chiplabel">Min. Rating pro Spieler</label>
                     <div class="sbc-opt-chips" id="sbc-opt-minrating-chips"></div>
@@ -7146,21 +6510,7 @@
                 </div>
                 </details>
                 <button class="sbc-opt-btn primary" id="sbc-opt-run">Optimieren + Eintragen</button>
-                <!-- v6.1.0: warum die Hauptaktion (noch) nicht greift - Hinweis
-                     statt Fehler-Toast nach dem Tipp (runBlockReason). -->
-                <div class="sbc-opt-runhint" id="sbc-opt-runhint" hidden></div>
                 <div class="sbc-opt-result" id="sbc-opt-result"></div>
-                <!-- v6.1.0: MEHRERE ERLEDIGEN - Reihe, Batch und Vorlagen in EINEM
-                     Bereich mit Umschalter (syncMultiModes). Die drei
-                     Abschnitte behalten ihre IDs und Handler; der Umschalter
-                     blendet nur um. -->
-                <div class="sbc-opt-multi" id="sbc-opt-multi" data-mode="batch">
-                    <div class="sbc-opt-group-title" style="margin-top:0;">Mehrere erledigen</div>
-                    <div class="sbc-opt-chips" id="sbc-opt-multi-modes" role="group" aria-label="Art">
-                        <button type="button" class="sbc-opt-chip" data-mode="reihe">Dieses Set</button>
-                        <button type="button" class="sbc-opt-chip on" data-mode="batch">Diese SBC N&#215;</button>
-                        <button type="button" class="sbc-opt-chip" data-mode="vorlagen">Vorlagen</button>
-                    </div>
                 <!-- SBC-REIHE: verschiedene Challenges EINES Sets nacheinander.
                      Nur sichtbar, wenn das offene Set mehr als eine Challenge
                      hat (syncQueueSection()). Vorschau, Plan-Check und die
@@ -7181,7 +6531,7 @@
                 </div>
                 <!-- BATCH: dieselbe SBC mehrfach. Zwei Schritte - erst planen und
                      ansehen, dann EINE Freigabe für den ganzen Lauf. -->
-                <div class="sbc-opt-batch" id="sbc-opt-batchsection">
+                <div class="sbc-opt-batch">
                     <label class="sbc-opt-chiplabel">SBC mehrfach abschließen</label>
                     <div class="sbc-opt-chips" id="sbc-opt-batch-chips"></div>
                     <div class="sbc-opt-chipedit sbc-opt-inline" id="sbc-opt-batch-edit">
@@ -7192,13 +6542,6 @@
                     <input type="number" id="sbc-opt-batch-count" value="5" min="1" max="10"
                            style="margin-bottom:10px;">
                     <button class="sbc-opt-btn plan" id="sbc-opt-batch-plan">Teams planen (Vorschau)</button>
-                </div>
-                <!-- VORLAGEN: gespeicherte Auto-Laeufe, eigene Vollbild-
-                     Oberflaeche (Rasmus, 28.08.: "einfach 'Vorlagen' reicht"). -->
-                <div class="sbc-opt-batch" id="sbc-opt-vorlagensection">
-                    <div class="sbc-opt-debug" style="margin:0 0 4px;">Gespeicherte Abläufe, die mehrere SBCs nacheinander erledigen - abgegeben wird nur bei 100 % Confidence.</div>
-                    <button class="sbc-opt-btn blue" id="sbc-opt-vorlagen-btn">Vorlagen</button>
-                </div>
                 </div>
                 <!-- VORSCHAU + FREIGABE fuer BEIDE Plan-Sorten (Batch und
                      SBC-Reihe). Steht bewusst UNTER beiden Abschnitten: die
@@ -7211,16 +6554,6 @@
                     <button class="sbc-opt-btn danger" id="sbc-opt-batch-run" style="display:none;">
                         Alle eintragen + abgeben
                     </button>
-                    <!-- v6.1.0: Freigabe im Panel statt window.confirm - Frage,
-                         Zusammenfassung, dann Abbrechen / Ja (showBatchConfirm). -->
-                    <div class="sbc-opt-confirm" id="sbc-opt-batch-confirm" hidden>
-                        <div class="sbc-opt-confirm-title" id="sbc-opt-batch-confirm-title"></div>
-                        <div class="sbc-opt-confirm-body" id="sbc-opt-batch-confirm-body"></div>
-                        <div class="sbc-opt-confirm-actions">
-                            <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-batch-confirm-no">Abbrechen</button>
-                            <button type="button" class="sbc-opt-btn danger" id="sbc-opt-batch-confirm-yes">Ja, alle abgeben</button>
-                        </div>
-                    </div>
                     <details id="sbc-opt-batch-details" class="sbc-opt-details-toggle" style="display:none;">
                         <summary id="sbc-opt-batch-detail-summary">Teams im Detail (0)</summary>
                         <div id="sbc-opt-batch-detail-body"></div>
@@ -7231,20 +6564,16 @@
                 <div class="sbc-opt-tab" id="sbc-opt-tab-mehr" role="tabpanel">
                     <div class="sbc-opt-stats sbc-opt-card" style="margin-bottom:12px;">
                         <div class="sbc-opt-stat"><span class="k">Version</span><b>v` + VERSION + `</b></div>
-                        <div class="sbc-opt-stat"><span class="k">Brücke zu futbin</span><b id="sbc-opt-bridge-status">–</b></div>
+                        <div class="sbc-opt-stat"><span class="k">Bruecke zu futbin</span><b id="sbc-opt-bridge-status">–</b></div>
                     </div>
-                    <!-- v6.3.0: ohne Bruecke fehlen futbin-Suche und Galerie - der Weg
-                         zur Installation steht direkt da (syncBridgeLink). In der App
-                         gibt es die Bruecke nativ, dort bleibt der Link verborgen. -->
-                    <a class="sbc-opt-bridge-link" id="sbc-opt-bridge-install" href="https://raw.githubusercontent.com/Rasmus33/pittools/main/pittools-bridge.user.js" target="_blank" rel="noopener" hidden>PitTools Bridge in Tampermonkey installieren ↗<small>Ohne sie fehlen futbin-Lösungssuche und Galerie.</small></a>
                     <div class="sbc-opt-group-title" style="margin-top:0;">Transfermarkt</div>
                     <!-- v5.37.0: alle unverkauften Spieler der Transferliste zum Marktpreis listen. -->
                     <button type="button" class="sbc-opt-btn primary" id="sbc-opt-tools-sell" style="margin-top:0;"><span>Transferliste zum Marktpreis listen</span></button>
-                    <div class="sbc-opt-debug">Liest EAs Transferliste, holt je Karte das günstigste aktuelle Angebot, zeigt eine Vorschau und listet nach Rückfrage nacheinander (1 Stunde). Aktive und verkaufte Karten bleiben unberührt.</div>
+                    <div class="sbc-opt-debug">Liest EAs Transferliste, holt je Karte das guenstigste aktuelle Angebot, zeigt eine Vorschau und listet nach Rueckfrage nacheinander (1 Stunde). Aktive und verkaufte Karten bleiben unberuehrt.</div>
                     <div class="sbc-opt-result" id="sbc-opt-tools-result"></div>
                     <div class="sbc-opt-group-title">Werkzeuge</div>
                     <button class="sbc-opt-btn ghost" id="sbc-opt-diag" style="margin-top:0;">Diagnose in Konsole schreiben</button>
-                    <div class="sbc-opt-debug">Die Diagnose ist ein JSON-Report für die Fehlersuche (Konsole bzw. App-Log).</div>
+                    <div class="sbc-opt-debug">Die Diagnose ist ein JSON-Report fuer die Fehlersuche (Konsole bzw. App-Log).</div>
                 </div>
                 <!-- PACK-OPENER (Store, Ticket #69/#76): nur in der Store-Ansicht
                      sichtbar (syncPackSection()) - Pack-Oeffnen ist unumkehrbar,
@@ -7260,7 +6589,7 @@
                                 style="margin:0;padding:6px 10px;width:auto;flex:0 0 auto;">↻</button>
                     </div>
                     <!-- "Test: 1 Pack oeffnen" ist weg (Rasmus: "brauchen wir auch
-                         nicht mehr, 'Alle öffnen' reicht vollkommen"). Wer einen
+                         nicht mehr, 'Alle oeffnen' reicht vollkommen"). Wer einen
                          Testlauf will, traegt bei Anzahl eine 1 ein. -->
                     <div class="sbc-opt-compact" style="margin-top:2px;margin-bottom:8px;">
                         <label>Anzahl (leer = alle)</label>
@@ -7279,8 +6608,6 @@
             </div>
         `;
         document.body.appendChild(panel);
-        enhanceSelectSegments(panel);
-        initUxHelpers(panel);
         // Fortschritts-Overlay: bewusst ausserhalb des Panels, damit es auch
         // sichtbar ist, wenn das Panel zu ist.
         const prog = document.createElement('div');
@@ -7376,7 +6703,6 @@
             batchPlan: panel.querySelector('#sbc-opt-batch-plan'),
             batchPreview: panel.querySelector('#sbc-opt-batch-preview'),
             batchRun: panel.querySelector('#sbc-opt-batch-run'),
-            batchConfirm: panel.querySelector('#sbc-opt-batch-confirm'),
             batchDetails: panel.querySelector('#sbc-opt-batch-details'),
             batchDetailSummary: panel.querySelector('#sbc-opt-batch-detail-summary'),
             batchDetailBody: panel.querySelector('#sbc-opt-batch-detail-body'),
@@ -7435,12 +6761,6 @@
         });
         ui.batchPlan.addEventListener('click', onBatchPlanClick);
         ui.batchRun.addEventListener('click', onBatchRunClick);
-        (function () {
-            const y = panel.querySelector('#sbc-opt-batch-confirm-yes');
-            const n = panel.querySelector('#sbc-opt-batch-confirm-no');
-            if (y) y.addEventListener('click', onBatchConfirmYes);
-            if (n) n.addEventListener('click', onBatchConfirmNo);
-        })();
         ui.queueRefresh.addEventListener('click', function () {
             queueTriedSet = null;
             queueLoadError = null;
@@ -7860,7 +7180,7 @@
                 p.style.left = ''; p.style.top = '';
                 p.style.right = '22px'; p.style.bottom = '90px';
                 try { localStorage.removeItem('sbcOptPanelPos'); } catch (e) {}
-                warn('Panel lag ausserhalb des Bildschirms - Position zurückgesetzt.');
+                warn('Panel lag ausserhalb des Bildschirms - Position zurueckgesetzt.');
             }
         } catch (e) {}
     }
@@ -8131,7 +7451,7 @@
             const b = document.getElementById('sbc-opt-bridge-status');
             if (b) {
                 const k = bridgeKind();
-                b.textContent = k === 'app' ? 'App (WebView)' : k === 'tm' ? 'Tampermonkey-Script' : 'keine';
+                b.textContent = k === 'app' ? 'App (WebView)' : k === 'tm' ? 'Tampermonkey-Script' : 'keine - Bridge-Script installieren';
             }
         }
     }
@@ -8292,7 +7612,7 @@
                     const ring = STATE.diag.featureFlips || (STATE.diag.featureFlips = []);
                     ring.push({ flag: k, from: lastFeatureFlags[k], to: now[k], at: Date.now() });
                     if (ring.length > 10) ring.shift();
-                    log('EA-Feature-Schalter geändert:', k, lastFeatureFlags[k], '->', now[k]);
+                    log('EA-Feature-Schalter geaendert:', k, lastFeatureFlags[k], '->', now[k]);
                     if (k === 'SBC_ENABLED' && now[k] === true) {
                         toast('EA hat SBCs in der Web App freigeschaltet - Panel-Funktionen wieder nutzbar.', 'ok');
                         refreshDiagUI();
@@ -8337,7 +7657,6 @@
     // ========================================================================
     // [FUTBIN-BEGIN]
     const FUTBIN_HOST = 'https://www.futbin.com';
-    const FUTGG_HOST = 'https://www.fut.gg';
     /** Spieljahr fuer futbin-URLs: "fc27" -> "27"; sonst aus window.fut_year. */
     function futbinYear(gameName, futYear) {
         const m = String(gameName || '').match(/^fc(\d\d)$/i);
@@ -8397,108 +7716,6 @@
         }
         return out;
     }
-    // Die Community-Seite hat andere Spalten. Ein unbekannter Filter wird
-    // von futbin IGNORIERT: nur explizit passende Challenge/Jahr-Links nehmen.
-    function parseFutbinCommunitySolutions(html, year, challengeId) {
-        const out = [];
-        for (const row of String(html || '').match(/<tr[\s>][\s\S]*?<\/tr>/gi) || []) {
-            const challenge = row.match(/href="\/(\d\d)\/squad-building-challenges\/[^/"\s]+\/(\d+)\//);
-            const squad = row.match(/href="\/(\d\d)\/squad\/(\d+)\/sbc"/);
-            if (!challenge || !squad || challenge[1] !== String(year) || squad[1] !== String(year) ||
-                challenge[2] !== String(challengeId)) continue;
-            const cells = (row.match(/<td[\s>][\s\S]*?<\/td>/gi) || []).map(stripTags);
-            if (cells.length !== 7) continue;
-            out.push({ squadId: squad[2], year: squad[1], label: cells[2] || 'Community Squad ' + squad[2],
-                ai: false, tagCheapest: false, tagNew: false, age: null, likes: null,
-                pricePs: parseCoins(cells[3]), pricePc: parseCoins(cells[4]), thumbResourceId: null, listRank: out.length });
-        }
-        return out;
-    }
-    async function loadFutbinSolutions(year, challengeId, fetchPage, diag) {
-        diag.requests = [];
-        const direct = futbinChallengeUrl(year, challengeId);
-        async function request(url, source) {
-            diag.url = url;
-            diag.source = source;
-            const response = await fetchPage(url);
-            diag.requests.push({ url: url, status: response.status });
-            return response;
-        }
-        const first = await request(direct, 'challenge');
-        if (first.status !== 200 && first.status !== 404) throw new Error('futbin antwortet mit HTTP ' + first.status);
-        const list = first.status === 200 ? parseFutbinSolutionList(first.text) : [];
-        if (list.length) return list;
-        const fallback = await request(FUTBIN_HOST + '/' + year + '/squad-building-challenges/squads?challenge=' +
-            encodeURIComponent(String(challengeId)), 'community');
-        if (fallback.status !== 200) throw new Error('futbin antwortet mit HTTP ' + fallback.status);
-        const matched = parseFutbinCommunitySolutions(fallback.text, year, challengeId);
-        diag.communityRows = (String(fallback.text || '').match(/href="\/\d\d\/squad\/\d+\/sbc"/g) || []).length;
-        diag.communityMatched = matched.length;
-        return matched;
-    }
-    // FUT.GG fuehrt EAs Challenge-ID direkt in seiner API. Das ist wichtig,
-    // weil ein Futbin-Filter leer sein kann, obwohl die Challenge bei FUT.GG
-    // bereits samt Loesung da ist (live: Challenge 49, 30.09.2026).
-    function futggChallengeUrl(year, challengeId) {
-        return FUTGG_HOST + '/api/fut/sbc/' + String(year) + '/challenge/' + String(challengeId) + '/';
-    }
-    function futggSquadUrl(uuid) { return FUTGG_HOST + '/api/squads/' + encodeURIComponent(String(uuid)) + '/'; }
-    function futggPlayersUrl(year, ids) {
-        return FUTGG_HOST + '/api/fut/' + String(year) + '/player-items/?ids=' + encodeURIComponent((ids || []).join(','));
-    }
-    function parseFutggSolution(challengeText, squadText, playersText, challengeId, platform) {
-        let meta, squadData, playerData;
-        try { meta = JSON.parse(challengeText).data; squadData = JSON.parse(squadText).data; playerData = JSON.parse(playersText).data; } catch (e) { return null; }
-        const ch = (meta && meta.challenges || []).find(x => Number(x && x.eaId) === Number(challengeId));
-        const positions = squadData && squadData.data && squadData.data.activeGroupPositions;
-        if (!ch || !Array.isArray(positions) || !Array.isArray(playerData)) return null;
-        const byId = new Map(playerData.map(x => [Number(x && x.eaId), x]));
-        const players = [];
-        for (const x of positions) {
-            if (!x || String(x.group).toUpperCase() !== 'FIELD' || !(Number(x.playerEaId) > 0)) continue;
-            const p = byId.get(Number(x.playerEaId));
-            if (!p || !(Number(p.eaId) > 0) || !(Number(p.overall) > 0) || !p.position) return null;
-            players.push({ lid: String(x.positionIdx), slotPosition: null, cardPosition: String(p.position),
-                resourceId: Number(p.eaId), futbinId: null, name: p.cardName || p.commonName || null,
-                rating: Number(p.overall), pricePs: null, pricePc: null, cardLevel: null,
-                isRare: false, isEvolution: !!p.isEvolutionPlayerItem });
-        }
-        const solutionUrl = platform === 'pc' ? (ch.cheapestSolutionPcUrl || ch.cheapestSolutionUrl) :
-            (ch.cheapestSolutionUrl || ch.cheapestSolutionPcUrl);
-        const uuidMatch = String(solutionUrl || '').match(/\/squad-builder\/([^/?#]+)\//);
-        if (players.length !== 11 || !uuidMatch) return null;
-        return { source: 'futgg', squadId: uuidMatch[1], year: String(meta.game || ''), label: ch.name || meta.name || 'FUT.GG-Lösung',
-            ai: true, tagCheapest: true, tagNew: false, age: null, likes: null,
-            pricePs: Number(ch.cheapestSolutionPrice) || null, pricePc: Number(ch.cheapestSolutionPricePc) || null,
-            thumbResourceId: null, listRank: 0, squad: { formation: null, players: players } };
-    }
-    async function loadFutggSolution(year, challengeId, platform, fetchPage, diag) {
-        const request = async (url, kind) => {
-            const r = await fetchPage(url);
-            (diag.futggRequests || (diag.futggRequests = [])).push({ url: url, status: r.status, kind: kind });
-            if (r.status !== 200) throw new Error('fut.gg antwortet mit HTTP ' + r.status);
-            return r.text;
-        };
-        const metaText = await request(futggChallengeUrl(year, challengeId), 'challenge');
-        let meta;
-        try { meta = JSON.parse(metaText).data; } catch (e) { throw new Error('fut.gg-Challenge nicht lesbar'); }
-        const ch = (meta && meta.challenges || []).find(x => Number(x && x.eaId) === Number(challengeId));
-        const solutionUrl = ch && (platform === 'pc' ? (ch.cheapestSolutionPcUrl || ch.cheapestSolutionUrl) :
-            (ch.cheapestSolutionUrl || ch.cheapestSolutionPcUrl));
-        const match = String(solutionUrl || '').match(/\/squad-builder\/([^/?#]+)\//);
-        if (!match) return [];
-        const squadText = await request(futggSquadUrl(match[1]), 'squad');
-        let positions;
-        try { positions = JSON.parse(squadText).data.data.activeGroupPositions; } catch (e) { throw new Error('fut.gg-Kader nicht lesbar'); }
-        const ids = (positions || []).filter(x => x && String(x.group).toUpperCase() === 'FIELD' && Number(x.playerEaId) > 0)
-            .map(x => Number(x.playerEaId));
-        if (ids.length !== 11) throw new Error('fut.gg-Kader hat ' + ids.length + ' Feldspieler statt 11');
-        const playersText = await request(futggPlayersUrl(year, ids), 'players');
-        const row = parseFutggSolution(metaText, squadText, playersText, challengeId, platform);
-        if (!row) throw new Error('fut.gg-Lösung nicht vollständig lesbar');
-        diag.source = 'futgg'; diag.url = futggChallengeUrl(year, challengeId); diag.futggSolution = row.squadId;
-        return [row];
-    }
     /** Balancierte {...}/[...]-Spanne ab Index j (Strings mit Escapes beachtet). */
     function scanBalanced(t, j) {
         let depth = 0, inStr = false;
@@ -8538,7 +7755,7 @@
      */
     function parseFutbinSquad(html) {
         const sq = extractJsonAfterKey(html, 'squadData');
-        if (!sq || !Array.isArray(sq.squad)) return parseFutbinHtmlSquad(html);
+        if (!sq || !Array.isArray(sq.squad)) return null;
         const fd = extractJsonAfterKey(html, 'formationData');
         const slotPos = {};
         let formation = null;
@@ -8576,54 +7793,6 @@
             lid = null;
         }
         return { formation: formation, players: players };
-    }
-    // Neuer servergerenderter Kader (30.09.2026). Nur Feldkarten, keine
-    // Empfehlungen/Bank. SLOT-Position bewusst unbekannt: Eintragen ordnet
-    // seit v5.28 ausschliesslich nach EAs Kartenpositionen zu.
-    function parseFutbinHtmlSquad(html) {
-        const source = String(html || '');
-        const field = source.match(/<div\b[^>]*class="[^"]*\bfield-structure-([\d-]+)\b[^"]*"[^>]*>/);
-        if (!field) return null;
-        // Auf das Feld begrenzen, damit Bank/Empfehlungen keine Karten liefern.
-        const tail = source.slice(field.index);
-        let depth = 0, end = 0;
-        for (const tag of tail.matchAll(/<\/?div\b[^>]*>/g)) {
-            depth += /^<\//.test(tag[0]) ? -1 : 1;
-            if (depth === 0) { end = tag.index + tag[0].length; break; }
-        }
-        if (!end) return null;
-        const text = tail.slice(0, end);
-        const slots = Array.from(text.matchAll(/<div\b[^>]*\bid="(cardlid\d+)"[^>]*>/g));
-        const seen = new Set(), players = [];
-        function classText(block, name) {
-            const re = new RegExp('<(?:div|span)\\b[^>]*class="[^"]*\\b' + name + '\\b[^"]*"[^>]*>([\\s\\S]*?)<\\/(?:div|span)>');
-            const m = block.match(re);
-            return m ? stripTags(m[1]) : null;
-        }
-        function price(value) {
-            const compact = String(value || '').trim().match(/^(\d+(?:\.\d+)?)\s*([KM])$/i);
-            return compact ? Math.round(Number(compact[1]) * (/k/i.test(compact[2]) ? 1000 : 1000000)) : parseCoins(value);
-        }
-        for (let i = 0; i < slots.length; i++) {
-            if (seen.has(slots[i][1])) return null;
-            seen.add(slots[i][1]);
-            const block = text.slice(slots[i].index, i + 1 < slots.length ? slots[i + 1].index : text.length);
-            const image = block.match(/<img\b[^>]*class="[^"]*\bplayercard-\d+-base-img\b[^"]*"[^>]*>/);
-            const imageSrc = image && image[0].match(/\bsrc="([^"]+)"/);
-            const resource = imageSrc && imageSrc[1].match(/players\/(\d+)\.png(?:[?]|$)/);
-            const rating = Number(classText(block, 'playercard-\\d+-rating'));
-            const position = classText(block, 'playercard-\\d+-position');
-            // Nicht still einzelne unlesbare Spieler aus einem Kader streichen.
-            if (!resource || !rating || !position) return null;
-            const prices = Array.from(block.matchAll(/<span\b[^>]*class="[^"]*\bprice-segment\b[^"]*"[^>]*>([\s\S]*?)<\/span>/g));
-            const link = block.match(/href="\/\d\d\/player\/(\d+)\//);
-            players.push({ lid: slots[i][1], slotPosition: null, cardPosition: position,
-                resourceId: Number(resource[1]), futbinId: link ? Number(link[1]) : null,
-                name: classText(block, 'playercard-\\d+-name'), rating: rating,
-                pricePs: price(prices[0] && stripTags(prices[0][1])), pricePc: price(prices[1] && stripTags(prices[1][1])),
-                cardLevel: null, isRare: false, isEvolution: false });
-        }
-        return players.length ? { formation: field[1], players: players } : null;
     }
     /** Preis einer futbin-Karte auf der gewaehlten Plattform (ps|pc). */
     function futbinPrice(pl, platform) {
@@ -9084,6 +8253,87 @@
         }));
         return Array.from(byId.values());
     }
+    /** Nur Datenliterale aus fut.ggs SSR-Zustand lesen; fremdes JavaScript nie ausfuehren. */
+    function parseGallerySsr(html) {
+        const s = String(html || '');
+        const start = /\bl:\$R\[\d+\]=\{set:/.exec(s);
+        if (!start) return null;
+        let pos = start.index + 2, nodes = 0;
+        const refs = new Map();
+        const fail = () => { throw new Error('Unbekanntes Galerie-Datenformat bei ' + pos); };
+        function ws() { while (/\s/.test(s[pos] || '') && pos < s.length) pos++; }
+        function value(depth) {
+            if (++nodes > 100000 || depth > 80 || pos - start.index > 2000000) fail();
+            ws();
+            if (s.slice(pos, pos + 3) === '$R[') {
+                const m = /^\$R\[(\d+)\]/.exec(s.slice(pos));
+                if (!m) fail();
+                pos += m[0].length; ws();
+                const id = Number(m[1]);
+                if (s[pos] === '=') { pos++; const v = value(depth + 1); refs.set(id, v); return v; }
+                if (!refs.has(id)) fail();
+                return refs.get(id);
+            }
+            if (s[pos] === '"') {
+                const from = pos++;
+                while (pos < s.length) {
+                    const ch = s[pos++];
+                    if (ch === '\\') pos++;
+                    else if (ch === '"') return JSON.parse(s.slice(from, pos));
+                }
+                fail();
+            }
+            if (s[pos] === '{' || s[pos] === '[') {
+                const array = s[pos++] === '[', end = array ? ']' : '}';
+                const out = array ? [] : Object.create(null);
+                ws();
+                while (s[pos] !== end) {
+                    let key;
+                    if (!array) {
+                        if (s[pos] === '"') key = value(depth + 1);
+                        else { const m = /^[A-Za-z_$][\w$]*/.exec(s.slice(pos)); if (!m) fail(); key = m[0]; pos += key.length; }
+                        if (['__proto__', 'constructor', 'prototype'].includes(key)) fail();
+                        ws(); if (s[pos++] !== ':') fail();
+                    }
+                    const v = value(depth + 1);
+                    if (array) out.push(v); else out[key] = v;
+                    ws();
+                    if (s[pos] === end) break;
+                    if (s[pos++] !== ',') fail();
+                    ws();
+                }
+                pos++; return out;
+            }
+            const m = /^(null|true|false|!0|!1|-?\d+(?:\.\d+)?(?:e[+-]?\d+)?)(?![\w$.])/i.exec(s.slice(pos));
+            if (!m) fail();
+            pos += m[0].length;
+            if (m[0] === 'null') return null;
+            if (m[0] === 'true' || m[0] === '!0') return true;
+            if (m[0] === 'false' || m[0] === '!1') return false;
+            const n = Number(m[0]); if (!Number.isFinite(n)) fail(); return n;
+        }
+        return value(0);
+    }
+    /** Quellen-Aufstellungen nach Note, mit exaktem Versions-Abgleich; keine eigene Optimierung. */
+    function galleryUpgradeOptions(data, pool, collected) {
+        if (!data || !data.set || !data.solution || data.solution.setId !== data.set.id || !Array.isArray(data.solution.costTiers)) return [];
+        const known = collectedIdSet(collectedRecordsFromPool(pool).concat(collected || []));
+        return data.solution.costTiers.filter(t => t && /^[DCBAS]$/.test(t.grade) && t.status === 'optimal' &&
+            Array.isArray(t.items) && t.items.length === data.set.requiredCards &&
+            t.items.every(p => p && Number.isInteger(p.eaId) && p.eaId > 0 && Number.isFinite(p.score) && p.score > 0 &&
+                Number.isInteger(p.overall) && p.overall > 0 && p.overall <= 99) &&
+            new Set(t.items.map(p => p.eaId)).size === t.items.length &&
+            Number.isInteger(t.tokens) && t.tokens >= 0 &&
+            Number.isFinite(t.threshold) && t.threshold > 0 &&
+            Number.isFinite(t.totalScore) && t.totalScore >= t.threshold).map(t => {
+                const missing = t.items.filter(p => !known.has(String(p.eaId)));
+                const priced = missing.every(p => Number.isFinite(p.price) && p.price > 0);
+                return { grade: t.grade, threshold: t.threshold, score: t.totalScore, tokens: t.tokens,
+                    baseScore: t.items.reduce((n, p) => n + p.score, 0),
+                    known: t.items.length - missing.length, total: t.items.length, missing: missing,
+                    coins: priced ? missing.reduce((n, p) => n + p.price, 0) : null };
+            });
+    }
     function parseFutggGallerySet(html) {
         const s = String(html || '');
         const out = { name: null, requires: null, requirement: null, bestGrade: null, coinsInHand: null, coinsTotal: null,
@@ -9130,6 +8380,8 @@
         if (tot) out.score = galleryNum(tot[1]);
         const tax = /<dt[^>]*>Lost to tax<\/dt>[\s\S]*?\/>([\d,]+)/.exec(s);
         if (tax) out.tax = galleryNum(tax[1]);
+        try { out.upgradeData = parseGallerySsr(s); }
+        catch (e) { out.upgradeError = e.message; }
         return out;
     }
     /**
@@ -9193,10 +8445,10 @@
         let json;
         try {
             json = decodeURIComponent(escape(atob(s.slice(GALLERY_CODE_PREFIX.length))));
-        } catch (e) { return { error: 'Der Code ist unvollständig oder beschädigt.' }; }
+        } catch (e) { return { error: 'Der Code ist unvollstaendig oder beschaedigt.' }; }
         let obj;
-        try { obj = JSON.parse(json); } catch (e) { return { error: 'Der Code ist unvollständig oder beschädigt.' }; }
-        if (!obj || typeof obj !== 'object') return { error: 'Der Code ist unvollständig oder beschädigt.' };
+        try { obj = JSON.parse(json); } catch (e) { return { error: 'Der Code ist unvollstaendig oder beschaedigt.' }; }
+        if (!obj || typeof obj !== 'object') return { error: 'Der Code ist unvollstaendig oder beschaedigt.' };
         return { done: Array.isArray(obj.done) ? obj.done : [], bought: Array.isArray(obj.bought) ? obj.bought : [],
                  collected: Array.isArray(obj.collected) ? obj.collected : [] };
     }
@@ -9228,7 +8480,7 @@
             // schon gesammelt haben - dann waere ein Kauf verschenktes Geld.
             if (collectedByDef && collectedByDef[p.defId] === true) {
                 collectedCount++;
-                skipped.push({ defId: p.defId, name: p.name, reason: 'schon gesammelt (EA) - zählt bereits für die Galerie' });
+                skipped.push({ defId: p.defId, name: p.name, reason: 'schon gesammelt (EA) - zaehlt bereits fuer die Galerie' });
                 return;
             }
             const live = liveBins ? liveBins[p.defId] : undefined;
@@ -9769,7 +9021,7 @@
         if (!/Host nicht erlaubt/i.test(m)) return m;
         return /fut\.gg/i.test(m)
             ? m + ' - die Galerie braucht App 1.14.0 oder neuer (im Browser das Bridge-Script 1.1.0). Bitte die neue App installieren.'
-            : m + ' - Brücke zu alt oder Adresse nicht freigegeben (App 1.14.0 / Bridge-Script 1.1.0).';
+            : m + ' - Bruecke zu alt oder Adresse nicht freigegeben (App 1.14.0 / Bridge-Script 1.1.0).';
     }
     window.__pitBridgeDone = function (id, status, err) {
         const p = bridgePending.get(String(id));
@@ -9793,7 +9045,7 @@
         try { if (document.documentElement.getAttribute('data-pittools-bridge') === 'tm') return 'tm'; } catch (e) {}
         return null;
     }
-    const BRIDGE_HINT = 'Keine Brücke zu futbin. Browser: das Zusatz-Script "PitTools Bridge" ' +
+    const BRIDGE_HINT = 'Keine Bruecke zu futbin. Browser: das Zusatz-Script "PitTools Bridge" ' +
         '(pittools-bridge.user.js aus dem PitTools-Repo) in Tampermonkey installieren. App: Version 1.11.0 oder neuer (FUT Gallery: Bridge 1.1.0 / App 1.14.0).';
     function bridgeFetch(url, timeoutMs) {
         const kind = bridgeKind();
@@ -9802,7 +9054,7 @@
         return new Promise(function (resolve, reject) {
             const timer = setTimeout(function () {
                 bridgePending.delete(id);
-                reject(new Error('Zeitüberschreitung (' + kind + '): ' + url));
+                reject(new Error('Zeitueberschreitung (' + kind + '): ' + url));
             }, timeoutMs || 30000);
             bridgePending.set(id, { parts: [], resolve: resolve, reject: reject, timer: timer });
             try {
@@ -9903,8 +9155,8 @@
         if (ui.futbinResult && !ui.futbinResult.innerHTML) {
             ui.futbinResult.className = 'sbc-opt-result show sbc-opt-result-empty';
             ui.futbinResult.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>' +
-                'Öffne eine Kauf-SBC im Spiel und tippe auf <b>Futbin-Lösungen suchen</b>.<br>' +
-                'PitTools holt die Community-Lösungen, prüft die Live-Preise am EA-Markt und kauft die fehlenden Spieler nach und nach.';
+                'Oeffne eine Kauf-SBC im Spiel und tippe auf <b>Futbin-Loesungen suchen</b>.<br>' +
+                'PitTools holt die Community-Loesungen, prueft die Live-Preise am EA-Markt und kauft die fehlenden Spieler nach und nach.';
         }
     }
     function renderFutbinPlatformChips() {
@@ -9939,7 +9191,7 @@
         if (sessionReady()) return marketOffersHttp(rid, maxBuy);
         if (typeof window.UTSearchCriteriaDTO !== 'function' || !window.services || !window.services.Item ||
             typeof window.services.Item.searchTransferMarket !== 'function') {
-            throw new Error('EA-Marktsuche nicht verfügbar');
+            throw new Error('EA-Marktsuche nicht verfuegbar');
         }
         const crit = marketCriteria(rid, maxBuy);
         const resp = await obsPromise(window.services.Item.searchTransferMarket(crit, 1));
@@ -10112,7 +9364,7 @@
     async function clientBidFallback(rid, tradeId, maxBuy) {
         try {
             if (typeof window.UTSearchCriteriaDTO !== 'function' || !window.services || !window.services.Item ||
-                typeof window.services.Item.searchTransferMarket !== 'function' || typeof window.services.Item.bid !== 'function') return { tried: false, why: 'Client-Weg nicht verfügbar' };
+                typeof window.services.Item.searchTransferMarket !== 'function' || typeof window.services.Item.bid !== 'function') return { tried: false, why: 'Client-Weg nicht verfuegbar' };
             const crit = marketCriteria(rid, maxBuy);
             // v5.51.0: EAs Suchcache leeren, wie PaleTools vor jeder Suche (unser
             // Client-Weg bekam in v5.23 zwoelfmal dasselbe Ergebnis aus dem Cache).
@@ -10293,7 +9545,7 @@
     async function conceptEntity(resourceId) {
         if (typeof window.UTSearchCriteriaDTO !== 'function' || !window.services || !window.services.Item ||
             typeof window.services.Item.searchConceptItems !== 'function') {
-            throw new Error('EA-Konzept-Suche nicht verfügbar');
+            throw new Error('EA-Konzept-Suche nicht verfuegbar');
         }
         const crit = new window.UTSearchCriteriaDTO();
         try { crit.type = window.SearchType ? window.SearchType.PLAYER : 'player'; } catch (e) {}
@@ -10321,11 +9573,11 @@
      * Speichert ueber services.SBC.saveChallenge (Ansicht aktualisiert sich).
      */
     async function insertFutbinSolution(squad, owned) {
-        if (typeof window.UTItemEntityFactory !== 'function') throw new Error('UTItemEntityFactory nicht verfügbar.');
+        if (typeof window.UTItemEntityFactory !== 'function') throw new Error('UTItemEntityFactory nicht verfuegbar.');
         const sbcSvc = window.services && window.services.SBC;
-        if (!sbcSvc || typeof sbcSvc.saveChallenge !== 'function') throw new Error('services.SBC.saveChallenge nicht verfügbar.');
+        if (!sbcSvc || typeof sbcSvc.saveChallenge !== 'function') throw new Error('services.SBC.saveChallenge nicht verfuegbar.');
         const ctrl = findSbcController();
-        if (!ctrl) throw new Error('Kein offener SBC-Squad-Controller (Challenge im Spiel öffnen).');
+        if (!ctrl) throw new Error('Kein offener SBC-Squad-Controller (Challenge im Spiel oeffnen).');
         const liveSquad = ctrl._squad || (ctrl.getSquad && ctrl.getSquad());
         if (!liveSquad || typeof liveSquad.setPlayers !== 'function') throw new Error('Live-Squad hat kein setPlayers().');
         const challenge = findLiveChallenge();
@@ -10337,11 +9589,11 @@
             const pl = squad.players[i];
             if (owned && owned[i]) {
                 const it = factory.createItem(owned[i].raw);
-                if (!it) throw new Error('Factory-Item unbrauchbar für ' + owned[i].id);
+                if (!it) throw new Error('Factory-Item unbrauchbar fuer ' + owned[i].id);
                 entities.push({ ent: it, pos: pl.slotPosition, concept: false });
                 ownedPlaced++;
             } else {
-                if (!pl.resourceId) throw new Error('Spieler ohne resourceId in der Lösung (' + (pl.name || '?') + ')');
+                if (!pl.resourceId) throw new Error('Spieler ohne resourceId in der Loesung (' + (pl.name || '?') + ')');
                 entities.push({ ent: await conceptEntity(pl.resourceId), pos: pl.slotPosition, concept: true });
                 conceptPlaced++;
             }
@@ -10522,35 +9774,28 @@
         });
     }
     async function onFutbinSearchClick() {
-        if (futbinBusy) { toast('Futbin-Suche läuft schon.', 'warn'); return; }
+        if (futbinBusy) { toast('Futbin-Suche laeuft schon.', 'warn'); return; }
         const diag = { at: Date.now(), bridge: bridgeKind(), url: null, listCount: null, candidates: null, marketQueries: 0, errors: [] };
         STATE.diag.futbin = diag;
         futbinBusy = true;
-        setBtnBusy(ui.futbinSearch, true, 'Suche läuft');
+        setBtnBusy(ui.futbinSearch, true, 'Suche laeuft');
         try {
             try { syncSbcWithOpenChallenge(); } catch (e) {}
             const cid = STATE.sbc.challengeId;
-            if (cid == null) { setFutbinResult(warnHtml('Keine SBC erkannt - bitte die Challenge im Spiel öffnen.')); return; }
+            if (cid == null) { setFutbinResult(warnHtml('Keine SBC erkannt - bitte die Challenge im Spiel oeffnen.')); return; }
             if (!diag.bridge) { setFutbinResult(warnHtml(BRIDGE_HINT)); return; }
             const s = readFutbinSettings();
             const year = futbinYear(STATE.diag.gameName, window.fut_year);
             const url = futbinChallengeUrl(year, cid);
             diag.url = url;
             setFutbinStep(1);
-            setFutbinResult('<div class="sbc-opt-dim">Lade Lösungen (Futbin, danach FUT.GG falls nötig) für Challenge ' + escapeHtml(String(cid)) + ' ...</div>');
-            let list = [], futbinError = null;
-            try { list = await loadFutbinSolutions(year, cid, u => bridgeFetch(u, 30000), diag); }
-            catch (e) { futbinError = e; diag.futbinError = String(e && e.message || e); }
-            if (!list.length) {
-                try { list = await loadFutggSolution(year, cid, s.platform, u => bridgeFetch(u, 30000), diag); }
-                catch (e) {
-                    diag.futggError = String(e && e.message || e);
-                    if (futbinError) throw new Error('Futbin: ' + diag.futbinError + ' | FUT.GG: ' + diag.futggError);
-                }
-            }
+            setFutbinResult('<div class="sbc-opt-dim">Lade Loesungsliste von futbin (Challenge ' + escapeHtml(String(cid)) + ') ...</div>');
+            const listResp = await bridgeFetch(url, 30000);
+            if (listResp.status !== 200) throw new Error('futbin antwortet mit HTTP ' + listResp.status);
+            const list = parseFutbinSolutionList(listResp.text);
             diag.listCount = list.length;
             if (!list.length) {
-                setFutbinResult(warnHtml('Weder Futbin noch FUT.GG liefern für diese Challenge (ID ' + cid + ') eine lesbare Lösung. Fremde Futbin-Challenges werden nicht übernommen (Report: futbin).'));
+                setFutbinResult(warnHtml('futbin hat fuer diese Challenge (ID ' + cid + ') keine Loesungen - oder die Seite hat sich geaendert (Report: futbin).'));
                 return;
             }
             const priceOf = x => futbinPrice({ pricePs: x.pricePs, pricePc: x.pricePc }, s.platform);
@@ -10570,12 +9815,9 @@
                 const row = picks[i];
                 setFutbinResult(progressHtml('Lade Kader ' + (i + 1) + ' von ' + picks.length + ' ...', i, picks.length));
                 try {
-                    let squad = row.squad || null;
-                    if (!squad) {
-                        const r = await bridgeFetch(futbinSquadUrl(year, row.squadId), 40000);
-                        if (r.status !== 200) throw new Error('HTTP ' + r.status);
-                        squad = parseFutbinSquad(r.text);
-                    }
+                    const r = await bridgeFetch(futbinSquadUrl(year, row.squadId), 40000);
+                    if (r.status !== 200) throw new Error('HTTP ' + r.status);
+                    const squad = parseFutbinSquad(r.text);
                     // v5.26.0: Pflicht-Slots (Custom Brick) haben in futbins
                     // Loesung keinen Spieler - 10 statt 11 ist dann korrekt.
                     const bricks = (STATE.sbc.customBricks || []).length;
@@ -10586,7 +9828,7 @@
                     cands.push({
                         row: row, squad: squad, owned: owned, eval: ev, listRank: row.listRank,
                         listPrice: priceOf(row),
-                        adjCost: row.source === 'futgg' ? priceOf(row) : (s.market ? ev.cost : crowdAdjustedCost(ev.cost, row.listRank, FUTBIN_SKIP_TOP, 1.15)),
+                        adjCost: s.market ? ev.cost : crowdAdjustedCost(ev.cost, row.listRank, FUTBIN_SKIP_TOP, 1.15),
                         formationOk: eaFormation ? formationMatches(squad.formation, eaFormation) : null,
                         liveCost: null, liveUnknown: 0, livePruned: false
                     });
@@ -10596,10 +9838,7 @@
             if (!cands.length) throw new Error('Kein Kader lesbar. ' + diag.errors.join(' | '));
             let ranked = rankCandidates(cands, 'adjCost');
             let marketStats = null;
-            // FUT.GG nennt nur die Gesamt-Kosten. Fuer sichere Kaufobergrenzen
-            // werden seine Einzelkarten daher immer gegen EAs Markt geprüft.
-            const marketEnabled = s.market || cands.some(c => c.row.source === 'futgg');
-            if (marketEnabled) {
+            if (s.market) {
                 const cache = new Map();
                 // Obergrenze fuer die Anzeige: alle verschiedenen fehlenden Karten der pruefbaren Kandidaten.
                 const distinct = new Set();
@@ -10622,8 +9861,8 @@
                         if (!cache.has(pl.resourceId)) {
                             if (best != null && live >= best) { pruned = true; break; }
                             diag.marketQueries++;
-                            setFutbinResult(progressHtml('Marktpreise prüfen ... Abfrage ' + diag.marketQueries +
-                                            ' von höchstens ' + distinct.size, diag.marketQueries, distinct.size));
+                            setFutbinResult(progressHtml('Marktpreise pruefen ... Abfrage ' + diag.marketQueries +
+                                            ' von hoechstens ' + distinct.size, diag.marketQueries, distinct.size));
                             let est = null;
                             try { est = await marketMinBin(pl.resourceId); }
                             catch (e) { diag.errors.push('Markt ' + pl.resourceId + ': ' + (e && e.message || e)); }
@@ -10656,7 +9895,7 @@
                 diag.marketStats = marketStats;
                 ranked = rankCandidates(ranked.slice(0, checked), 'liveCost').concat(rest);
             }
-            futbinLast = { ranked: ranked, platform: s.platform, market: marketEnabled, year: year, marketStats: marketStats };
+            futbinLast = { ranked: ranked, platform: s.platform, market: s.market, year: year, marketStats: marketStats };
             diag.candidates = ranked.map(c => ({
                 squadId: c.row.squadId, ai: c.row.ai, listRank: c.listRank, listPrice: c.listPrice,
                 cost: c.eval.cost, adjCost: c.adjCost, liveCost: c.liveCost, liveUnknown: c.liveUnknown,
@@ -10681,38 +9920,37 @@
                  '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-futbin-load">Verein laden, dann erneut suchen</button>';
         }
         const checkedN = marketStats ? marketStats.checked : Math.min(FUTBIN_MARKET_TOP, ranked.length);
-        const marketActive = !!marketStats;
-        h += '<div class="sbc-opt-summary">' + ranked.length + ' Lösungen · ' +
+        h += '<div class="sbc-opt-summary">' + ranked.length + ' Loesungen · ' +
              (s.platform === 'pc' ? 'PC' : 'Konsole') + ' · ' +
-             (marketActive ? checkedN + ' am EA-Markt geprüft' : 'ohne Marktcheck (+15 % auf Platz 1-' + FUTBIN_SKIP_TOP + ')') + '</div>';
+             (s.market ? checkedN + ' am EA-Markt geprueft' : 'ohne Marktcheck (+15 % auf Platz 1-' + FUTBIN_SKIP_TOP + ')') + '</div>';
         if (marketStats && marketStats.cheapUnchecked > 0) {
-            h += warnHtml(marketStats.cheapUnchecked + ' weitere Lösung' + (marketStats.cheapUnchecked === 1 ? ' ist' : 'en sind') +
-                          ' laut futbin billiger als die Empfehlung, aber nicht am Markt geprüft (Obergrenze ' + FUTBIN_MARKET_MAX +
-                          ' Kader pro Suche). Futbin-Preise können veraltet sein - die Live-Preise gelten.');
+            h += warnHtml(marketStats.cheapUnchecked + ' weitere Loesung' + (marketStats.cheapUnchecked === 1 ? ' ist' : 'en sind') +
+                          ' laut futbin billiger als die Empfehlung, aber nicht am Markt geprueft (Obergrenze ' + FUTBIN_MARKET_MAX +
+                          ' Kader pro Suche). Futbin-Preise koennen veraltet sein - die Live-Preise gelten.');
         }
         if (ranked.length && ranked[0].formationOk === false) {
-            h += warnHtml('Keine Lösung in der Formation der Challenge - Chemie und Positionen bitte vor dem Kaufen prüfen.');
+            h += warnHtml('Keine Loesung in der Formation der Challenge - Chemie und Positionen bitte vor dem Kaufen pruefen.');
         }
         ranked.forEach(function (c, i) {
             const cost = c.liveCost != null ? c.liveCost : c.adjCost;
             const live = c.liveCost != null;
-            const tag = live ? '<span class="sbc-opt-tag ok">live geprüft</span>'
+            const tag = live ? '<span class="sbc-opt-tag ok">live geprueft</span>'
                       : c.livePruned ? '<span class="sbc-opt-tag">teurer als Empfehlung</span>'
-                      : '<span class="sbc-opt-tag">' + (c.row.source === 'futgg' ? 'FUT.GG-Schätzung' : 'futbin-Schätzung') + '</span>';
+                      : '<span class="sbc-opt-tag">futbin-Schaetzung</span>';
             h += '<div class="sbc-opt-fb-row' + (i === 0 ? ' best' : '') + (i >= FUTBIN_SHOW_OPEN ? ' sbc-opt-fb-more' : '') + '">' +
                  '<div class="sbc-opt-fb-top"><span class="sbc-opt-fb-price">' + fmtCoins(cost) + '</span>' +
                  '<span class="sbc-opt-fb-tags">' + (i === 0 ? '<span class="sbc-opt-tag best">Empfehlung</span>' : '') + tag + '</span></div>' +
-                 '<div class="sbc-opt-fb-meta">' + (i + 1) + '. ' + (c.row.source === 'futgg' ? 'FUT.GG' : (c.row.ai ? 'FUTBIN AI' : 'Futbin Community')) +
-                 ' #' + escapeHtml(String(c.row.squadId)) + (c.row.source === 'futgg' ? ' · günstigste Lösung ' : ' · Platz ' + (c.listRank + 1) + ' · Liste ') + fmtCoins(c.listPrice) +
+                 '<div class="sbc-opt-fb-meta">' + (i + 1) + '. ' + (c.row.ai ? 'FUTBIN AI' : 'Community') +
+                 ' #' + escapeHtml(String(c.row.squadId)) + ' · Platz ' + (c.listRank + 1) + ' · Liste ' + fmtCoins(c.listPrice) +
                  (c.squad.formation ? ' · ' + escapeHtml(String(c.squad.formation)) : '') + '</div>' +
                  '<div class="sbc-opt-fb-meta">eigene Karten <b>' + c.eval.ownedCount + '</b> · zu kaufen <b>' + c.eval.missing + '</b>' +
                  (live && c.liveUnknown ? ' · ' + c.liveUnknown + ' ohne Angebot (futbin-Preis)' : '') + '</div>' +
-                 (c.formationOk === false ? '<div class="sbc-opt-warn">≠ Formation der Challenge - Positionen werden angepasst, Chemie prüfen</div>' : '') +
-                 '<button type="button" class="sbc-opt-btn ' + (i === 0 ? 'primary' : 'ghost') + '" data-fb-idx="' + i + '">Einfügen</button>' +
+                 (c.formationOk === false ? '<div class="sbc-opt-warn">≠ Formation der Challenge - Positionen werden angepasst, Chemie pruefen</div>' : '') +
+                 '<button type="button" class="sbc-opt-btn ' + (i === 0 ? 'primary' : 'ghost') + '" data-fb-idx="' + i + '">Einfuegen</button>' +
                  '</div>';
         });
         if (ranked.length > FUTBIN_SHOW_OPEN) {
-            h += '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-fb-showmore">' + (ranked.length - FUTBIN_SHOW_OPEN) + ' weitere Lösungen anzeigen</button>';
+            h += '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-fb-showmore">' + (ranked.length - FUTBIN_SHOW_OPEN) + ' weitere Loesungen anzeigen</button>';
         }
         setFutbinResult(h);
         setFutbinStep(2);
@@ -10728,14 +9966,14 @@
         const c = futbinLast && futbinLast.ranked[idx];
         if (!c) return;
         try {
-            setStatus('trage ' + (c.row.source === 'futgg' ? 'FUT.GG-' : 'Futbin-') + 'Lösung ein...');
+            setStatus('trage Futbin-Loesung ein...');
             const res = await insertFutbinSolution(c.squad, c.owned);
             let h = '<div class="sbc-opt-summary">Eingetragen: ' + res.placed + ' Spieler (' + res.ownedPlaced + ' eigene, ' +
                     res.conceptPlaced + ' Konzept)</div>' +
-                    '<div>Positionen: ' + res.onPref + ' auf Hauptposition' + (res.onAlt ? ', ' + res.onAlt + ' auf Nebenposition (zählt für die Chemie voll)' : '') + '</div>';
+                    '<div>Positionen: ' + res.onPref + ' auf Hauptposition' + (res.onAlt ? ', ' + res.onAlt + ' auf Nebenposition (zaehlt fuer die Chemie voll)' : '') + '</div>';
             if (res.fallbackPlaced) {
                 h += warnHtml(res.fallbackPlaced + ' Spieler steh' + (res.fallbackPlaced === 1 ? 't' : 'en') +
-                              ' AUSSER Position - die Lösung passt nicht zur Formation der Challenge. Chemie vor dem Kaufen prüfen oder eine andere Lösung wählen.');
+                              ' AUSSER Position - die Loesung passt nicht zur Formation der Challenge. Chemie vor dem Kaufen pruefen oder eine andere Loesung waehlen.');
             }
             if (res.bricks) {
                 res.bricks.filled.forEach(function (b) {
@@ -10743,7 +9981,7 @@
                 });
                 res.bricks.open.forEach(function (b) {
                     h += warnHtml('Pflicht-Slot ' + (b.index + 1) + ' bleibt leer - kein passender Spieler im Verein (Nation ' + (b.nation || '–') +
-                                  ', Liga ' + (b.league || '–') + ', Verein ' + (b.club || '–') + '). Bitte selbst füllen.');
+                                  ', Liga ' + (b.league || '–') + ', Verein ' + (b.club || '–') + '). Bitte selbst fuellen.');
                 });
             }
             // v5.29.0: Hauptaktion (Kaufen) zuerst, die Kaufliste eingeklappt darunter.
@@ -10755,7 +9993,7 @@
                 const price = pl.liveBin != null ? pl.liveBin : futbinPrice(pl, futbinLast.platform);
                 const src = pl.liveBin != null
                     ? 'Markt: ' + (pl.liveDist && pl.liveDist.length ? fmtDist(pl.liveDist) : '2. Angebot von ' + (pl.liveOffers != null ? pl.liveOffers : '?'))
-                    : (c.row.source === 'futgg' ? 'FUT.GG, kein Live-Angebot gesehen' : 'futbin' + (pl.liveOffers === 0 ? ', kein Angebot gesehen' : ''));
+                    : 'futbin' + (pl.liveOffers === 0 ? ', kein Angebot gesehen' : '');
                 list += '<div>' + escapeHtml(pl.name || ('#' + pl.resourceId)) + ' <span class="sbc-opt-muted">(' + (pl.rating || '?') + ', ' +
                         escapeHtml(pl.cardPosition || pl.slotPosition || '?') + ')</span> ' + fmtCoins(price) +
                         ' <span class="sbc-opt-muted">(' + escapeHtml(src) + ')</span></div>';
@@ -10763,27 +10001,27 @@
             const plan = buildBuyPlan(c, futbinLast.platform);
             if (plan.length) {
                 h += '<button type="button" class="sbc-opt-btn primary" id="sbc-opt-futbin-buy">' + plan.length + ' fehlende Spieler kaufen</button>';
-                h += '<div class="sbc-opt-dim">Zusammen höchstens <b>' + fmtCoins(plan.reduce((a, p) => a + p.maxPrice, 0)) + '</b> (Plan + ' +
-                     Math.round(BUY_TOLERANCE * 100) + ' %). Vor dem Kauf werden die Live-Preise geholt, dann kommt eine Rückfrage. ' +
-                     'Ein Kauf alle paar Sekunden, nie über der Obergrenze.</div>';
+                h += '<div class="sbc-opt-dim">Zusammen hoechstens <b>' + fmtCoins(plan.reduce((a, p) => a + p.maxPrice, 0)) + '</b> (Plan + ' +
+                     Math.round(BUY_TOLERANCE * 100) + ' %). Vor dem Kauf werden die Live-Preise geholt, dann kommt eine Rueckfrage. ' +
+                     'Ein Kauf alle paar Sekunden, nie ueber der Obergrenze.</div>';
             } else if (!missing) {
                 h += '<div class="sbc-opt-summary">Alle Spieler aus dem Verein - nichts zu kaufen.</div>';
             }
             if (missing) {
                 h += '<details class="sbc-opt-details-toggle"><summary>Kaufliste (' + missing + ' Konzept-Spieler auf dem Feld)</summary>' + list + '</details>';
             }
-            h += '<div class="sbc-opt-dim">Abgeben drückst du selbst - nach dem Kaufen prüfen, ob EA alle Vorgaben als erfüllt zeigt.</div>';
+            h += '<div class="sbc-opt-dim">Abgeben drueckst du selbst - nach dem Kaufen pruefen, ob EA alle Vorgaben als erfuellt zeigt.</div>';
             setFutbinResult(h);
             setFutbinStep(3);
             futbinLast.insertedIdx = idx;
             const buyBtn = ui.futbinResult.querySelector('#sbc-opt-futbin-buy');
             if (buyBtn) buyBtn.addEventListener('click', function () { onFutbinBuyClick(idx); });
             if (STATE.diag.futbin) STATE.diag.futbin.inserted = { squadId: c.row.squadId, at: Date.now(), result: res };
-            toast('Futbin-Lösung eingetragen: ' + res.ownedPlaced + ' eigene + ' + res.conceptPlaced + ' Konzept-Spieler.', 'ok');
+            toast('Futbin-Loesung eingetragen: ' + res.ownedPlaced + ' eigene + ' + res.conceptPlaced + ' Konzept-Spieler.', 'ok');
         } catch (e) {
-            reportError('Futbin einfügen', e);
-            if (STATE.diag.futbin) STATE.diag.futbin.errors.push('einfügen: ' + (e && e.message || e));
-            toast('Einfügen fehlgeschlagen: ' + (e && e.message || e), 'error');
+            reportError('Futbin einfuegen', e);
+            if (STATE.diag.futbin) STATE.diag.futbin.errors.push('einfuegen: ' + (e && e.message || e));
+            toast('Einfuegen fehlgeschlagen: ' + (e && e.message || e), 'error');
         } finally {
             setStatus('bereit');
         }
@@ -10845,7 +10083,7 @@
     function isSessionExpired(status) {
         return status === 401;
     }
-    const SESSION_LOST_TEXT = 'EA-Sitzung abgelaufen. Im Spiel einmal navigieren (z.B. Verein öffnen), dann erneut versuchen - es wurde nichts gelistet.';
+    const SESSION_LOST_TEXT = 'EA-Sitzung abgelaufen. Im Spiel einmal navigieren (z.B. Verein oeffnen), dann erneut versuchen - es wurde nichts gelistet.';
     function isRateLimit(status) {
         try { if (window.HttpStatusCode && status === window.HttpStatusCode.RATE_LIMIT) return true; } catch (e) {}
         return status === 429 || status === 426 || status === 512;
@@ -10883,7 +10121,7 @@
     async function onFutbinBuyClick(idx) {
         const c = futbinLast && futbinLast.ranked[idx];
         if (!c) return;
-        if (buyBusy || futbinBusy) { toast('Es läuft schon ein Lauf.', 'warn'); return; }
+        if (buyBusy || futbinBusy) { toast('Es laeuft schon ein Lauf.', 'warn'); return; }
         // v5.27.0: erst Live-Preise fuer alles, was der Marktcheck nicht hatte.
         buyBusy = true;
         let refreshed = null;
@@ -10899,13 +10137,13 @@
         const coins = userCoins();
         const lines = plan.map(p => p.name + ' (' + (p.rating || '?') + '): bis ' + fmtCoins(p.maxPrice) + (p.source === 'futbin' ? ' (futbin-Preis, kein Angebot am Markt)' : '')).join('\n');
         const noLive = plan.filter(p => p.source === 'futbin').length;
-        const frage = plan.length + ' Spieler nach und nach kaufen?\n\n' + lines + '\n\nZusammen höchstens ' + fmtCoins(total) +
+        const frage = plan.length + ' Spieler nach und nach kaufen?\n\n' + lines + '\n\nZusammen hoechstens ' + fmtCoins(total) +
                       (coins != null ? ' (Kontostand ' + fmtCoins(coins) + ')' : '') +
                       (noLive ? '\n' + noLive + ' Preis(e) stammen von futbin, weil der Markt gerade kein Angebot zeigt.' : '') +
                       '.\nEin Kauf alle 3-6 Sekunden, Abbruch bei Fehlern. Es wird nie mehr als die Obergrenze gezahlt.';
         if (!window.confirm(frage)) return;
         if (coins != null && coins < total) {
-            if (!window.confirm('Der Kontostand reicht nicht für die Obergrenze aller Spieler. Trotzdem starten (kauft, so weit die Coins reichen)?')) return;
+            if (!window.confirm('Der Kontostand reicht nicht fuer die Obergrenze aller Spieler. Trotzdem starten (kauft, so weit die Coins reichen)?')) return;
         }
         await buyPlannedPlayers(c, plan);
     }
@@ -10984,7 +10222,7 @@
                     step.found = offer.bin;
                     const coins = userCoins();
                     if (coins != null && coins < offer.bin) { step.status = 'zu wenig Coins'; diag.stopped = 'Coins reichen nicht'; lines.push('⚠ Coins reichen nicht mehr (' + fmtCoins(coins) + ').'); hardStop = true; break; }
-                    render('Kaufe ' + p.name + ' für ' + fmtCoins(offer.bin) + (t ? ' (Angebot ' + (t + 1) + ')' : '') + ' ...');
+                    render('Kaufe ' + p.name + ' fuer ' + fmtCoins(offer.bin) + (t ? ' (Angebot ' + (t + 1) + ')' : '') + ' ...');
                     // v5.24.0: Kauf ueber EAs Bid-Endpunkt (eigener PUT, wie die
                     // Suche) - Angebote aus dem Client-Weg hatten hier ein Entity,
                     // die HTTP-Angebote haben tradeId + Rohdaten.
@@ -11014,15 +10252,15 @@
                             try { const u = await apiGet('purchased/items'); diag.market461.unassigned = u && Array.isArray(u.itemData) ? u.itemData.length : null; } catch (e) { diag.market461.unassigned = 'err'; }
                             if (diag.market461.watchlist >= 50) {
                                 step.status = 'Transferziele voll (' + diag.market461.watchlist + ')';
-                                diag.stopped = 'Transferziele voll - EA nimmt keine Käufe an';
+                                diag.stopped = 'Transferziele voll - EA nimmt keine Kaeufe an';
                                 lines.push('⚠ Deine Transferziele sind voll (' + diag.market461.watchlist + '). Im Spiel unter Transfers → Transferziele gewonnene Karten in den Verein schicken, dann erneut.');
                                 hardStop = true; break;
                             }
                         }
                         if (denied461 >= BUY_461_LOCK_LIMIT) {
                             step.status = 'EA lehnt jeden Kauf ab (461 x' + denied461 + ')';
-                            diag.stopped = 'EA lehnt alle Käufe ab (461 in Folge) - Transfermarkt vermutlich vorübergehend gesperrt';
-                            lines.push('⚠ ' + denied461 + ' Käufe in Folge abgelehnt, auch bei frischen Angeboten. Das ist meist eine zeitweise Marktsperre nach vielen Aktionen (Listings, Suchen). Bitte im Spiel einen Kauf von Hand probieren; klappt der nicht, 30-60 Minuten warten.');
+                            diag.stopped = 'EA lehnt alle Kaeufe ab (461 in Folge) - Transfermarkt vermutlich vorruebergehend gesperrt';
+                            lines.push('⚠ ' + denied461 + ' Kaeufe in Folge abgelehnt, auch bei frischen Angeboten. Das ist meist eine zeitweise Marktsperre nach vielen Aktionen (Listings, Suchen). Bitte im Spiel einen Kauf von Hand probieren; klappt der nicht, 30-60 Minuten warten.');
                             hardStop = true; break;
                         }
                         // v5.42.0: 461 = "weg" ODER "nicht erlaubt". Report 21.09.: sieben 461 in
@@ -11041,13 +10279,13 @@
                                     offer = { tradeId: cb.tradeId, bin: cb.bin, item: cb.item, itemId: cb.item && cb.item.id, raw: null };
                                     step.found = cb.bin; step.via = 'client';
                                     ok = true; denied461 = 0;
-                                    lines.push('✓ ' + escapeHtml(p.name) + ' über EAs Client gekauft (eigener Weg: 461).');
+                                    lines.push('✓ ' + escapeHtml(p.name) + ' ueber EAs Client gekauft (eigener Weg: 461).');
                                     break;
                                 }
                             }
                             step.status = 'EA verweigert den Kauf (461) - Angebot ist aktiv';
-                            diag.stopped = 'EA verweigert Käufe (461) bei aktivem Angebot - Transfermarkt vermutlich vorübergehend gesperrt';
-                            lines.push('⚠ ' + escapeHtml(p.name) + ': EA verweigert den Kauf, obwohl das Angebot aktiv ist. Das ist meist eine zeitweise Marktsperre nach vielen Aktionen - bitte im Spiel einen Kauf von Hand probieren und später erneut.');
+                            diag.stopped = 'EA verweigert Kaeufe (461) bei aktivem Angebot - Transfermarkt vermutlich vorruebergehend gesperrt';
+                            lines.push('⚠ ' + escapeHtml(p.name) + ': EA verweigert den Kauf, obwohl das Angebot aktiv ist. Das ist meist eine zeitweise Marktsperre nach vielen Aktionen - bitte im Spiel einen Kauf von Hand probieren und spaeter erneut.');
                             hardStop = true; break;
                         }
                         deadTrades.add(String(offer.tradeId)); // weg - nie wieder anbieten lassen
@@ -11082,19 +10320,19 @@
                 // Rasmus mit "in den Verein tun" von Hand ausloest.
                 step.moved = null;
                 bought.push({ plan: p, item: offer.item || null, raw: offer.raw || null, itemId: offer.itemId != null ? offer.itemId : (offer.item && offer.item.id), paid: offer.bin });
-                lines.push('✓ ' + escapeHtml(p.name) + ' für ' + fmtCoins(offer.bin) + (offer.bin > p.planned ? ' (Plan ' + fmtCoins(p.planned) + ')' : ''));
+                lines.push('✓ ' + escapeHtml(p.name) + ' fuer ' + fmtCoins(offer.bin) + (offer.bin > p.planned ? ' (Plan ' + fmtCoins(p.planned) + ')' : ''));
                 render(null);
                 if (k < plan.length - 1) await futbinSleep(randomBetween(gapMin, gapMax));
             }
             // Gekaufte Karten in den SBC-Kader statt der Konzept-Spieler, dann speichern.
             if (bought.length) {
-                render('Gekaufte Karten in den Verein übernehmen ...');
+                render('Gekaufte Karten in den Verein uebernehmen ...');
                 const adopted = await adoptBoughtIntoClient(bought);
                 diag.adopted = adopted;
-                lines.push(adopted.moved + ' von ' + bought.length + ' gekauften Karten über EAs Client in den Verein' +
+                lines.push(adopted.moved + ' von ' + bought.length + ' gekauften Karten ueber EAs Client in den Verein' +
                            (adopted.httpMoved ? ' (' + adopted.httpMoved + ' per Notweg)' : '') + '.');
                 if (opts.noSquad) {
-                    lines.push('Die Karten liegen im Verein und zählen für die Galerie.');
+                    lines.push('Die Karten liegen im Verein und zaehlen fuer die Galerie.');
                 } else {
                     const swapped = await replaceConceptsWithBought(bought);
                     lines.push(swapped.replaced + ' von ' + bought.length + ' gekauften Karten im Kader eingesetzt' +
@@ -11176,7 +10414,7 @@
             ui.gallerySell.dataset.wired = '1';
             ui.gallerySell.addEventListener('click', onGallerySellClick);
             if (ui.gallerySellClear) ui.gallerySellClear.addEventListener('click', function () {
-                if (window.confirm('Merkliste der gekauften Galerie-Karten leeren? (Nichts wird verkauft oder gelöscht.)')) { galleryBoughtSave([]); toast('Merkliste geleert.', 'ok'); }
+                if (window.confirm('Merkliste der gekauften Galerie-Karten leeren? (Nichts wird verkauft oder geloescht.)')) { galleryBoughtSave([]); toast('Merkliste geleert.', 'ok'); }
             });
         }
         refreshGallerySellBtn();
@@ -11200,7 +10438,7 @@
                 galleryBoughtSave(m.bought);
                 collectedSave(m.collected);
                 if (ui.galleryCode) ui.galleryCode.value = '';
-                toast('Übernommen: ' + m.addedDone + ' Sets, ' + m.addedBought + ' Karten, ' + m.addedCollected + ' gesammelte Spieler neu.', 'ok');
+                toast('Uebernommen: ' + m.addedDone + ' Sets, ' + m.addedBought + ' Karten, ' + m.addedCollected + ' gesammelte Spieler neu.', 'ok');
             });
         }
         if (ui.toolsSell && !ui.toolsSell.dataset.wired) { ui.toolsSell.dataset.wired = '1'; ui.toolsSell.addEventListener('click', onTradepileSellClick); }
@@ -11222,12 +10460,12 @@
         if (ui.galleryResult && !ui.galleryResult.innerHTML) {
             ui.galleryResult.className = 'sbc-opt-result show sbc-opt-result-empty';
             ui.galleryResult.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>' +
-                'Tippe auf <b>Nächstes Set kaufen</b>: PitTools holt die günstigsten Gallery-Sets von fut.gg, ' +
-                'du wählst eines, PitTools kauft die fehlenden Spieler nach und nach in den Verein. Bewertet wird danach im Spiel.';
+                'Tippe auf <b>Naechstes Set kaufen</b>: PitTools holt die guenstigsten Gallery-Sets von fut.gg, ' +
+                'du waehlst eines, PitTools kauft die fehlenden Spieler nach und nach in den Verein. Bewertet wird danach im Spiel.';
         }
     }
     async function onGalleryLoadClick() {
-        if (galleryBusy || buyBusy) { toast('Es läuft schon ein Lauf.', 'warn'); return; }
+        if (galleryBusy || buyBusy) { toast('Es laeuft schon ein Lauf.', 'warn'); return; }
         const diag = { at: Date.now(), bridge: bridgeKind(), sets: null, shown: null, errors: [] };
         STATE.diag.gallery = diag;
         galleryBusy = true;
@@ -11237,7 +10475,7 @@
             setGalleryStep(1);
             setGalleryResult(progressHtml('Lade Gallery-Sets von fut.gg ...', 0, 1));
             const r = await bridgeFetch(futggGalleryIndexUrl(), 30000);
-            if (r.status !== 200) throw new Error('fut.gg antwortet mit HTTP ' + r.status + (r.status === 0 ? ' - Brücke zu alt? Browser: Bridge-Script 1.1.0, App: 1.14.0' : ''));
+            if (r.status !== 200) throw new Error('fut.gg antwortet mit HTTP ' + r.status + (r.status === 0 ? ' - Bruecke zu alt? Browser: Bridge-Script 1.1.0, App: 1.14.0' : ''));
             const lists = [parseFutggGalleryIndex(r.text)];
             // v5.66.0: die Vereine stehen seit dem fut.gg-Umbau auf den
             // Kategorieseiten - ohne sie fehlen genau die kleinen, billigen Sets.
@@ -11261,7 +10499,7 @@
             const sets = mergeGallerySets(lists);
             diag.sets = sets.length;
             diag.setsFromIndex = lists[0].length;
-            if (!sets.length) throw new Error('Keine Sets auf der fut.gg-Seite gefunden (Seite geändert?).');
+            if (!sets.length) throw new Error('Keine Sets auf der fut.gg-Seite gefunden (Seite geaendert?).');
             const hideDone = !ui.galleryHideDone || ui.galleryHideDone.checked;
             let ranked = rankGallerySets(sets, hideDone ? galleryDoneIds() : [], null);
             const coins = userCoins();
@@ -11280,7 +10518,7 @@
             diag.verified = [];
             const verifyOne = async function (x) {
                 checked++;
-                setGalleryResult(progressHtml('Prüfe Set ' + checked + ' von höchstens ' + GALLERY_CHECK_MAX + ': ' + escapeHtml(x.name) + ' ...', checked, GALLERY_CHECK_MAX));
+                setGalleryResult(progressHtml('Pruefe Set ' + checked + ' von hoechstens ' + GALLERY_CHECK_MAX + ': ' + escapeHtml(x.name) + ' ...', checked, GALLERY_CHECK_MAX));
                 try {
                     const r2 = await bridgeFetch(futggGallerySetUrl(x.path), 40000);
                     if (r2.status !== 200) throw new Error('HTTP ' + r2.status);
@@ -11288,8 +10526,9 @@
                     galleryLast.setCache[x.path] = set;
                     const tv = gallerySetTruePerToken(set, x.tokens);
                     if (tv) { x.total = tv.total; x.truePerToken = tv.perToken; x.playersN = set.players.length; if (best == null || tv.perToken < best) best = tv.perToken; }
-                    diag.verified.push({ id: x.id, name: x.name, total: tv ? tv.total : null, perToken: tv ? tv.perToken : null, players: set.players.length });
-                } catch (e) { diag.errors.push('prüfen ' + x.name + ': ' + (e && e.message || e)); }
+                    diag.verified.push({ id: x.id, name: x.name, total: tv ? tv.total : null, perToken: tv ? tv.perToken : null, players: set.players.length,
+                        upgradeGrades: galleryUpgradeOptions(set.upgradeData, STATE.pool, collectedNow).map(o => o.grade), upgradeError: set.upgradeError || null });
+                } catch (e) { diag.errors.push('pruefen ' + x.name + ': ' + (e && e.message || e)); }
                 await futbinSleep(FUTBIN_FETCH_GAP_MS);
             };
             const mode = gallerySortMode();
@@ -11325,59 +10564,24 @@
             setBtnBusy(ui.galleryLoad, false);
         }
     }
-    /**
-     * v6.2.0: Fortschritt eines Sets fuer die Set-Liste. Bevorzugt die
-     * gesammelten Karten (eigener Pool, EA-Kategorien); sonst fut.ggs Score
-     * gegen die Schwelle. null = nichts Belastbares bekannt (kein Balken).
-     */
-    function galleryProgress(x) {
-        if (x && x.own && x.eaKind && x.items > 0) {
-            const have = Math.max(0, Math.min(x.own.count, x.items));
-            return { pct: Math.round(have / x.items * 100), label: have + '/' + x.items };
-        }
-        if (x && x.score != null && x.threshold > 0) {
-            const pct = Math.max(0, Math.min(100, Math.round(x.score / x.threshold * 100)));
-            return { pct: pct, label: pct + ' %' };
-        }
-        return null;
-    }
-    /** v6.2.0: Kurs je Token als kurzer Wert fuer die Zeile (geprueft: "~", ungeprueft: "ab"). */
-    function galleryKursText(x) {
-        if (!x) return '';
-        // Ohne " Coins": die Zeile ist schmal, "/ Token" sagt, was gemeint ist.
-        const n = function (v) { return fmtCoins(v).replace(/ Coins$/, ''); };
-        if (x.truePerToken != null) return '~' + n(x.truePerToken) + ' / Token';
-        if (x.coins > 0 && x.tokens > 0) return 'ab ' + n(Math.ceil(x.coins / x.tokens)) + ' / Token';
-        return '';
-    }
     function renderGallerySets(ranked) {
         const coins = galleryLast && galleryLast.coins;
         const over = ranked.filter(x => x.overBudget).length;
         let h = '<div class="sbc-opt-summary">' + ranked.length + ' Sets mit Tokens · ' +
                 (gallerySortMode() === 'fertig' ? 'begonnene Sets zuerst (wenigste fehlende Karten)' : gallerySortMode() === 'tokens' ? 'meiste Tokens zuerst (im Budget)' : 'sortiert nach Coins je Token') +
                 ' <span class="sbc-opt-muted">(fut.gg)</span></div>' +
-                (coins > 0 ? '<div class="sbc-opt-fb-meta">Kontostand <b>' + fmtCoins(coins) + '</b>' + (over ? ' · ' + over + ' Sets darüber stehen am Ende' : '') + '</div>' : '');
-        if (!ranked.length) h += warnHtml('Kein Set übrig - alle erledigt oder ohne Tokens. Schalter "Erledigte ausblenden" prüfen.');
+                (coins > 0 ? '<div class="sbc-opt-fb-meta">Kontostand <b>' + fmtCoins(coins) + '</b>' + (over ? ' · ' + over + ' Sets darueber stehen am Ende' : '') + '</div>' : '');
+        if (!ranked.length) h += warnHtml('Kein Set uebrig - alle erledigt oder ohne Tokens. Schalter "Erledigte ausblenden" pruefen.');
         ranked.forEach(function (x, i) {
             h += '<div class="sbc-opt-fb-row' + (i === 0 ? ' best' : '') + (i >= GALLERY_SHOW_OPEN ? ' sbc-opt-fb-more' : '') + '">' +
                  '<div class="sbc-opt-fb-top"><span class="sbc-opt-fb-price">' + escapeHtml(x.name) + '</span>' +
                  '<span class="sbc-opt-fb-tags">' + (i === 0 ? '<span class="sbc-opt-tag best">Bester Kurs</span>' : '') +
                  (x.overBudget ? '<span class="sbc-opt-tag" title="teurer als dein Kontostand">zu teuer</span>' : '') +
-                 (x.truePerToken != null ? '<span class="sbc-opt-tag ok">geprüft</span>' : '<span class="sbc-opt-tag">ungeprüft</span>') +
+                 (x.truePerToken != null ? '<span class="sbc-opt-tag ok">geprueft</span>' : '<span class="sbc-opt-tag">ungeprueft</span>') +
                  '<span class="sbc-opt-tag ok">Note ' + escapeHtml(x.bestGrade || '?') + '</span></span></div>' +
-                 (function () {
-                     // v6.2.0: Fortschritt und Kurs auf einen Blick (Muster
-                     // "Sammel-Fortschritt pro Eintrag").
-                     const pr = galleryProgress(x), kurs = galleryKursText(x);
-                     if (!pr && !kurs) return '';
-                     return '<div class="sbc-opt-gal-line">' +
-                         (pr ? '<span class="bar" title="Fortschritt"><span class="fill" style="width:' + pr.pct + '%"></span></span>' +
-                               '<span class="v">' + escapeHtml(pr.label) + '</span>' : '<span class="bar-empty"></span>') +
-                         (kurs ? '<span class="kurs">' + escapeHtml(kurs) + '</span>' : '') + '</div>';
-                 })() +
                  (x.truePerToken != null
-                    ? '<div class="sbc-opt-fb-meta"><b>' + fmtCoins(x.total) + '</b> gesamt für <b>' + x.tokens + '</b> Tokens' + (x.tokensTotal ? ' von ' + x.tokensTotal : '') + ' · ~' + fmtCoins(x.truePerToken) + ' je Token</div>'
-                    : '<div class="sbc-opt-fb-meta">mind. <b>' + fmtCoins(x.coins) + '</b> für <b>' + x.tokens + '</b> Tokens' + (x.tokensTotal ? ' von ' + x.tokensTotal : '') + ' <span class="sbc-opt-muted">(fut.gg-Untergrenze, die echte Summe ist meist deutlich höher - "Set ansehen" prüft)</span></div>') +
+                    ? '<div class="sbc-opt-fb-meta"><b>' + fmtCoins(x.total) + '</b> gesamt fuer <b>' + x.tokens + '</b> Tokens' + (x.tokensTotal ? ' von ' + x.tokensTotal : '') + ' · ~' + fmtCoins(x.truePerToken) + ' je Token</div>'
+                    : '<div class="sbc-opt-fb-meta">mind. <b>' + fmtCoins(x.coins) + '</b> fuer <b>' + x.tokens + '</b> Tokens' + (x.tokensTotal ? ' von ' + x.tokensTotal : '') + ' <span class="sbc-opt-muted">(fut.gg-Untergrenze, die echte Summe ist meist deutlich hoeher - "Set ansehen" prueft)</span></div>') +
                  '<div class="sbc-opt-fb-meta">' + (x.playersN || x.items || '?') + ' Spieler' +
                  (x.own && x.eaKind ? ' · im Verein <b>' + x.own.count + '</b>' + (x.items ? ' von ' + x.items : '') : '') +
                  ' · ' + escapeHtml(x.league.replace(/-/g, ' ')) +
@@ -11406,7 +10610,7 @@
     async function onGalleryPick(idx) {
         const x = galleryLast && galleryLast.ranked[idx];
         if (!x) return;
-        if (galleryBusy || buyBusy) { toast('Es läuft schon ein Lauf.', 'warn'); return; }
+        if (galleryBusy || buyBusy) { toast('Es laeuft schon ein Lauf.', 'warn'); return; }
         galleryBusy = true;
         try {
             let set = galleryLast.setCache && galleryLast.setCache[x.path];
@@ -11433,14 +10637,15 @@
             // Oeffnen eine Anfrage fuer immer dieselbe Antwort. Die Auskunft
             // kommt jetzt vom Markt (v5.64.0) und auf Tastendruck
             // (Knopf "Sammelstand bei EA pruefen"). Der Befund steht in LEARNINGS.
-            if (STATE.diag.gallery) STATE.diag.gallery.chosen = { id: x.id, name: x.name, players: set.players.length, owned: owned.filter(Boolean).length, coinsTotal: set.coinsTotal, grade: set.bestGrade, tokens: set.tokens };
+            if (STATE.diag.gallery) STATE.diag.gallery.chosen = { id: x.id, name: x.name, players: set.players.length, owned: owned.filter(Boolean).length, coinsTotal: set.coinsTotal, grade: set.bestGrade, tokens: set.tokens,
+                upgradeGrades: galleryUpgradeOptions(set.upgradeData, STATE.pool, collectedLoad()).map(o => o.grade), upgradeError: set.upgradeError || null };
             renderGallerySet(x, set, owned);
             setGalleryStep(3);
         } catch (e) {
             reportError('Gallery-Set', e);
             if (STATE.diag.gallery) STATE.diag.gallery.errors.push('set: ' + (e && e.message || e));
             setGalleryResult(warnHtml('Set laden fehlgeschlagen: ' + (e && e.message || e)) +
-                             '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-back">Zurück zur Liste</button>');
+                             '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-back">Zurueck zur Liste</button>');
             const back = ui.galleryResult.querySelector('#sbc-opt-gal-back');
             if (back) back.addEventListener('click', function () { renderGallerySets(galleryLast.ranked); });
         } finally {
@@ -11460,11 +10665,11 @@
         let h = '<div class="sbc-opt-summary"><b>' + escapeHtml(set.name || x.name) + '</b> · Note ' + escapeHtml(set.bestGrade || x.bestGrade || '?') +
                 ' · ' + (set.tokens != null ? set.tokens : x.tokens) + ' Tokens</div>' +
                 (x.eaKind ? '<div class="sbc-opt-fb-meta">Gesammelt: <b>' + own.count + '</b>' + (set.requires ? ' von ' + set.requires : '') + ' passende Karten' +
-                    (own.earlier ? ' <span class="sbc-opt-muted">(' + own.inClub + ' im Verein, ' + own.earlier + ' früher)</span>' : '') + ' · Basis-Score <b>' +
+                    (own.earlier ? ' <span class="sbc-opt-muted">(' + own.inClub + ' im Verein, ' + own.earlier + ' frueher)</span>' : '') + ' · Basis-Score <b>' +
                     own.score.toLocaleString('de-DE') + '</b>' + (ownGrade ? ' → mindestens Note <b>' + ownGrade.grade + '</b>' + (ownGrade.tokens ? ' (' + ownGrade.tokens + ' Tokens)' : '') : (set.grades.length ? ' → noch unter Note D' : '')) +
                     (!STATE.pool.length ? ' <span class="sbc-opt-warn">(Verein nicht geladen)</span>' : '') + '</div>' : '') +
-                '<div class="sbc-opt-fb-meta">' + set.players.length + ' Spieler in der günstigsten Aufstellung' + (set.requires ? ' (Set braucht ' + set.requires + ')' : '') +
-                ' · <b>' + (ownedN - earlierN) + '</b> im Verein' + (earlierN ? ' · <b>' + earlierN + '</b> früher gesammelt' : '') + ' · <b>' + missing.length + '</b> zu kaufen' +
+                '<div class="sbc-opt-fb-meta">' + set.players.length + ' Spieler in der guenstigsten Aufstellung' + (set.requires ? ' (Set braucht ' + set.requires + ')' : '') +
+                ' · <b>' + (ownedN - earlierN) + '</b> im Verein' + (earlierN ? ' · <b>' + earlierN + '</b> frueher gesammelt' : '') + ' · <b>' + missing.length + '</b> zu kaufen' +
                 (set.score != null ? ' · Score ' + set.score.toLocaleString('de-DE') : '') + '</div>' +
                 '<div class="sbc-opt-fb-meta">fut.gg-Preise der fehlenden Karten zusammen <b>' + fmtCoins(sumMissing) + '</b>' +
                 (set.tax != null ? ' · beim Wiederverkauf gehen ~' + fmtCoins(set.tax) + ' Steuer weg' : '') + '</div>';
@@ -11485,21 +10690,21 @@
         if (spend.duplicates.length) {
             h += '<div class="sbc-opt-fb-meta sbc-opt-warn">Mehrfach in der Aufstellung: ' +
                  spend.duplicates.map(d => escapeHtml(d.name) + ' ' + d.count + '\u00d7 (zusammen ' + fmtCoins(d.total) + ')').join(', ') +
-                 ' - verschiedene Kartenversionen desselben Spielers. fut.gg füllt damit auf, wenn der Verein zu wenige günstige Karten hat.</div>';
+                 ' - verschiedene Kartenversionen desselben Spielers. fut.gg fuellt damit auf, wenn der Verein zu wenige guenstige Karten hat.</div>';
         }
         if (x.eaKind && set.requires && own.count >= set.requires) {
-            h += '<div class="sbc-opt-summary">Das Set ist mit deinen Karten schon voll - im Spiel bewerten.' + (missing.length ? ' Für eine bessere Note kannst du trotzdem die fut.gg-Aufstellung kaufen.' : '') + '</div>';
+            h += '<div class="sbc-opt-summary">Das Set ist mit deinen Karten schon voll - im Spiel bewerten.' + (missing.length ? ' Fuer eine bessere Note kannst du trotzdem die fut.gg-Aufstellung kaufen.' : '') + '</div>';
         }
         if (missing.length) {
             // v5.36.0: zwei Wege - vervollstaendigen (nur die fehlenden, guenstigsten) oder die komplette Aufstellung.
             const completeIsCheaper = x.eaKind && comp.need > 0 && comp.idx.length && comp.idx.length < missing.length;
             if (completeIsCheaper) {
-                h += '<button type="button" class="sbc-opt-btn primary" id="sbc-opt-gal-buy-complete">Set vervollständigen: ' + comp.idx.length + ' kaufen (~' + fmtCoins(comp.total) + ')</button>' +
-                     '<div class="sbc-opt-dim">Die ' + comp.idx.length + ' günstigsten fehlenden Karten der fut.gg-Aufstellung füllen das Set auf ' + set.requires + '. Die Note ergibt sich aus deinen Karten plus diesen.</div>';
+                h += '<button type="button" class="sbc-opt-btn primary" id="sbc-opt-gal-buy-complete">Set vervollstaendigen: ' + comp.idx.length + ' kaufen (~' + fmtCoins(comp.total) + ')</button>' +
+                     '<div class="sbc-opt-dim">Die ' + comp.idx.length + ' guenstigsten fehlenden Karten der fut.gg-Aufstellung fuellen das Set auf ' + set.requires + '. Die Note ergibt sich aus deinen Karten plus diesen.</div>';
             }
             h += '<button type="button" class="sbc-opt-btn ' + (completeIsCheaper ? 'ghost' : 'primary') + '" id="sbc-opt-gal-buy">' +
                  (completeIsCheaper ? 'Komplette fut.gg-Aufstellung: ' : '') + missing.length + ' Spieler kaufen</button>' +
-                 '<div class="sbc-opt-dim">Erst werden die Live-Preise am EA-Markt geholt, dann kommt eine Rückfrage. Ein Kauf alle 4-8 Sekunden, nie über der Obergrenze (Plan + ' +
+                 '<div class="sbc-opt-dim">Erst werden die Live-Preise am EA-Markt geholt, dann kommt eine Rueckfrage. Ein Kauf alle 4-8 Sekunden, nie ueber der Obergrenze (Plan + ' +
                  Math.round(BUY_TOLERANCE * 100) + ' %). Die Karten gehen direkt in den Verein.</div>';
         } else if (!(x.eaKind && set.requires && own.count >= set.requires)) {
             h += '<div class="sbc-opt-summary">Alle Spieler der Aufstellung sind schon im Verein - nichts zu kaufen. Im Spiel bewerten.</div>';
@@ -11518,14 +10723,41 @@
             set.grades.forEach(g => { h += '<div>' + g.grade + ': ab ' + (g.score != null ? g.score.toLocaleString('de-DE') : '?') + ' Score → ' + (g.tokens ? g.tokens + ' Tokens' : escapeHtml(g.reward || '–')) + '</div>'; });
             h += '</details>';
         }
+        // v5.68: additive Vorschau. Diese Quellenplaene sind NICHT an den Kauf-Lauf angeschlossen.
+        const upgrades = galleryUpgradeOptions(set.upgradeData, STATE.pool, collectedLoad());
+        if (upgrades.length) {
+            h += '<details class="sbc-opt-details-toggle" open><summary>Aufwertung: Plaene je Zielnote</summary>' +
+                 '<div class="sbc-opt-dim">fut.gg-Aufstellungen mit Boni. Bereits gesammelte Kartenversionen werden abgezogen. Preise sind Schaetzungen; unbekannter Sammelstand kann die Kosten senken. ' +
+                 'Deine aktuelle bewertete Note ist hier noch nicht bekannt. Tokens gelten insgesamt bis zur Zielnote. Ein guenstigerer Mix mit deinen Karten kann moeglich sein. Die Plaene sind eine Vorschau.</div>';
+            const computed = set.upgradeData.solution.computedAt;
+            if (typeof computed === 'string' && Number.isFinite(Date.parse(computed))) {
+                h += '<div class="sbc-opt-dim">Quellenplan vom ' + escapeHtml(new Date(computed).toLocaleString('de-DE')) + '</div>';
+            }
+            const cards = new Map((Array.isArray(set.upgradeData.lineupCards) ? set.upgradeData.lineupCards : []).filter(c => c && c.eaId > 0).map(c => [c.eaId, c]));
+            upgrades.forEach(o => {
+                h += '<details class="sbc-opt-details-toggle"><summary><b>' + o.grade + '</b> · ' + o.known + '/' + o.total + ' gesammelt · ' +
+                     o.missing.length + ' zu pruefen · ' + (o.coins == null ? 'Preis offen' : '~' + fmtCoins(o.coins)) + '</summary>' +
+                     '<div class="sbc-opt-fb-meta">Score ' + o.score.toLocaleString('de-DE') + ' = ' + o.baseScore.toLocaleString('de-DE') +
+                     ' Basis + ' + (o.score - o.baseScore).toLocaleString('de-DE') + ' Boni · Ziel ' + o.threshold.toLocaleString('de-DE') +
+                     ' · ' + (o.tokens || 0) + ' Tokens insgesamt</div>';
+                o.missing.forEach(p => {
+                    const c = cards.get(p.eaId);
+                    h += '<div>' + escapeHtml(c && (c.commonName || c.cardName) || ('#' + p.eaId)) +
+                         ' <span class="sbc-opt-muted">(' + p.overall + ', ID ' + p.eaId + ') · Score ' + p.score + '</span> · ' +
+                         (p.price > 0 ? fmtCoins(p.price) : 'Preis offen') + '</div>';
+                });
+                h += '</details>';
+            });
+            h += '</details>';
+        }
         // v5.65.0: Sammelstand bei EA nachfragen (eine Marktabfrage je unbekanntem Spieler).
         const checkIdx = galleryCheckTargets(set.players, owned, collectedIdSet(collectedLoad()));
         if (checkIdx.length) {
-            h += '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-check">Sammelstand bei EA prüfen (' + checkIdx.length + ' Abfragen)</button>' +
-                 '<div class="sbc-opt-dim">Fragt für jeden noch unbekannten Spieler den Markt - EAs Antwort verrät, ob du die Karte schon einmal gesammelt hast. Ist das Set damit voll, wird es als erledigt markiert. Dauert rund ' + Math.ceil(checkIdx.length * 2) + ' Sekunden.</div>';
+            h += '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-check">Sammelstand bei EA pruefen (' + checkIdx.length + ' Abfragen)</button>' +
+                 '<div class="sbc-opt-dim">Fragt fuer jeden noch unbekannten Spieler den Markt - EAs Antwort verraet, ob du die Karte schon einmal gesammelt hast. Ist das Set damit voll, wird es als erledigt markiert. Dauert rund ' + Math.ceil(checkIdx.length * 2) + ' Sekunden.</div>';
         }
         h += '<div class="sbc-opt-inline" style="margin-top:8px;">' +
-             '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-back" style="margin:0;">Zurück</button>' +
+             '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-back" style="margin:0;">Zurueck</button>' +
              '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-done" style="margin:0;">Als erledigt markieren</button></div>';
         setGalleryResult(h);
         const buy = ui.galleryResult.querySelector('#sbc-opt-gal-buy');
@@ -11553,7 +10785,7 @@
     async function onGalleryCheckClick() {
         const ch = galleryLast && galleryLast.chosen;
         if (!ch || !ch.set) return;
-        if (galleryBusy || buyBusy || sellBusy) { toast('Es läuft schon ein Lauf.', 'warn'); return; }
+        if (galleryBusy || buyBusy || sellBusy) { toast('Es laeuft schon ein Lauf.', 'warn'); return; }
         if (!sessionReady()) { toast('EA-Sitzung noch nicht erfasst - einmal im Spiel klicken, dann erneut.', 'warn'); return; }
         const players = ch.set.players || [];
         const known = players.filter((p, i) => ch.owned && ch.owned[i]).length;
@@ -11573,7 +10805,7 @@
         try {
             for (let k = 0; k < idx.length; k++) {
                 const p = players[idx[k]];
-                setGalleryResult(progressHtml('Sammelstand prüfen ... ' + (k + 1) + ' von ' + idx.length + ' (' + escapeHtml(p.name) + ')', k + 1, idx.length));
+                setGalleryResult(progressHtml('Sammelstand pruefen ... ' + (k + 1) + ' von ' + idx.length + ' (' + escapeHtml(p.name) + ')', k + 1, idx.length));
                 let val = null;
                 try {
                     const offers = await marketOffersHttp(p.defId, 0);
@@ -11610,14 +10842,14 @@
                 h += '<details class="sbc-opt-details-toggle"><summary>Fehlende Spieler</summary>' +
                      diag.results.filter(r => r.collected === false).map(r => '<div>' + escapeHtml(r.name) + '</div>').join('') + '</details>';
             }
-            h += '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-check-back">Zurück zum Set</button>';
+            h += '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-check-back">Zurueck zum Set</button>';
             setGalleryResult(h);
             const back = ui.galleryResult.querySelector('#sbc-opt-gal-check-back');
             if (back) back.addEventListener('click', function () { onGalleryPick(ch.idx); });
             toast('Sammelstand: ' + sum.collected + ' von ' + sum.total + (full ? ' - Set als erledigt markiert.' : ''), full ? 'ok' : 'warn');
         } catch (e) {
-            reportError('Galerie: Sammelstand prüfen', e);
-            setGalleryResult(warnHtml('Prüfen fehlgeschlagen: ' + escapeHtml(String(e && e.message || e))));
+            reportError('Galerie: Sammelstand pruefen', e);
+            setGalleryResult(warnHtml('Pruefen fehlgeschlagen: ' + escapeHtml(String(e && e.message || e))));
         } finally {
             galleryBusy = false;
         }
@@ -11625,7 +10857,7 @@
     async function onGalleryBuyClick() {
         const ch = galleryLast && galleryLast.chosen;
         if (!ch) return;
-        if (galleryBusy || buyBusy) { toast('Es läuft schon ein Lauf.', 'warn'); return; }
+        if (galleryBusy || buyBusy) { toast('Es laeuft schon ein Lauf.', 'warn'); return; }
         galleryBusy = true;
         const liveBins = {}, liveEst = {};
         // v5.36.0: "vervollstaendigen" kauft nur die gewaehlten Indizes; alles andere gilt als vorhanden.
@@ -11641,7 +10873,7 @@
                     liveEst[p.defId] = est ? { min: est.min, robust: est.robust, count: est.count, complete: est.complete, steps: est.steps, fromCache: !!est.fromCache, dist: est.dist || null, collected: est.collected || null } : null; // v5.46.0: Report, v5.51.0: Verteilung, v5.58.0: Sammel-Flag
                 } catch (e) {
                     liveBins[p.defId] = null;
-                    if (isRateLimit(e && e.status)) { setGalleryResult(warnHtml('EA drosselt die Marktsuche - später noch einmal.')); return; }
+                    if (isRateLimit(e && e.status)) { setGalleryResult(warnHtml('EA drosselt die Marktsuche - spaeter noch einmal.')); return; }
                 }
                 if (k < todo.length - 1) await futbinSleep(FUTBIN_MARKET_GAP_MS);
             }
@@ -11669,10 +10901,10 @@
                                                              players: built.plan.map(p => ({ name: p.name, planned: p.planned, max: p.maxPrice, futgg: p.futggPrice, est: p.est })) };
         if (!built.plan.length) {
             if (built.collectedCount && built.collectedCount === built.skipped.length) {
-                setGalleryResult(warnHtml('Alle fehlenden Karten dieses Sets hast du laut EA schon einmal gesammelt - sie zählen weiter für die Galerie. Hier ist nichts zu kaufen; im Spiel bewerten.'));
+                setGalleryResult(warnHtml('Alle fehlenden Karten dieses Sets hast du laut EA schon einmal gesammelt - sie zaehlen weiter fuer die Galerie. Hier ist nichts zu kaufen; im Spiel bewerten.'));
                 return;
             }
-            setGalleryResult(warnHtml('Kein kaufbarer Spieler.' + (built.skipped.length ? ' Übersprungen: ' + built.skipped.map(s => escapeHtml(s.name || ('#' + s.defId)) + ' (' + escapeHtml(s.reason) + ')').join(', ') : '')));
+            setGalleryResult(warnHtml('Kein kaufbarer Spieler.' + (built.skipped.length ? ' Uebersprungen: ' + built.skipped.map(s => escapeHtml(s.name || ('#' + s.defId)) + ' (' + escapeHtml(s.reason) + ')').join(', ') : '')));
             return;
         }
         const total = built.plan.reduce((a, p) => a + p.maxPrice, 0);
@@ -11697,14 +10929,14 @@
                             ' - verschiedene Versionen desselben Spielers.' : '');
         if (STATE.diag.gallery && STATE.diag.gallery.plan) STATE.diag.gallery.plan.spend = { perToken: perTokenHere, tokens: tokensHere || null, dominant: prof.dominant, duplicates: prof.duplicates };
         const frage = 'Gallery-Set "' + ch.meta.name + '": ' + built.plan.length + ' Spieler nach und nach kaufen?\n\n' + lines + kursText +
-                      '\n\nZusammen höchstens ' + fmtCoins(total) + (coins != null ? ' (Kontostand ' + fmtCoins(coins) + ')' : '') +
+                      '\n\nZusammen hoechstens ' + fmtCoins(total) + (coins != null ? ' (Kontostand ' + fmtCoins(coins) + ')' : '') +
                       (noLive ? '\n' + noLive + ' Preis(e) stammen von fut.gg, weil der Markt gerade kein Angebot zeigt.' : '') +
                       // v5.56.0: was NICHT gekauft wird, steht mit Grund in der Rueckfrage.
                       (built.skipped.length ? '\n\nNicht dabei (selbst entscheiden):\n' + built.skipped.map(s => '- ' + s.name + ': ' + s.reason).join('\n') : '') +
-                      '.\nEin Kauf alle 4-8 Sekunden, Abbruch bei Fehlern. Die Karten gehen in den Verein und zählen für die Galerie.';
+                      '.\nEin Kauf alle 4-8 Sekunden, Abbruch bei Fehlern. Die Karten gehen in den Verein und zaehlen fuer die Galerie.';
         if (!window.confirm(frage)) { renderGallerySet(ch.meta, ch.set, ch.owned); return; }
         if (coins != null && coins < total) {
-            if (!window.confirm('Der Kontostand reicht nicht für die Obergrenze aller Spieler. Trotzdem starten (kauft, so weit die Coins reichen)?')) { renderGallerySet(ch.meta, ch.set, ch.owned); return; }
+            if (!window.confirm('Der Kontostand reicht nicht fuer die Obergrenze aller Spieler. Trotzdem starten (kauft, so weit die Coins reichen)?')) { renderGallerySet(ch.meta, ch.set, ch.owned); return; }
         }
         await buyPlannedPlayers(null, built.plan, {
             noSquad: true, setResult: setGalleryResult, maxPerRun: GALLERY_BUY_MAX_PER_RUN,
@@ -11716,7 +10948,7 @@
                 try {
                     const added = mergeIntoPool((bought || []).map(b => b && b.raw ? normalizePlayer(b.raw, false) : null).filter(Boolean));
                     if (STATE.diag.gallery) STATE.diag.gallery.pooled = added;
-                } catch (e) { reportError('Gallery: Pool ergänzen', e); }
+                } catch (e) { reportError('Gallery: Pool ergaenzen', e); }
                 // v5.35.0: fuer "Gekaufte Karten verkaufen" merken (itemId, Einkaufspreis, Set).
                 try { const n = rememberGalleryBought(ch.meta, bought); if (STATE.diag.gallery) STATE.diag.gallery.remembered = n; }
                 catch (e) { reportError('Gallery: Karten merken', e); }
@@ -11724,7 +10956,7 @@
                 if (rest > 0 && ui.galleryResult) {
                     ui.galleryResult.insertAdjacentHTML('beforeend',
                         warnHtml(rest + ' Spieler fehlen noch' + (d.stopped ? ' (Lauf gestoppt: ' + d.stopped + ')' : '') + '.') +
-                        '<button type="button" class="sbc-opt-btn primary" id="sbc-opt-gal-rest">Set neu prüfen und Rest kaufen</button>');
+                        '<button type="button" class="sbc-opt-btn primary" id="sbc-opt-gal-rest">Set neu pruefen und Rest kaufen</button>');
                     const b = ui.galleryResult.querySelector('#sbc-opt-gal-rest');
                     if (b) b.addEventListener('click', function () { onGalleryPick(ch.idx); });
                 }
@@ -11760,11 +10992,11 @@
                     ' komplett gekauft: ' + d.bought + ' Karten, jetzt im Verein' + (ch.set && ch.set.bestGrade ? ' · Ziel-Note ' + escapeHtml(ch.set.bestGrade) : '') +
                     (ch.meta.tokens ? ' · ' + ch.meta.tokens + ' Tokens' : '') + '.</div>' +
                     (komplett ? '<div class="sbc-opt-summary sbc-opt-gain">' + escapeHtml(ch.meta.name) + ' wurde als erledigt markiert.</div>' : '') +
-                    '<div>Die Karten zählen ab jetzt dauerhaft für die Galerie - sie mussten den Verein nur EINMAL berührt haben (Rasmus 22.09.). Du kannst sie sofort wieder verkaufen (5 % Steuer) und <b>später</b> im Spiel bewerten: <b>Galerie → ' + escapeHtml(ch.meta.name) + ' → bewerten</b> (Konsole/PC oder Companion App).</div>' +
+                    '<div>Die Karten zaehlen ab jetzt dauerhaft fuer die Galerie - sie mussten den Verein nur EINMAL beruehrt haben (Rasmus 22.09.). Du kannst sie sofort wieder verkaufen (5 % Steuer) und <b>spaeter</b> im Spiel bewerten: <b>Galerie → ' + escapeHtml(ch.meta.name) + ' → bewerten</b> (Konsole/PC oder Companion App).</div>' +
                     (zumVerkauf ? '<button type="button" class="sbc-opt-btn primary" id="sbc-opt-gal-sell-now">Gekaufte Karten verkaufen (' + zumVerkauf + ')</button>' : '') +
                     '<div class="sbc-opt-inline" style="margin-top:8px;">' +
                     (komplett ? '' : '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-done2" style="margin:0;">Set als erledigt markieren</button>') +
-                    '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-next" style="margin:0;">Nächstes Set suchen</button></div>');
+                    '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-next" style="margin:0;">Naechstes Set suchen</button></div>');
                 const sell = el.querySelector('#sbc-opt-gal-sell-now');
                 if (sell) sell.addEventListener('click', onGallerySellClick);
                 const b = el.querySelector('#sbc-opt-gal-done2');
@@ -11862,7 +11094,7 @@
         return apiPost('auctionhouse', { itemData: { id: itemId }, startingBid: start, duration: duration, buyNowPrice: buyNow });
     }
     async function onGallerySellClick() {
-        if (sellBusy || buyBusy || galleryBusy) { toast('Es läuft schon ein Lauf.', 'warn'); return; }
+        if (sellBusy || buyBusy || galleryBusy) { toast('Es laeuft schon ein Lauf.', 'warn'); return; }
         const records = galleryBoughtLoad();
         if (!records.length) { toast('Keine gekauften Galerie-Karten gemerkt.', ''); return; }
         if (!sessionReady()) { setGalleryResult(warnHtml('EA-Sitzung noch nicht erfasst - einmal im Spiel klicken, dann erneut.')); return; }
@@ -11891,7 +11123,7 @@
             return;
         }
         sellPrefixHtml = recon.dropped.length
-            ? '<div class="sbc-opt-muted">' + recon.dropped.length + ' gemerkte Karte(n) übersprungen: ' + recon.dropped.map(d => escapeHtml(d.name || '?') + ' (' + d.why + ')').join(', ') + '. Merkliste bereinigt.</div>'
+            ? '<div class="sbc-opt-muted">' + recon.dropped.length + ' gemerkte Karte(n) uebersprungen: ' + recon.dropped.map(d => escapeHtml(d.name || '?') + ' (' + d.why + ')').join(', ') + '. Merkliste bereinigt.</div>'
             : '';
         await priceAndPreview(recon.keep, ui.gallerySell, 'gallerySell');
     }
@@ -11916,7 +11148,7 @@
             const prog = { ea: 0, fb: 0, fbOn: false, note: null };
             const showProg = function () {
                 const txt = 'Aktuelle Angebote ' + prog.ea + '/' + defIds.length +
-                            (prog.fbOn ? ' · futbin-Verkäufe ' + prog.fb + '/' + defIds.length : '') +
+                            (prog.fbOn ? ' · futbin-Verkaeufe ' + prog.fb + '/' + defIds.length : '') +
                             (prog.note ? ' · ' + prog.note : '');
                 setSellResult(progressHtml(txt, prog.ea + (prog.fbOn ? prog.fb : 0), defIds.length * (prog.fbOn ? 2 : 1)));
             };
@@ -12075,7 +11307,7 @@
     }
     /** v5.37.0: alle unverkauften Spieler der Transferliste zum Marktpreis listen (Reiter "Mehr"). */
     async function onTradepileSellClick() {
-        if (sellBusy || buyBusy || galleryBusy) { toast('Es läuft schon ein Lauf.', 'warn'); return; }
+        if (sellBusy || buyBusy || galleryBusy) { toast('Es laeuft schon ein Lauf.', 'warn'); return; }
         if (!sessionReady()) { toast('EA-Sitzung noch nicht erfasst - einmal im Spiel klicken, dann erneut.', 'warn'); return; }
         sellTargetEl = ui.toolsResult;
         sellPrefixHtml = ''; // v5.52.0
@@ -12098,19 +11330,6 @@
         if (!cands.length) { setSellResult('<div class="sbc-opt-summary">Keine unverkauften Spieler auf der Transferliste.</div>'); return; }
         await priceAndPreview(cands, ui.toolsSell, 'tradepileSell');
     }
-    /**
-     * v6.2.0: Summenzeilen vor dem Listen (Muster "Verkauf pruefen"):
-     * Angebote, EA-Steuer, ggf. Einkauf, Erloes als letzte, fette Zeile.
-     * Dieselbe Rechnung wie vorher (Erloes = floor(Summe * 0.95)).
-     */
-    function sellReceiptHtml(gross, paidSum, paidN) {
-        const net = Math.floor(gross * 0.95);
-        return '<div class="sbc-opt-receipt">' +
-            '<div><span>Sofortkauf zusammen</span><b>' + fmtCoins(gross) + '</b></div>' +
-            '<div><span>EA-Steuer 5 %</span><b class="sbc-opt-loss">\u2212' + fmtCoins(gross - net) + '</b></div>' +
-            (paidSum ? '<div><span>Einkauf (' + paidN + ' Karte' + (paidN === 1 ? '' : 'n') + ')</span><b>' + fmtCoins(paidSum) + '</b></div>' : '') +
-            '<div class="sum"><span>Erl\u00f6s nach Steuer</span><b>' + fmtCoins(net) + '</b></div></div>';
-    }
     function renderSellPreview(rows, sellable, byMode) {
         const bySet = {};
         rows.forEach(x => { const k = x.rec.setName || 'Ohne Set'; (bySet[k] = bySet[k] || []).push(x); });
@@ -12123,20 +11342,21 @@
         const isGallery = sellTargetEl === ui.galleryResult || !sellTargetEl;
         const dg = sellLastRows && STATE.diag[sellLastRows.diagKey];
         const withFb = sellable.filter(x => x.price.futbin && x.price.futbin.sales.length).length;
-        let h = (sellPrefixHtml || '') + '<div class="sbc-opt-summary">' + sellable.length + ' von ' + rows.length + ' Karten mit aktuellem Angebot' + (withFb ? ' · ' + withFb + ' mit futbin-Verkäufen' : '') + '</div>' +
-                (dg && dg.stopped ? warnHtml('EA hat die Preissuche gedrosselt - nur die schon gepreisten Karten stehen hier. Die anderen beim nächsten Lauf (Preise bleiben 3 Minuten gemerkt).') : '') +
-                sellReceiptHtml(gross, paidSum, withPaid.length) +
+        let h = (sellPrefixHtml || '') + '<div class="sbc-opt-summary">' + sellable.length + ' von ' + rows.length + ' Karten mit aktuellem Angebot' + (withFb ? ' · ' + withFb + ' mit futbin-Verkaeufen' : '') + '</div>' +
+                (dg && dg.stopped ? warnHtml('EA hat die Preissuche gedrosselt - nur die schon gepreisten Karten stehen hier. Die anderen beim naechsten Lauf (Preise bleiben 3 Minuten gemerkt).') : '') +
+                '<div class="sbc-opt-fb-meta">Sofortkauf zusammen <b>' + fmtCoins(gross) + '</b> · nach 5 % Steuer ~<b>' + fmtCoins(Math.floor(gross * 0.95)) + '</b>' +
+                (paidSum ? ' · gekauft fuer ' + fmtCoins(paidSum) : '') + '</div>' +
                 // v5.67.0: das Ergebnis GROSS und farbig - gruen bei Plus, rot bei Minus.
                 (withPaid.length
                     ? '<div class="sbc-opt-net ' + (profitSum >= 0 ? 'gain' : 'loss') + '">' +
                       '<span class="sbc-opt-net-label">Ergebnis nach 5 % Steuer</span>' +
                       '<span class="sbc-opt-net-value">' + signed(profitSum) + '</span>' +
-                      '<span class="sbc-opt-net-sub">' + fmtCoins(Math.floor(gross * 0.95)) + ' Erlös gegen ' + fmtCoins(paidSum) + ' Einkauf' +
+                      '<span class="sbc-opt-net-sub">' + fmtCoins(Math.floor(gross * 0.95)) + ' Erloes gegen ' + fmtCoins(paidSum) + ' Einkauf' +
                       (withPaid.length < sellable.length ? ' · ' + (sellable.length - withPaid.length) + ' Karte(n) ohne bekannten Einkaufspreis' : '') + '</span></div>'
-                    : '<div class="sbc-opt-net neutral"><span class="sbc-opt-net-label">Erlös nach 5 % Steuer</span>' +
+                    : '<div class="sbc-opt-net neutral"><span class="sbc-opt-net-label">Erloes nach 5 % Steuer</span>' +
                       '<span class="sbc-opt-net-value">' + fmtCoins(Math.floor(gross * 0.95)) + '</span>' +
                       '<span class="sbc-opt-net-sub">kein Einkaufspreis bekannt - kein Gewinn/Verlust berechenbar</span></div>') +
-                '<label class="sbc-opt-chiplabel" style="margin-top:8px;">Preis gegenüber dem günstigsten Angebot' +
+                '<label class="sbc-opt-chiplabel" style="margin-top:8px;">Preis gegenueber dem guenstigsten Angebot' +
                 (byMode && withPaid.length ? ' <span class="sbc-opt-muted">(Zahl = Ergebnis nach Steuer)</span>' : '') + '</label>' +
                 '<div class="sbc-opt-chips" id="sbc-opt-sell-markup">' +
                 SELL_MARKUP_CHIPS.map(function (o) {
@@ -12148,8 +11368,8 @@
                         : (t ? '<span class="sbc-opt-chip-net">' + fmtCoins(t.net) + '</span>' : '');
                     return '<button type="button" class="sbc-opt-chip' + (mode === o[0] ? ' on' : '') + '" data-markup="' + o[0] + '">' + o[1] + extra + '</button>';
                 }).join('') + '</div>' +
-                (isGallery ? '<div class="sbc-opt-dim">Die Karten bleiben in der Galerie, auch verkauft - bewerten geht später im Spiel. Gelistet wird für 1 Stunde.</div>'
-                           : '<div class="sbc-opt-dim">Gelistet wird für 1 Stunde. Die Karten liegen schon auf der Transferliste, verschoben wird nichts.</div>');
+                (isGallery ? '<div class="sbc-opt-dim">Die Karten bleiben in der Galerie, auch verkauft - bewerten geht spaeter im Spiel. Gelistet wird fuer 1 Stunde.</div>'
+                           : '<div class="sbc-opt-dim">Gelistet wird fuer 1 Stunde. Die Karten liegen schon auf der Transferliste, verschoben wird nichts.</div>');
         Object.keys(bySet).forEach(function (setName) {
             h += '<details class="sbc-opt-details-toggle" open><summary>' + escapeHtml(setName) + ' (' + bySet[setName].length + ')</summary>';
             bySet[setName].forEach(function (x) {
@@ -12159,7 +11379,7 @@
                      (p ? ' → <b>' + fmtCoins(p.buyNow) + '</b> <span class="sbc-opt-muted">(Start ' + fmtCoins(p.start) + ', ' + p.count + ' Angebote ab ' + fmtCoins(p.lowest) + ')</span>' +
                           (p.profit != null ? ' <span class="' + (p.profit >= 0 ? 'sbc-opt-gain' : 'sbc-opt-loss') + '">' + signed(p.profit) + '</span>' : '') +
                           (p.futbin && p.futbin.sales.length ? '<div class="sbc-opt-fb-meta">zuletzt verkauft: ' + p.futbin.sales.map(x => fmtCoins(x.price) + ' <span class="sbc-opt-muted">(' + escapeHtml(x.when.replace(/^\w+ \d+, /, '')) + ')</span>').join(' · ') +
-                              (p.futbin.raised ? ' · <b>auf Verkaufsniveau angehoben</b>' : '') + '</div>' : (p.futbin ? '<div class="sbc-opt-fb-meta sbc-opt-muted">futbin: keine jüngsten Verkäufe</div>' : ''))
+                              (p.futbin.raised ? ' · <b>auf Verkaufsniveau angehoben</b>' : '') + '</div>' : (p.futbin ? '<div class="sbc-opt-fb-meta sbc-opt-muted">futbin: keine juengsten Verkaeufe</div>' : ''))
                         : ' <span class="sbc-opt-warn">kein Angebot am Markt - wird nicht gelistet</span>') + '</div>';
             });
             h += '</details>';
@@ -12189,7 +11409,7 @@
         const frage = sellable.length + ' Karten auf den Transfermarkt stellen (1 Stunde, Sofortkauf = Verkaufsniveau' +
                       (mk && mk.tiers ? ' + ' + mk.tiers + ' Stufe(n)' : mk && mk.pct ? ' + ' + Math.round(mk.pct * 100) + ' %' : '') + ')?\n\n' +
                       sellable.slice(0, 12).map(x => x.rec.name + ': ' + fmtCoins(x.price.buyNow)).join('\n') + (sellable.length > 12 ? '\n...' : '') +
-                      '\n\nDie Karten bleiben für die Galerie gezählt (sie waren im Verein) - bewerten kannst du später im Spiel.';
+                      '\n\nDie Karten bleiben fuer die Galerie gezaehlt (sie waren im Verein) - bewerten kannst du spaeter im Spiel.';
         if (!window.confirm(frage)) return;
         sellBusy = true;
         const diagKey = (sellLastRows && sellLastRows.diagKey) || 'gallerySell';
@@ -12208,12 +11428,12 @@
                 const x = sellable[k];
                 const step = { name: x.rec.name, buyNow: x.price.buyNow, start: x.price.start, status: null, paid: x.rec.paid || null, detail: x.price.detail || null };
                 diag.steps.push(step);
-                render('Liste ' + x.rec.name + ' für ' + fmtCoins(x.price.buyNow) + ' ...');
+                render('Liste ' + x.rec.name + ' fuer ' + fmtCoins(x.price.buyNow) + ' ...');
                 try {
                     await listItemHttp(x.rec.itemId, x.price.start, x.price.buyNow, SELL_DURATION_S, !!x.rec.inTradePile);
                     step.status = 'gelistet'; diag.listed++; fails = 0;
                     if (!x.rec.inTradePile) galleryBoughtSave(removeBoughtRecords(galleryBoughtLoad(), [x.rec.itemId]));
-                    lines.push('✓ ' + escapeHtml(x.rec.name) + ' für ' + fmtCoins(x.price.buyNow));
+                    lines.push('✓ ' + escapeHtml(x.rec.name) + ' fuer ' + fmtCoins(x.price.buyNow));
                 } catch (e) {
                     const st = httpStatusOf(e);
                     // v5.39.0: 461 mit Aufschlag -> einmal zum Basispreis (EAs Spanne war unbekannt).
@@ -12225,7 +11445,7 @@
                             await listItemHttp(x.rec.itemId, start2 < x.price.base ? start2 : x.price.base, x.price.base, SELL_DURATION_S, true);
                             step.status = 'gelistet (ohne Aufschlag: ' + x.price.base + ')'; step.retryAt = x.price.base; diag.listed++; fails = 0;
                             if (!x.rec.inTradePile) galleryBoughtSave(removeBoughtRecords(galleryBoughtLoad(), [x.rec.itemId]));
-                            lines.push('✓ ' + escapeHtml(x.rec.name) + ' für ' + fmtCoins(x.price.base) + ' (Aufschlag lag über EAs Preisspanne)');
+                            lines.push('✓ ' + escapeHtml(x.rec.name) + ' fuer ' + fmtCoins(x.price.base) + ' (Aufschlag lag ueber EAs Preisspanne)');
                             if (k < sellable.length - 1) await futbinSleep(randomBetween(BUY_GAP_MIN_MS, BUY_GAP_MAX_MS));
                             continue;
                         } catch (e2) { /* faellt in die normale Fehlerbehandlung */ }
@@ -12284,7 +11504,7 @@
         return out;
     }
     async function onBuyConceptsClick() {
-        if (buyBusy || futbinBusy) { toast('Es läuft schon ein Lauf.', 'warn'); return; }
+        if (buyBusy || futbinBusy) { toast('Es laeuft schon ein Lauf.', 'warn'); return; }
         const concepts = collectConceptPlayers();
         if (!concepts.length) { setFutbinResult(warnHtml('Im offenen Kader stehen keine Konzept-Spieler.')); return; }
         setFutbinStep(3);
@@ -12303,21 +11523,21 @@
                 } catch (e) {
                     estimates[c.definitionId] = null;
                     probeErrors.push((c.name || c.definitionId) + ': ' + (e && e.message || e));
-                    if (isRateLimit(e && e.status)) { setFutbinResult(warnHtml('EA drosselt die Marktsuche - später noch einmal.')); return; }
+                    if (isRateLimit(e && e.status)) { setFutbinResult(warnHtml('EA drosselt die Marktsuche - spaeter noch einmal.')); return; }
                 }
                 await futbinSleep(FUTBIN_MARKET_GAP_MS);
             }
             const built = conceptBuyPlan(concepts, estimates, BUY_TOLERANCE, eaPriceTiers());
             STATE.diag.futbinBuyPlan = { at: Date.now(), concepts: concepts.length, plan: built.plan.length, skipped: built.skipped, probeErrors: probeErrors };
             let h = '<div class="sbc-opt-summary">' + concepts.length + ' Konzept-Spieler im Kader, ' + built.plan.length + ' mit Angebot</div>';
-            built.plan.forEach(p => { h += '<div>' + escapeHtml(p.name) + ' <span class="sbc-opt-muted">(' + (p.rating || '?') + ')</span> Plan ' + fmtCoins(p.planned) + ', höchstens ' + fmtCoins(p.maxPrice) + '</div>'; });
+            built.plan.forEach(p => { h += '<div>' + escapeHtml(p.name) + ' <span class="sbc-opt-muted">(' + (p.rating || '?') + ')</span> Plan ' + fmtCoins(p.planned) + ', hoechstens ' + fmtCoins(p.maxPrice) + '</div>'; });
             built.skipped.forEach(s => { h += '<div class="sbc-opt-muted">– ' + escapeHtml(s.name || ('#' + s.definitionId)) + ': ' + escapeHtml(s.reason) + ' - selbst kaufen</div>'; });
             setFutbinResult(h);
             if (!built.plan.length) return;
             const total = built.plan.reduce((a, p) => a + p.maxPrice, 0);
             const coins = userCoins();
             const lines = built.plan.map(p => p.name + ' (' + (p.rating || '?') + '): bis ' + fmtCoins(p.maxPrice)).join('\n');
-            const frage = built.plan.length + ' Konzept-Spieler nach und nach kaufen?\n\n' + lines + '\n\nZusammen höchstens ' + fmtCoins(total) +
+            const frage = built.plan.length + ' Konzept-Spieler nach und nach kaufen?\n\n' + lines + '\n\nZusammen hoechstens ' + fmtCoins(total) +
                           (coins != null ? ' (Kontostand ' + fmtCoins(coins) + ')' : '') +
                           '.\nEin Kauf alle 3-6 Sekunden, Abbruch bei Fehlern. Es wird nie mehr als die Obergrenze gezahlt.';
             if (!window.confirm(frage)) return;
@@ -13897,7 +13117,7 @@
         const navigated = String(openId) !== String(startId);
         const falsche = navigated && openId != null && String(openId) !== String(step.id);
         steps.push({ ms: Date.now() - t0, popup: popupState(),
-                     why: 'Zeitüberschreitung', openId: openId, wantId: step.id,
+                     why: 'Zeitueberschreitung', openId: openId, wantId: step.id,
                      startId: startId, navigated: navigated, wrongChallenge: falsche,
                      phase: phase, rowClicks: clicked, enterClicks: entered });
         return { ok: false, wrongChallenge: falsche, navigated: navigated,
@@ -14499,7 +13719,7 @@
             .concat(visibleAll('.ut-navigation-bar-view .btn-navigation'));
         if (!cands.length) return { ok: false, why: 'kein Zurueck-Button gefunden' };
         const el = cands[0];
-        return { ok: clickLike(el), why: 'Zurück geklickt',
+        return { ok: clickLike(el), why: 'Zurueck geklickt',
                  cls: String(el.className || el.tagName || '').slice(0, 60) };
     }
     /**
@@ -14885,7 +14105,7 @@
             if (explainedByPick) {
                 lines.push({ level: 'hint', team: teamNo, text: 'Team ' + teamNo +
                     ': 1x ' + countedName + ' stammt aus der manuellen Karten-Wahl (keine SBC-Vorgabe)' +
-                    ' - Auswahl zurücksetzen, falls unbeabsichtigt.' });
+                    ' - Auswahl zuruecksetzen, falls unbeabsichtigt.' });
             }
             const belowMin = r.players.filter(p => p.rating < effectiveMinRating);
             runCheck('error', belowMin.length === 0,
@@ -14962,43 +14182,6 @@
             }
         } catch (e) {}
         return out;
-    }
-    /** v6.2.0: Leiste "Vorlage geloescht - Rueckgaengig" (8 s). Lebt ausserhalb
-     *  des Overlays, weil renderVorlagen() dessen Inhalt jedes Mal neu setzt. */
-    let vorlagenUndo = null;
-    const VORLAGEN_UNDO_MS = 8000;
-    function vorlagenReinsert(items, item, idx) {
-        if (!item || items.some(function (v) { return v.id === item.id; })) return items;
-        const at = Math.max(0, Math.min(Number(idx) || 0, items.length));
-        items.splice(at, 0, item);
-        return items;
-    }
-    function showVorlagenUndo(item, idx) {
-        let bar = document.getElementById('sbc-opt-vl-undo');
-        if (!bar) {
-            bar = document.createElement('div');
-            bar.id = 'sbc-opt-vl-undo';
-            bar.setAttribute('role', 'status');
-            bar.innerHTML = '<span class="t"></span><button type="button">R\u00fcckg\u00e4ngig</button>';
-            bar.querySelector('button').addEventListener('click', function () {
-                const u = vorlagenUndo;
-                hideVorlagenUndo();
-                if (!u) return;
-                vorlagenSave(vorlagenReinsert(vorlagenLoad(), u.item, u.idx));
-                renderVorlagen();
-            });
-            document.body.appendChild(bar);
-        }
-        if (vorlagenUndo && vorlagenUndo.timer) clearTimeout(vorlagenUndo.timer);
-        vorlagenUndo = { item: item, idx: idx, timer: setTimeout(hideVorlagenUndo, VORLAGEN_UNDO_MS) };
-        bar.querySelector('.t').textContent = 'Vorlage \u201e' + (item && item.name || '') + '\u201c gel\u00f6scht';
-        bar.style.display = 'flex';
-    }
-    function hideVorlagenUndo() {
-        if (vorlagenUndo && vorlagenUndo.timer) clearTimeout(vorlagenUndo.timer);
-        vorlagenUndo = null;
-        const bar = document.getElementById('sbc-opt-vl-undo');
-        if (bar) bar.style.display = 'none';
     }
     function renderVorlagen() {
         if (!ui.vorlagenOverlay) return;
@@ -15078,7 +14261,7 @@
         const clean = vorlagenSanitize({ items: [Object.assign({}, d,
             { id: d.id || ('vl' + Date.now()) })] });
         if (!clean.length || !clean[0].steps.length) {
-            toast('Die Vorlage liess sich nicht speichern (Eingaben prüfen).', 'error');
+            toast('Die Vorlage liess sich nicht speichern (Eingaben pruefen).', 'error');
             return;
         }
         const idx = items.findIndex(function (v) { return v.id === clean[0].id; });
@@ -15139,15 +14322,10 @@
             return;
         case 'vl-del':
             if (idx < 0) return;
-            // v6.2.0: loeschen sofort, dafuer ein paar Sekunden "Rueckgaengig"
-            // (Muster "Rueckgaengig statt Rueckfrage"). Nur fuer Vorlagen -
-            // Abgeben, Abstossen und Packs oeffnen behalten ihre Freigabe.
-            (function () {
-                const removed = items.splice(idx, 1)[0];
-                vorlagenSave(items);
-                renderVorlagen();
-                showVorlagenUndo(removed, idx);
-            })();
+            if (!window.confirm('Vorlage "' + items[idx].name + '" l\u00f6schen?')) return;
+            items.splice(idx, 1);
+            vorlagenSave(items);
+            renderVorlagen();
             return;
         case 'vl-step-add':
             if (!vorlagenView.draft) return;
@@ -16074,21 +15252,7 @@
                 chipsHtml +
                 '<button class="sbc-opt-btn primary sbc-opt-vl-start" data-act="vl-start:' +
                 escapeHtml(v.id) + '"' + (avail.aus ? ' disabled title="Heute nicht mehr verf\u00fcgbar"' : '') +
-                '>\u25b6 Start</button>' +
-                // v6.0.0: die fuenf Nebenaktionen stehen in einem Menue (Muster
-                // "Routine-Karte: Start + Menue"), damit Start die EINE sichtbare
-                // Aktion ist. Natives <details>: keine eigene Auf/Zu-Logik, und
-                // die Knoepfe tragen dieselben data-act wie vorher - der
-                // delegierte Klick-Handler bleibt unveraendert.
-                '<details class="sbc-opt-vl-menu"><summary title="Weitere Aktionen" aria-label="Weitere Aktionen">\u22ef</summary>' +
-                '<div class="sbc-opt-vl-menu-list">' +
-                '<button class="sbc-opt-vl-menu-item" data-act="vl-edit:' + escapeHtml(v.id) + '">Bearbeiten</button>' +
-                '<button class="sbc-opt-vl-menu-item" data-act="vl-copy:' + escapeHtml(v.id) + '">Kopie</button>' +
-                '<button class="sbc-opt-vl-menu-item" data-act="vl-up:' + escapeHtml(v.id) + '" title="nach oben">\u2191 Nach oben</button>' +
-                '<button class="sbc-opt-vl-menu-item" data-act="vl-down:' + escapeHtml(v.id) + '" title="nach unten">\u2193 Nach unten</button>' +
-                '<button class="sbc-opt-vl-menu-item danger" data-act="vl-del:' + escapeHtml(v.id) + '">L\u00f6schen</button>' +
-                '</div></details>' +
-                '</div>' +
+                '>\u25b6 Start</button></div>' +
                 '<div class="sbc-opt-vl-sum">' + escapeHtml(vorlageSummary(v)) + '</div>' +
                 avail.zeilen.map(function (z) {
                     return '<div class="sbc-opt-vl-avail">' + escapeHtml(z) + '</div>';
@@ -16096,7 +15260,13 @@
                 (v.lastRun && v.lastRun.text
                     ? '<div class="sbc-opt-vl-last">zuletzt: ' +
                       escapeHtml(v.lastRun.text) + '</div>' : '') +
-                '</div>';
+                '<div class="sbc-opt-vl-tools">' +
+                '<button class="sbc-opt-btn ghost sbc-opt-vl-mini" data-act="vl-up:' + escapeHtml(v.id) + '" title="nach oben">\u2191</button>' +
+                '<button class="sbc-opt-btn ghost sbc-opt-vl-mini" data-act="vl-down:' + escapeHtml(v.id) + '" title="nach unten">\u2193</button>' +
+                '<button class="sbc-opt-btn ghost" data-act="vl-edit:' + escapeHtml(v.id) + '">Bearbeiten</button>' +
+                '<button class="sbc-opt-btn ghost" data-act="vl-copy:' + escapeHtml(v.id) + '">Kopie</button>' +
+                '<button class="sbc-opt-btn ghost" data-act="vl-del:' + escapeHtml(v.id) + '">L\u00f6schen</button>' +
+                '</div></div>';
         }
         h += '<button class="sbc-opt-btn plan" data-act="vl-neu">+ Neue Vorlage</button>';
         h += '<div class="sbc-opt-vl-tools">' +
@@ -16171,17 +15341,14 @@
             (setTitles || []).map(function (t) {
                 return '<option value="' + escapeHtml(t) + '">';
             }).join('') + '</datalist>';
-        // v6.2.0: Schritte als Kette (Nummer an einer Linie, "+" am Ende).
-        h += '<div class="sbc-opt-vl-chain">';
         draft.steps.forEach(function (st, i) {
             h += '<div class="sbc-opt-vl-step">' +
-                '<span class="sbc-opt-vl-stepnum" aria-hidden="true">' + (i + 1) + '</span>' +
-                '<div class="sbc-opt-vl-steprow">' +
+                '<div class="sbc-opt-vl-steprow"><b>' + (i + 1) + '.</b>' +
                 '<select class="sbc-opt-vl-input" data-f="type" data-i="' + i + '">' +
                 '<option value="batch"' + (st.type !== 'reihe' ? ' selected' : '') +
-                ' title="Eine SBC mehrfach abschlie\u00dfen">Mehrfach</option>' +
+                '>Mehrfach (eine SBC N\u00d7)</option>' +
                 '<option value="reihe"' + (st.type === 'reihe' ? ' selected' : '') +
-                ' title="Alle Challenges eines Sets">Set komplett</option></select>' +
+                '>Set komplett (alle Challenges)</option></select>' +
                 '<button class="sbc-opt-btn ghost sbc-opt-vl-mini" data-act="vl-step-up:' + i + '" title="nach oben">\u2191</button>' +
                 '<button class="sbc-opt-btn ghost sbc-opt-vl-mini" data-act="vl-step-down:' + i + '" title="nach unten">\u2193</button>' +
                 '<button class="sbc-opt-btn ghost sbc-opt-vl-mini" data-act="vl-step-del:' + i + '" title="Schritt entfernen">\u2715</button>' +
@@ -16198,12 +15365,11 @@
                 '">Aktuelle Panel-Einstellungen \u00fcbernehmen</button>' +
                 '</div>';
         });
-        h += '<button class="sbc-opt-vl-stepadd" data-act="vl-step-add" aria-label="Schritt hinzuf\u00fcgen">' +
-            '<span class="plus" aria-hidden="true">+</span>Schritt hinzuf\u00fcgen</button></div>';
         h += '<label class="sbc-opt-chiplabel" style="margin-top:10px;">Schnellwahl-Anzahlen (z.B. 3, 5, 10)</label>' +
             '<input type="text" id="sbc-opt-vl-anzahlchips" class="sbc-opt-vl-input" value="' +
             escapeHtml((draft.anzahlChips || [3, 5, 10]).join(', ')) + '">';
-        h += '<div class="sbc-opt-vl-hint">Das Profil friert die Panel-Einstellungen ' +
+        h += '<button class="sbc-opt-btn ghost" data-act="vl-step-add">+ Schritt</button>' +
+            '<div class="sbc-opt-vl-hint">Das Profil friert die Panel-Einstellungen ' +
             '(Min-Rating, \u00dcberschuss, Rarity-Schutz \u2026) f\u00fcr diesen ' +
             'Schritt ein \u2013 erst im Panel einstellen, dann \u00fcbernehmen.</div>' +
             '<div class="sbc-opt-vl-tools">' +
@@ -16279,7 +15445,7 @@
                 const prot = !!(p.groups && p.groups.indexOf(83) > -1);
                 detailHtml += '<div class="sbc-opt-batch-card' + (prot ? ' prot' : '') + '">' +
                     '<span class="r">' + p.rating + '</span> ' + escapeHtml(displayName(p)) +
-                    ' <span class="src' + (p.isStorage ? ' storage' : '') + '">' + (p.isStorage ? 'Storage' : 'Verein') + '</span>' +
+                    ' <span class="src">' + (p.isStorage ? 'Storage' : 'Verein') + '</span>' +
                     ' <span class="rar">' + escapeHtml(rarityLabel(p)) + '</span>' +
                     (p.untradeable ? ' <span class="untr">unverkäuflich</span>' : '') + '</div>';
             }
@@ -16345,8 +15511,6 @@
         }
         box.innerHTML = html;
         if (ui.planResult) ui.planResult.classList.remove('sbc-opt-hidden');
-        // v6.1.0: neue Vorschau = alte Freigabe-Frage ist veraltet.
-        if (ui.batchConfirm) ui.batchConfirm.hidden = true;
         ui.batchRun.style.display = plan.planned ? 'block' : 'none';
         ui.batchRun.disabled = false;
         ui.batchRun.textContent = 'Alle ' + plan.planned + ' eintragen + abgeben';
@@ -16451,51 +15615,9 @@
                           ' (OVR ' + r.ovr + ')';
                }).join('\n') + '\n\n')
             : (n + ' SBC(s) werden eingetragen UND endgültig abgegeben.\n\n');
-        // v6.1.0: Freigabe im Panel statt window.confirm (Rasmus, 25.09.:
-        // Zusammenfassung, dann Abbrechen / Ja). Texte unveraendert; der Lauf
-        // startet NUR ueber "Ja" und nur fuer genau diesen Plan.
-        showBatchConfirm(plan, isQueue
-            ? n + ' SBCs dieses Sets eintragen und abgeben?'
-            : n + ' Teams eintragen und abgeben?',
-            whatText + 'Die verbauten Karten sind danach weg.' + quotaWarn);
-    }
-    /**
-     * Freigabe-Kasten unter der Vorschau (v6.1.0). Der Lauf startet nur, wenn
-     * beim "Ja" noch GENAU dieser Plan aktiv ist - wurde zwischendurch neu
-     * geplant, ist die gezeigte Zusammenfassung veraltet und es passiert
-     * nichts ausser einem Hinweis.
-     */
-    let batchConfirmPlan = null;
-    function showBatchConfirm(plan, title, body) {
-        const box = ui.batchConfirm;
-        if (!box) {
-            // Ohne Kasten (sollte nicht vorkommen): die alte Rueckfrage.
-            if (window.confirm(title + '\n\n' + body)) executePlan(plan);
-            return;
-        }
-        batchConfirmPlan = plan;
-        document.getElementById('sbc-opt-batch-confirm-title').textContent = title;
-        document.getElementById('sbc-opt-batch-confirm-body').textContent = body;
-        box.hidden = false;
-        if (ui.batchRun) ui.batchRun.style.display = 'none';
-        try { box.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) {}
-    }
-    function hideBatchConfirm() {
-        batchConfirmPlan = null;
-        if (ui.batchConfirm) ui.batchConfirm.hidden = true;
-    }
-    async function onBatchConfirmYes() {
-        const plan = batchConfirmPlan;
-        hideBatchConfirm();
-        if (!plan || plan !== STATE.batch) {
-            toast('Der Plan hat sich geändert - bitte die neue Vorschau prüfen.', 'warn');
-            return;
-        }
+        if (!window.confirm(whatText +
+                'Die verbauten Karten sind danach weg. Fortfahren?' + quotaWarn)) return;
         await executePlan(plan);
-    }
-    function onBatchConfirmNo() {
-        hideBatchConfirm();
-        if (ui.batchRun && STATE.batch && STATE.batch.planned) ui.batchRun.style.display = 'block';
     }
     /**
      * Der LAUF hinter der Freigabe (wortgleich aus onBatchRunClick gezogen,
@@ -16697,7 +15819,7 @@
                            (counterSays === false ? 'set-nicht-wiederholbar' : null))
                         : null),
                     // Woran lag die Bestaetigung? award = EAs eigene Antwort.
-                    via: awardOk ? 'award' : (counterSays != null ? 'Zähler' : null),
+                    via: awardOk ? 'award' : (counterSays != null ? 'zaehler' : null),
                     award: STATE.lastAward || null,
                     repeatable: round.repeatable,
                     basis: baseForCmp,
@@ -16755,7 +15877,7 @@
                         (confirmRetries + 1) + 'x gelesen, und keine ' +
                         'Belohnungs-Antwort) - ' + done +
                         ' von ' + n + ' fertig. Abgebrochen, bevor daraus eine Fehlerkette ' +
-                        'wird: bitte die SBC im Spiel einmal schließen, neu öffnen und ' +
+                        'wird: bitte die SBC im Spiel einmal schliessen, neu öffnen und ' +
                         'nachsehen, ob das Team noch drin steht.');
                 }
                 done++;
@@ -18347,7 +17469,7 @@
             added: 0, skipped: 0, reason: null
         };
         if (!btns.length) {
-            scan.reason = 'keine Open-Knöpfe im DOM';
+            scan.reason = 'keine Open-Knoepfe im DOM';
             mergePackScan({ tileScan: scan });
             return;
         }
@@ -18454,10 +17576,10 @@
             // den habe ich zweimal als Fehlschlag gelesen.
             scan.reason = (scan.alreadyDone && !scan.skipped && !scan.exhausted)
                 ? ('nichts zu tun - alle ' + scan.alreadyDone +
-                   ' Knöpfe sind bereits eingebaut')
+                   ' Knoepfe sind bereits eingebaut')
                 : (scan.exhausted
                     ? ('kein Kachel-Titel passte (' + scan.exhausted +
-                       ' Knöpfe haben ihre Anläufe verbraucht - titlesSeen zeigt, ' +
+                       ' Knoepfe haben ihre Anlaeufe verbraucht - titlesSeen zeigt, ' +
                        'was in der Kachel steht)')
                     : 'kein Kachel-Titel passte zu einem Pack-Namen');
         }

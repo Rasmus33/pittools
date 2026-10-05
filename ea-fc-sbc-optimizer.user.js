@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.3.12
+// @version      6.3.13
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.3.12';
+    const VERSION = '6.3.13';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -9737,7 +9737,8 @@ const HybridSbcEa = (() => {
             cards = Array.from(byId.values());
         }
         const result = galleryPersonalSearch(cards, n, data.tags, data.set.grades);
-        if (result) { result.catalogue = cards.length; result.known = cards.filter(c => c.owned).length; result.pale = usedPale; }
+        if (result) { result.catalogue = cards.length; result.known = cards.filter(c => c.owned).length; result.pale = usedPale;
+            result.confirmedGrade = galleryKnownGrade(data.set.id); }
         return result;
     }
     function galleryPersonalScore(cards, required, tags, grades) {
@@ -9843,26 +9844,54 @@ const HybridSbcEa = (() => {
     function galleryPersonalHint(personal) {
         if (!personal) return '';
         const current = personal.current;
-        const target = personal.plans.slice().sort((a,b) => b.threshold-a.threshold)[0];
-        const status = current.grade ? 'Sammlung: ' + current.grade + ' berechnet' : 'Sammlung: Auswahl unvollständig';
+        const target = galleryPersonalTargets(personal)[0];
+        const status = (personal.confirmedGrade ? 'Erreichte Note: '+(personal.confirmedGrade === 'N' ? 'keine' : personal.confirmedGrade)+' · ' : 'Erreichte Note unbekannt · ') +
+            (current.grade ? 'mindestens ' + current.grade + ' berechnet' : 'bekannte Auswahl unvollständig');
         if (!target || !target.missing.length || (current.complete && target.threshold <= current.score)) return status;
         return status + ' · ' + target.grade + ' gefunden mit ' + target.missing.length + ' Nachkäufen (~' + fmtCoins(target.coins) + ')';
     }
     // [GALLERYPERSONAL-END]
 
     // [GALLERYTARGET-BEGIN]
+    function galleryGradeRank(grade) { return 'NDCBAS'.indexOf(grade); }
+    function galleryKnownGrade(id) {
+        try {
+            const persona = typeof ownPersonaId === 'function' && ownPersonaId();
+            if (!persona || typeof localStorage === 'undefined') return null;
+            const grade = localStorage.getItem('sbcOptGalleryGrade:'+persona+':'+id);
+            return typeof grade === 'string' && /^[NDCBAS]$/.test(grade) ? grade : null;
+        } catch (_) { return null; }
+    }
+    function galleryRememberGrade(id,grade) {
+        const persona = ownPersonaId();
+        if (!persona || !/^[NDCBAS]$/.test(grade)) return;
+        localStorage.setItem('sbcOptGalleryGrade:'+persona+':'+id,grade);
+    }
+    function galleryAssertUpgrade(meta,grade,personal) {
+        const known = galleryKnownGrade(meta.id);
+        if (!known) throw Error('Bitte zuerst die bereits erreichte Note dieses Sets im Feld „Erreichte Note im Spiel“ angeben. Die berechnete Vorschau kennt nicht alle früher gesammelten Karten.');
+        const floor = Math.max(galleryGradeRank(known),galleryGradeRank(personal && personal.current && personal.current.grade));
+        if (!/^[DCBAS]$/.test(grade) || galleryGradeRank(grade) <= floor) throw Error('Note '+grade+' ist bereits erreicht oder ohne Nachkauf möglich. Dafür wird nichts gekauft.');
+    }
     function galleryPersonalTargets(personal) {
-        return personal ? personal.plans.filter(p => p.missing.length > 0 && p.threshold > (personal.current.complete ? personal.current.score : 0))
-            .sort((a,b) => b.threshold-a.threshold) : [];
+        return personal ? personal.plans.filter(p => p.missing.length > 0 && p.threshold > (personal.current.complete ? personal.current.score : 0) &&
+            galleryGradeRank(p.grade) > galleryGradeRank(personal.confirmedGrade))
+            .sort((a,b) => a.missing.length-b.missing.length || a.coins-b.coins || b.threshold-a.threshold) : [];
+    }
+    function orderGalleryUpgradeCandidates(ranked) {
+        const group = x => x.own && x.own.count > 0 ? (x.items > x.own.count ? 0 : 1) : 2;
+        const missing = x => x.items > 0 ? Math.max(0,x.items-(x.own && x.own.count || 0)) : Infinity;
+        return ranked.slice().sort((a,b) => group(a)-group(b) || missing(a)-missing(b) || (a.perToken || Infinity)-(b.perToken || Infinity));
     }
     function orderGalleryUpgradeSets(ranked, coins) {
         const result = ranked.map(x => {
             const target = galleryPersonalTargets(x.personal)[0];
             return Object.assign({},x,{upgradeView:true,overBudget:!!target && coins > 0 && target.coins > coins,
-                upgradeReady:!!x.personal && x.personal.current.complete && x.personal.current.grade === 'S'});
+                upgradeReady:!!x.personal && (x.personal.confirmedGrade === 'S' || x.personal.current.complete && x.personal.current.grade === 'S')});
         });
         return result.sort((a,b) => Number(a.overBudget)-Number(b.overBudget) || Number(a.upgradeReady)-Number(b.upgradeReady) ||
-            (galleryPersonalTargets(a.personal)[0]?.missing.length ?? Infinity)-(galleryPersonalTargets(b.personal)[0]?.missing.length ?? Infinity));
+            (galleryPersonalTargets(a.personal)[0]?.missing.length ?? (a.own && a.own.count > 0 && a.items > a.own.count ? a.items-a.own.count : Infinity))-
+            (galleryPersonalTargets(b.personal)[0]?.missing.length ?? (b.own && b.own.count > 0 && b.items > b.own.count ? b.items-b.own.count : Infinity)));
     }
     function galleryTargetRecords(cards) {
         return cards.map(c => ({d:c.id,t:Number(c.attrs.CLUB)||0,l:Number(c.attrs.LEAGUEID)||0,n:Number(c.attrs.NATION)||0,s:c.score,r:c.rating}));
@@ -10008,11 +10037,11 @@ const HybridSbcEa = (() => {
      * Tokens bringt, nicht erledigt, optional unter einem Coin-Limit; sortiert
      * nach Coins je Token (aufsteigend), dann Coins, dann Spielerzahl.
      */
-    function rankGallerySets(sets, doneIds, maxCoins) {
+    function rankGallerySets(sets, doneIds, maxCoins, includeGrades = false) {
         const done = new Set((doneIds || []).map(String));
         return (sets || [])
-            .filter(x => x && x.tokens > 0 && x.coins != null && !done.has(String(x.id)) && (maxCoins == null || x.coins <= maxCoins))
-            .map(x => Object.assign({}, x, { perToken: Math.round(x.coins / x.tokens) }))
+            .filter(x => x && (includeGrades ? x.items > 0 : x.tokens > 0 && x.coins != null) && !done.has(String(x.id)) && (maxCoins == null || x.coins <= maxCoins))
+            .map(x => Object.assign({}, x, { perToken: x.tokens > 0 && x.coins != null ? Math.round(x.coins / x.tokens) : Infinity }))
             .sort((a, b) => (a.perToken - b.perToken) || (a.coins - b.coins) || ((a.items || 0) - (b.items || 0)));
     }
     /**
@@ -10417,11 +10446,11 @@ const HybridSbcEa = (() => {
         const seen = new Set();
         (pool || []).forEach(p => {
             const r = (p && p.raw) || {};
-            const hit = setMeta.eaKind === 'club' ? Number(r.teamid) === setMeta.eaId
+            const hit = setMeta.eaKind === 'club' ? Number(r.teamid || r.teamId) === setMeta.eaId
                       : setMeta.eaKind === 'league' ? Number(r.leagueId) === setMeta.eaId
                       : setMeta.eaKind === 'nation' ? Number(r.nation) === setMeta.eaId : false;
             if (!hit) return;
-            const key = String(p.assetId || r.assetId || r.definitionId || p.id);
+            const key = String(r.resourceId || r.definitionId || p.assetId || r.assetId || p.id);
             if (seen.has(key)) return;
             seen.add(key);
             out.count++; out.inClub++;
@@ -12595,9 +12624,9 @@ const HybridSbcEa = (() => {
             if (!sets.length) throw new Error('Keine Sets auf der fut.gg-Seite gefunden (Seite geändert?).');
             diag.tokenSets = sets.filter(x => x.tokens > 0).length;
             diag.pricedTokenSets = sets.filter(x => x.tokens > 0 && x.coins != null).length;
-            if (diag.tokenSets && !diag.pricedTokenSets) throw new Error('Galerie-Sets geladen, aber fut.gg-Preise nicht lesbar. Keine Kaufempfehlung möglich (Preisquelle geändert?).');
+            if (!upgradeMode && diag.tokenSets && !diag.pricedTokenSets) throw new Error('Galerie-Sets geladen, aber fut.gg-Preise nicht lesbar. Keine Kaufempfehlung möglich (Preisquelle geändert?).');
             const hideDone = !ui.galleryHideDone || ui.galleryHideDone.checked;
-            let ranked = rankGallerySets(sets, hideDone ? galleryDoneIds() : [], null);
+            let ranked = rankGallerySets(sets, hideDone ? galleryDoneIds() : [], null, upgradeMode);
             const coins = userCoins();
             diag.coins = coins;
             galleryLast = { sets: sets, ranked: ranked, at: Date.now(), setCache: {}, coins: coins };
@@ -12630,7 +12659,10 @@ const HybridSbcEa = (() => {
             };
             const mode = gallerySortMode();
             diag.sortMode = mode;
-            if (mode === 'guenstig') {
+            if (upgradeMode) {
+                ranked = orderGalleryUpgradeCandidates(ranked);
+                for (const x of ranked.slice(0,GALLERY_CHECK_MAX)) await verifyOne(x);
+            } else if (mode === 'guenstig') {
                 for (let i = 0; i < ranked.length && shouldVerifyGallerySet(checked, ranked[i].perToken, best, GALLERY_CHECK_MAX); i++) {
                     const x = ranked[i];
                     if (coins > 0 && x.coins > coins) continue; // v5.40.0: ueber dem Kontostand - keine Pruefung wert
@@ -12689,7 +12721,7 @@ const HybridSbcEa = (() => {
     function renderGallerySets(ranked) {
         const coins = galleryLast && galleryLast.coins;
         const over = ranked.filter(x => x.overBudget).length;
-        let h = '<div class="sbc-opt-summary">' + ranked.length + ' Sets mit Tokens · ' +
+        let h = '<div class="sbc-opt-summary">' + ranked.length + (ranked.some(x => x.upgradeView) ? ' Galerie-Sets · auch C/D ohne Tokens · ' : ' Sets mit Tokens · ') +
                 (gallerySortMode() === 'fertig' ? 'begonnene Sets zuerst (wenigste fehlende Karten)' : gallerySortMode() === 'tokens' ? 'meiste Tokens zuerst (im Budget)' : 'sortiert nach Coins je Token') +
                 ' <span class="sbc-opt-muted">(fut.gg)</span></div>' +
                 (coins > 0 ? '<div class="sbc-opt-fb-meta">Kontostand <b>' + fmtCoins(coins) + '</b>' + (over ? ' · ' + over + ' Sets darüber stehen am Ende' : '') + '</div>' : '');
@@ -12700,7 +12732,7 @@ const HybridSbcEa = (() => {
                  '<span class="sbc-opt-fb-tags">' + (i === 0 ? '<span class="sbc-opt-tag best">'+(x.upgradeView ? 'Wenige Nachkäufe' : 'Bester Kurs')+'</span>' : '') +
                  (x.overBudget ? '<span class="sbc-opt-tag" title="teurer als dein Kontostand">zu teuer</span>' : '') +
                  (x.truePerToken != null ? '<span class="sbc-opt-tag ok">geprüft</span>' : '<span class="sbc-opt-tag">ungeprüft</span>') +
-                 '<span class="sbc-opt-tag ok">Note ' + escapeHtml(x.bestGrade || '?') + '</span></span></div>' +
+                '<span class="sbc-opt-tag ok">Quelle: ' + escapeHtml(x.bestGrade || '?') + '</span></span></div>' +
                  (function () {
                      // v6.2.0: Fortschritt und Kurs auf einen Blick (Muster
                      // "Sammel-Fortschritt pro Eintrag").
@@ -12830,6 +12862,7 @@ const HybridSbcEa = (() => {
             const personal = galleryPersonalAssessment(data,STATE.pool,collectedLoad());
             const target = personal && personal.plans.find(p => p.grade === grade);
             if (!target) throw Error('Keine passende Mischung für diese Zielnote gefunden. Bitte das Set neu prüfen.');
+            galleryAssertUpgrade(ch.meta,grade,personal);
             const known = collectedIdSet(collectedRecordsFromPool(STATE.pool).concat(collectedLoad()));
             const prepared = await galleryPrepareTarget(data,target,{known,running,
                 pending:new Set(galleryBoughtLoad().map(p => String(p.defId))),
@@ -12863,7 +12896,7 @@ const HybridSbcEa = (() => {
                     cancelled:() => { try { running(); return false; } catch (_) { return true; } },
                     canAdopt:() => ownPersonaId() === run.persona,
                     offerMatches:(p,o) => galleryTargetOfferMatches(p.variant,o,window),
-                    beforeBid:async () => { running(); return true; },
+                    beforeBid:async () => { running(); galleryAssertUpgrade(ch.meta,grade,personal); return true; },
                     onFinish:(d,bought) => {
                         diag.buy = {bought:d.bought,spent:d.spent,stopped:d.stopped,adopted:d.adopted};
                         if (ownPersonaId() !== run.persona) return;
@@ -12924,6 +12957,11 @@ const HybridSbcEa = (() => {
                 (set.score != null ? ' · Score ' + set.score.toLocaleString('de-DE') : '') + '</div>' +
                 '<div class="sbc-opt-fb-meta">fut.gg-Preise der fehlenden Karten zusammen <b>' + fmtCoins(sumMissing) + '</b>' +
                 (set.tax != null ? ' · beim Wiederverkauf gehen ~' + fmtCoins(set.tax) + ' Steuer weg' : '') + '</div>';
+        const confirmed = galleryKnownGrade(x.id);
+        h += '<label class="sbc-opt-fb-meta">Erreichte Note im Spiel <select id="sbc-opt-gal-current-grade">' +
+            '<option value="">Bitte auswählen</option>' + ['N','D','C','B','A','S'].map(g => '<option value="'+g+'"'+
+                (confirmed === g ? ' selected' : '')+'>'+(g === 'N' ? 'Noch keine Note' : g)+'</option>').join('') +
+            '</select></label><div class="sbc-opt-dim">Bereits erreichte Noten werden nicht nochmals gekauft. Der Wert gilt nur für dieses Set und diesen Account auf diesem Gerät.</div>';
         // v5.63.0: was kostet ein Token hier wirklich - und welche Karten treiben den Preis?
         const spend = gallerySpendProfile(set.players, owned, set.tokens != null ? set.tokens : x.tokens);
         const bestOther = bestPerTokenOf(galleryLast.ranked, x.id);
@@ -12944,14 +12982,15 @@ const HybridSbcEa = (() => {
                  ' - verschiedene Kartenversionen desselben Spielers. fut.gg füllt damit auf, wenn der Verein zu wenige günstige Karten hat.</div>';
         }
         if (x.eaKind && set.requires && own.count >= set.requires) {
-            h += '<div class="sbc-opt-summary">Das Set ist mit deinen Karten schon voll - im Spiel bewerten.' + (missing.length ? ' Für eine bessere Note kannst du trotzdem die fut.gg-Aufstellung kaufen.' : '') + '</div>';
+            h += '<div class="sbc-opt-summary">Genug Karten bekannt; Auswahl und Boni im Spiel prüfen. Nachkäufe nur für eine höhere als die bereits erreichte Note.</div>';
         }
         if (missing.length) {
             // v5.36.0: zwei Wege - vervollstaendigen (nur die fehlenden, guenstigsten) oder die komplette Aufstellung.
-            const completeIsCheaper = x.eaKind && comp.need > 0 && comp.idx.length && comp.idx.length < missing.length;
+            const completionTarget = galleryPersonalTargets(personal)[0];
+            const completeIsCheaper = !!completionTarget && completionTarget.missing.length < missing.length;
             if (completeIsCheaper) {
-                h += '<button type="button" class="sbc-opt-btn primary" id="sbc-opt-gal-buy-complete">Set vervollständigen: ' + comp.idx.length + ' kaufen (~' + fmtCoins(comp.total) + ')</button>' +
-                     '<div class="sbc-opt-dim">Die ' + comp.idx.length + ' günstigsten fehlenden Karten der fut.gg-Aufstellung füllen das Set auf ' + set.requires + '. Die Note ergibt sich aus deinen Karten plus diesen.</div>';
+                h += '<button type="button" class="sbc-opt-btn primary" id="sbc-opt-gal-buy-complete">'+completionTarget.grade+' erreichen: ' + completionTarget.missing.length + ' kaufen (~' + fmtCoins(completionTarget.coins) + ')</button>' +
+                     '<div class="sbc-opt-dim">Geprüfte Mischung aus gesammelten Karten und Nachkäufen; nicht nur die Kartenanzahl.</div>';
             }
             h += '<button type="button" class="sbc-opt-btn ' + (completeIsCheaper ? 'ghost' : 'primary') + '" id="sbc-opt-gal-buy">' +
                  (completeIsCheaper ? 'Komplette fut.gg-Aufstellung: ' : '') + missing.length + ' Spieler kaufen</button>' +
@@ -13042,7 +13081,17 @@ const HybridSbcEa = (() => {
         const buy = ui.galleryResult.querySelector('#sbc-opt-gal-buy');
         if (buy) buy.addEventListener('click', function () { if (galleryLast.chosen) galleryLast.chosen.buyIdx = null; onGalleryBuyClick(); });
         const buyC = ui.galleryResult.querySelector('#sbc-opt-gal-buy-complete');
-        if (buyC) buyC.addEventListener('click', function () { if (galleryLast.chosen) galleryLast.chosen.buyIdx = comp.idx.slice(); onGalleryBuyClick(); });
+        if (buyC) buyC.addEventListener('click', function () {
+            const target = galleryPersonalTargets(personal)[0];
+            if (target) onGalleryUpgradeClick(target.grade);
+            else toast('Kein geprüfter Noten-Aufstieg gefunden. Bitte die erreichte Note und den Sammelstand prüfen.','warn');
+        });
+        const currentGrade = ui.galleryResult.querySelector('#sbc-opt-gal-current-grade');
+        if (currentGrade) currentGrade.addEventListener('change',() => {
+            if (!currentGrade.value) return;
+            galleryRememberGrade(x.id,currentGrade.value);
+            renderGallerySet(x,set,owned);
+        });
         ui.galleryResult.querySelectorAll('button[data-gal-target-grade]').forEach(b => b.addEventListener('click',() => onGalleryUpgradeClick(b.getAttribute('data-gal-target-grade'))));
         const check = ui.galleryResult.querySelector('#sbc-opt-gal-check');
         if (check) check.addEventListener('click', onGalleryCheckClick);
@@ -13138,6 +13187,12 @@ const HybridSbcEa = (() => {
         const ch = galleryLast && galleryLast.chosen;
         if (!ch) return;
         if (galleryBusy || buyBusy) { toast('Es läuft schon ein Lauf.', 'warn'); return; }
+        try {
+            if (ch.buyIdx) throw Error('Kartenanzahl allein beweist keinen Noten-Aufstieg. Bitte einen geprüften Zielnotenplan wählen.');
+            galleryAssertUpgrade(ch.meta,ch.set.bestGrade || ch.meta.bestGrade,
+                galleryPersonalAssessment(ch.set.upgradeData,STATE.pool,collectedLoad()));
+        } catch (e) { toast(String(e.message || e),'warn'); return; }
+        const gradePersona = ownPersonaId();
         galleryBusy = true;
         const liveBins = {}, liveEst = {};
         // v5.36.0: "vervollstaendigen" kauft nur die gewaehlten Indizes; alles andere gilt als vorhanden.
@@ -13227,6 +13282,12 @@ const HybridSbcEa = (() => {
         await buyPlannedPlayers(null, built.plan, {
             noSquad: true, setResult: setGalleryResult, maxPerRun: GALLERY_BUY_MAX_PER_RUN,
             offerMatches: (p,o) => galleryOfferMatches(p.variant,o,window),
+            beforeBid:async () => {
+                if (ownPersonaId() !== gradePersona || !galleryLast || galleryLast.chosen !== ch) throw Error('Account oder Galerie-Set gewechselt.');
+                galleryAssertUpgrade(ch.meta,ch.set.bestGrade || ch.meta.bestGrade,
+                    galleryPersonalAssessment(ch.set.upgradeData,STATE.pool,collectedLoad()));
+                return true;
+            },
             gapMin: GALLERY_BUY_GAP_MIN_MS, gapMax: GALLERY_BUY_GAP_MAX_MS,
             // v5.34.0: gekaufte Karten sofort in den Pool (Report 21.09.: 25 von 30
             // gekauft - ein zweiter Lauf haette sie erneut gekauft, weil der Pool

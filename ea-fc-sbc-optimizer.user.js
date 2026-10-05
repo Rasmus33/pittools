@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.3.4
+// @version      6.3.5
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.3.4';
+    const VERSION = '6.3.5';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -153,6 +153,7 @@
             vorlagenNav: null,
             vorlagenGate: null,
             vorlagenRepeats: null,   // Wo geht die Zeit beim Planen hin? (ms pro Phase)
+            hybridSbc: null,        // Vereinslösung: Schutz, EA-Prüfung und Suchstatus
             solverProfile: null,     // Solver-Innenleben: Stufen/Baender/Versuche pro Lauf
             poolCache: null,         // Pool-Cache: geschrieben? Groesse? Grund fuer Nein?
             poolCacheRead: null,     // Pool-Cache: benutzt? sonst WARUM nicht?
@@ -5707,6 +5708,7 @@
             font-size:var(--pt-text-md); font-weight:var(--pt-weight-semibold); text-decoration:none;
         }
         .sbc-opt-bridge-link[hidden] { display:none; }
+        #sbc-opt-hybrid-club-stop[hidden] { display:none; }
         .sbc-opt-bridge-link small { color:var(--pt-fg-muted); font-size:var(--pt-text-xs); font-weight:var(--pt-weight-regular); }
         .sbc-opt-bridge-link:active { background:var(--pt-state-press); }
         /* Karte: gruppiert die Eingaben einer Aktion */
@@ -6935,6 +6937,13 @@
                          Spieler aus dem offenen Kader (auch nach Neuladen oder
                          von Hand eingesetzt), Marktpreis je Karte, Rueckfrage,
                          dann derselbe schrittweise Kauf-Lauf. -->
+                    <div class="sbc-opt-card">
+                        <div class="sbc-opt-group-title">Vereinslösung · Beta</div>
+                        <div class="sbc-opt-dim">Für Team-SBCs mit Chemie und engen Vorgaben. Geschützte Mannschafts- und Goldkarten bleiben erhalten. Zunächst nur Vorschau ohne Nachkauf.</div>
+                        <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-hybrid-club-search">Vereinslösung suchen</button>
+                        <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-hybrid-club-stop" hidden>Suche stoppen</button>
+                        <div class="sbc-opt-result" id="sbc-opt-hybrid-club-result"></div>
+                    </div>
                     <div class="sbc-opt-group-title sbc-opt-secondary">Ohne futbin</div>
                     <button class="sbc-opt-btn ghost" id="sbc-opt-futbin-buyconcepts" style="margin-top:0;">Konzept-Spieler im Kader nachkaufen</button>
                     <div class="sbc-opt-debug" style="margin-top:-4px;">Für Kader, die schon Konzept-Spieler enthalten (z.B. nach Neuladen oder von Hand eingesetzt).</div>
@@ -7334,6 +7343,9 @@
             useLocks: panel.querySelector('#sbc-opt-uselocks'),
             futbinPlatform: panel.querySelector('#sbc-opt-futbin-platform'),
             futbinMarket: panel.querySelector('#sbc-opt-futbin-market'),
+            hybridClubSearch: panel.querySelector('#sbc-opt-hybrid-club-search'),
+            hybridClubStop: panel.querySelector('#sbc-opt-hybrid-club-stop'),
+            hybridClubResult: panel.querySelector('#sbc-opt-hybrid-club-result'),
             futbinSearch: panel.querySelector('#sbc-opt-futbin-search'),
             futbinBuyConcepts: panel.querySelector('#sbc-opt-futbin-buyconcepts'),
             futbinResult: panel.querySelector('#sbc-opt-futbin-result'),
@@ -7413,6 +7425,7 @@
         ui.run.addEventListener('click', onRunClick);
         initFutbinUi();
         initGalleryUi();
+        initHybridClubUi();
         ui.diagBtn.addEventListener('click', onDiagClick);
         // Schnellwahl aufbauen und mit den Feldern verbinden. Tippt Rasmus von
         // Hand einen Wert, aktualisiert sich nur die Hervorhebung - der Wert
@@ -8335,6 +8348,377 @@
     //  Dieser Block ist REIN (kein DOM, kein EA) und wird aus Fixtures
     //  getestet (test-fixtures/futbin-*.html, aus echten Seiten gekuerzt).
     // ========================================================================
+    // [HYBRIDCORE-BEGIN]
+
+const HybridSbcCore = (() => {
+    const FIELDS = new Set(['score', 'rating', 'league', 'nation', 'club', 'rarity', 'quality', 'firstOwner']);
+    const idSet = ids => new Set((ids || []).map(String));
+    const positive = n => Number.isFinite(n) && n > 0;
+
+    function exclusion(card, guards, now) {
+        if (!card || !['club', 'storage', 'market'].includes(card.source) || card.id == null || card.playerId == null || String(card.id) === '' || String(card.playerId) === '' ||
+            !positive(card.score) || !Number.isInteger(card.rating) || card.rating < 1 || card.rating > 99) return 'Kartendaten unbekannt';
+        if (card.protected || card.evolution || card.loan) return 'Karte geschützt';
+        if (card.source === 'market') {
+            if (card.special !== false) return 'Nachkauf-Special oder Seltenheit unbekannt';
+            return positive(card.coins) && Number.isInteger(card.coins) ? null : 'Kaufpreis unbekannt';
+        }
+        if (!guards || guards.squadsComplete !== true || guards.locksComplete !== true) return 'Kartenschutz unvollständig';
+        if (guards.squadIds.has(String(card.id))) return 'In einer Mannschaft';
+        if ([card.id, card.playerId, card.defId].some(id => id != null && guards.lockedIds.has(String(id)))) return 'Manuell gesperrt';
+        if (card.special !== false && !(card.source === 'storage' && card.special === true)) return 'Vereins-Special oder Seltenheit unbekannt';
+        if (card.source === 'club' && card.rating >= 75) {
+            const p = card.market;
+            if (!p || p.complete !== true || !positive(p.minimum) || !positive(p.value) || !Number.isFinite(p.at) ||
+                p.at > now || now - p.at > 180000 || p.value < p.minimum) return 'Gold-Spielbarkeit ungeklärt';
+            if (p.value > p.minimum) return 'Gold über EA-Mindestpreis';
+        }
+        return null;
+    }
+
+    function ruleValue(rule, cards) {
+        const values = cards.map(c => c[rule.field]);
+        if (rule.kind === 'sum') return values.reduce((n, v) => n + v, 0);
+        if (rule.kind === 'count') return values.filter(v => rule.values.includes(v)).length;
+        if (rule.kind === 'distinct') return new Set(values).size;
+        const counts = new Map();
+        values.forEach(v => counts.set(v, (counts.get(v) || 0) + 1));
+        return Math.max(0, ...counts.values());
+    }
+    function passes(rule, value) {
+        return rule.cmp === 'min' ? value >= rule.value : rule.cmp === 'max' ? value <= rule.value : value === rule.value;
+    }
+    function dominates(a, b) {
+        return a.score <= b.score && a.coins <= b.coins && (a.score < b.score || a.coins < b.coins);
+    }
+    function tieCompare(a, b) {
+        return b.storage - a.storage || b.untradeable - a.untradeable || a.key.localeCompare(b.key);
+    }
+    function addPlan(frontier, plan) {
+        if (frontier.some(p => dominates(p, plan))) return;
+        const same = frontier.findIndex(p => p.score === plan.score && p.coins === plan.coins);
+        if (same >= 0 && tieCompare(frontier[same], plan) <= 0) return;
+        for (let i = frontier.length - 1; i >= 0; i--) {
+            if (dominates(plan, frontier[i]) || (same >= 0 && i === same)) frontier.splice(i, 1);
+        }
+        frontier.push(plan);
+    }
+    function validateRules(rules) {
+        if (!Array.isArray(rules)) throw Error('Vorgabenliste fehlt');
+        rules.forEach(r => {
+            if (!r || !['count', 'distinct', 'same', 'sum'].includes(r.kind) || !FIELDS.has(r.field) ||
+                !['min', 'max', 'exact'].includes(r.cmp) || !Number.isFinite(r.value) || r.value < 0 ||
+                (r.kind !== 'sum' && !Number.isInteger(r.value)) ||
+                (r.kind === 'sum' && !['score', 'rating'].includes(r.field)) ||
+                (r.kind === 'count' && !Array.isArray(r.values))) throw Error('Unbekannte oder unvollständige Vorgabe');
+        });
+    }
+
+    /** Suche bis zum Limit; exhaustive bedeutet nur: angegebener Kandidatenpool untersucht. */
+    async function search(input) {
+        if (!input || !Array.isArray(input.cards) || !Array.isArray(input.slots) || !input.slots.length || input.slots.length > 23)
+            throw Error('Karten oder Slots fehlen');
+        if (!input.slots.every(s => Array.isArray(s) && s.every(p => typeof p === 'string' || Number.isInteger(p)))) throw Error('Slotposition unbekannt');
+        const preferredSlots = input.preferredSlots || input.slots;
+        if (!Array.isArray(preferredSlots) || preferredSlots.length !== input.slots.length || !preferredSlots.every(s => Array.isArray(s) && s.every(p => typeof p === 'string' || Number.isInteger(p)))) throw Error('Bevorzugte Slotposition unbekannt');
+        const rules = input.rules;
+        validateRules(rules);
+        const budget = input.budget;
+        if (!Number.isFinite(budget) || budget < 0) throw Error('Gesamt-Kaufbudget fehlt');
+        if (input.maxPurchases != null && (!Number.isInteger(input.maxPurchases) || input.maxPurchases < 0)) throw Error('Nachkaufzahl ungültig');
+        const now = input.now == null ? Date.now() : input.now;
+        if (!Number.isFinite(now)) throw Error('Zeitpunkt ungültig');
+        if (input.accept != null && typeof input.accept !== 'function') throw Error('Bewertungsfunktion ungültig');
+        if (input.cancelled != null && typeof input.cancelled !== 'function') throw Error('Abbruchfunktion ungültig');
+        const guards = input.guards && Object.assign({}, input.guards, {
+            squadIds: idSet(input.guards.squadIds), lockedIds: idSet(input.guards.lockedIds)
+        });
+        const excluded = {}, seen = new Set(), cards = [];
+        const requiredFields = [...new Set(rules.map(r => r.field))];
+        for (const raw of input.cards) {
+            let why = exclusion(raw, guards, now);
+            if (!why && requiredFields.some(f => raw[f] == null || !['number', 'string', 'boolean'].includes(typeof raw[f]) ||
+                (typeof raw[f] === 'number' && !Number.isFinite(raw[f])))) why = 'Vorgaben-Merkmal unbekannt';
+            if (!why && (raw.source !== 'market' && raw.coins != null && raw.coins !== 0)) why = 'Eigene Karte mit Zusatz-Coins';
+            if (!why && seen.has(String(raw.id))) why = 'Doppelte Kandidaten-ID';
+            if (why) { excluded[why] = (excluded[why] || 0) + 1; continue; }
+            seen.add(String(raw.id));
+            cards.push(Object.freeze(Object.assign({}, raw, { coins: raw.source === 'market' ? raw.coins : 0,
+                positions: Object.freeze((Array.isArray(raw.positions) ? raw.positions : []).slice()) })));
+        }
+        const slots = input.slots.map((positions, index) => ({ index, list: cards.filter(c =>
+            !positions.length || positions.some(p => c.positions.includes(p))).sort((a, b) =>
+            a.score - b.score || a.coins - b.coins || Number(preferredSlots[index].some(p => b.positions.includes(p))) - Number(preferredSlots[index].some(p => a.positions.includes(p))) || Number(b.source === 'storage') - Number(a.source === 'storage') ||
+            Number(!!b.untradeable) - Number(!!a.untradeable) || String(a.id).localeCompare(String(b.id))) }));
+        // Engste Position zuerst; Ausgabe bleibt in der urspruenglichen Slotfolge.
+        slots.sort((a, b) => a.list.length - b.list.length || a.index - b.index);
+        const minScore = [], minCoins = [];
+        for (let i = slots.length; i >= 0; i--) {
+            minScore[i] = i === slots.length ? 0 : minScore[i + 1] + slots[i].list.reduce((n, c) => Math.min(n, c.score), Infinity);
+            minCoins[i] = i === slots.length ? 0 : minCoins[i + 1] + slots[i].list.reduce((n, c) => Math.min(n, c.coins), Infinity);
+        }
+        const maxField = {};
+        rules.filter(r => r.kind === 'sum').forEach(r => { maxField[r.field] = cards.reduce((n, c) => Math.max(n, c[r.field]), 0); });
+        const selected = [], usedIds = new Set(), usedPlayers = new Set(), frontier = [];
+        const maxNodes = input.maxNodes == null ? 100000 : input.maxNodes;
+        const maxMs = input.maxMs == null ? 3000 : input.maxMs;
+        if (!Number.isInteger(maxNodes) || maxNodes < 1 || !positive(maxMs)) throw Error('Suchlimit ungültig');
+        const start = Date.now(); let nodes = 0, checked = 0, stopped = null;
+        function possible(remaining) {
+            return rules.every(r => {
+                const v = ruleValue(r, selected), upper = v + remaining * (r.kind === 'sum' ? maxField[r.field] : 1);
+                return (r.cmp === 'min' || v <= r.value) && (r.cmp === 'max' || upper >= r.value);
+            });
+        }
+        const visit = function* (depth, score, coins, purchases) {
+            if (stopped) return;
+            if (input.cancelled && input.cancelled()) { stopped = 'cancelled'; return; }
+            if (nodes >= maxNodes || Date.now() - start >= maxMs) { stopped = 'limit'; return; }
+            nodes++;
+            yield null;
+            if (coins > budget || (input.maxPurchases != null && purchases > input.maxPurchases) || !possible(slots.length - depth)) return;
+            if (depth === slots.length) {
+                if (!rules.every(r => passes(r, ruleValue(r, selected)))) return;
+                const players = new Array(slots.length);
+                slots.forEach((s, i) => { players[s.index] = selected[i]; });
+                yield { players: Object.freeze(players), score, coins, purchases,
+                    storage: selected.filter(c => c.source === 'storage').length,
+                    untradeable: selected.filter(c => c.untradeable).length,
+                    key: selected.map(c => String(c.id)).sort().join('|') };
+                return;
+            }
+            // Unabhaengige Slot-Minima sind eine optimistische Untergrenze,
+            // auch wenn derselbe Spieler darin mehrfach vorkommt.
+            const lower = { score: score + minScore[depth], coins: coins + minCoins[depth] };
+            if (lower.coins > budget || frontier.some(p => dominates(p, lower))) return;
+            for (const c of slots[depth].list) {
+                const id = String(c.id), pid = String(c.playerId);
+                if (usedIds.has(id) || (input.uniquePlayer !== false && usedPlayers.has(pid))) continue;
+                usedIds.add(id); usedPlayers.add(pid); selected.push(c);
+                yield* visit(depth + 1, score + c.score, coins + c.coins, purchases + Number(c.source === 'market'));
+                selected.pop(); usedIds.delete(id); usedPlayers.delete(pid);
+                if (stopped) break;
+            }
+        }
+        const iterator = visit(0, 0, 0, 0);
+        for (let step = iterator.next(); !step.done; step = iterator.next()) {
+            if (step.value) {
+                checked++;
+                const assessment = input.accept ? await input.accept(step.value.players) : true;
+                if (assessment === true || (assessment && assessment.valid === true)) addPlan(frontier, step.value);
+            }
+            if (nodes % 256 === 0) await new Promise(resolve => setTimeout(resolve, 0));
+        }
+        frontier.sort((a, b) => a.coins - b.coins || a.score - b.score || tieCompare(a, b));
+        return { plans: frontier, nodes, checked, stopped, exhaustive: !stopped, excluded,
+            candidates: cards.length, ms: Date.now() - start };
+    }
+    return { search, exclusion, ruleValue, dominates };
+})();
+    // [HYBRIDCORE-END]
+
+    // [HYBRIDEA-BEGIN]
+const HybridSbcEa = (() => {
+    const positiveId = x => (typeof x === 'number' || typeof x === 'string') && /^\d+$/.test(String(x)) && Number.isSafeInteger(Number(x)) && Number(x) > 0;
+    const clone = x => JSON.parse(JSON.stringify(x));
+    const requireFn = (obj, key) => { if (!obj || typeof obj[key] !== 'function') throw Error(`EA-Schnittstelle fehlt: ${key}`); };
+    const ok = r => r && r.success === true && r.status >= 200 && r.status < 300;
+    function assertRunning(cancelled) { if (cancelled && cancelled()) throw Error('SBC-Planung gestoppt'); }
+
+    /** Frische GETs, kein Save/LoadChallenge. Cache-Alter wird nur invalidiert. */
+    async function readSavedSquads(options) {
+        const { ea, now = Date.now, cancelled } = options;
+        const observe = options.observe;
+        const wait = options.wait;
+        const svc = ea.services && ea.services.Squad, repo = ea.repositories && ea.repositories.Squad;
+        requireFn(svc, 'requestSquadList'); requireFn(svc, 'requestSquadById');
+        requireFn(repo, 'setSquadListCacheTimestamp');
+        if (typeof observe !== 'function' || typeof wait !== 'function') throw Error('EA-Anfrageadapter fehlt');
+        const started = now();
+        assertRunning(cancelled);
+        repo.setSquadListCacheTimestamp(0, 0);
+        const response = await observe(svc.requestSquadList());
+        if (!ok(response) || !response.data || !Array.isArray(response.data.squads)) throw Error('Mannschaftsliste nicht frisch vollständig lesbar');
+        const squads = response.data.squads;
+        const ids = new Set(), squadIds = [];
+        for (const squad of squads) {
+            requireFn(squad, 'getId'); requireFn(squad, 'setCacheTimestamp');
+            const id = squad.getId();
+            if (!positiveId(id) || ids.has(String(id))) throw Error('Mannschafts-ID fehlt oder ist doppelt');
+            ids.add(String(id)); squadIds.push(id);
+        }
+        const protectedIds = new Set();
+        for (let i = 0; i < squads.length; i++) {
+            assertRunning(cancelled);
+            await wait(350);
+            assertRunning(cancelled);
+            squads[i].setCacheTimestamp(0);
+            const r = await observe(svc.requestSquadById(squadIds[i]));
+            if (!ok(r) || !r.data || !r.data.squad) throw Error(`Mannschaft ${i + 1} nicht frisch lesbar`);
+            const s = r.data.squad;
+            requireFn(s, 'getId'); requireFn(s, 'getPlayers');
+            if (String(s.getId()) !== String(squadIds[i])) throw Error('EA lieferte eine andere Mannschaft');
+            const slots = s.getPlayers();
+            if (!Array.isArray(slots) || slots.length !== 23) throw Error('Startelf, Bank oder Reserve unvollständig');
+            const indices = new Set();
+            for (const slot of slots) {
+                requireFn(slot, 'getIndex'); requireFn(slot, 'getItem');
+                const index = slot.getIndex(), item = slot.getItem();
+                if (!Number.isInteger(index) || index < 0 || index >= 23 || indices.has(index)) throw Error('Mannschafts-Slot fehlt oder ist doppelt');
+                indices.add(index);
+                if (!item || item.id == null) throw Error('Mannschaftskarte unbekannt');
+                // Nur explizit id 0 ist ein leerer Slot. Konzeptkarten mit
+                // physischer ID schützen wir konservativ ebenfalls.
+                if (item.id === 0 || item.id === '0') continue;
+                if (!positiveId(item.id)) throw Error('Mannschaftskarte ohne sichere Item-ID');
+                protectedIds.add(String(item.id));
+            }
+            if (options.progress) options.progress(i + 1, squads.length);
+        }
+        assertRunning(cancelled);
+        return { complete: true, started, at: now(), teamCount: squads.length, itemIds: [...protectedIds] };
+    }
+
+    /** Normalisierte Kandidaten aus PitTools' bereits gefiltertem eigenen Pool. */
+    function normalizePool({ pool, ea, squads, locks, marketCache, now = Date.now() }) {
+        if (!Array.isArray(pool) || !Number.isFinite(now)) throw Error('Spielerpool oder Zeitpunkt fehlt');
+        if (!squads || squads.complete !== true || !Number.isFinite(squads.at) || squads.at > now || now - squads.at > 30000) throw Error('Mannschaftsschutz fehlt oder ist veraltet');
+        if (!locks || locks.complete !== true || !Array.isArray(locks.ids)) throw Error('PaleTools-Sperren unvollständig');
+        requireFn(ea.repositories && ea.repositories.TeamConfig, 'getLinkedTeam');
+        requireFn(ea.repositories && ea.repositories.Squad, 'getPositionByUniqueName');
+        const cards = [], rejected = {};
+        function reject(reason) { rejected[reason] = (rejected[reason] || 0) + 1; }
+        for (const p of pool) {
+            const r = p && p.raw;
+            if (!r || !positiveId(p.id) || !positiveId(r.assetId) || !positiveId(r.resourceId) ||
+                typeof r.gradingScore !== 'number' || !Number.isFinite(r.gradingScore) || r.gradingScore <= 0 ||
+                !Number.isInteger(r.rating) || !Number.isInteger(r.rareflag) || !Array.isArray(r.possiblePositions) ||
+                !r.possiblePositions.length || !r.possiblePositions.every(p => typeof p === 'string' && p.length > 0) ||
+                !positiveId(r.leagueId) || !positiveId(r.nation) || !positiveId(r.teamid) ||
+                typeof r.loans !== 'number' || r.loans !== 0 || r.concept === true || r.isConcept === true ||
+                r.academyId > 0 || r.academyItemId > 0 || r.evolutionId > 0 || r.evolutionData || r.evoPath || r.isEvo === true || r.isAcademy === true ||
+                (r.academyAttributes && Object.keys(r.academyAttributes).length) || (r.tradableBeforeAcademy !== undefined && r.tradableBeforeAcademy !== null)) {
+                reject('Kartendaten oder Schutzmerkmale unvollständig'); continue;
+            }
+            const club = ea.repositories.TeamConfig.getLinkedTeam(r.teamid);
+            if (!positiveId(club)) { reject('Vereinszuordnung unbekannt'); continue; }
+            const positions = r.possiblePositions.map(p => ea.repositories.Squad.getPositionByUniqueName(p)).map(p => p && p.typeId);
+            if (!positions.every(Number.isInteger)) { reject('Positionszuordnung unbekannt'); continue; }
+            const cached = marketCache && marketCache.get(String(r.resourceId));
+            const low = cached && cached.low;
+            // Ein Durchschnitt oder fremdes Preisangebot ist kein Minimum.
+            const bids = low && low.complete === true && Array.isArray(low.offers) ? low.offers.map(o => o.bin).filter(n => Number.isInteger(n) && n > 0) : [];
+            cards.push({ id: p.id, playerId: r.assetId, defId: r.resourceId,
+                source: p.isStorage ? 'storage' : 'club', special: r.rareflag !== 0 && r.rareflag !== 1,
+                rating: r.rating, score: r.gradingScore, positions,
+                league: r.leagueId, nation: r.nation, club, rarity: r.rareflag,
+                // EA quality tiers: bronze 1, silver 2, gold 3 (Bundle/DTO).
+                quality: r.rating < 65 ? 1 : r.rating < 75 ? 2 : 3,
+                firstOwner: Number.isInteger(r.owners) ? r.owners === 1 : undefined,
+                untradeable: p.untradeable === true, raw: r, name: p.name,
+                market: bids.length && Number.isInteger(r.marketDataMinPrice) && r.marketDataMinPrice > 0 ?
+                    { complete: true, minimum: r.marketDataMinPrice, value: Math.min(...bids), at: cached.at } : null,
+            });
+        }
+        return { cards, rejected, guards: { squadsComplete: true, locksComplete: true,
+            squadIds: squads.itemIds.slice(), lockedIds: locks.ids.slice() } };
+    }
+
+    /** Isolierter traditioneller Kader. Bewusst kein ONE_CLICK/Brick-Fallback. */
+    function createTeamOracle({ ea, challengeDTO, liveChallenge }) {
+        if (!challengeDTO || challengeDTO.type !== 'OPEN_CHALLENGE' || !positiveId(challengeDTO.challengeId) ||
+            typeof challengeDTO.formation !== 'string' || !challengeDTO.formation || !Array.isArray(challengeDTO.elgReq)) throw Error('Team-SBC-Format nicht unterstützt');
+        if (!liveChallenge || String(liveChallenge.id) !== String(challengeDTO.challengeId) || liveChallenge.type !== challengeDTO.type) throw Error('Offene SBC passt nicht zur Vorgabe');
+        const liveSquad = liveChallenge.squad;
+        requireFn(liveSquad, 'getFormation'); requireFn(liveSquad, 'getAllBrickIndices');
+        const liveFormation = liveSquad.getFormation();
+        if (!liveFormation || liveFormation.id !== challengeDTO.formation || liveSquad.getAllBrickIndices().length) throw Error('Formation oder Pflicht-Slots nicht unterstützt');
+        if (typeof ea.UTSBCFactory !== 'function') throw Error('EA-Vorgabenfactory fehlt');
+        requireFn(ea.factories && ea.factories.Squad, 'createSBCSquad');
+        requireFn(ea.factories && ea.factories.Item, 'createItem');
+        const keys = ea.SBCEligibilityKey, scopes = ea.SBCEligibilityScope, operations = ea.SBCEligibilityOperation;
+        if (!keys || !scopes || !operations || operations.AND == null || operations.OR == null ||
+            [scopes.GREATER, scopes.LOWER, scopes.EXACT].some(v => v == null)) throw Error('EA-Vorgabenschlüssel fehlen');
+        const recognizedNames = ['SCOPE', 'PLAYER_COUNT', 'PLAYER_COUNT_COMBINED', 'ALL_PLAYERS_CHEMISTRY_POINTS',
+            'CHEMISTRY_POINTS', 'TEAM_STAR_RATING', 'TEAM_RATING', 'PLAYER_QUALITY', 'PLAYER_LEVEL',
+            'SAME_NATION_COUNT', 'SAME_LEAGUE_COUNT', 'SAME_CLUB_COUNT', 'NATION_COUNT', 'LEAGUE_COUNT', 'CLUB_COUNT',
+            'NATION_ID', 'LEAGUE_ID', 'CLUB_ID', 'LEGEND_COUNT', 'PLAYER_RARITY', 'PLAYER_RARITY_GROUP',
+            'PLAYER_EXACT_OVR', 'PLAYER_MAX_OVR', 'PLAYER_MIN_OVR', 'FIRST_OWNER_PLAYERS_COUNT', 'PLAYER_TRADABILITY'];
+        const recognized = new Set(recognizedNames.map(n => keys[n]).filter(k => k != null));
+        if (challengeDTO.elgReq.some(r => !r || !recognized.has(r.eligibilityKey) || !Number.isFinite(r.eligibilityValue) || !Number.isInteger(r.eligibilitySlot))) throw Error('Unbekannte EA-Vorgabe: kein ausführbarer Plan');
+        if (challengeDTO.elgOperation != null && ![operations.AND, operations.OR].includes(challengeDTO.elgOperation)) throw Error('EA-Vorgabenverknüpfung unbekannt');
+        const factory = new ea.UTSBCFactory(null);
+        const dto = clone(challengeDTO); dto.awards = [];
+        const challenge = factory.createChallenge(dto);
+        if (!challenge || challenge === liveChallenge) throw Error('EA-Prüfchallenge nicht isoliert');
+        requireFn(challenge, 'meetsRequirements'); requireFn(challenge, 'isRequirementMet');
+        requireFn(challenge, 'hasExpired');
+        for (const r of challenge.eligibilityRequirements) {
+            if (r.isAttributeRequirement || !r.keys().length || ![scopes.GREATER, scopes.LOWER, scopes.EXACT].includes(r.scope)) throw Error('EA-Vorgabe nicht vollständig prüfbar');
+        }
+        const rules = [];
+        // OR wird ausschließlich von EA geprüft. Eine einzelne Vorbedingung
+        // könnte sonst erlaubte Teams ausschließen.
+        if (challenge.eligibilityOperation === operations.AND) {
+            for (const r of challenge.eligibilityRequirements) {
+                if (r.isCombinedRequirement) continue;
+                const key = r.getFirstKey(), values = r.getValue(key), cmp = r.scope === scopes.GREATER ? 'min' : r.scope === scopes.LOWER ? 'max' : 'exact';
+                const countFields = { NATION_ID: 'nation', LEAGUE_ID: 'league', PLAYER_LEVEL: 'quality', PLAYER_RARITY: 'rarity' };
+                // CLUB_ID benötigt EAs linked-team-Abgleich auch für Zielwerte;
+                // deswegen vorerst ausschließlich der EA-Prüfer.
+                const sameFields = { SAME_NATION_COUNT: 'nation', SAME_LEAGUE_COUNT: 'league', SAME_CLUB_COUNT: 'club' };
+                const distinctFields = { NATION_COUNT: 'nation', LEAGUE_COUNT: 'league', CLUB_COUNT: 'club' };
+                const name = recognizedNames.find(n => keys[n] === key);
+                if (countFields[name] && r.count >= 0) rules.push({ kind: 'count', field: countFields[name], values: values.slice(), cmp, value: r.count });
+                else if (sameFields[name] && values.length === 1 && values[0] >= 0) rules.push({ kind: 'same', field: sameFields[name], cmp, value: values[0] });
+                else if (distinctFields[name] && values.length === 1 && values[0] >= 0) rules.push({ kind: 'distinct', field: distinctFields[name], cmp, value: values[0] });
+            }
+        }
+        requireFn(liveFormation, 'getPosition');
+        const preferredSlots = Array.from({ length: 11 }, (_, i) => {
+            // EAs uniquePosition ist feiner (z.B. LCM) als possiblePositions.
+            const pos = liveFormation.getPosition(i);
+            const general = pos && pos.typeId;
+            if (!Number.isInteger(general)) throw Error('EA-Slotposition unbekannt');
+            return [general];
+        });
+        function assess(players) {
+            if (!Array.isArray(players) || players.length !== 11) return { valid: false };
+            if (challenge.hasExpired()) throw Error('SBC inzwischen abgelaufen');
+            const raws = players.map((c, i) => {
+                if (!c || !c.raw || !positiveId(c.playerId) || !positiveId(c.defId)) throw Error('EA-Kartendaten für Prüfung fehlen');
+                if (String(c.raw.assetId) !== String(c.playerId) || String(c.raw.resourceId) !== String(c.defId)) throw Error('EA-Kartenidentität passt nicht');
+                const raw = clone(c.raw);
+                if (c.source === 'market') {
+                    // Hypothetischer gekaufter Spieler; kein echter Besitz-
+                    // oder Submit-Beweis. First-owner bleibt dabei falsch.
+                    raw.id = 9000000000000 + i; raw.dream = false; raw.concept = false; raw.isConcept = false; raw.owners = 2;
+                }
+                return raw;
+            });
+            const squad = ea.factories.Squad.createSBCSquad({ id: -1, formation: dto.formation, players: [] }, factory);
+            if (!squad || squad === liveSquad) throw Error('EA-Prüfkader nicht isoliert');
+            requireFn(squad, 'setPlayers'); requireFn(squad, 'getFieldPlayers');
+            requireFn(squad, 'isSquadFull'); requireFn(squad, 'isSBCSquadEligible');
+            const entities = raws.map(raw => ea.factories.Item.createItem(raw));
+            if (entities.some((entity, i) => !entity || entity === players[i].raw)) throw Error('EA-Prüfkarten nicht isoliert');
+            squad.setPlayers(entities, true);
+            challenge.squad = squad;
+            const field = squad.getFieldPlayers();
+            if (!Array.isArray(field) || field.length !== 11 || field.some((s, i) => {
+                const item = s.getItem();
+                return !item || String(item.definitionId) !== String(players[i].defId) || String(item.databaseId) !== String(players[i].playerId) || String(item.id) !== String(entities[i].id);
+            })) return { valid: false };
+            const valid = squad.isSquadFull() && squad.isSBCSquadEligible() && challenge.meetsRequirements();
+            return { valid, rating: squad.getRating(), chemistry: squad.getChemistry(),
+                requirements: challenge.eligibilityRequirements.map(r => challenge.isRequirementMet(r)) };
+        }
+        return { slots: preferredSlots.map(() => []), preferredSlots, rules, assess, challengeId: dto.challengeId, type: dto.type };
+    }
+    return { readSavedSquads, normalizePool, createTeamOracle };
+})();
+    // [HYBRIDEA-END]
+
     // [FUTBIN-BEGIN]
     const FUTBIN_HOST = 'https://www.futbin.com';
     const FUTGG_HOST = 'https://www.fut.gg';
@@ -9996,6 +10380,112 @@
             el.classList.toggle('on', k === n);
         });
     }
+    // [HYBRIDUI-BEGIN]
+    let hybridClubBusy = false, hybridClubCancel = false;
+    function hybridOpenChallenge() {
+        const live = findLiveChallenge();
+        if (!live || !inSbcView()) return null;
+        // Der bisherige Finder darf auf die gecachte Entity zurückfallen.
+        // Die neue Vorschau verlangt zusätzlich einen sichtbaren Controller.
+        const chain = getControllerChain();
+        return chain.some(c => {
+            if (!/sbc/i.test((c.constructor && c.constructor.name) || '')) return false;
+            if (c._challenge === live) return true;
+            return ['_overviewController', 'leftController', '_leftController'].some(k => c[k] && c[k]._challenge === live);
+        }) ? live : null;
+    }
+    function setHybridClubResult(html) {
+        if (!ui.hybridClubResult) return;
+        ui.hybridClubResult.className = 'sbc-opt-result show';
+        ui.hybridClubResult.innerHTML = html;
+    }
+    function renderHybridClubPreview(result, assessment, name) {
+        const plan = result.plans[0];
+        if (!plan) return warnHtml(result.exhaustive
+            ? 'Keine passende Vereinslösung aus den freigegebenen Karten gefunden. Geschützte Karten bleiben ausgeschlossen.'
+            : 'Im Suchlimit keine passende Vereinslösung gefunden. Das bedeutet nicht, dass die SBC unlösbar ist.');
+        let html = '<b>' + escapeHtml(name || 'Gefundene Vereinslösung') + ' · ' + escapeHtml(String(plan.score)) + ' Materialpunkte</b>' +
+            '<div class="sbc-opt-dim">0 Nachkauf-Coins · Rating ' + escapeHtml(String(assessment.rating)) +
+            ' · Chemie ' + escapeHtml(String(assessment.chemistry)) + ' · ' + plan.storage + ' Storage</div>';
+        if (!result.exhaustive) html += '<div class="sbc-opt-dim">Suchlimit erreicht; weitere günstigere Lösungen können existieren.</div>';
+        html += '<div class="sbc-opt-batch-cards">';
+        plan.players.forEach(function (p, index) {
+            const label = displayName({ id: p.id, assetId: p.playerId, name: p.name, raw: p.raw, rating: p.rating });
+            html += '<div class="sbc-opt-batch-card"><span class="r">' + (index + 1) + '</span> ' + escapeHtml(label) +
+                ' <span class="src">' + p.rating + ' OVR · ' + p.score + ' Punkte · ' + (p.source === 'storage' ? 'Storage' : 'Verein') + '</span></div>';
+        });
+        return html + '</div><div class="sbc-opt-dim">Vorschau: Der Kader wurde nicht verändert. Eintragen und Hybrid-Nachkäufe folgen im nächsten Schritt.</div>';
+    }
+    async function onHybridClubClick() {
+        if (hybridClubBusy || futbinBusy || buyBusy || galleryBusy || sellBusy || STATE.loading || (vorlagenRun && !vorlagenRun.fertig)) {
+            toast('Es läuft bereits ein anderer Lauf.', 'warn'); return;
+        }
+        hybridClubBusy = true; hybridClubCancel = false; futbinBusy = true;
+        setBtnBusy(ui.hybridClubSearch, true, 'Suche läuft');
+        if (ui.hybridClubStop) ui.hybridClubStop.hidden = false;
+        const diag = { at: Date.now(), phase: 'start', errors: [] };
+        STATE.diag.hybridSbc = diag;
+        let live = null;
+        const cancelled = function () {
+            return hybridClubCancel || (live && hybridOpenChallenge() !== live) ||
+                STATE.loading || buyBusy || galleryBusy || sellBusy || (vorlagenRun && !vorlagenRun.fertig);
+        };
+        try {
+            live = hybridOpenChallenge();
+            if (!inSbcView() || !live || !live.squad) throw Error('Bitte eine Team-SBC mit geöffnetem Kader öffnen.');
+            diag.type = live.type; diag.challengeId = live.id;
+            if (live.type !== 'OPEN_CHALLENGE') throw Error('Diese Vorschau unterstützt Team-SBCs. Punkte-SBCs und Pflicht-Slots folgen separat.');
+            if (!STATE.poolFullLoadDone || STATE.loadIncomplete || !STATE.pool.length) throw Error('Bitte zuerst die Spieler vollständig laden.');
+            diag.phase = 'vorgaben';
+            setHybridClubResult('<div class="sbc-opt-dim">Lese die Vorgaben der geöffneten SBC …</div>');
+            if (!Number.isSafeInteger(Number(live.setId)) || Number(live.setId) <= 0) throw Error('SBC-Set nicht eindeutig erkannt.');
+            const json = await apiGet('sbs/setId/' + Number(live.setId) + '/challenges');
+            if (cancelled()) throw Error('SBC-Planung gestoppt oder Ansicht gewechselt.');
+            const dto = findChallengeNode(json, live.id);
+            const oracle = HybridSbcEa.createTeamOracle({ ea: window, challengeDTO: dto, liveChallenge: live });
+            diag.requirements = dto.elgReq; diag.localRules = oracle.rules;
+            diag.phase = 'mannschaften';
+            const squads = await HybridSbcEa.readSavedSquads({ ea: window, observe: obsPromise, wait: sleep, cancelled,
+                progress: function (n, total) { setHybridClubResult('<div class="sbc-opt-dim">Schütze Mannschaften einschließlich Bank und Reserve: ' + n + '/' + total + ' …</div>'); } });
+            diag.teams = squads.teamCount; diag.squadCardsProtected = squads.itemIds.length;
+            const locked = Array.from(readPaletoolsLocks()), lockDiag = STATE.diag.locks;
+            const model = HybridSbcEa.normalizePool({ pool: STATE.pool.filter(p => !isEvolution(p.raw)), ea: window, squads,
+                locks: { complete: !!lockDiag && !lockDiag.error && !lockDiag.skippedKeys, ids: locked }, marketCache: marketLowCache });
+            diag.dataRejected = model.rejected; diag.phase = 'suche';
+            setHybridClubResult('<div class="sbc-opt-dim">Suche eine günstige Vereinslösung und prüfe Rating und Chemie …</div>');
+            await sleep(0);
+            const result = await HybridSbcCore.search({ cards: model.cards, guards: model.guards, slots: oracle.slots,
+                preferredSlots: oracle.preferredSlots, rules: oracle.rules, budget: 0, maxPurchases: 0,
+                maxMs: 8000, maxNodes: 100000, cancelled, accept: oracle.assess });
+            diag.nodes = result.nodes; diag.checked = result.checked; diag.excluded = result.excluded;
+            diag.candidates = result.candidates; diag.ms = result.ms; diag.stopped = result.stopped; diag.exhaustive = result.exhaustive;
+            if (cancelled() || result.stopped === 'cancelled') throw Error('SBC-Planung gestoppt oder Ansicht gewechselt.');
+            const latestLocks = Array.from(readPaletoolsLocks()), latestLockDiag = STATE.diag.locks;
+            if (!latestLockDiag || latestLockDiag.error || latestLockDiag.skippedKeys || Date.now() - squads.at > 30000) throw Error('Kartenschutz inzwischen unvollständig oder veraltet. Bitte erneut suchen.');
+            const finalGuards = Object.assign({}, model.guards, { squadIds: new Set(model.guards.squadIds.map(String)), lockedIds: new Set(latestLocks.map(String)) });
+            if (result.plans.some(plan => plan.players.some(p => HybridSbcCore.exclusion(p, finalGuards, Date.now())))) throw Error('Kartenschutz oder Goldpreis inzwischen geändert. Bitte erneut suchen.');
+            const assessment = result.plans.length ? oracle.assess(result.plans[0].players) : null;
+            if (assessment && !assessment.valid) throw Error('EA-Vorgabenprüfung hat den Plan verworfen.');
+            diag.plan = result.plans.length ? { score: result.plans[0].score, coins: 0, rating: assessment.rating, chemistry: assessment.chemistry,
+                players: result.plans[0].players.map(p => ({ defId: p.defId, score: p.score, rating: p.rating, source: p.source })) } : null;
+            diag.phase = 'vorschau';
+            const excludedText = Object.entries(Object.assign({}, model.rejected, result.excluded)).map(([reason, n]) => escapeHtml(reason) + ': ' + n).join(' · ');
+            setHybridClubResult(renderHybridClubPreview(result, assessment, live.name) + (excludedText ? '<details><summary>Ausgeschlossene Karten</summary><div class="sbc-opt-dim">' + excludedText + '</div></details>' : ''));
+        } catch (e) {
+            diag.phase = 'abbruch'; diag.errors.push(String(e.message || e));
+            setHybridClubResult(warnHtml(String(e.message || e)));
+        } finally {
+            hybridClubBusy = false; futbinBusy = false;
+            setBtnBusy(ui.hybridClubSearch, false);
+            if (ui.hybridClubStop) ui.hybridClubStop.hidden = true;
+        }
+    }
+    function initHybridClubUi() {
+        if (ui.hybridClubSearch) ui.hybridClubSearch.addEventListener('click', onHybridClubClick);
+        if (ui.hybridClubStop) ui.hybridClubStop.addEventListener('click', function () { hybridClubCancel = true; });
+    }
+    // [HYBRIDUI-END]
+
     function initFutbinUi() {
         if (!ui.futbinSearch) return;
         renderFutbinPlatformChips();
@@ -13024,6 +13514,7 @@
             itemProbe: computeItemProbe(STATE.pool),
             // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten mit
             // Kosten, Marktabfragen, Fehler, eingefuegte Loesung.
+            hybridSbc: STATE.diag.hybridSbc || null,
             futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null,
             futbinBuy: STATE.diag.futbinBuy || null,
             futbinBuyPlan: STATE.diag.futbinBuyPlan || null,

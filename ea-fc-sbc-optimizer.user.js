@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.3.2
+// @version      6.3.3
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.3.2';
+    const VERSION = '6.3.3';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -9084,6 +9084,87 @@
         }));
         return Array.from(byId.values());
     }
+    /** Nur Datenliterale aus fut.ggs SSR-Zustand lesen; fremdes JavaScript nie ausfuehren. */
+    function parseGallerySsr(html) {
+        const s = String(html || '');
+        const start = /\bl:\$R\[\d+\]=\{set:/.exec(s);
+        if (!start) return null;
+        let pos = start.index + 2, nodes = 0;
+        const refs = new Map();
+        const fail = () => { throw new Error('Unbekanntes Galerie-Datenformat bei ' + pos); };
+        function ws() { while (/\s/.test(s[pos] || '') && pos < s.length) pos++; }
+        function value(depth) {
+            if (++nodes > 100000 || depth > 80 || pos - start.index > 2000000) fail();
+            ws();
+            if (s.slice(pos, pos + 3) === '$R[') {
+                const m = /^\$R\[(\d+)\]/.exec(s.slice(pos));
+                if (!m) fail();
+                pos += m[0].length; ws();
+                const id = Number(m[1]);
+                if (s[pos] === '=') { pos++; const v = value(depth + 1); refs.set(id, v); return v; }
+                if (!refs.has(id)) fail();
+                return refs.get(id);
+            }
+            if (s[pos] === '"') {
+                const from = pos++;
+                while (pos < s.length) {
+                    const ch = s[pos++];
+                    if (ch === '\\') pos++;
+                    else if (ch === '"') return JSON.parse(s.slice(from, pos));
+                }
+                fail();
+            }
+            if (s[pos] === '{' || s[pos] === '[') {
+                const array = s[pos++] === '[', end = array ? ']' : '}';
+                const out = array ? [] : Object.create(null);
+                ws();
+                while (s[pos] !== end) {
+                    let key;
+                    if (!array) {
+                        if (s[pos] === '"') key = value(depth + 1);
+                        else { const m = /^[A-Za-z_$][\w$]*/.exec(s.slice(pos)); if (!m) fail(); key = m[0]; pos += key.length; }
+                        if (['__proto__', 'constructor', 'prototype'].includes(key)) fail();
+                        ws(); if (s[pos++] !== ':') fail();
+                    }
+                    const v = value(depth + 1);
+                    if (array) out.push(v); else out[key] = v;
+                    ws();
+                    if (s[pos] === end) break;
+                    if (s[pos++] !== ',') fail();
+                    ws();
+                }
+                pos++; return out;
+            }
+            const m = /^(null|true|false|!0|!1|-?\d+(?:\.\d+)?(?:e[+-]?\d+)?)(?![\w$.])/i.exec(s.slice(pos));
+            if (!m) fail();
+            pos += m[0].length;
+            if (m[0] === 'null') return null;
+            if (m[0] === 'true' || m[0] === '!0') return true;
+            if (m[0] === 'false' || m[0] === '!1') return false;
+            const n = Number(m[0]); if (!Number.isFinite(n)) fail(); return n;
+        }
+        return value(0);
+    }
+    /** Quellen-Aufstellungen nach Note, mit exaktem Versions-Abgleich; keine eigene Optimierung. */
+    function galleryUpgradeOptions(data, pool, collected) {
+        if (!data || !data.set || !data.solution || data.solution.setId !== data.set.id || !Array.isArray(data.solution.costTiers)) return [];
+        const known = collectedIdSet(collectedRecordsFromPool(pool).concat(collected || []));
+        return data.solution.costTiers.filter(t => t && /^[DCBAS]$/.test(t.grade) && t.status === 'optimal' &&
+            Array.isArray(t.items) && t.items.length === data.set.requiredCards &&
+            t.items.every(p => p && Number.isInteger(p.eaId) && p.eaId > 0 && Number.isFinite(p.score) && p.score > 0 &&
+                Number.isInteger(p.overall) && p.overall > 0 && p.overall <= 99) &&
+            new Set(t.items.map(p => p.eaId)).size === t.items.length &&
+            Number.isInteger(t.tokens) && t.tokens >= 0 &&
+            Number.isFinite(t.threshold) && t.threshold > 0 &&
+            Number.isFinite(t.totalScore) && t.totalScore >= t.threshold).map(t => {
+                const missing = t.items.filter(p => !known.has(String(p.eaId)));
+                const priced = missing.every(p => Number.isFinite(p.price) && p.price > 0);
+                return { grade: t.grade, threshold: t.threshold, score: t.totalScore, tokens: t.tokens,
+                    baseScore: t.items.reduce((n, p) => n + p.score, 0),
+                    known: t.items.length - missing.length, total: t.items.length, missing: missing,
+                    coins: priced ? missing.reduce((n, p) => n + p.price, 0) : null };
+            });
+    }
     function parseFutggGallerySet(html) {
         const s = String(html || '');
         const out = { name: null, requires: null, requirement: null, bestGrade: null, coinsInHand: null, coinsTotal: null,
@@ -9130,6 +9211,8 @@
         if (tot) out.score = galleryNum(tot[1]);
         const tax = /<dt[^>]*>Lost to tax<\/dt>[\s\S]*?\/>([\d,]+)/.exec(s);
         if (tax) out.tax = galleryNum(tax[1]);
+        try { out.upgradeData = parseGallerySsr(s); }
+        catch (e) { out.upgradeError = e.message; }
         return out;
     }
     /**
@@ -11288,7 +11371,8 @@
                     galleryLast.setCache[x.path] = set;
                     const tv = gallerySetTruePerToken(set, x.tokens);
                     if (tv) { x.total = tv.total; x.truePerToken = tv.perToken; x.playersN = set.players.length; if (best == null || tv.perToken < best) best = tv.perToken; }
-                    diag.verified.push({ id: x.id, name: x.name, total: tv ? tv.total : null, perToken: tv ? tv.perToken : null, players: set.players.length });
+                    diag.verified.push({ id: x.id, name: x.name, total: tv ? tv.total : null, perToken: tv ? tv.perToken : null, players: set.players.length,
+                        upgradeGrades: galleryUpgradeOptions(set.upgradeData, STATE.pool, collectedNow).map(o => o.grade), upgradeError: set.upgradeError || null });
                 } catch (e) { diag.errors.push('prüfen ' + x.name + ': ' + (e && e.message || e)); }
                 await futbinSleep(FUTBIN_FETCH_GAP_MS);
             };
@@ -11433,7 +11517,8 @@
             // Oeffnen eine Anfrage fuer immer dieselbe Antwort. Die Auskunft
             // kommt jetzt vom Markt (v5.64.0) und auf Tastendruck
             // (Knopf "Sammelstand bei EA pruefen"). Der Befund steht in LEARNINGS.
-            if (STATE.diag.gallery) STATE.diag.gallery.chosen = { id: x.id, name: x.name, players: set.players.length, owned: owned.filter(Boolean).length, coinsTotal: set.coinsTotal, grade: set.bestGrade, tokens: set.tokens };
+            if (STATE.diag.gallery) STATE.diag.gallery.chosen = { id: x.id, name: x.name, players: set.players.length, owned: owned.filter(Boolean).length, coinsTotal: set.coinsTotal, grade: set.bestGrade, tokens: set.tokens,
+                upgradeGrades: galleryUpgradeOptions(set.upgradeData, STATE.pool, collectedLoad()).map(o => o.grade), upgradeError: set.upgradeError || null };
             renderGallerySet(x, set, owned);
             setGalleryStep(3);
         } catch (e) {
@@ -11516,6 +11601,33 @@
         if (set.grades.length) {
             h += '<details class="sbc-opt-details-toggle"><summary>Noten und Tokens</summary>';
             set.grades.forEach(g => { h += '<div>' + g.grade + ': ab ' + (g.score != null ? g.score.toLocaleString('de-DE') : '?') + ' Score → ' + (g.tokens ? g.tokens + ' Tokens' : escapeHtml(g.reward || '–')) + '</div>'; });
+            h += '</details>';
+        }
+        // v6.3.3: additive Vorschau. Diese Quellenplaene sind NICHT an den Kauf-Lauf angeschlossen.
+        const upgrades = galleryUpgradeOptions(set.upgradeData, STATE.pool, collectedLoad());
+        if (upgrades.length) {
+            h += '<details class="sbc-opt-details-toggle" open><summary>Aufwertung: Pläne je Zielnote</summary>' +
+                 '<div class="sbc-opt-dim">fut.gg-Aufstellungen mit Boni. Bereits gesammelte Kartenversionen werden abgezogen. Preise sind Schätzungen; unbekannter Sammelstand kann die Kosten senken. ' +
+                 'Deine aktuelle bewertete Note ist hier noch nicht bekannt. Tokens gelten insgesamt bis zur Zielnote. Ein günstigerer Mix mit deinen Karten kann möglich sein. Die Pläne sind eine Vorschau.</div>';
+            const computed = set.upgradeData.solution.computedAt;
+            if (typeof computed === 'string' && Number.isFinite(Date.parse(computed))) {
+                h += '<div class="sbc-opt-dim">Quellenplan vom ' + escapeHtml(new Date(computed).toLocaleString('de-DE')) + '</div>';
+            }
+            const cards = new Map((Array.isArray(set.upgradeData.lineupCards) ? set.upgradeData.lineupCards : []).filter(c => c && c.eaId > 0).map(c => [c.eaId, c]));
+            upgrades.forEach(o => {
+                h += '<details class="sbc-opt-details-toggle"><summary><b>' + o.grade + '</b> · ' + o.known + '/' + o.total + ' gesammelt · ' +
+                     o.missing.length + ' zu prüfen · ' + (o.coins == null ? 'Preis offen' : '~' + fmtCoins(o.coins)) + '</summary>' +
+                     '<div class="sbc-opt-fb-meta">Score ' + o.score.toLocaleString('de-DE') + ' = ' + o.baseScore.toLocaleString('de-DE') +
+                     ' Basis + ' + (o.score - o.baseScore).toLocaleString('de-DE') + ' Boni · Ziel ' + o.threshold.toLocaleString('de-DE') +
+                     ' · ' + (o.tokens || 0) + ' Tokens insgesamt</div>';
+                o.missing.forEach(p => {
+                    const c = cards.get(p.eaId);
+                    h += '<div>' + escapeHtml(c && (c.commonName || c.cardName) || ('#' + p.eaId)) +
+                         ' <span class="sbc-opt-muted">(' + p.overall + ', ID ' + p.eaId + ') · Score ' + p.score + '</span> · ' +
+                         (p.price > 0 ? fmtCoins(p.price) : 'Preis offen') + '</div>';
+                });
+                h += '</details>';
+            });
             h += '</details>';
         }
         // v5.65.0: Sammelstand bei EA nachfragen (eine Marktabfrage je unbekanntem Spieler).

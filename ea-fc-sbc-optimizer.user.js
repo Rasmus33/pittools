@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.3.5
+// @version      6.3.6
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.3.5';
+    const VERSION = '6.3.6';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -8590,17 +8590,19 @@ const HybridSbcEa = (() => {
         function reject(reason) { rejected[reason] = (rejected[reason] || 0) + 1; }
         for (const p of pool) {
             const r = p && p.raw;
+            const team = r && (r.teamid != null ? r.teamid : r.teamId);
             if (!r || !positiveId(p.id) || !positiveId(r.assetId) || !positiveId(r.resourceId) ||
                 typeof r.gradingScore !== 'number' || !Number.isFinite(r.gradingScore) || r.gradingScore <= 0 ||
                 !Number.isInteger(r.rating) || !Number.isInteger(r.rareflag) || !Array.isArray(r.possiblePositions) ||
                 !r.possiblePositions.length || !r.possiblePositions.every(p => typeof p === 'string' && p.length > 0) ||
-                !positiveId(r.leagueId) || !positiveId(r.nation) || !positiveId(r.teamid) ||
+                !positiveId(r.leagueId) || !positiveId(r.nation) || !positiveId(team) ||
                 typeof r.loans !== 'number' || r.loans !== 0 || r.concept === true || r.isConcept === true ||
                 r.academyId > 0 || r.academyItemId > 0 || r.evolutionId > 0 || r.evolutionData || r.evoPath || r.isEvo === true || r.isAcademy === true ||
                 (r.academyAttributes && Object.keys(r.academyAttributes).length) || (r.tradableBeforeAcademy !== undefined && r.tradableBeforeAcademy !== null)) {
                 reject('Kartendaten oder Schutzmerkmale unvollständig'); continue;
             }
-            const club = ea.repositories.TeamConfig.getLinkedTeam(r.teamid);
+            if (r.teamid != null && r.teamId != null && String(r.teamid) !== String(r.teamId)) { reject('Vereinszuordnung widersprüchlich'); continue; }
+            const club = ea.repositories.TeamConfig.getLinkedTeam(Number(team));
             if (!positiveId(club)) { reject('Vereinszuordnung unbekannt'); continue; }
             const positions = r.possiblePositions.map(p => ea.repositories.Squad.getPositionByUniqueName(p)).map(p => p && p.typeId);
             if (!positions.every(Number.isInteger)) { reject('Positionszuordnung unbekannt'); continue; }
@@ -10410,7 +10412,7 @@ const HybridSbcEa = (() => {
         if (!result.exhaustive) html += '<div class="sbc-opt-dim">Suchlimit erreicht; weitere günstigere Lösungen können existieren.</div>';
         html += '<div class="sbc-opt-batch-cards">';
         plan.players.forEach(function (p, index) {
-            const label = displayName({ id: p.id, assetId: p.playerId, name: p.name, raw: p.raw, rating: p.rating });
+            const label = displayName({ id: p.id, assetId: p.playerId, name: p.name, raw: JSON.parse(JSON.stringify(p.raw)), rating: p.rating });
             html += '<div class="sbc-opt-batch-card"><span class="r">' + (index + 1) + '</span> ' + escapeHtml(label) +
                 ' <span class="src">' + p.rating + ' OVR · ' + p.score + ' Punkte · ' + (p.source === 'storage' ? 'Storage' : 'Verein') + '</span></div>';
         });

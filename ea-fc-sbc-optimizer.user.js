@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.3.10
+// @version      6.3.11
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.3.10';
+    const VERSION = '6.3.11';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -8468,8 +8468,29 @@ const HybridSbcCore = (() => {
             minScore[i] = i === slots.length ? 0 : minScore[i + 1] + slots[i].list.reduce((n, c) => Math.min(n, c.score), Infinity);
             minCoins[i] = i === slots.length ? 0 : minCoins[i + 1] + slots[i].list.reduce((n, c) => Math.min(n, c.coins), Infinity);
         }
-        const maxField = {};
-        rules.filter(r => r.kind === 'sum').forEach(r => { maxField[r.field] = cards.reduce((n, c) => Math.max(n, c[r.field]), 0); });
+        // Optimistische Rest-Grenzen je Vorgabe und Slot. Wiederverwendung
+        // bleibt hier erlaubt: Grenzen duerfen nur unmoegliche Aeste streichen.
+        const bounds = rules.map(r => {
+            const suffix = new Array(slots.length + 1);
+            suffix[slots.length] = { min: 0, max: 0, values: new Map(), ids: new Set() };
+            for (let i = slots.length - 1; i >= 0; i--) {
+                const list = slots[i].list, next = suffix[i + 1];
+                const b = { min: next.min, max: next.max, values: new Map(next.values), ids: new Set(next.ids) };
+                if (r.kind === 'sum') {
+                    b.min += list.reduce((n,c) => Math.min(n,c[r.field]), Infinity);
+                    b.max += list.reduce((n,c) => Math.max(n,c[r.field]), 0);
+                } else if (r.kind === 'count') {
+                    const matching = list.filter(c => r.values.includes(c[r.field]));
+                    b.min += Number(list.length > 0 && matching.length === list.length);
+                    b.max += Number(matching.length > 0);
+                    matching.forEach(c => b.ids.add(String(input.uniquePlayer === false ? c.id : c.playerId)));
+                } else {
+                    new Set(list.map(c => c[r.field])).forEach(v => b.values.set(v,(b.values.get(v) || 0) + 1));
+                }
+                suffix[i] = b;
+            }
+            return suffix;
+        });
         const selected = [], usedIds = new Set(), usedPlayers = new Set(), frontier = [];
         const maxNodes = input.maxNodes == null ? 100000 : input.maxNodes;
         const maxMs = input.maxMs == null ? 3000 : input.maxMs;
@@ -8496,10 +8517,28 @@ const HybridSbcCore = (() => {
                 storage: players.filter(c => c.source === 'storage').length, untradeable: players.filter(c => c.untradeable).length,
                 key: players.map(c => String(c.id)).sort().join('|') });
         }
-        function possible(remaining) {
-            return rules.every(r => {
-                const v = ruleValue(r, selected), upper = v + remaining * (r.kind === 'sum' ? maxField[r.field] : 1);
-                return (r.cmp === 'min' || v <= r.value) && (r.cmp === 'max' || upper >= r.value);
+        function possible(depth) {
+            const remaining = slots.length - depth;
+            return rules.every((r,index) => {
+                const v = ruleValue(r, selected), b = bounds[index][depth];
+                let lower = v, upper = v + remaining;
+                if (r.kind === 'sum') { lower += b.min; upper = v + b.max; }
+                else if (r.kind === 'count') {
+                    const used = input.uniquePlayer === false ? usedIds : usedPlayers;
+                    let available = b.ids.size;
+                    used.forEach(id => { if (b.ids.has(id)) available--; });
+                    lower += b.min; upper = v + Math.min(b.max,available);
+                } else if (r.kind === 'distinct') {
+                    const values = new Set(selected.map(c => c[r.field]));
+                    b.values.forEach((n,value) => values.add(value));
+                    upper = Math.min(upper,values.size);
+                } else {
+                    const counts = new Map();
+                    selected.forEach(c => counts.set(c[r.field],(counts.get(c[r.field]) || 0) + 1));
+                    upper = v;
+                    b.values.forEach((n,value) => { upper = Math.max(upper,(counts.get(value) || 0) + n); });
+                }
+                return (r.cmp === 'min' || lower <= r.value) && (r.cmp === 'max' || upper >= r.value);
             });
         }
         const visit = function* (depth, score, coins, purchases) {
@@ -8508,7 +8547,7 @@ const HybridSbcCore = (() => {
             if (nodes >= maxNodes || Date.now() - start >= maxMs) { stopped = 'limit'; return; }
             nodes++;
             yield null;
-            if (coins > budget || (input.maxPurchases != null && purchases > input.maxPurchases) || !possible(slots.length - depth)) return;
+            if (coins > budget || (input.maxPurchases != null && purchases > input.maxPurchases) || !possible(depth)) return;
             if (depth === slots.length) {
                 if (!rules.every(r => passes(r, ruleValue(r, selected)))) return;
                 const players = new Array(slots.length);

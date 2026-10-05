@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.3.6
+// @version      6.3.7
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.3.6';
+    const VERSION = '6.3.7';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -9536,6 +9536,236 @@ const HybridSbcEa = (() => {
         return value(0);
     }
     /** Quellen-Aufstellungen nach Note, mit exaktem Versions-Abgleich; keine eigene Optimierung. */
+    // [GALLERYPERSONAL-BEGIN]
+    const galleryPaleSnapshots = new Map();
+    function galleryReadPaleSnapshot(controllers) {
+        for (const c of controllers || []) {
+            const set = c && c.selectedSet, entries = c && c.albumEntries;
+            if (!c || c.active !== true || !set || !Number.isInteger(set.id) || typeof set.name !== 'string' ||
+                !Number.isInteger(set.requiredItems) || !Array.isArray(entries) || !entries.length || entries.length > 7000) continue;
+            const cards = [];
+            for (const e of entries) {
+                const it = e && e.item;
+                if (!it || !Number.isInteger(it.definitionId) || it.definitionId <= 0 ||
+                    !Number.isFinite(it.gradingScore) || it.gradingScore <= 0 || !Number.isInteger(it.rating)) continue;
+                const get = (method, fallback) => { try { return typeof it[method] === 'function' ? it[method]() : fallback; } catch (_) { return null; } };
+                const stat = get('getStaticData', {});
+                const positions = (it.possiblePositions || []).map(p => typeof p === 'string' ? p :
+                    (typeof window !== 'undefined' && window.PlayerPosition ? window.PlayerPosition[p] : null)).filter(p => typeof p === 'string');
+                cards.push({ id: it.definitionId, name: stat && stat.name || ('#' + it.definitionId), score: it.gradingScore,
+                    owned: e.status === 'owned' || e.tracked === true || it.isCollected === true,
+                    attrs: { NATION: it.nationId, CLUB: it.teamId, LEAGUEID: it.leagueId, RARE: it.rareflag,
+                        BASE_DEF_ID: it.databaseId, LEVEL: it.rating < 65 ? 'bronze' : it.rating < 75 ? 'silver' : 'gold',
+                        FIRST_OWNED: e.status === 'owned' && it.owners === 1 ? 1 : 0,
+                        HYPER_COSMETIC_TYPE: get('getFoilSubtype', null), WEAK_FOOT: get('getWeakFoot', it._weakFoot),
+                        SKILL_MOVES: get('getSkillMoves', it._skillMoves), POSSIBLE_POSITIONS: positions } });
+            }
+            return { setId: set.id, name: set.name, required: set.requiredItems, cards, at: Date.now(), entries };
+        }
+        return null;
+    }
+    function galleryCapturePale() {
+        try {
+            const persona = ownPersonaId();
+            if (!persona) return;
+            const controllers = getControllerChain();
+            // Derselbe geladene Katalog wird nicht alle zwei Sekunden kopiert.
+            if (controllers.some(c => c && c.selectedSet && galleryPaleSnapshots.has(c.selectedSet.id) &&
+                galleryPaleSnapshots.get(c.selectedSet.id).persona === persona &&
+                galleryPaleSnapshots.get(c.selectedSet.id).entries === c.albumEntries)) return;
+            const snap = galleryReadPaleSnapshot(controllers);
+            if (snap && snap.cards.length) {
+                snap.persona = persona;
+                galleryPaleSnapshots.set(snap.setId, snap);
+                if (galleryPaleSnapshots.size > 150) galleryPaleSnapshots.delete(galleryPaleSnapshots.keys().next().value);
+            }
+        } catch (_) {} // Optionale PaleTools-Ansicht darf keinen alten Weg stoeren.
+    }
+    // Individuelle, begrenzte Suche. Unbekannte historische Details geben
+    // keinen Bonus; Quellenplaene bleiben als unabhaengiger Fallback erhalten.
+    function galleryPersonalAssessment(data, pool, collected, paleSnapshot) {
+        if (!data || !data.set || !data.solution || data.solution.setId !== data.set.id ||
+            !Number.isInteger(data.set.requiredCards) || data.set.requiredCards < 1 || data.set.requiredCards > 40 ||
+            !Array.isArray(data.tags) || !data.tags.length || !Array.isArray(data.set.grades) || !data.set.grades.length ||
+            data.set.grades.some(g => !g || !/^[DCBAS]$/.test(g.name) || !Number.isFinite(g.threshold) || g.threshold <= 0) ||
+            !Array.isArray(data.solution.items) || !Array.isArray(data.solution.costTiers) ||
+            (data.lineupCards != null && !Array.isArray(data.lineupCards))) return null;
+        const n = data.set.requiredCards, meta = new Map(), source = new Map();
+        (data.lineupCards || []).forEach(c => { if (c && c.eaId > 0) meta.set(Number(c.eaId), c); });
+        [data.solution].concat(data.solution.costTiers || []).forEach(t => {
+            (t && Array.isArray(t.items) ? t.items : []).forEach(p => {
+                if (p && Number.isInteger(p.eaId) && p.eaId > 0 && Number.isFinite(p.score) && p.score > 0 && Number.isInteger(p.overall) && p.overall > 0 && p.overall <= 99)
+                    source.set(p.eaId, Object.assign({}, p));
+            });
+        });
+        const safePool = (pool || []).filter(p => p && !(p.raw && (p.raw.loans > 0 || p.raw.concept === true || p.raw.dream === true)));
+        const known = collectedIdSet(collectedRecordsFromPool(safePool).concat(collected || []));
+        const live = new Map();
+        safePool.forEach(p => { const r = p && p.raw || {}, d = Number(r.resourceId || r.definitionId);
+            if (d > 0 && (!live.has(d) || r.owners === 1)) live.set(d, r); });
+        // Bei Vereins-Sets belegen die Quellen die echten (auch Frauen-)
+        // Team-IDs. Keine Gleichsetzung mit dem Badge-/verknuepften Team.
+        const teams = new Set(Array.from(source.values()).map(p => p.clubEaId).filter(t => t > 0));
+        if (data.set.clubEaId > 0 && teams.size === 1) {
+            (pool || []).forEach(p => {
+                const r = p && p.raw || {}, d = Number(r.resourceId || r.definitionId);
+                if (!Number.isInteger(d) || d <= 0 || source.has(d) || !teams.has(Number(r.teamid || r.teamId)) ||
+                    !Number.isFinite(r.gradingScore) || r.gradingScore <= 0 || !Number.isInteger(r.rating) || r.rating < 1 || r.rating > 99 ||
+                    r.loans > 0 || r.concept === true || r.dream === true) return;
+                source.set(d, { eaId: d, playerEaId: Number(r.assetId), score: r.gradingScore, overall: r.rating,
+                    clubEaId: Number(r.teamid || r.teamId), nationEaId: Number(r.nation), rarityEaId: Number(r.rareflag) });
+                meta.set(d, { commonName: p.name || ('#' + d), leagueEaId: Number(r.leagueId),
+                    positionNames: r.possiblePositions, weakFoot: r.weakFoot, skillMoves: r.skillMoves });
+            });
+        }
+        let cards = Array.from(source.values()).map(p => {
+            const m = meta.get(p.eaId) || {}, r = live.get(p.eaId) || {};
+            return { id: p.eaId, name: m.commonName || m.cardName || ('#' + p.eaId),
+                score: Number.isFinite(r.gradingScore) && r.gradingScore > 0 ? r.gradingScore : p.score,
+                owned: known.has(String(p.eaId)), price: p.price,
+                attrs: { NATION: p.nationEaId, CLUB: p.clubEaId, LEAGUEID: m.leagueEaId,
+                    RARE: p.rarityEaId, BASE_DEF_ID: p.playerEaId,
+                    LEVEL: p.overall < 65 ? 'bronze' : p.overall < 75 ? 'silver' : 'gold',
+                    FIRST_OWNED: known.has(String(p.eaId)) && r.owners === 1 ? 1 : 0,
+                    // Keine erfundenen historischen Holo-/Erstbesitz-Boni.
+                    HYPER_COSMETIC_TYPE: null,
+                    WEAK_FOOT: Number.isFinite(r.weakFoot) ? r.weakFoot : m.weakFoot,
+                    SKILL_MOVES: Number.isFinite(r.skillMoves) ? r.skillMoves : m.skillMoves,
+                    POSSIBLE_POSITIONS: Array.isArray(r.possiblePositions) && r.possiblePositions.every(p => typeof p === 'string') ? r.possiblePositions : m.positionNames } };
+        });
+        const cachedPale = galleryPaleSnapshots.get(data.set.id);
+        const pale = paleSnapshot || (cachedPale && typeof ownPersonaId === 'function' &&
+            cachedPale.persona === ownPersonaId() ? cachedPale : null);
+        const usedPale = !!(pale && pale.setId === data.set.id && pale.name === data.set.name && pale.required === n &&
+            Number.isFinite(pale.at) && Date.now() - pale.at >= 0 && Date.now() - pale.at <= 1800000 && Array.isArray(pale.cards));
+        if (usedPale) {
+            const byId = new Map(cards.map(c => [c.id,c]));
+            pale.cards.forEach(p => {
+                const existing = byId.get(p.id);
+                if (!existing && !p.owned) return; // Kaufpreis unbekannt: keine kostenlose Karte.
+                const ownRaw = live.get(p.id);
+                const attrs = Object.assign({}, existing && existing.attrs, p.attrs);
+                // Neue Kaufkarte bekommt niemals Erstbesitz, auch wenn eine
+                // Konzept-Entitaet einen Default-owners-Wert traegt.
+                attrs.FIRST_OWNED = ownRaw && ownRaw.owners === 1 ? 1 : p.owned ? p.attrs.FIRST_OWNED : 0;
+                byId.set(p.id, Object.assign({}, existing, p, { attrs, owned: !!(p.owned || existing && existing.owned), price: existing && existing.price }));
+            });
+            cards = Array.from(byId.values());
+        }
+        const result = galleryPersonalSearch(cards, n, data.tags, data.set.grades);
+        if (result) { result.catalogue = cards.length; result.known = cards.filter(c => c.owned).length; result.pale = usedPale; }
+        return result;
+    }
+    function galleryPersonalScore(cards, required, tags, grades) {
+        if (!Array.isArray(cards) || new Set(cards.map(c => c.id)).size !== cards.length ||
+            cards.some(c => !Number.isFinite(c.score) || c.score <= 0)) return null;
+        let bonus = 0; const unknown = new Set(), breakdown = [];
+        for (const tag of tags) {
+            if (!tag || tag.bonusType !== 'ITEM_SCORE_PERCENTAGE' || tag.thresholdType !== 'ITEM_COUNT' ||
+                !Array.isArray(tag.rules) || !tag.rules.length || !Array.isArray(tag.tiers)) return null;
+            let matched = cards, incompleteTag = false;
+            for (const rule of tag.rules) {
+                if (!rule || !['ATTRIBUTE', 'BASE_DEF_ID'].includes(rule.target) ||
+                    !['COUNT', 'COUNT_ANY', 'MIN_COUNT', 'COUNT_DIFF', 'MAX_COUNT_ALL_SAME'].includes(rule.type) ||
+                    !Array.isArray(rule.values) || !rule.values.length || typeof rule.attribute !== 'string') return null;
+                const valid = matched.filter(c => {
+                    const v = c.attrs && c.attrs[rule.attribute];
+                    if (v == null || (typeof v === 'number' && !Number.isFinite(v)) || (Array.isArray(v) && !v.length)) {
+                        unknown.add(tag.name || rule.attribute); incompleteTag = true; return false; }
+                    return true;
+                });
+                if (rule.type === 'COUNT_DIFF' || rule.type === 'MAX_COUNT_ALL_SAME') {
+                    const groups = new Map();
+                    valid.forEach(c => { const v = c.attrs[rule.attribute]; if (Number(v) < 0) return;
+                        const key = String(v); if (!groups.has(key)) groups.set(key, []); groups.get(key).push(c); });
+                    const sum = a => a.reduce((s, c) => s + c.score, 0);
+                    matched = rule.type === 'COUNT_DIFF' ? Array.from(groups.values()).map(a => a.slice().sort((a,b) => b.score-a.score)[0]) :
+                        Array.from(groups.values()).sort((a,b) => b.length-a.length || sum(b)-sum(a))[0] || [];
+                } else {
+                    matched = valid.filter(c => { const v = c.attrs[rule.attribute];
+                        return rule.type === 'MIN_COUNT' ? Number(v) >= Number(rule.values[0]) :
+                            (Array.isArray(v) ? v : [v]).some(x => rule.values.map(String).includes(String(x))); });
+                }
+            }
+            if (tag.tiers.some(t => !t || !Number.isInteger(t.minItems) || t.minItems < 1 ||
+                !Number.isFinite(t.bonus) || t.bonus < 0)) return null;
+            const tier = tag.tiers.slice().sort((a,b) => a.minItems-b.minItems).filter(t => matched.length >= t.minItems).pop();
+            const points = incompleteTag ? 0 : Math.floor(matched.reduce((s,c) => s+c.score, 0) * (tier ? tier.bonus : 0) / 100);
+            bonus += points; if (points) breakdown.push({ name: tag.name, points });
+        }
+        const base = cards.reduce((s,c) => s+c.score, 0), score = base + bonus;
+        const grade = cards.length === required ? grades.filter(g => g && Number.isFinite(g.threshold) && score >= g.threshold)
+            .sort((a,b) => a.threshold-b.threshold).pop() : null;
+        return { base, bonus, score, grade: grade && grade.name || null, complete: cards.length === required,
+            unknown: Array.from(unknown), breakdown };
+    }
+    function galleryPersonalSearch(cards, required, tags, grades) {
+        if (!Array.isArray(cards) || cards.length > 160 || !Number.isInteger(required) || required < 1 || required > 40 ||
+            new Set(cards.map(c => c.id)).size !== cards.length) return null;
+        const eligible = cards.filter(c => c.owned || (Number.isFinite(c.price) && c.price > 0));
+        const own = eligible.filter(c => c.owned).sort((a,b) => b.score-a.score || a.id-b.id);
+        const currentCards = own.slice(0, required), current = galleryPersonalScore(currentCards, required, tags, grades);
+        if (!current) return null;
+        let checks = 0, limited = false; const seen = new Set(), best = new Map();
+        const evaluate = selected => {
+            const key = selected.map(c => c.id).sort((a,b) => a-b).join(',');
+            if (seen.has(key)) return null; if (checks >= 6000) { limited = true; return null; }
+            seen.add(key); checks++;
+            const assessment = galleryPersonalScore(selected, required, tags, grades);
+            if (!assessment) return null;
+            const missing = selected.filter(c => !c.owned), coins = missing.reduce((s,c) => s+c.price, 0);
+            const state = { cards: selected, assessment, missing, coins, key };
+            if (assessment.complete) grades.forEach(g => {
+                if (!g || !/^[DCBAS]$/.test(g.name) || !Number.isFinite(g.threshold) || assessment.score < g.threshold) return;
+                const old = best.get(g.name);
+                if (!old || coins < old.coins || (coins === old.coins && (missing.length < old.missing.length ||
+                    missing.length === old.missing.length && assessment.score > old.assessment.score))) best.set(g.name, state);
+            });
+            return state;
+        };
+        let beam = [];
+        if (currentCards.length === required) { const s = evaluate(currentCards); if (s) beam.push(s); }
+        const cheapest = eligible.slice().sort((a,b) => (a.owned ? 0 : a.price)-(b.owned ? 0 : b.price) || b.score-a.score).slice(0, required);
+        if (cheapest.length === required) { const s = evaluate(cheapest); if (s) beam.push(s); }
+        const strongest = eligible.slice().sort((a,b) => b.score-a.score).slice(0, required);
+        if (strongest.length === required) { const s = evaluate(strongest); if (s) beam.push(s); }
+        // Auch reine Vereins-Auswahlen durch Tauschen verbessern: hoechster
+        // Einzel-Score ist wegen der Boni nicht immer die beste Kombination.
+        for (let round = 0; round < 4 && beam.length && !limited; round++) {
+            const next = [];
+            for (const state of beam) {
+                const ids = new Set(state.cards.map(c => c.id));
+                for (const incoming of eligible) {
+                    if (ids.has(incoming.id)) continue;
+                    for (let i = 0; i < state.cards.length; i++) {
+                        const selected = state.cards.slice(); selected[i] = incoming;
+                        const s = evaluate(selected); if (s) next.push(s);
+                        if (limited) break;
+                    }
+                    if (limited) break;
+                }
+                if (limited) break;
+            }
+            // Zwei Suchrichtungen: maximaler Score und wenig Nachkauf-Coins.
+            const high = next.slice().sort((a,b) => b.assessment.score-a.assessment.score || a.coins-b.coins).slice(0,8);
+            const cheap = next.filter(s => s.assessment.score >= current.score).sort((a,b) => a.coins-b.coins || b.assessment.score-a.assessment.score).slice(0,8);
+            beam = Array.from(new Map(high.concat(cheap).map(s => [s.key,s])).values());
+        }
+        const zero = Array.from(best.values()).filter(s => s.coins === 0).sort((a,b) => b.assessment.score-a.assessment.score)[0];
+        return { current: zero ? zero.assessment : current, currentCards: zero ? zero.cards : currentCards,
+            plans: grades.filter(g => best.has(g.name)).map(g => Object.assign({ grade: g.name, threshold: g.threshold }, best.get(g.name))),
+            checks, limited };
+    }
+    function galleryPersonalHint(personal) {
+        if (!personal) return '';
+        const current = personal.current;
+        const target = personal.plans.slice().sort((a,b) => b.threshold-a.threshold)[0];
+        const status = current.grade ? 'Sammlung: ' + current.grade + ' berechnet' : 'Sammlung: Auswahl unvollständig';
+        if (!target || !target.missing.length || (current.complete && target.threshold <= current.score)) return status;
+        return status + ' · ' + target.grade + ' gefunden mit ' + target.missing.length + ' Nachkäufen (~' + fmtCoins(target.coins) + ')';
+    }
+    // [GALLERYPERSONAL-END]
+
     function galleryUpgradeOptions(data, pool, collected) {
         if (!data || !data.set || !data.solution || data.solution.setId !== data.set.id || !Array.isArray(data.solution.costTiers)) return [];
         const known = collectedIdSet(collectedRecordsFromPool(pool).concat(collected || []));
@@ -11890,6 +12120,7 @@ const HybridSbcEa = (() => {
                     if (r2.status !== 200) throw new Error('HTTP ' + r2.status);
                     const set = parseFutggGallerySet(r2.text);
                     galleryLast.setCache[x.path] = set;
+                    x.personal = galleryPersonalAssessment(set.upgradeData, STATE.pool, collectedNow);
                     const tv = gallerySetTruePerToken(set, x.tokens);
                     if (tv) { x.total = tv.total; x.truePerToken = tv.perToken; x.playersN = set.players.length; if (best == null || tv.perToken < best) best = tv.perToken; }
                     diag.verified.push({ id: x.id, name: x.name, total: tv ? tv.total : null, perToken: tv ? tv.perToken : null, players: set.players.length,
@@ -11987,6 +12218,7 @@ const HybridSbcEa = (() => {
                  (x.own && x.eaKind ? ' · im Verein <b>' + x.own.count + '</b>' + (x.items ? ' von ' + x.items : '') : '') +
                  ' · ' + escapeHtml(x.league.replace(/-/g, ' ')) +
                  (x.score != null && x.threshold != null ? ' · Score ' + x.score.toLocaleString('de-DE') + ' / ' + x.threshold.toLocaleString('de-DE') : '') + '</div>' +
+                 (x.personal ? '<div class="sbc-opt-fb-meta"><b>' + escapeHtml(galleryPersonalHint(x.personal)) + '</b> · Vorschau aus bekannten Karten</div>' : '') +
                  '<div class="sbc-opt-fb-actions"><button type="button" class="sbc-opt-btn ' + (i === 0 ? 'primary' : 'ghost') + '" data-gal-idx="' + i + '">Set ansehen</button>' +
                  '<button type="button" class="sbc-opt-btn ghost small" data-gal-done="' + i + '" title="Als erledigt markieren (ausblenden)">Erledigt ✓</button></div></div>';
         });
@@ -12060,6 +12292,8 @@ const HybridSbcEa = (() => {
         const sumMissing = missing.reduce((a, p) => a + (p.price || 0), 0);
         // v5.36.0: eigener Fortschritt aus dem Pool (Basis-Score ohne Tag-Boni = untere Schranke).
         const own = x.own || galleryOwnProgress(x, STATE.pool, collectedLoad());
+        const personal = galleryPersonalAssessment(set.upgradeData, STATE.pool, collectedLoad());
+        x.personal = personal;
         const ownGrade = gradeForScore(set.grades, own.score);
         const comp = galleryCompletionPlan(set.requires || set.players.length, own.count, set.players, owned);
         if (galleryLast.chosen) { galleryLast.chosen.own = own; galleryLast.chosen.comp = comp; galleryLast.chosen.buyIdx = null; }
@@ -12067,7 +12301,7 @@ const HybridSbcEa = (() => {
                 ' · ' + (set.tokens != null ? set.tokens : x.tokens) + ' Tokens</div>' +
                 (x.eaKind ? '<div class="sbc-opt-fb-meta">Gesammelt: <b>' + own.count + '</b>' + (set.requires ? ' von ' + set.requires : '') + ' passende Karten' +
                     (own.earlier ? ' <span class="sbc-opt-muted">(' + own.inClub + ' im Verein, ' + own.earlier + ' früher)</span>' : '') + ' · Basis-Score <b>' +
-                    own.score.toLocaleString('de-DE') + '</b>' + (ownGrade ? ' → mindestens Note <b>' + ownGrade.grade + '</b>' + (ownGrade.tokens ? ' (' + ownGrade.tokens + ' Tokens)' : '') : (set.grades.length ? ' → noch unter Note D' : '')) +
+                    own.score.toLocaleString('de-DE') + '</b>' + (personal ? ' (Summe der Sammlung; gewertete Auswahl unten)' : (ownGrade ? ' → mindestens Note <b>' + ownGrade.grade + '</b>' + (ownGrade.tokens ? ' (' + ownGrade.tokens + ' Tokens)' : '') : (set.grades.length ? ' → noch unter Note D' : ''))) +
                     (!STATE.pool.length ? ' <span class="sbc-opt-warn">(Verein nicht geladen)</span>' : '') + '</div>' : '') +
                 '<div class="sbc-opt-fb-meta">' + set.players.length + ' Spieler in der günstigsten Aufstellung' + (set.requires ? ' (Set braucht ' + set.requires + ')' : '') +
                 ' · <b>' + (ownedN - earlierN) + '</b> im Verein' + (earlierN ? ' · <b>' + earlierN + '</b> früher gesammelt' : '') + ' · <b>' + missing.length + '</b> zu kaufen' +
@@ -12122,6 +12356,34 @@ const HybridSbcEa = (() => {
         if (set.grades.length) {
             h += '<details class="sbc-opt-details-toggle"><summary>Noten und Tokens</summary>';
             set.grades.forEach(g => { h += '<div>' + g.grade + ': ab ' + (g.score != null ? g.score.toLocaleString('de-DE') : '?') + ' Score → ' + (g.tokens ? g.tokens + ' Tokens' : escapeHtml(g.reward || '–')) + '</div>'; });
+            h += '</details>';
+        }
+        // v6.3.7: eigene Auswahl und Nachkauf-Mischungen samt belegter Tag-Regeln.
+        if (personal) {
+            const a = personal.current;
+            if (STATE.diag && STATE.diag.gallery) STATE.diag.gallery.personal = { setId: x.id, catalogue: personal.catalogue,
+                known: personal.known, checks: personal.checks, limited: personal.limited,
+                pale: personal.pale, current: a, plans: personal.plans.map(p => ({ grade: p.grade, score: p.assessment.score,
+                    coins: p.coins, missing: p.missing.map(c => c.id) })) };
+            h += '<details class="sbc-opt-details-toggle" open><summary>Deine Sammlung und gezielte Nachkäufe</summary>' +
+                '<div class="sbc-opt-fb-meta">Mit bekannten gesammelten Karten: <b>' + (a.grade ? 'Note ' + escapeHtml(a.grade) : 'noch keine vollständige Auswahl') +
+                '</b> · ' + a.score.toLocaleString('de-DE') + ' Punkte (' + a.base + ' Basis + ' + a.bonus + ' Boni) · ' +
+                personal.currentCards.length + '/' + set.upgradeData.set.requiredCards + ' Karten</div>' +
+                '<div class="sbc-opt-dim">Berechnete Vorschau, keine eingelöste Note. ' + personal.known + ' gesammelte Versionen in ' + personal.catalogue +
+                ' bekannten Karten' + (personal.pale ? ' · PaleTools-Galerie mitgelesen' : ' · Für mehr Sammeldaten das passende Set einmal in der PaleTools-Galerie öffnen') +
+                '. Begrenzte Suche nach Mischungen; weitere Karten können bessere Lösungen ermöglichen. Unbekannte Bonusdetails werden ohne Bonus gerechnet. Preise von fut.gg; Sammelstand und Live-Preise vor einem Kauf prüfen.</div>';
+            h += '<details class="sbc-opt-details-toggle"><summary>Eigene Auswahl und Boni</summary>';
+            personal.currentCards.forEach(c => { h += '<div>✓ ' + escapeHtml(c.name) + ' · ID ' + c.id + ' · ' + c.score + ' Basis-Punkte</div>'; });
+            a.breakdown.forEach(b => { h += '<div>' + escapeHtml(b.name || 'Bonus') + ': +' + b.points + '</div>'; });
+            if (a.unknown.length) h += '<div class="sbc-opt-dim">Ohne Bonus wegen fehlender Details: ' + escapeHtml(a.unknown.join(', ')) + '</div>';
+            h += '</details>';
+            personal.plans.filter(p => p.missing.length > 0 && p.threshold > (a.complete ? a.score : 0)).forEach(p => {
+                h += '<details class="sbc-opt-details-toggle"><summary><b>' + escapeHtml(p.grade) + '</b> mit ' + p.missing.length +
+                    ' Nachkäufen · ~' + fmtCoins(p.coins) + '</summary><div>' + p.assessment.score.toLocaleString('de-DE') +
+                    ' Punkte (' + p.assessment.base + ' Basis + ' + p.assessment.bonus + ' Boni)</div>';
+                p.missing.forEach(c => { h += '<div>' + escapeHtml(c.name) + ' · ID ' + c.id + ' · ' + fmtCoins(c.price) + '</div>'; });
+                h += '<div class="sbc-opt-dim">Gefundene Mischung zur Zielnote; Vorschau ohne Kaufaktion.</div></details>';
+            });
             h += '</details>';
         }
         // v6.3.3: additive Vorschau. Diese Quellenplaene sind NICHT an den Kauf-Lauf angeschlossen.
@@ -19737,6 +19999,7 @@ const HybridSbcEa = (() => {
                     document.body.appendChild(ui.panel);
                 }
                 refreshDiagUI();
+                galleryCapturePale();
             } catch (e) {}
         }, 2000);
         // Menüpunkt in der EA-Leiste: häufiger als der 2s-Watchdog, damit er

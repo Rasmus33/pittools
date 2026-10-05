@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.3.9
+// @version      6.3.10
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.3.9';
+    const VERSION = '6.3.10';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -12744,7 +12744,8 @@ const HybridSbcEa = (() => {
         STATE.diag.galleryUpgrade = diag;
         const running = () => {
             if (!run.persona || galleryUpgradeRun !== run || run.cancelled || !galleryLast || galleryLast.chosen !== ch ||
-                ownPersonaId() !== run.persona || STATE.loading || futbinBusy || sellBusy || (vorlagenRun && !vorlagenRun.fertig)) throw Error('Aufwertung gestoppt, Account oder Set gewechselt.');
+                ownPersonaId() !== run.persona || STATE.loading || futbinBusy || sellBusy || (buyBusy && diag.phase !== 'kaufen') ||
+                (vorlagenRun && !vorlagenRun.fertig)) throw Error('Aufwertung gestoppt, anderer Lauf, Account oder Set gewechselt.');
         };
         try {
             running();

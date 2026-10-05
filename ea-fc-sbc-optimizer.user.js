@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.3.7
+// @version      6.3.8
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.3.7';
+    const VERSION = '6.3.8';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -6938,9 +6938,13 @@
                          von Hand eingesetzt), Marktpreis je Karte, Rueckfrage,
                          dann derselbe schrittweise Kauf-Lauf. -->
                     <div class="sbc-opt-card">
-                        <div class="sbc-opt-group-title">Vereinslösung · Beta</div>
-                        <div class="sbc-opt-dim">Für Team-SBCs mit Chemie und engen Vorgaben. Geschützte Mannschafts- und Goldkarten bleiben erhalten. Zunächst nur Vorschau ohne Nachkauf.</div>
+                        <div class="sbc-opt-group-title">Verein und günstige Nachkäufe · Beta</div>
+                        <div class="sbc-opt-dim">Für Team-SBCs mit Chemie und engen Vorgaben. Geschützte Mannschafts- und Goldkarten bleiben erhalten.</div>
                         <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-hybrid-club-search">Vereinslösung suchen</button>
+                        <div class="sbc-opt-inline"><label>Kaufbudget (Coins) <input type="number" id="sbc-opt-hybrid-budget" min="0" max="1000000" step="100" value="3000"></label>
+                        <label>Höchstens Nachkäufe <input type="number" id="sbc-opt-hybrid-count" min="0" max="11" value="3"></label></div>
+                        <button type="button" class="sbc-opt-btn primary" id="sbc-opt-hybrid-search">Verein + Nachkäufe vergleichen</button>
+                        <div class="sbc-opt-dim">Bis zu 16 Karten aus Community-Lösungen werden mit EA-Preisen geprüft. Die Suche kann einige Minuten dauern. Das Budget umfasst die Kaufobergrenzen aller Karten.</div>
                         <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-hybrid-club-stop" hidden>Suche stoppen</button>
                         <div class="sbc-opt-result" id="sbc-opt-hybrid-club-result"></div>
                     </div>
@@ -7344,6 +7348,9 @@
             futbinPlatform: panel.querySelector('#sbc-opt-futbin-platform'),
             futbinMarket: panel.querySelector('#sbc-opt-futbin-market'),
             hybridClubSearch: panel.querySelector('#sbc-opt-hybrid-club-search'),
+            hybridSearch: panel.querySelector('#sbc-opt-hybrid-search'),
+            hybridBudget: panel.querySelector('#sbc-opt-hybrid-budget'),
+            hybridCount: panel.querySelector('#sbc-opt-hybrid-count'),
             hybridClubStop: panel.querySelector('#sbc-opt-hybrid-club-stop'),
             hybridClubResult: panel.querySelector('#sbc-opt-hybrid-club-result'),
             futbinSearch: panel.querySelector('#sbc-opt-futbin-search'),
@@ -8361,6 +8368,8 @@ const HybridSbcCore = (() => {
         if (card.protected || card.evolution || card.loan) return 'Karte geschützt';
         if (card.source === 'market') {
             if (card.special !== false) return 'Nachkauf-Special oder Seltenheit unbekannt';
+            if (!guards || guards.locksComplete !== true) return 'Kartenschutz unvollständig';
+            if ([card.playerId, card.defId].some(id => id != null && guards.lockedIds.has(String(id)))) return 'Manuell gesperrt';
             return positive(card.coins) && Number.isInteger(card.coins) ? null : 'Kaufpreis unbekannt';
         }
         if (!guards || guards.squadsComplete !== true || guards.locksComplete !== true) return 'Kartenschutz unvollständig';
@@ -8464,6 +8473,27 @@ const HybridSbcCore = (() => {
         const maxMs = input.maxMs == null ? 3000 : input.maxMs;
         if (!Number.isInteger(maxNodes) || maxNodes < 1 || !positive(maxMs)) throw Error('Suchlimit ungültig');
         const start = Date.now(); let nodes = 0, checked = 0, stopped = null;
+        // Optional bekannte vollstaendige Teams als Startpunkte. Jede Karte
+        // kommt aus dem gefilterten Pool; kein Quellenplan umgeht den EA-Pruefer.
+        if (input.initialTeams != null && (!Array.isArray(input.initialTeams) || input.initialTeams.length > 32)) throw Error('Startteams ungültig');
+        const byId = new Map(cards.map(c => [String(c.id),c]));
+        for (const ids of input.initialTeams || []) {
+            if (input.cancelled && input.cancelled()) { stopped = 'cancelled'; break; }
+            if (Date.now() - start >= maxMs) { stopped = 'limit'; break; }
+            if (!Array.isArray(ids) || ids.length !== input.slots.length) continue;
+            const players = ids.map(id => byId.get(String(id)));
+            if (players.some((c,i) => !c || (input.slots[i].length && !input.slots[i].some(p => c.positions.includes(p)))) ||
+                new Set(players.map(c => String(c.id))).size !== players.length ||
+                (input.uniquePlayer !== false && new Set(players.map(c => String(c.playerId))).size !== players.length)) continue;
+            const coins = players.reduce((s,c) => s+c.coins,0), purchases = players.filter(c => c.source === 'market').length;
+            if (coins > budget || (input.maxPurchases != null && purchases > input.maxPurchases) || !rules.every(r => passes(r,ruleValue(r,players)))) continue;
+            checked++;
+            const assessment = input.accept ? await input.accept(players) : true;
+            if (assessment === true || assessment && assessment.valid === true) addPlan(frontier, {
+                players: Object.freeze(players), score: players.reduce((s,c) => s+c.score,0), coins, purchases,
+                storage: players.filter(c => c.source === 'storage').length, untradeable: players.filter(c => c.untradeable).length,
+                key: players.map(c => String(c.id)).sort().join('|') });
+        }
         function possible(remaining) {
             return rules.every(r => {
                 const v = ruleValue(r, selected), upper = v + remaining * (r.kind === 'sum' ? maxField[r.field] : 1);
@@ -8717,7 +8747,19 @@ const HybridSbcEa = (() => {
         }
         return { slots: preferredSlots.map(() => []), preferredSlots, rules, assess, challengeId: dto.challengeId, type: dto.type };
     }
-    return { readSavedSquads, normalizePool, createTeamOracle };
+    function normalizeMarket({ rid, offer, coins, estimatedCoins, ea, now = Date.now() }) {
+        const r = offer && offer.raw;
+        if (!r || Number(rid) >= 16777216 || String(r.resourceId) !== String(rid) || !positiveId(r.id) ||
+            !Number.isInteger(coins) || coins <= 0 || !Number.isInteger(estimatedCoins) || estimatedCoins <= 0 ||
+            estimatedCoins > coins || ![0,1].includes(r.rareflag)) return null;
+        const raw = clone(r); raw.owners = 2; raw.untradeable = false;
+        const normalized = normalizePool({ pool: [{ id: raw.id, raw, untradeable: false }], ea,
+            squads: { complete: true, at: now, itemIds: [] }, locks: { complete: true, ids: [] }, now });
+        if (normalized.cards.length !== 1) return null;
+        return Object.assign({}, normalized.cards[0], { id: 'market:' + rid, source: 'market',
+            coins, estimatedCoins, firstOwner: false, untradeable: false, special: false, priceAt: now });
+    }
+    return { readSavedSquads, normalizePool, normalizeMarket, createTeamOracle };
 })();
     // [HYBRIDEA-END]
 
@@ -9840,6 +9882,11 @@ const HybridSbcEa = (() => {
         if (tax) out.tax = galleryNum(tax[1]);
         try {
             out.upgradeData = parseGallerySsr(s);
+            const variantCards = out.upgradeData && out.upgradeData.lineupCards;
+            if (Array.isArray(variantCards)) out.players.forEach(p => {
+                const c = variantCards.find(c => c && Number(c.eaId) === p.defId);
+                if (c && Object.prototype.hasOwnProperty.call(c, 'holographicType')) p.holographicType = c.holographicType;
+            });
             // v6.3.4: die HTML-Karten zeigen ebenfalls nur noch Preis-Platzhalter.
             // Ausschliesslich exakte Definitionen bepreisen; die HTML-Aufstellung
             // NICHT durch den abweichenden maximalen Score-Plan ersetzen.
@@ -9944,6 +9991,28 @@ const HybridSbcEa = (() => {
     // einem Abstand ist der Markt leergekauft (Galerie-Ansturm) oder fut.gg
     // veraltet; in beiden Faellen entscheidet Rasmus selbst.
     const GALLERY_PRICE_GUARD = { factor: 3, minGap: 1000 };
+    function galleryOfferMatches(variant, offer, ea) {
+        if (!variant) return true;
+        const raw = offer && offer.raw, original = offer && offer.item;
+        const def = raw ? raw.resourceId : original && original.definitionId;
+        if (String(def) !== String(variant.defId)) return false;
+        if (variant.score > 0 && Number(raw ? raw.gradingScore : original && original.gradingScore) !== variant.score) return false;
+        if (variant.rating > 0 && Number(raw ? raw.rating : original && original.rating) !== variant.rating) return false;
+        if (!Object.prototype.hasOwnProperty.call(variant, 'holographicType')) return true;
+        let expected;
+        if (variant.holographicType === null) expected = false;
+        else if (variant.holographicType === 'holographic' || variant.holographicType === 'pristine') expected = true;
+        else return false;
+        try {
+            const it = original || (ea && ea.factories && ea.factories.Item && ea.factories.Item.createItem &&
+                ea.factories.Item.createItem(JSON.parse(JSON.stringify(raw))));
+            if (!it || typeof it.getFoilSubtype !== 'function') return false;
+            const subtype = it.getFoilSubtype();
+            // Belegt ist -1 = kein Foil. Holo/Pristine werden durch exakte
+            // Definitions-ID und Score getrennt, ohne Subtype-Nummern zu raten.
+            return Number.isInteger(subtype) && (expected ? subtype >= 0 : subtype === -1);
+        } catch (_) { return false; }
+    }
     function galleryBuyPlan(players, owned, liveBins, tolerance, tiers, guard, collectedByDef) {
         const g = guard || GALLERY_PRICE_GUARD;
         const plan = [], skipped = []; let ownedCount = 0, collectedCount = 0;
@@ -10612,8 +10681,96 @@ const HybridSbcEa = (() => {
             el.classList.toggle('on', k === n);
         });
     }
+    // [HYBRIDMARKET-BEGIN]
+    const HybridSbcMarket = (() => {
+        function alternatives(plans) {
+            const frontier = plans.filter((p,i) => !plans.some((q,j) => j !== i &&
+                (q.score < p.score && q.coins <= p.coins || q.score <= p.score && q.coins < p.coins)));
+            const byCost = frontier.slice().sort((a,b) => a.coins-b.coins || a.score-b.score);
+            if (byCost.length <= 3) return byCost;
+            const lowestScore = frontier.slice().sort((a,b) => a.score-b.score || a.coins-b.coins)[0];
+            return Array.from(new Set([byCost[0],byCost[1],lowestScore])).sort((a,b) => a.coins-b.coins);
+        }
+        async function collect(o) {
+            const cards = [], teams = [], errors = [], seen = new Set();
+            const running = () => { if (o.cancelled && o.cancelled()) throw Error('Hybrid-Suche gestoppt oder Ansicht gewechselt.'); };
+            running();
+            const rows = await o.rows(); running();
+            for (const row of rows.slice(0,2)) {
+                try {
+                    const squad = await o.squad(row); running();
+                    if (!squad || !Array.isArray(squad.players) || squad.players.length !== 11) continue;
+                    teams.push(squad.players.map(p => Number(p.resourceId)));
+                } catch (e) { running(); if (o.fatal && o.fatal(e)) throw e; errors.push(String(e.message || e)); }
+            }
+            const ids = Array.from(new Set(teams.flat().filter(id => Number.isSafeInteger(id) && id > 0))).slice(0,16);
+            for (let i=0;i<ids.length;i++) {
+                running(); const rid = ids[i];
+                if (o.progress) o.progress(i+1,ids.length,rid);
+                try {
+                    const low = await o.quote(rid); running();
+                    const offers = low && low.offers;
+                    if (!Array.isArray(offers) || !offers.length) continue;
+                    const estimate = o.estimate(offers.map(x => x.bin));
+                    if (!Number.isInteger(estimate) || estimate <= 0) continue;
+                    const coins = o.cap(estimate);
+                    if (coins > o.budget) continue;
+                    // Die Metadaten gehoeren zur exakt angefragten Definition.
+                    // Kein Rating-zu-Score-Schaetzwert aus einer fremden Quelle.
+                    const offer = offers.find(x => x.raw && String(x.raw.resourceId) === String(rid));
+                    const c = o.normalize(rid,offer,coins,estimate);
+                    if (!c || seen.has(String(c.id))) continue;
+                    seen.add(String(c.id)); cards.push(c);
+                } catch (e) { running(); if (o.fatal && o.fatal(e)) throw e; errors.push('Karte '+rid+': '+String(e.message || e)); }
+                finally { if (i < ids.length-1) await o.wait(); running(); }
+            }
+            return { cards, teams, errors, asked: ids.length };
+        }
+        function starts(teams, cards, preferred, assign) {
+            const byDef = new Map();
+            cards.slice().sort((a,b) => (a.source === 'market')-(b.source === 'market') || a.score-b.score).forEach(c => {
+                if (!byDef.has(String(c.defId))) byDef.set(String(c.defId),c);
+            });
+            const out = [];
+            for (const defs of teams) {
+                const chosen = defs.map(id => byDef.get(String(id)));
+                if (chosen.length !== preferred.length || chosen.some(c => !c)) continue;
+                const positions = chosen.map(c => ({pref:c.positions.slice(0,1).map(String),alts:c.positions.map(String)}));
+                const matched = assign(positions,preferred.map(s => s.map(String)),[]);
+                const ids = new Array(chosen.length);
+                matched.slotOfPlayer.forEach((slot,i) => { if (slot >= 0) ids[slot] = chosen[i].id; });
+                if (ids.filter(id => id != null).length === chosen.length) out.push(ids);
+            }
+            return out;
+        }
+        return { alternatives, collect, starts };
+    })();
+    // [HYBRIDMARKET-END]
+
     // [HYBRIDUI-BEGIN]
     let hybridClubBusy = false, hybridClubCancel = false;
+    let hybridLast = null;
+    function renderHybridPlans(result, oracle, name, budget, maxPurchases) {
+        if (!result.plans.length) return warnHtml('Keine passende Mischung im geprüften Pool und Suchlimit gefunden. Geschützte Karten bleiben erhalten; andere Kaufkandidaten können helfen.');
+        let h = '<b>' + escapeHtml(name || 'Hybrid-SBC') + '</b><div class="sbc-opt-dim">Budget höchstens ' + budget +
+            ' Coins · maximal ' + maxPurchases + ' Nachkäufe. Begrenzte Kandidatensuche, kein globales Preisminimum. Einzel-SBC selbst abgeben.</div>';
+        const baseline = result.plans.find(p => p.coins === 0);
+        result.plans.forEach((p,i) => {
+            const a = oracle.assess(p.players);
+            const estimate = p.players.reduce((s,c) => s+(c.source === 'market' ? c.estimatedCoins : 0),0);
+            h += '<details open><summary><b>' + p.score + ' Materialpunkte · höchstens ' + p.coins + ' Nachkauf-Coins</b></summary>' +
+                '<div>' + p.purchases + ' Nachkäufe (~' + estimate + ' Coins) · ' + p.storage + ' Storage · Rating ' + a.rating + ' · Chemie ' + a.chemistry + '</div>' +
+                (baseline && p !== baseline ? '<div>' + (baseline.score-p.score) + ' Punkte weniger als ohne Nachkauf</div>' : '');
+            p.players.forEach((c,slot) => {
+                const label = displayName({id:c.id,assetId:c.playerId,rating:c.rating,name:c.name,raw:JSON.parse(JSON.stringify(c.raw))});
+                h += '<div>' + (slot+1) + ': ' + escapeHtml(label) + ' · ' + c.rating + ' OVR · ' + c.score + ' Punkte · ' +
+                    (c.source === 'market' ? 'Nachkauf bis '+c.coins+' Coins' : c.source === 'storage' ? 'Storage' : 'Verein') + '</div>';
+            });
+            h += '<button type="button" class="sbc-opt-btn primary" data-hybrid-apply="' + i + '">Diesen Plan eintragen</button></details>';
+        });
+        if (!result.exhaustive) h += '<div class="sbc-opt-dim">Suchlimit erreicht; günstigere Kombinationen können existieren.</div>';
+        return h;
+    }
     function hybridOpenChallenge() {
         const live = findLiveChallenge();
         if (!live || !inSbcView()) return null;
@@ -10648,11 +10805,13 @@ const HybridSbcEa = (() => {
         });
         return html + '</div><div class="sbc-opt-dim">Vorschau: Der Kader wurde nicht verändert. Eintragen und Hybrid-Nachkäufe folgen im nächsten Schritt.</div>';
     }
-    async function onHybridClubClick() {
+    async function onHybridClubClick(withMarket) {
+        withMarket = withMarket === true;
         if (hybridClubBusy || futbinBusy || buyBusy || galleryBusy || sellBusy || STATE.loading || (vorlagenRun && !vorlagenRun.fertig)) {
             toast('Es läuft bereits ein anderer Lauf.', 'warn'); return;
         }
         hybridClubBusy = true; hybridClubCancel = false; futbinBusy = true;
+        hybridLast = null;
         setBtnBusy(ui.hybridClubSearch, true, 'Suche läuft');
         if (ui.hybridClubStop) ui.hybridClubStop.hidden = false;
         const diag = { at: Date.now(), phase: 'start', errors: [] };
@@ -10676,6 +10835,36 @@ const HybridSbcEa = (() => {
             const dto = findChallengeNode(json, live.id);
             const oracle = HybridSbcEa.createTeamOracle({ ea: window, challengeDTO: dto, liveChallenge: live });
             diag.requirements = dto.elgReq; diag.localRules = oracle.rules;
+            let budget = 0, maxPurchases = 0, market = {cards:[],teams:[],errors:[]};
+            if (withMarket) {
+                budget = Number(ui.hybridBudget && ui.hybridBudget.value);
+                maxPurchases = Number(ui.hybridCount && ui.hybridCount.value);
+                if (!Number.isInteger(budget) || budget < 0 || budget > 1000000 || !Number.isInteger(maxPurchases) || maxPurchases < 0 || maxPurchases > 11) throw Error('Kaufbudget oder Nachkaufzahl ungültig.');
+                diag.budget = budget; diag.maxPurchases = maxPurchases; diag.phase = 'kaufkandidaten';
+                if (budget && maxPurchases) {
+                    if (!bridgeKind()) throw Error(BRIDGE_HINT);
+                    const year = futbinYear(STATE.diag.gameName,window.fut_year), platform = readFutbinSettings().platform;
+                    market = await HybridSbcMarket.collect({ budget, cancelled,
+                        rows: async () => {
+                            let rows = [];
+                            try { rows = await loadFutbinSolutions(year,live.id,u => bridgeFetch(u,30000),diag); }
+                            catch (e) { diag.errors.push('Futbin: '+String(e.message||e)); }
+                            if (!rows.length) rows = await loadFutggSolution(year,live.id,platform,u => bridgeFetch(u,30000),diag);
+                            return rows.sort((a,b) => (futbinPrice(a,platform) || Infinity)-(futbinPrice(b,platform) || Infinity));
+                        },
+                        squad: async row => {
+                            if (row.squad) return row.squad;
+                            const r = await bridgeFetch(futbinSquadUrl(year,row.squadId),40000);
+                            if (r.status !== 200) throw Error('Kaderquelle HTTP '+r.status);
+                            return parseFutbinSquad(r.text);
+                        }, quote: rid => marketOffersLowest(rid), estimate: bins => robustMinBin(bins).robust,
+                        cap: price => planMaxPrice(price,BUY_TOLERANCE,eaPriceTiers()),
+                        normalize: (rid,offer,coins,estimatedCoins) => HybridSbcEa.normalizeMarket({rid,offer,coins,estimatedCoins,ea:window}),
+                        fatal: e => isRateLimit(e.status) || isSessionExpired(e.status), wait: () => futbinSleep(FUTBIN_MARKET_GAP_MS),
+                        progress: (k,n,rid) => setHybridClubResult('<div class="sbc-opt-dim">Prüfe Kaufkandidat '+k+'/'+n+' (Karten-ID '+rid+') …</div>') });
+                    diag.market = {asked:market.asked,candidates:market.cards.length,errors:market.errors};
+                }
+            }
             diag.phase = 'mannschaften';
             const squads = await HybridSbcEa.readSavedSquads({ ea: window, observe: obsPromise, wait: sleep, cancelled,
                 progress: function (n, total) { setHybridClubResult('<div class="sbc-opt-dim">Schütze Mannschaften einschließlich Bank und Reserve: ' + n + '/' + total + ' …</div>'); } });
@@ -10684,10 +10873,17 @@ const HybridSbcEa = (() => {
             const model = HybridSbcEa.normalizePool({ pool: STATE.pool.filter(p => !isEvolution(p.raw)), ea: window, squads,
                 locks: { complete: !!lockDiag && !lockDiag.error && !lockDiag.skippedKeys, ids: locked }, marketCache: marketLowCache });
             diag.dataRejected = model.rejected; diag.phase = 'suche';
-            setHybridClubResult('<div class="sbc-opt-dim">Suche eine günstige Vereinslösung und prüfe Rating und Chemie …</div>');
+            setHybridClubResult('<div class="sbc-opt-dim">'+(withMarket ? 'Vergleiche Verein und Nachkäufe' : 'Suche eine günstige Vereinslösung')+' und prüfe Rating und Chemie …</div>');
             await sleep(0);
-            const result = await HybridSbcCore.search({ cards: model.cards, guards: model.guards, slots: oracle.slots,
-                preferredSlots: oracle.preferredSlots, rules: oracle.rules, budget: 0, maxPurchases: 0,
+            // Eine zweite Kopie einer bereits im Verein liegenden Definition
+            // kann EA nicht in den Verein uebernehmen. Geschuetzte eigene
+            // Karten dadurch auch nicht mit einem vermeintlichen Nachkauf umgehen.
+            const clubDefs = new Set(STATE.pool.filter(p => !p.isStorage && p.raw).map(p => String(p.raw.resourceId)));
+            const allCards = model.cards.concat(market.cards.filter(c => !clubDefs.has(String(c.defId))));
+            const g = Object.assign({},model.guards,{squadIds:new Set(model.guards.squadIds.map(String)),lockedIds:new Set(locked.map(String))});
+            const starts = withMarket ? HybridSbcMarket.starts(market.teams,allCards.filter(c => !HybridSbcCore.exclusion(c,g,Date.now())),oracle.preferredSlots,assignSlots) : [];
+            const result = await HybridSbcCore.search({ cards: allCards, guards: model.guards, slots: oracle.slots,
+                initialTeams: starts, preferredSlots: oracle.preferredSlots, rules: oracle.rules, budget, maxPurchases,
                 maxMs: 8000, maxNodes: 100000, cancelled, accept: oracle.assess });
             diag.nodes = result.nodes; diag.checked = result.checked; diag.excluded = result.excluded;
             diag.candidates = result.candidates; diag.ms = result.ms; diag.stopped = result.stopped; diag.exhaustive = result.exhaustive;
@@ -10697,12 +10893,20 @@ const HybridSbcEa = (() => {
             const finalGuards = Object.assign({}, model.guards, { squadIds: new Set(model.guards.squadIds.map(String)), lockedIds: new Set(latestLocks.map(String)) });
             if (result.plans.some(plan => plan.players.some(p => HybridSbcCore.exclusion(p, finalGuards, Date.now())))) throw Error('Kartenschutz oder Goldpreis inzwischen geändert. Bitte erneut suchen.');
             const assessment = result.plans.length ? oracle.assess(result.plans[0].players) : null;
-            if (assessment && !assessment.valid) throw Error('EA-Vorgabenprüfung hat den Plan verworfen.');
-            diag.plan = result.plans.length ? { score: result.plans[0].score, coins: 0, rating: assessment.rating, chemistry: assessment.chemistry,
+            if (result.plans.some(p => !oracle.assess(p.players).valid)) throw Error('EA-Vorgabenprüfung hat den Plan verworfen.');
+            diag.plan = result.plans.length ? { score: result.plans[0].score, coins: result.plans[0].coins, rating: assessment.rating, chemistry: assessment.chemistry,
                 players: result.plans[0].players.map(p => ({ defId: p.defId, score: p.score, rating: p.rating, source: p.source })) } : null;
             diag.phase = 'vorschau';
             const excludedText = Object.entries(Object.assign({}, model.rejected, result.excluded)).map(([reason, n]) => escapeHtml(reason) + ': ' + n).join(' · ');
-            setHybridClubResult(renderHybridClubPreview(result, assessment, live.name) + (excludedText ? '<details><summary>Ausgeschlossene Karten</summary><div class="sbc-opt-dim">' + excludedText + '</div></details>' : ''));
+            if (withMarket) {
+                result.plans = HybridSbcMarket.alternatives(result.plans);
+                hybridLast = {live,dto,oracle,result,budget,maxPurchases,at:Date.now(),persona:ownPersonaId()};
+            }
+            setHybridClubResult((withMarket ? renderHybridPlans(result,oracle,live.name,budget,maxPurchases) : renderHybridClubPreview(result, assessment, live.name)) +
+                (excludedText ? '<details><summary>Ausgeschlossene Karten</summary><div class="sbc-opt-dim">' + excludedText + '</div></details>' : ''));
+            if (withMarket && ui.hybridClubResult.querySelectorAll) ui.hybridClubResult.querySelectorAll('[data-hybrid-apply]').forEach(b => {
+                b.addEventListener('click',() => onHybridApplyClick(Number(b.getAttribute('data-hybrid-apply'))));
+            });
         } catch (e) {
             diag.phase = 'abbruch'; diag.errors.push(String(e.message || e));
             setHybridClubResult(warnHtml(String(e.message || e)));
@@ -10714,9 +10918,138 @@ const HybridSbcEa = (() => {
     }
     function initHybridClubUi() {
         if (ui.hybridClubSearch) ui.hybridClubSearch.addEventListener('click', onHybridClubClick);
+        if (ui.hybridSearch) ui.hybridSearch.addEventListener('click',() => onHybridClubClick(true));
         if (ui.hybridClubStop) ui.hybridClubStop.addEventListener('click', function () { hybridClubCancel = true; });
     }
     // [HYBRIDUI-END]
+    // [HYBRIDEXEC-BEGIN]
+    function hybridActionRunning(last) {
+        if (!last || last !== hybridLast || hybridClubCancel || hybridOpenChallenge() !== last.live ||
+            ownPersonaId() !== last.persona || galleryBusy || sellBusy || (vorlagenRun && !vorlagenRun.fertig)) throw Error('SBC-Plan gestoppt, Account oder Ansicht gewechselt.');
+    }
+    function hybridPitchMatches(last) {
+        try {
+            const slots = last.live.squad.getFieldPlayers();
+            return Array.isArray(slots) && slots.length === 11 && slots.every((s,i) => {
+                const item = s.getItem(), c = last.selected.players[i];
+                return item && String(item.definitionId) === String(c.defId) &&
+                    (c.source === 'market' || String(item.id) === String(c.id));
+            });
+        } catch (_) { return false; }
+    }
+    async function hybridGuardSelected(last, pool) {
+        hybridActionRunning(last);
+        const cancelled = () => { try { hybridActionRunning(last); return false; } catch (_) { return true; } };
+        const squads = await HybridSbcEa.readSavedSquads({ea:window,observe:obsPromise,wait:sleep,cancelled});
+        hybridActionRunning(last);
+        const ids = Array.from(readPaletoolsLocks()), d = STATE.diag.locks;
+        const model = HybridSbcEa.normalizePool({pool,ea:window,squads,
+            locks:{complete:!!d && !d.error && !d.skippedKeys,ids},marketCache:marketLowCache});
+        const byId = new Map(model.cards.map(c => [String(c.id),c]));
+        const players = last.selected.players.map(c => {
+            if (c.source === 'market') {
+                if (pool.some(p => !p.isStorage && p.raw && String(p.raw.resourceId) === String(c.defId))) throw Error('Eine geplante Nachkaufkarte liegt inzwischen im Verein. Bitte erneut suchen.');
+                return c;
+            }
+            const fresh = byId.get(String(c.id));
+            if (!fresh || fresh.defId !== c.defId || fresh.playerId !== c.playerId || fresh.score !== c.score || fresh.rating !== c.rating || fresh.source !== c.source) throw Error('Eine geplante eigene Karte fehlt oder wurde verändert. Bitte erneut suchen.');
+            return fresh;
+        });
+        const guards = Object.assign({},model.guards,{squadIds:new Set(model.guards.squadIds.map(String)),lockedIds:new Set(ids.map(String))});
+        if (players.some(c => HybridSbcCore.exclusion(c,guards,Date.now()))) throw Error('Mannschafts-, Sperr- oder Goldschutz hat sich geändert. Bitte erneut suchen.');
+        return {players,squads};
+    }
+    async function onHybridApplyClick(index) {
+        const last = hybridLast;
+        if (hybridClubBusy || futbinBusy || buyBusy || galleryBusy || sellBusy || STATE.loading) { toast('Es läuft bereits ein anderer Lauf.','warn'); return; }
+        if (!last || !last.result.plans[index]) return;
+        hybridClubBusy = true; futbinBusy = true; hybridClubCancel = false;
+        if (ui.hybridClubStop) ui.hybridClubStop.hidden = false;
+        try {
+            hybridActionRunning(last);
+            if (Date.now()-last.at > 180000 || Number(ui.hybridBudget.value) !== last.budget || Number(ui.hybridCount.value) !== last.maxPurchases) throw Error('Plan oder Budget geändert/veraltet. Bitte erneut vergleichen.');
+            last.selected = last.result.plans[index];
+            // Konzept-Suche zuerst; danach frische Besitz- und Schutzpruefung.
+            const concepts = new Map();
+            for (const c of last.selected.players.filter(c => c.source === 'market')) {
+                setHybridClubResult('<div class="sbc-opt-dim">Bereite Konzept-Karte '+c.defId+' vor …</div>');
+                const item = await conceptEntity(c.defId); hybridActionRunning(last);
+                if (!item || String(item.definitionId) !== String(c.defId) || String(item.databaseId) !== String(c.playerId)) throw Error('Konzept-Suche liefert eine andere Kartenversion.');
+                concepts.set(String(c.defId),item);
+            }
+            setHybridClubResult('<div class="sbc-opt-dim">Prüfe eigene Karten frisch vor dem Eintragen …</div>');
+            STATE.loading = true; STATE.cancelLoad = false;
+            try {
+                await fetchClubViaHttp(() => { try { hybridActionRunning(last); } catch (_) { STATE.cancelLoad = true; } });
+                if (!clubHarvest || !clubHarvest.ok || STATE.cancelLoad) throw Error('Verein nicht vollständig frisch gelesen.');
+                last.ownPool = clubHarvest.players.slice();
+                const storage = await apiGet('storagepile'); hybridActionRunning(last);
+                last.ownPool = last.ownPool.concat(extractItems(storage).map(r => normalizePlayer(r,true)).filter(Boolean));
+            } finally { STATE.loading = false; }
+            const guarded = await hybridGuardSelected(last,last.ownPool);
+            const json = await apiGet('sbs/setId/'+Number(last.live.setId)+'/challenges'); hybridActionRunning(last);
+            const oracle = HybridSbcEa.createTeamOracle({ea:window,challengeDTO:findChallengeNode(json,last.live.id),liveChallenge:last.live});
+            const assessment = oracle.assess(guarded.players);
+            if (!assessment.valid || Date.now()-guarded.squads.at > 30000) throw Error('EA-Vorgaben oder Kartenschutz nicht mehr gültig.');
+            const entities = guarded.players.map(c => c.source === 'market' ? concepts.get(String(c.defId)) :
+                window.factories.Item.createItem(JSON.parse(JSON.stringify(c.raw))));
+            if (entities.some((it,i) => !it || String(it.definitionId) !== String(guarded.players[i].defId) ||
+                String(it.databaseId) !== String(guarded.players[i].playerId) ||
+                (guarded.players[i].source !== 'market' && String(it.id) !== String(guarded.players[i].id)))) throw Error('EA-Kartenidentität passt nicht zum Plan.');
+            hybridActionRunning(last);
+            const latest = Array.from(readPaletoolsLocks()), lockDiag = STATE.diag.locks;
+            if (!lockDiag || lockDiag.error || lockDiag.skippedKeys || guarded.players.some(c => [c.id,c.defId,c.playerId].some(id => latest.map(String).includes(String(id))))) throw Error('Kartensperren haben sich geändert.');
+            // Die vom EA-Pruefer bestaetigte Slot-Reihenfolge unveraendert setzen.
+            if (!window.services || !window.services.SBC || typeof window.services.SBC.saveChallenge !== 'function') throw Error('EA-Speicherweg fehlt.');
+            last.live.squad.setPlayers(entities,true);
+            const response = await obsPromise(window.services.SBC.saveChallenge(last.live));
+            if (!responseOk(response)) throw Error('EA konnte den Kader nicht speichern. Bitte im Spiel prüfen.');
+            hybridActionRunning(last); last.inserted = true;
+            if (!hybridPitchMatches(last)) throw Error('Gespeicherter Kader entspricht nicht dem Plan. Bitte im Spiel prüfen.');
+            setHybridClubResult('<b>Plan eingetragen · '+last.selected.score+' Materialpunkte</b><div>'+last.selected.purchases+
+                ' Konzept-Spieler · Nachkauf höchstens '+last.selected.coins+' Coins. Einzel-SBC selbst abgeben.</div>'+
+                (last.selected.purchases ? '<button type="button" class="sbc-opt-btn primary" id="sbc-opt-hybrid-buy">Geplante Nachkäufe prüfen und kaufen</button>' : ''));
+            const button = ui.hybridClubResult.querySelector('#sbc-opt-hybrid-buy');
+            if (button) button.addEventListener('click',onHybridBuyClick);
+        } catch (e) { setHybridClubResult(warnHtml(String(e.message||e))); }
+        finally { hybridClubBusy = false; futbinBusy = false; if (ui.hybridClubStop) ui.hybridClubStop.hidden = true; }
+    }
+    async function onHybridBuyClick() {
+        const last = hybridLast;
+        if (!last || !last.inserted || buyBusy || futbinBusy || hybridClubBusy || STATE.loading) return;
+        try {
+            hybridActionRunning(last);
+            if (!hybridPitchMatches(last)) throw Error('Kader verändert. Bitte erneut vergleichen.');
+            const plan = last.selected.players.filter(c => c.source === 'market').map(c => ({resourceId:c.defId,name:c.name||('#'+c.defId),
+                rating:c.rating,planned:c.estimatedCoins,maxPrice:c.coins,source:'live',variant:{defId:c.defId,rating:c.rating,score:c.score}}));
+            if (!plan.length || plan.length > last.maxPurchases || plan.reduce((s,p) => s+p.maxPrice,0) > last.budget) throw Error('Kaufplan überschreitet das bestätigte Budget.');
+            const total = plan.reduce((s,p) => s+p.maxPrice,0);
+            const question = plan.length+' Karten für die offene SBC kaufen?\n\n'+plan.map(p => p.name+': bis '+p.maxPrice+' Coins').join('\n')+
+                '\n\nZusammen höchstens '+total+' Coins (Budget '+last.budget+'). Obergrenzen werden bei Preisänderungen nicht erhöht. Ein Kauf alle 3–6 Sekunden. Die SBC selbst abgeben.';
+            if (!window.confirm(question)) return;
+            hybridClubCancel = false;
+            if (ui.hybridClubStop) ui.hybridClubStop.hidden = false;
+            await buyPlannedPlayers(null,plan,{noSquad:true,mode:'hybrid',setResult:setHybridClubResult,
+                hardBudget:total,fixedCaps:true,cancelled:() => { try { hybridActionRunning(last); return false; } catch (_) { return true; } },
+                offerMatches:(p,o) => galleryOfferMatches(p.variant,o,window),
+                beforeBid:async p => {
+                    hybridActionRunning(last); if (!hybridPitchMatches(last)) throw Error('Kader während des Kaufs verändert.');
+                    const slot = last.selected.players.findIndex(c => c.source === 'market' && c.defId === p.resourceId);
+                    const item = last.live.squad.getFieldPlayers()[slot].getItem();
+                    if (!item || item.concept !== true) throw Error('Die geplante Konzept-Karte wurde bereits ersetzt. Bitte den Kader prüfen.');
+                    await hybridGuardSelected(last,last.ownPool); hybridActionRunning(last);
+                    if (!hybridPitchMatches(last) || last.live.squad.getFieldPlayers()[slot].getItem().concept !== true) throw Error('Kader während der Schutzprüfung verändert.');
+                    return true;
+                }, onFinish:(diag,bought) => {
+                    last.inserted = false; // keine zweite Freigabe desselben Kaufplans.
+                    mergeIntoPool(bought.map(b => b.raw ? normalizePlayer(b.raw,false) : null).filter(Boolean));
+                    if (STATE.diag.hybridSbc) STATE.diag.hybridSbc.buy = {bought:diag.bought,spent:diag.spent,budget:total,stopped:diag.stopped};
+                }});
+        } catch (e) { setHybridClubResult(warnHtml(String(e.message||e))); }
+        finally { if (ui.hybridClubStop) ui.hybridClubStop.hidden = true; }
+    }
+    // [HYBRIDEXEC-END]
+
 
     function initFutbinUi() {
         if (!ui.futbinSearch) return;
@@ -10940,7 +11273,7 @@ const HybridSbcEa = (() => {
      * Angebot mit derselben tradeId (sonst das guenstigste bis maxBuy, tote
      * Trades ausgenommen) und bietet mit EAs eigener Methode.
      */
-    async function clientBidFallback(rid, tradeId, maxBuy) {
+    async function clientBidFallback(rid, tradeId, maxBuy, beforeBid) {
         try {
             if (typeof window.UTSearchCriteriaDTO !== 'function' || !window.services || !window.services.Item ||
                 typeof window.services.Item.searchTransferMarket !== 'function' || typeof window.services.Item.bid !== 'function') return { tried: false, why: 'Client-Weg nicht verfügbar' };
@@ -10964,6 +11297,7 @@ const HybridSbcEa = (() => {
                 if (!pick || bin < pick.bin) pick = { it: it, bin: bin, tid: tid };
             }
             if (!pick) return { tried: true, ok: false, why: 'kein Angebot im Client-Ergebnis', seen: items.length };
+            if (beforeBid && !(await beforeBid({ tradeId: pick.tid, bin: pick.bin, item: pick.it }))) return { tried: true, ok: false, why: 'Kaufwache hat Client-Angebot verworfen' };
             let r = null;
             try { r = await obsPromise(window.services.Item.bid(pick.it, pick.bin)); }
             catch (e) { return { tried: true, ok: false, why: String(e && e.message || e), sameTrade: same }; }
@@ -11740,6 +12074,14 @@ const HybridSbcEa = (() => {
         }
         await buyPlannedPlayers(c, plan);
     }
+    function buyBudgetAllows(plan, player, offer, spent, opts) {
+        if (opts.hardBudget == null) return true;
+        if (!Number.isInteger(opts.hardBudget) || opts.hardBudget < 0 || !Number.isFinite(spent) || spent < 0 ||
+            !Array.isArray(plan) || plan.some(p => !Number.isInteger(p.maxPrice) || p.maxPrice <= 0) ||
+            plan.reduce((sum,p) => sum+p.maxPrice,0) > opts.hardBudget) return false;
+        return !offer || !!player && Number.isInteger(offer.bin) && offer.bin > 0 &&
+            offer.bin <= player.maxPrice && spent+offer.bin <= opts.hardBudget;
+    }
     async function buyPlannedPlayers(c, plan, opts) {
         // v5.32.0: Optionen fuer den Galerie-Kauf - kein Kader (noSquad), eigenes
         // Ergebnisfeld, mehr Kaeufe je Lauf, laengere Pausen. Ohne opts: exakt
@@ -11748,7 +12090,7 @@ const HybridSbcEa = (() => {
         const setResult = typeof opts.setResult === 'function' ? opts.setResult : setFutbinResult;
         const maxPerRun = opts.maxPerRun || BUY_MAX_PER_RUN;
         const gapMin = opts.gapMin || BUY_GAP_MIN_MS, gapMax = opts.gapMax || BUY_GAP_MAX_MS;
-        const diag = { at: Date.now(), mode: opts.noSquad ? 'gallery' : 'sbc', planned: plan.length, bought: 0, spent: 0, plannedSpent: 0, steps: [], stopped: null };
+        const diag = { at: Date.now(), mode: opts.mode || (opts.noSquad ? 'gallery' : 'sbc'), planned: plan.length, bought: 0, spent: 0, plannedSpent: 0, steps: [], stopped: null };
         STATE.diag.futbinBuy = diag;
         buyBusy = true;
         let fails = 0;
@@ -11764,7 +12106,9 @@ const HybridSbcEa = (() => {
             setResult(h);
         };
         try {
+            if (!buyBudgetAllows(plan,null,null,0,opts)) throw Error('Kaufplan überschreitet das freigegebene Gesamtbudget.');
             for (let k = 0; k < plan.length && k < maxPerRun; k++) {
+                if (opts.cancelled && opts.cancelled()) { diag.stopped = 'Lauf gestoppt oder Challenge gewechselt'; break; }
                 const p = plan[k];
                 const step = { name: p.name, planned: p.planned, max: p.maxPrice, found: null, paid: null, status: null, est: p.est || null, futgg: p.futggPrice || null };
                 diag.steps.push(step);
@@ -11783,7 +12127,7 @@ const HybridSbcEa = (() => {
                     await futbinSleep(randomBetween(gapMin, gapMax));
                     continue;
                 }
-                if (!offers.length) {
+                if (!offers.length && !opts.fixedCaps) {
                     // v5.43.0 (Rasmus: "dann sollte der preis neu evaluiert und angepasst
                     // werden, anstatt es so oft zu versuchen"): echtes Marktminimum frisch
                     // holen; liegt es hoechstens beim Doppelten des Plans, Plan anheben und
@@ -11813,6 +12157,14 @@ const HybridSbcEa = (() => {
                 for (let t = 0; t < offers.length && t < BUY_OFFER_TRIES && !ok; t++) {
                     offer = offers[t];
                     step.found = offer.bin;
+                    if (opts.offerMatches && !opts.offerMatches(p,offer)) { step.variantRejected = (step.variantRejected || 0) + 1; continue; }
+                    if ((opts.cancelled && opts.cancelled()) || !buyBudgetAllows(plan,p,offer,diag.spent,opts)) {
+                        diag.stopped = 'Kaufwache: Lauf gestoppt oder Budget überschritten'; hardStop = true; break;
+                    }
+                    if (opts.beforeBid && !await opts.beforeBid(p,offer,diag)) throw Error('Kaufwache verweigert den Kauf.');
+                    if ((opts.cancelled && opts.cancelled()) || !buyBudgetAllows(plan,p,offer,diag.spent,opts)) {
+                        diag.stopped = 'Kaufwache: Lauf gestoppt oder Budget überschritten'; hardStop = true; break;
+                    }
                     const coins = userCoins();
                     if (coins != null && coins < offer.bin) { step.status = 'zu wenig Coins'; diag.stopped = 'Coins reichen nicht'; lines.push('⚠ Coins reichen nicht mehr (' + fmtCoins(coins) + ').'); hardStop = true; break; }
                     render('Kaufe ' + p.name + ' für ' + fmtCoins(offer.bin) + (t ? ' (Angebot ' + (t + 1) + ')' : '') + ' ...');
@@ -11866,7 +12218,12 @@ const HybridSbcEa = (() => {
                             // aktivem Angebot (Report 21.09.: bei "closed" war die Karte wirklich
                             // weg, der Client-Versuch brachte nur 429/512 obendrauf).
                             if (!step.clientBid) {
-                                const cb = await clientBidFallback(p.resourceId, offer.tradeId, p.maxPrice);
+                                const clientGuard = opts.offerMatches || opts.hardBudget != null || opts.beforeBid || opts.cancelled ? async o => {
+                                    if ((opts.cancelled && opts.cancelled()) || !buyBudgetAllows(plan,p,o,diag.spent,opts) || (opts.offerMatches && !opts.offerMatches(p,o))) return false;
+                                    if (opts.beforeBid && !await opts.beforeBid(p,o,diag)) return false;
+                                    return !(opts.cancelled && opts.cancelled()) && buyBudgetAllows(plan,p,o,diag.spent,opts);
+                                } : undefined;
+                                const cb = await clientBidFallback(p.resourceId, offer.tradeId, p.maxPrice, clientGuard);
                                 step.clientBid = { tried: !!cb.tried, ok: !!cb.ok, status: cb.status || null, sameTrade: !!cb.sameTrade, bin: cb.bin || null, why: cb.why || null };
                                 if (cb.ok) {
                                     offer = { tradeId: cb.tradeId, bin: cb.bin, item: cb.item, itemId: cb.item && cb.item.id, raw: null };
@@ -11890,7 +12247,7 @@ const HybridSbcEa = (() => {
                 }
                 if (hardStop) break;
                 if (!ok) {
-                    step.status = 'Kauf abgelehnt (' + (why || '?') + ')';
+                    step.status = step.variantRejected && !why ? 'Kein Angebot mit der verlangten Kartenversion/Holografie nachweisbar' : 'Kauf abgelehnt (' + (why || '?') + ')';
                     fails++;
                     lines.push('⚠ ' + escapeHtml(p.name) + ': ' + escapeHtml(step.status) + (step.deadTried ? ' - ' + step.deadTried + ' Angebot(e) waren schon weg.' : ' - vermutlich schon weg.'));
                     if (fails >= BUY_MAX_CONSECUTIVE_FAILS) { diag.stopped = 'zwei Fehler hintereinander'; break; }
@@ -11925,7 +12282,7 @@ const HybridSbcEa = (() => {
                 lines.push(adopted.moved + ' von ' + bought.length + ' gekauften Karten über EAs Client in den Verein' +
                            (adopted.httpMoved ? ' (' + adopted.httpMoved + ' per Notweg)' : '') + '.');
                 if (opts.noSquad) {
-                    lines.push('Die Karten liegen im Verein und zählen für die Galerie.');
+                    lines.push(opts.mode === 'hybrid' ? 'Die Karten liegen im Verein. Bitte EAs Kader und Vorgaben prüfen und die SBC selbst abgeben.' : 'Die Karten liegen im Verein und zählen für die Galerie.');
                 } else {
                     const swapped = await replaceConceptsWithBought(bought);
                     lines.push(swapped.replaced + ' von ' + bought.length + ' gekauften Karten im Kader eingesetzt' +
@@ -12559,7 +12916,13 @@ const HybridSbcEa = (() => {
             const alreadyDefs = ch.set.players.filter(p => p && collectedByDef[p.defId] === true);
             try { const m = mergeCollectedRecords(collectedLoad(), collectedRecordsFromGallery(ch.meta, alreadyDefs)); if (m.added) collectedSave(m.list); } catch (e) {}
         }
-        built.plan.forEach(p => { p.est = liveEst[p.resourceId] || null; p.futggPrice = (ch.set.players[p.index] || {}).price || null; });
+        built.plan.forEach(p => {
+            p.est = liveEst[p.resourceId] || null; p.futggPrice = (ch.set.players[p.index] || {}).price || null;
+            const card = ch.set.players[p.index];
+            p.variant = { defId: card.defId, rating: card.rating, score: card.score };
+            if (Object.prototype.hasOwnProperty.call(card,'holographicType')) p.variant.holographicType = card.holographicType;
+            p.versionLabel = [card.version,card.holographicType === 'holographic' ? 'Holografisch' : card.holographicType === 'pristine' ? 'Pristine' : null].filter(Boolean).join(' · ');
+        });
         if (STATE.diag.gallery) STATE.diag.gallery.plan = { at: Date.now(), plan: built.plan.length, skipped: built.skipped.length, skippedDetail: built.skipped, alreadyCollected: built.collectedCount, noLive: built.plan.filter(p => p.source !== 'live').length,
                                                              players: built.plan.map(p => ({ name: p.name, planned: p.planned, max: p.maxPrice, futgg: p.futggPrice, est: p.est })) };
         if (!built.plan.length) {
@@ -12574,7 +12937,7 @@ const HybridSbcEa = (() => {
         const coins = userCoins();
         const noLive = built.plan.filter(p => p.source !== 'live').length;
         // v5.51.0: Plan, Markt-Verteilung (wie PaleTools) und Obergrenze je Spieler.
-        const lines = built.plan.map(p => p.name + ' (' + (p.rating || '?') + '): Plan ' + fmtCoins(p.planned) + ', bis ' + fmtCoins(p.maxPrice) +
+        const lines = built.plan.map(p => p.name + ' (' + (p.rating || '?') + (p.versionLabel ? ', '+p.versionLabel : '') + ', ID '+p.resourceId+'): Plan ' + fmtCoins(p.planned) + ', bis ' + fmtCoins(p.maxPrice) +
                                           (p.source !== 'live' ? ' (fut.gg-Preis, kein Angebot am Markt)' : (p.est && p.est.dist && p.est.dist.length ? ' [Markt: ' + fmtDist(p.est.dist) + ']' : ''))).join('\n');
         // v5.63.0: der Kurs und die Preistreiber gehoeren in die Rueckfrage, nicht
         // in den Bericht danach (Lille 22.09.: 30.250 von 39.750 Coins fuer zweimal
@@ -12603,6 +12966,7 @@ const HybridSbcEa = (() => {
         }
         await buyPlannedPlayers(null, built.plan, {
             noSquad: true, setResult: setGalleryResult, maxPerRun: GALLERY_BUY_MAX_PER_RUN,
+            offerMatches: (p,o) => galleryOfferMatches(p.variant,o,window),
             gapMin: GALLERY_BUY_GAP_MIN_MS, gapMax: GALLERY_BUY_GAP_MAX_MS,
             // v5.34.0: gekaufte Karten sofort in den Pool (Report 21.09.: 25 von 30
             // gekauft - ein zweiter Lauf haette sie erneut gekauft, weil der Pool

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.3.11
+// @version      6.3.12
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.3.11';
+    const VERSION = '6.3.12';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -10796,14 +10796,18 @@ const HybridSbcEa = (() => {
             const running = () => { if (o.cancelled && o.cancelled()) throw Error('Hybrid-Suche gestoppt oder Ansicht gewechselt.'); };
             running();
             const rows = await o.rows(); running();
-            for (const row of rows.slice(0,2)) {
+            for (const row of rows.slice(0,4)) {
                 try {
                     const squad = await o.squad(row); running();
                     if (!squad || !Array.isArray(squad.players) || squad.players.length !== 11) continue;
                     teams.push(squad.players.map(p => Number(p.resourceId)));
                 } catch (e) { running(); if (o.fatal && o.fatal(e)) throw e; errors.push(String(e.message || e)); }
             }
-            const ids = Array.from(new Set(teams.flat().filter(id => Number.isSafeInteger(id) && id > 0))).slice(0,16);
+            // Die bisherigen 16 Definitionen bleiben dabei; die acht neuen
+            // Plaetze bedienen die weiteren Kader abwechselnd.
+            const interleaved = Array.from(new Set(teams.slice(0,2).flat().filter(id => Number.isSafeInteger(id) && id > 0))).slice(0,16);
+            for (let slot=0;slot<11;slot++) teams.slice(1).forEach(t => interleaved.push(t[slot]));
+            const ids = Array.from(new Set(interleaved.filter(id => Number.isSafeInteger(id) && id > 0))).slice(0,24);
             for (let i=0;i<ids.length;i++) {
                 running(); const rid = ids[i];
                 if (o.progress) o.progress(i+1,ids.length,rid);
@@ -10826,22 +10830,51 @@ const HybridSbcEa = (() => {
             }
             return { cards, teams, errors, asked: ids.length };
         }
-        function starts(teams, cards, preferred, assign) {
+        function starts(teams, cards, preferred, assign, ownAlternatives = false) {
             const byDef = new Map();
             cards.slice().sort((a,b) => (a.source === 'market')-(b.source === 'market') || a.score-b.score).forEach(c => {
                 if (!byDef.has(String(c.defId))) byDef.set(String(c.defId),c);
             });
-            const out = [];
-            for (const defs of teams) {
-                const chosen = defs.map(id => byDef.get(String(id)));
-                if (chosen.length !== preferred.length || chosen.some(c => !c)) continue;
+            const out = [], seen = new Set();
+            function add(chosen) {
                 const positions = chosen.map(c => ({pref:c.positions.slice(0,1).map(String),alts:c.positions.map(String)}));
                 const matched = assign(positions,preferred.map(s => s.map(String)),[]);
                 const ids = new Array(chosen.length);
                 matched.slotOfPlayer.forEach((slot,i) => { if (slot >= 0) ids[slot] = chosen[i].id; });
-                if (ids.filter(id => id != null).length === chosen.length) out.push(ids);
+                const key = JSON.stringify(ids.map(String));
+                if (ids.filter(id => id != null).length === chosen.length && !seen.has(key)) {
+                    seen.add(key); out.push(ids);
+                }
             }
-            return out;
+            const own = cards.filter(c => c.source !== 'market').slice().sort((a,b) => a.score-b.score ||
+                Number(b.source === 'storage')-Number(a.source === 'storage') || Number(!!b.untradeable)-Number(!!a.untradeable) || String(a.id).localeCompare(String(b.id)));
+            for (const defs of teams) {
+                const chosen = defs.map(id => byDef.get(String(id)));
+                if (chosen.length !== preferred.length || chosen.some(c => !c)) continue;
+                add(chosen);
+                if (!ownAlternatives) continue;
+                // Nur Such-Startpunkte: Aehnliche Vereins-/Storage-Karten
+                // ersetzen mehrere Nachkaeufe zugleich. Weder gemeinsame
+                // Merkmale noch Positionen beweisen gueltige EA-Chemie.
+                for (const fields of [['club','league','nation'],['league','nation'],['club'],['league'],['nation']]) {
+                    const mixed = chosen.slice();
+                    const ids = new Set(mixed.map(c => String(c.id))), players = new Set(mixed.map(c => String(c.playerId)));
+                    if (ids.size !== mixed.length || players.size !== mixed.length) continue;
+                    for (let i=0;i<mixed.length;i++) {
+                        const original = mixed[i];
+                        if (original.source !== 'market') continue;
+                        ids.delete(String(original.id)); players.delete(String(original.playerId));
+                        const replacement = own.find(c => !ids.has(String(c.id)) && !players.has(String(c.playerId)) &&
+                            c.positions.some(p => original.positions.includes(p)) &&
+                            fields.every(f => c[f] != null && original[f] != null && c[f] === original[f]));
+                        if (replacement) mixed[i] = replacement;
+                        ids.add(String(mixed[i].id)); players.add(String(mixed[i].playerId));
+                    }
+                    add(mixed);
+                }
+                if (out.length >= 24) break;
+            }
+            return out.slice(0,24);
         }
         return { alternatives, collect, starts };
     })();
@@ -10962,7 +10995,7 @@ const HybridSbcEa = (() => {
                         normalize: (rid,offer,coins,estimatedCoins) => HybridSbcEa.normalizeMarket({rid,offer,coins,estimatedCoins,ea:window}),
                         fatal: e => isRateLimit(e.status) || isSessionExpired(e.status), wait: () => futbinSleep(FUTBIN_MARKET_GAP_MS),
                         progress: (k,n,rid) => setHybridClubResult('<div class="sbc-opt-dim">Prüfe Kaufkandidat '+k+'/'+n+' (Karten-ID '+rid+') …</div>') });
-                    diag.market = {asked:market.asked,candidates:market.cards.length,errors:market.errors};
+                    diag.market = {asked:market.asked,candidates:market.cards.length,sourceTeams:market.teams.length,errors:market.errors};
                 }
             }
             diag.phase = 'mannschaften';
@@ -10981,7 +11014,8 @@ const HybridSbcEa = (() => {
             const clubDefs = new Set(STATE.pool.filter(p => !p.isStorage && p.raw).map(p => String(p.raw.resourceId)));
             const allCards = model.cards.concat(market.cards.filter(c => !clubDefs.has(String(c.defId))));
             const g = Object.assign({},model.guards,{squadIds:new Set(model.guards.squadIds.map(String)),lockedIds:new Set(locked.map(String))});
-            const starts = withMarket ? HybridSbcMarket.starts(market.teams,allCards.filter(c => !HybridSbcCore.exclusion(c,g,Date.now())),oracle.preferredSlots,assignSlots) : [];
+            const starts = withMarket ? HybridSbcMarket.starts(market.teams,allCards.filter(c => !HybridSbcCore.exclusion(c,g,Date.now())),oracle.preferredSlots,assignSlots,true) : [];
+            diag.startTeams = starts.length;
             const result = await HybridSbcCore.search({ cards: allCards, guards: model.guards, slots: oracle.slots,
                 initialTeams: starts, preferredSlots: oracle.preferredSlots, rules: oracle.rules, budget, maxPurchases,
                 maxMs: 8000, maxNodes: 100000, cancelled, accept: oracle.assess });

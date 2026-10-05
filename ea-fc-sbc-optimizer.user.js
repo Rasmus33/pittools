@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.3.8
+// @version      6.3.9
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.3.8';
+    const VERSION = '6.3.9';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -6983,6 +6983,7 @@
                             <button type="button" class="sbc-opt-chip" data-sort="fertig">Fast fertig</button>
                             <button type="button" class="sbc-opt-chip" data-sort="tokens">Meiste Tokens</button>
                         </div>
+                        <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gallery-upgrade-load">Fast fertige Vereine / Aufwertungen prüfen</button>
                         <button class="sbc-opt-btn primary sbc-opt-btn-icon" id="sbc-opt-gallery-load"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span>Nächstes Set kaufen</span></button>
                     </div>
                     <div class="sbc-opt-result" id="sbc-opt-gallery-result"></div>
@@ -7360,6 +7361,7 @@
             galleryLoad: panel.querySelector('#sbc-opt-gallery-load'),
             galleryResult: panel.querySelector('#sbc-opt-gallery-result'),
             galleryHideDone: panel.querySelector('#sbc-opt-gallery-hidedone'),
+            galleryUpgradeLoad: panel.querySelector('#sbc-opt-gallery-upgrade-load'),
             gallerySell: panel.querySelector('#sbc-opt-gallery-sell'),
             gallerySort: panel.querySelector('#sbc-opt-gallery-sort'),
             toolsSell: panel.querySelector('#sbc-opt-tools-sell'),
@@ -9594,7 +9596,7 @@ const HybridSbcEa = (() => {
                 const stat = get('getStaticData', {});
                 const positions = (it.possiblePositions || []).map(p => typeof p === 'string' ? p :
                     (typeof window !== 'undefined' && window.PlayerPosition ? window.PlayerPosition[p] : null)).filter(p => typeof p === 'string');
-                cards.push({ id: it.definitionId, name: stat && stat.name || ('#' + it.definitionId), score: it.gradingScore,
+                cards.push({ id: it.definitionId, name: stat && stat.name || ('#' + it.definitionId), score: it.gradingScore, rating: it.rating,
                     owned: e.status === 'owned' || e.tracked === true || it.isCollected === true,
                     attrs: { NATION: it.nationId, CLUB: it.teamId, LEAGUEID: it.leagueId, RARE: it.rareflag,
                         BASE_DEF_ID: it.databaseId, LEVEL: it.rating < 65 ? 'bronze' : it.rating < 75 ? 'silver' : 'gold',
@@ -9662,7 +9664,7 @@ const HybridSbcEa = (() => {
         }
         let cards = Array.from(source.values()).map(p => {
             const m = meta.get(p.eaId) || {}, r = live.get(p.eaId) || {};
-            return { id: p.eaId, name: m.commonName || m.cardName || ('#' + p.eaId),
+            return Object.assign({ id: p.eaId, name: m.commonName || m.cardName || ('#' + p.eaId), rating: p.overall, version: m.rarityName || null,
                 score: Number.isFinite(r.gradingScore) && r.gradingScore > 0 ? r.gradingScore : p.score,
                 owned: known.has(String(p.eaId)), price: p.price,
                 attrs: { NATION: p.nationEaId, CLUB: p.clubEaId, LEAGUEID: m.leagueEaId,
@@ -9673,7 +9675,8 @@ const HybridSbcEa = (() => {
                     HYPER_COSMETIC_TYPE: null,
                     WEAK_FOOT: Number.isFinite(r.weakFoot) ? r.weakFoot : m.weakFoot,
                     SKILL_MOVES: Number.isFinite(r.skillMoves) ? r.skillMoves : m.skillMoves,
-                    POSSIBLE_POSITIONS: Array.isArray(r.possiblePositions) && r.possiblePositions.every(p => typeof p === 'string') ? r.possiblePositions : m.positionNames } };
+                    POSSIBLE_POSITIONS: Array.isArray(r.possiblePositions) && r.possiblePositions.every(p => typeof p === 'string') ? r.possiblePositions : m.positionNames } },
+                Object.prototype.hasOwnProperty.call(m,'holographicType') ? {holographicType:m.holographicType} : {});
         });
         const cachedPale = galleryPaleSnapshots.get(data.set.id);
         const pale = paleSnapshot || (cachedPale && typeof ownPersonaId === 'function' &&
@@ -9807,6 +9810,64 @@ const HybridSbcEa = (() => {
         return status + ' · ' + target.grade + ' gefunden mit ' + target.missing.length + ' Nachkäufen (~' + fmtCoins(target.coins) + ')';
     }
     // [GALLERYPERSONAL-END]
+
+    // [GALLERYTARGET-BEGIN]
+    function galleryPersonalTargets(personal) {
+        return personal ? personal.plans.filter(p => p.missing.length > 0 && p.threshold > (personal.current.complete ? personal.current.score : 0))
+            .sort((a,b) => b.threshold-a.threshold) : [];
+    }
+    function orderGalleryUpgradeSets(ranked, coins) {
+        const result = ranked.map(x => {
+            const target = galleryPersonalTargets(x.personal)[0];
+            return Object.assign({},x,{upgradeView:true,overBudget:!!target && coins > 0 && target.coins > coins,
+                upgradeReady:!!x.personal && x.personal.current.complete && x.personal.current.grade === 'S'});
+        });
+        return result.sort((a,b) => Number(a.overBudget)-Number(b.overBudget) || Number(a.upgradeReady)-Number(b.upgradeReady) ||
+            (galleryPersonalTargets(a.personal)[0]?.missing.length ?? Infinity)-(galleryPersonalTargets(b.personal)[0]?.missing.length ?? Infinity));
+    }
+    function galleryTargetRecords(cards) {
+        return cards.map(c => ({d:c.id,t:Number(c.attrs.CLUB)||0,l:Number(c.attrs.LEAGUEID)||0,n:Number(c.attrs.NATION)||0,s:c.score,r:c.rating}));
+    }
+    function galleryTargetOfferMatches(variant, offer, ea) {
+        const item = offer && (offer.raw || offer.item);
+        return galleryOfferMatches(variant,offer,ea) && !!item && (item.isCollected === false || item.isCollected === 0);
+    }
+    async function galleryPrepareTarget(data, target, o) {
+        const grade = data && data.set && data.set.grades.find(g => g.name === target.grade);
+        if (!grade || grade.threshold !== target.threshold || !Array.isArray(target.cards) ||
+            target.cards.length !== data.set.requiredCards || new Set(target.cards.map(c => c.id)).size !== target.cards.length ||
+            target.cards.some(c => !Number.isSafeInteger(c.id) || c.id <= 0 || !Number.isInteger(c.rating) || c.rating < 1 || c.rating > 99)) throw Error('Zielnotenplan unvollständig oder verändert.');
+        const cards = JSON.parse(JSON.stringify(target.cards)), purchases = [], found = [];
+        const needed = cards.filter(c => !c.owned && !o.known.has(String(c.id)));
+        for (const c of cards) if (o.known.has(String(c.id))) c.owned = true;
+        for (let i=0;i<needed.length;i++) {
+            o.running(); const c = needed[i];
+            if (o.progress) o.progress(i+1,needed.length,c);
+            const low = await o.quote(c.id); o.running();
+            const variant = {defId:c.id,rating:c.rating,score:c.score};
+            if (Object.prototype.hasOwnProperty.call(c,'holographicType')) variant.holographicType = c.holographicType;
+            const offers = low && Array.isArray(low.offers) ? low.offers.filter(x => o.matches(variant,x)) : [];
+            const status = collectedSummary(offers);
+            if (status.yes && status.no) throw Error('EA-Sammelstand widersprüchlich: '+c.name);
+            const collected = collectedFromOffers(status);
+            if (collected === true) { c.owned = true; found.push(c); }
+            else {
+                if (collected !== false) throw Error('Kartenversion oder Sammelstand nicht nachweisbar: '+c.name+'. Bitte später erneut prüfen.');
+                if (o.pending && o.pending.has(String(c.id))) throw Error(c.name+' wurde bereits gekauft. Bitte Transferziele/Verein prüfen, bevor erneut gekauft wird.');
+                const price = o.estimate(offers.map(x => x.bin)), cap = o.cap(price);
+                if (!Number.isInteger(price) || price <= 0 || !Number.isInteger(cap) || cap < price) throw Error('Kein verlässlicher Live-Preis: '+c.name);
+                purchases.push({resourceId:c.id,name:c.name,rating:c.rating,planned:price,maxPrice:cap,source:'live',variant,
+                    versionLabel:[c.version,c.holographicType === 'holographic' ? 'Holografisch' : c.holographicType === 'pristine' ? 'Pristine' : null].filter(Boolean).join(' · ')});
+                c.attrs.FIRST_OWNED = 0; // Nachkauf kann keinen Erstbesitz-Bonus liefern.
+            }
+            if (i<needed.length-1) { await o.wait(); o.running(); }
+        }
+        o.running();
+        const assessment = galleryPersonalScore(cards,data.set.requiredCards,data.tags,data.set.grades);
+        if (!assessment || !assessment.complete || assessment.score < grade.threshold) throw Error('Zielnote nach der Prüfung nicht mehr erreicht. Es wurde nichts gekauft.');
+        return {cards,purchases,found,assessment,total:purchases.reduce((s,p) => s+p.maxPrice,0)};
+    }
+    // [GALLERYTARGET-END]
 
     function galleryUpgradeOptions(data, pool, collected) {
         if (!data || !data.set || !data.solution || data.solution.setId !== data.set.id || !Array.isArray(data.solution.costTiers)) return [];
@@ -11320,10 +11381,11 @@ const HybridSbcEa = (() => {
      * Konzept-Spieler werden in allen SBC-Kadern ersetzt UND die Ansicht
      * aktualisiert. Nicht gefundene Karten gehen per Notweg (eigener PUT).
      */
-    async function adoptBoughtIntoClient(bought) {
+    async function adoptBoughtIntoClient(bought, canAdopt) {
         const out = { refreshed: false, found: 0, foundIn: null, moved: 0, httpMoved: 0, error: null };
         const wanted = new Set(bought.map(b => String(b.itemId)).filter(s => s && s !== 'undefined' && s !== 'null'));
         let ents = [];
+        const checkAccount = () => { if (canAdopt && !canAdopt()) throw Error('Account während der Kartenübernahme gewechselt.'); };
         try {
             const svc = window.services && window.services.Item;
             // v5.27.0: Sofortkaeufe liegen bei EA NICHT im Kauf-Stapel
@@ -11342,8 +11404,10 @@ const HybridSbcEa = (() => {
             for (const pair of piles) {
                 if (!svc || typeof svc[pair[1]] !== 'function') { out.piles.push({ pile: pair[0], missing: true }); continue; }
                 if (ents.length >= wanted.size) break;
+                checkAccount();
                 let resp = null;
                 try { resp = await obsPromise(svc[pair[1]]()); } catch (e) { resp = null; }
+                checkAccount();
                 if (responseOk(resp)) out.refreshed = true;
                 const items = (resp && ((resp.response && resp.response.items) || (resp.data && resp.data.items))) || [];
                 const have = new Set(ents.map(it => String(it.id)));
@@ -11374,12 +11438,14 @@ const HybridSbcEa = (() => {
             if (svc) {
                 const pile = window.ItemPile && window.ItemPile.CLUB;
                 if (ents.length && pile != null && typeof svc.move === 'function') {
+                    checkAccount();
                     let r = null;
                     try { r = await obsPromise(svc.move(ents, pile)); } catch (e) { r = null; }
                     if (responseOk(r)) out.moved = ents.length;
                     else {
                         // Einzeln nachfassen, falls der Dienst keine Liste nimmt.
                         for (const it of ents) {
+                            checkAccount();
                             try { const r1 = await obsPromise(svc.move(it, pile)); if (responseOk(r1)) out.moved++; } catch (e) {}
                         }
                     }
@@ -11389,6 +11455,7 @@ const HybridSbcEa = (() => {
         // Notweg fuer alles, was der Client nicht kannte: eigener PUT.
         const movedIds = new Set(ents.slice(0, out.moved).map(it => String(it.id)));
         for (const b of bought) {
+            if (canAdopt && !canAdopt()) { out.error = 'Account gewechselt; keine weitere Kartenübernahme.'; break; }
             const id = String(b.itemId);
             if (!wanted.has(id) || movedIds.has(id)) continue;
             if (await moveToClubHttp(b.itemId)) out.httpMoved++;
@@ -12275,9 +12342,9 @@ const HybridSbcEa = (() => {
                 if (k < plan.length - 1) await futbinSleep(randomBetween(gapMin, gapMax));
             }
             // Gekaufte Karten in den SBC-Kader statt der Konzept-Spieler, dann speichern.
-            if (bought.length) {
+            if (bought.length && (!opts.canAdopt || opts.canAdopt())) {
                 render('Gekaufte Karten in den Verein übernehmen ...');
-                const adopted = await adoptBoughtIntoClient(bought);
+                const adopted = opts.canAdopt ? await adoptBoughtIntoClient(bought,opts.canAdopt) : await adoptBoughtIntoClient(bought);
                 diag.adopted = adopted;
                 lines.push(adopted.moved + ' von ' + bought.length + ' gekauften Karten über EAs Client in den Verein' +
                            (adopted.httpMoved ? ' (' + adopted.httpMoved + ' per Notweg)' : '') + '.');
@@ -12290,6 +12357,7 @@ const HybridSbcEa = (() => {
                     diag.replaced = swapped.replaced; diag.saved = swapped.saved; diag.viewPushed = swapped.viewPushed || null;
                 }
             }
+            if (bought.length && opts.canAdopt && !opts.canAdopt()) lines.push('Account gewechselt: gekaufte Karten bitte in den Transferzielen des ursprünglichen Accounts prüfen.');
             render(null);
             const rest = plan.length - diag.bought;
             if (typeof opts.onFinish === 'function') { try { opts.onFinish(diag, bought); } catch (e) { reportError('onFinish', e); } }
@@ -12360,6 +12428,7 @@ const HybridSbcEa = (() => {
     function initGalleryUi() {
         if (!ui.galleryLoad) return;
         ui.galleryLoad.addEventListener('click', onGalleryLoadClick);
+        if (ui.galleryUpgradeLoad) ui.galleryUpgradeLoad.addEventListener('click',onGalleryUpgradeLoadClick);
         if (ui.gallerySell && !ui.gallerySell.dataset.wired) {
             ui.gallerySell.dataset.wired = '1';
             ui.gallerySell.addEventListener('click', onGallerySellClick);
@@ -12414,7 +12483,8 @@ const HybridSbcEa = (() => {
                 'du wählst eines, PitTools kauft die fehlenden Spieler nach und nach in den Verein. Bewertet wird danach im Spiel.';
         }
     }
-    async function onGalleryLoadClick() {
+    async function onGalleryLoadClick(withUpgrades) {
+        const upgradeMode = withUpgrades === true;
         if (galleryBusy || buyBusy) { toast('Es läuft schon ein Lauf.', 'warn'); return; }
         const diag = { at: Date.now(), bridge: bridgeKind(), sets: null, shown: null, errors: [] };
         STATE.diag.gallery = diag;
@@ -12498,13 +12568,13 @@ const HybridSbcEa = (() => {
                 ranked = orderGalleryByMode(ranked);
                 for (let i = 0; i < ranked.length && checked < GALLERY_CHECK_MAX; i++) {
                     const x = ranked[i];
-                    if (coins > 0 && x.coins > coins) continue;
+                    if (!upgradeMode && coins > 0 && x.coins > coins) continue;
                     if (x.truePerToken != null) continue;
                     await verifyOne(x);
                 }
             }
             ranked = orderGalleryByMode(ranked); // v5.44.0: guenstig / fertig / tokens
-            ranked = applyGalleryBudget(ranked, coins); // v5.40.0
+            ranked = upgradeMode ? orderGalleryUpgradeSets(ranked,coins) : applyGalleryBudget(ranked, coins); // v5.40.0
             galleryLast.ranked = ranked;
             diag.shown = ranked.slice(0, GALLERY_SHOW_OPEN).map(x => ({ id: x.id, name: x.name, coins: x.coins, total: x.total || null, tokens: x.tokens, grade: x.bestGrade }));
             renderGallerySets(ranked);
@@ -12554,7 +12624,7 @@ const HybridSbcEa = (() => {
         ranked.forEach(function (x, i) {
             h += '<div class="sbc-opt-fb-row' + (i === 0 ? ' best' : '') + (i >= GALLERY_SHOW_OPEN ? ' sbc-opt-fb-more' : '') + '">' +
                  '<div class="sbc-opt-fb-top"><span class="sbc-opt-fb-price">' + escapeHtml(x.name) + '</span>' +
-                 '<span class="sbc-opt-fb-tags">' + (i === 0 ? '<span class="sbc-opt-tag best">Bester Kurs</span>' : '') +
+                 '<span class="sbc-opt-fb-tags">' + (i === 0 ? '<span class="sbc-opt-tag best">'+(x.upgradeView ? 'Wenige Nachkäufe' : 'Bester Kurs')+'</span>' : '') +
                  (x.overBudget ? '<span class="sbc-opt-tag" title="teurer als dein Kontostand">zu teuer</span>' : '') +
                  (x.truePerToken != null ? '<span class="sbc-opt-tag ok">geprüft</span>' : '<span class="sbc-opt-tag">ungeprüft</span>') +
                  '<span class="sbc-opt-tag ok">Note ' + escapeHtml(x.bestGrade || '?') + '</span></span></div>' +
@@ -12575,7 +12645,8 @@ const HybridSbcEa = (() => {
                  (x.own && x.eaKind ? ' · im Verein <b>' + x.own.count + '</b>' + (x.items ? ' von ' + x.items : '') : '') +
                  ' · ' + escapeHtml(x.league.replace(/-/g, ' ')) +
                  (x.score != null && x.threshold != null ? ' · Score ' + x.score.toLocaleString('de-DE') + ' / ' + x.threshold.toLocaleString('de-DE') : '') + '</div>' +
-                 (x.personal ? '<div class="sbc-opt-fb-meta"><b>' + escapeHtml(galleryPersonalHint(x.personal)) + '</b> · Vorschau aus bekannten Karten</div>' : '') +
+                 (x.personal ? '<div class="sbc-opt-fb-meta"><b>' + escapeHtml(galleryPersonalHint(x.personal)) + '</b> · Live-Prüfung vor Kauf</div>' : '') +
+                 (galleryPersonalTargets(x.personal).slice(0,1).map(p => '<button type="button" class="sbc-opt-btn ghost" data-gal-upgrade-set="'+i+'" data-gal-upgrade-grade="'+p.grade+'">'+p.grade+'-Aufwertung prüfen ('+p.missing.length+' Nachkäufe)</button>').join('')) +
                  '<div class="sbc-opt-fb-actions"><button type="button" class="sbc-opt-btn ' + (i === 0 ? 'primary' : 'ghost') + '" data-gal-idx="' + i + '">Set ansehen</button>' +
                  '<button type="button" class="sbc-opt-btn ghost small" data-gal-done="' + i + '" title="Als erledigt markieren (ausblenden)">Erledigt ✓</button></div></div>';
         });
@@ -12595,6 +12666,12 @@ const HybridSbcEa = (() => {
             });
         });
         const more = ui.galleryResult.querySelector('#sbc-opt-gal-showmore');
+        ui.galleryResult.querySelectorAll('button[data-gal-upgrade-set]').forEach(b => b.addEventListener('click',async () => {
+            const idx = Number(b.getAttribute('data-gal-upgrade-set')), x = ranked[idx];
+            if (!x || galleryBusy || buyBusy || sellBusy) return;
+            await onGalleryPick(idx);
+            if (galleryLast && galleryLast.chosen && galleryLast.chosen.meta === x) await onGalleryUpgradeClick(b.getAttribute('data-gal-upgrade-grade'));
+        }));
         if (more) more.addEventListener('click', function () { ui.galleryResult.classList.add('fb-all'); more.remove(); });
     }
     async function onGalleryPick(idx) {
@@ -12642,6 +12719,113 @@ const HybridSbcEa = (() => {
             galleryBusy = false;
         }
     }
+    // [GALLERYUPGRADE-BEGIN]
+    let galleryUpgradeRun = null;
+    async function onGalleryUpgradeLoadClick() {
+        if (galleryBusy || buyBusy || sellBusy || futbinBusy || STATE.loading) { toast('Es läuft bereits ein Lauf.','warn'); return; }
+        if (!STATE.poolFullLoadDone || STATE.loadIncomplete) { toast('Bitte zuerst die Spieler vollständig laden.','warn'); return; }
+        if (ui.galleryHideDone) ui.galleryHideDone.checked = false;
+        try { localStorage.setItem('sbcOptGallerySort','fertig'); } catch (_) {}
+        if (ui.gallerySort) ui.gallerySort.querySelectorAll('.sbc-opt-chip').forEach(b => b.classList.toggle('on',b.getAttribute('data-sort') === 'fertig'));
+        await onGalleryLoadClick(true);
+    }
+    function galleryUpgradeProgress(run,text,body) {
+        if (galleryUpgradeRun !== run) return;
+        setGalleryResult('<div class="sbc-opt-summary">'+escapeHtml(text)+'</div>'+(body || '')+'<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gallery-upgrade-stop">Aufwertung stoppen</button>');
+        const b = ui.galleryResult && ui.galleryResult.querySelector('#sbc-opt-gallery-upgrade-stop');
+        if (b) b.addEventListener('click',() => { run.cancelled = true; b.disabled = true; });
+    }
+    async function onGalleryUpgradeClick(grade) {
+        const ch = galleryLast && galleryLast.chosen;
+        if (!ch || galleryBusy || buyBusy || sellBusy || futbinBusy || STATE.loading || (vorlagenRun && !vorlagenRun.fertig)) return;
+        const run = {ch,persona:ownPersonaId(),cancelled:false};
+        galleryUpgradeRun = run; galleryBusy = true;
+        const diag = {at:Date.now(),set:ch.meta.id,grade,phase:'prüfen',errors:[]};
+        STATE.diag.galleryUpgrade = diag;
+        const running = () => {
+            if (!run.persona || galleryUpgradeRun !== run || run.cancelled || !galleryLast || galleryLast.chosen !== ch ||
+                ownPersonaId() !== run.persona || STATE.loading || futbinBusy || sellBusy || (vorlagenRun && !vorlagenRun.fertig)) throw Error('Aufwertung gestoppt, Account oder Set gewechselt.');
+        };
+        try {
+            running();
+            if (!sessionReady()) throw Error('EA-Sitzung fehlt. Bitte einmal im Spiel klicken.');
+            if (!STATE.poolFullLoadDone || STATE.loadIncomplete) throw Error('Bitte zuerst die Spieler vollständig laden.');
+            const data = ch.set.upgradeData;
+            if (!data || !data.set || data.set.id !== ch.meta.id || data.set.name !== ch.meta.name) throw Error('Galerie-Set nicht eindeutig erkannt.');
+            galleryCapturePale();
+            const personal = galleryPersonalAssessment(data,STATE.pool,collectedLoad());
+            const target = personal && personal.plans.find(p => p.grade === grade);
+            if (!target) throw Error('Keine passende Mischung für diese Zielnote gefunden. Bitte das Set neu prüfen.');
+            const known = collectedIdSet(collectedRecordsFromPool(STATE.pool).concat(collectedLoad()));
+            const prepared = await galleryPrepareTarget(data,target,{known,running,
+                pending:new Set(galleryBoughtLoad().map(p => String(p.defId))),
+                quote:rid => marketOffersLowest(rid,{fresh:true}), matches:(v,o) => galleryOfferMatches(v,o,window),
+                estimate:bins => robustMinBin(bins).robust,cap:price => planMaxPrice(price,BUY_TOLERANCE,eaPriceTiers()),
+                wait:() => futbinSleep(FUTBIN_MARKET_GAP_MS),
+                progress:(i,n,c) => galleryUpgradeProgress(run,'Prüfe '+ch.meta.name+' → '+grade+': '+i+'/'+n+' ('+c.name+')')});
+            running();
+            if (prepared.found.length) {
+                const m = mergeCollectedRecords(collectedLoad(),galleryTargetRecords(prepared.found)); collectedSave(m.list);
+            }
+            diag.cards = prepared.cards.map(c => ({defId:c.id,owned:c.owned,score:c.score}));
+            diag.plan = prepared.purchases; diag.score = prepared.assessment.score; diag.total = prepared.total;
+            if (!prepared.purchases.length) {
+                diag.phase = 'bereits gesammelt';
+                setGalleryResult('<b>'+escapeHtml(ch.meta.name)+' → '+escapeHtml(grade)+'</b><div>Alle Karten der geprüften Auswahl sind schon gesammelt. '+prepared.assessment.score+' Punkte berechnet; nichts zu kaufen. Im Spiel die Auswahl bewerten.</div>');
+            } else {
+                const coins = userCoins();
+                if (coins != null && coins < prepared.total) throw Error('Kontostand reicht nicht für die Gesamtobergrenze von '+fmtCoins(prepared.total)+'.');
+                const question = ch.meta.name+' → Note '+grade+': nur '+prepared.purchases.length+' fehlende Karten kaufen?\n\n'+
+                    prepared.purchases.map(p => p.name+' ('+p.rating+(p.versionLabel ? ', '+p.versionLabel : '')+', ID '+p.resourceId+'): bis '+fmtCoins(p.maxPrice)).join('\n')+
+                    '\n\n'+prepared.assessment.score+' berechnete Punkte / Ziel '+target.threshold+'. Zusammen höchstens '+fmtCoins(prepared.total)+
+                    '. Preise werden nicht automatisch erhöht. Langsamer Kauf, danach die Auswahl im Spiel bewerten.';
+                if (!window.confirm(question)) {
+                    diag.phase = 'nicht freigegeben'; renderGallerySet(ch.meta,ch.set,ch.owned); return;
+                }
+                running(); diag.phase = 'kaufen';
+                await buyPlannedPlayers(null,prepared.purchases,{noSquad:true,mode:'gallery-upgrade',hardBudget:prepared.total,fixedCaps:true,
+                    maxPerRun:GALLERY_BUY_MAX_PER_RUN,gapMin:GALLERY_BUY_GAP_MIN_MS,gapMax:GALLERY_BUY_GAP_MAX_MS,
+                    setResult:h => { if (ownPersonaId() === run.persona) galleryUpgradeProgress(run,ch.meta.name+' → '+grade+' kaufen',h); },
+                    cancelled:() => { try { running(); return false; } catch (_) { return true; } },
+                    canAdopt:() => ownPersonaId() === run.persona,
+                    offerMatches:(p,o) => galleryTargetOfferMatches(p.variant,o,window),
+                    beforeBid:async () => { running(); return true; },
+                    onFinish:(d,bought) => {
+                        diag.buy = {bought:d.bought,spent:d.spent,stopped:d.stopped,adopted:d.adopted};
+                        if (ownPersonaId() !== run.persona) return;
+                        rememberGalleryBought(ch.meta,bought);
+                        const moved = d.adopted && d.adopted.moved+d.adopted.httpMoved >= bought.length;
+                        const boughtDefs = new Set(bought.map(b => Number(b.plan.resourceId)));
+                        if (moved) {
+                            mergeIntoPool(bought.map(b => b.raw ? normalizePlayer(Object.assign({},b.raw,{owners:2}),false) : null).filter(Boolean));
+                            const collected = prepared.cards.filter(c => boughtDefs.has(c.id));
+                            const m = mergeCollectedRecords(collectedLoad(),galleryTargetRecords(collected)); collectedSave(m.list);
+                            collected.forEach(c => { c.owned = true; });
+                        }
+                        const ready = prepared.cards.every(c => c.owned);
+                        diag.phase = ready ? 'Auswahl gesammelt' : 'teilweise';
+                        setGalleryResult('<b>'+escapeHtml(ch.meta.name)+' → '+grade+'</b><div>'+d.bought+' gekauft · '+fmtCoins(d.spent)+
+                            ' · '+(ready ? 'Auswahl vollständig gesammelt. Im Spiel bewerten.' : 'Auswahl noch nicht vollständig gesammelt. Transferziele und Rest prüfen.')+'</div>'+
+                            (d.stopped ? warnHtml(d.stopped) : '')+
+                            prepared.cards.map(c => '<div>'+(c.owned ? '✓ ' : 'Offen: ')+escapeHtml(c.name)+' · '+c.rating+' OVR · ID '+c.id+' · '+c.score+' Basis-Punkte</div>').join(''));
+                    }});
+            }
+            if (ownPersonaId() === run.persona && galleryLast && galleryLast.chosen === ch && ui.galleryResult) {
+                ui.galleryResult.insertAdjacentHTML('beforeend','<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gallery-upgrade-review">Set und verbleibende Aufwertungen neu prüfen</button>');
+                const b = ui.galleryResult.querySelector('#sbc-opt-gallery-upgrade-review');
+                if (b) b.addEventListener('click',() => onGalleryPick(ch.idx));
+                refreshGallerySellBtn();
+            }
+        } catch (e) {
+            diag.phase = 'gestoppt'; diag.errors.push(String(e.message||e));
+            if (ownPersonaId() === run.persona) {
+                setGalleryResult(warnHtml(String(e.message||e))+'<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gallery-upgrade-back">Set erneut ansehen</button>');
+                const b = ui.galleryResult && ui.galleryResult.querySelector('#sbc-opt-gallery-upgrade-back');
+                if (b) b.addEventListener('click',() => onGalleryPick(ch.idx));
+            }
+        } finally { galleryBusy = false; if (galleryUpgradeRun === run) galleryUpgradeRun = null; }
+    }
+    // [GALLERYUPGRADE-END]
     function renderGallerySet(x, set, owned) {
         const missing = set.players.filter((p, i) => !owned[i]);
         const ownedN = set.players.length - missing.length;
@@ -12651,6 +12835,7 @@ const HybridSbcEa = (() => {
         const own = x.own || galleryOwnProgress(x, STATE.pool, collectedLoad());
         const personal = galleryPersonalAssessment(set.upgradeData, STATE.pool, collectedLoad());
         x.personal = personal;
+        if (galleryLast && galleryLast.chosen) galleryLast.chosen.personal = personal;
         const ownGrade = gradeForScore(set.grades, own.score);
         const comp = galleryCompletionPlan(set.requires || set.players.length, own.count, set.players, owned);
         if (galleryLast.chosen) { galleryLast.chosen.own = own; galleryLast.chosen.comp = comp; galleryLast.chosen.buyIdx = null; }
@@ -12734,16 +12919,16 @@ const HybridSbcEa = (() => {
             a.breakdown.forEach(b => { h += '<div>' + escapeHtml(b.name || 'Bonus') + ': +' + b.points + '</div>'; });
             if (a.unknown.length) h += '<div class="sbc-opt-dim">Ohne Bonus wegen fehlender Details: ' + escapeHtml(a.unknown.join(', ')) + '</div>';
             h += '</details>';
-            personal.plans.filter(p => p.missing.length > 0 && p.threshold > (a.complete ? a.score : 0)).forEach(p => {
+            galleryPersonalTargets(personal).forEach(p => {
                 h += '<details class="sbc-opt-details-toggle"><summary><b>' + escapeHtml(p.grade) + '</b> mit ' + p.missing.length +
                     ' Nachkäufen · ~' + fmtCoins(p.coins) + '</summary><div>' + p.assessment.score.toLocaleString('de-DE') +
                     ' Punkte (' + p.assessment.base + ' Basis + ' + p.assessment.bonus + ' Boni)</div>';
                 p.missing.forEach(c => { h += '<div>' + escapeHtml(c.name) + ' · ID ' + c.id + ' · ' + fmtCoins(c.price) + '</div>'; });
-                h += '<div class="sbc-opt-dim">Gefundene Mischung zur Zielnote; Vorschau ohne Kaufaktion.</div></details>';
+                h += '<button type="button" class="sbc-opt-btn primary" data-gal-target-grade="'+p.grade+'">'+p.grade+' erreichen: fehlende Karten prüfen und kaufen</button></details>';
             });
             h += '</details>';
         }
-        // v6.3.3: additive Vorschau. Diese Quellenplaene sind NICHT an den Kauf-Lauf angeschlossen.
+        // Quellenplaene bleiben als Vergleich; gekauft wird die persoenliche Mischung oben.
         const upgrades = galleryUpgradeOptions(set.upgradeData, STATE.pool, collectedLoad());
         if (upgrades.length) {
             h += '<details class="sbc-opt-details-toggle" open><summary>Aufwertung: Pläne je Zielnote</summary>' +
@@ -12784,6 +12969,7 @@ const HybridSbcEa = (() => {
         if (buy) buy.addEventListener('click', function () { if (galleryLast.chosen) galleryLast.chosen.buyIdx = null; onGalleryBuyClick(); });
         const buyC = ui.galleryResult.querySelector('#sbc-opt-gal-buy-complete');
         if (buyC) buyC.addEventListener('click', function () { if (galleryLast.chosen) galleryLast.chosen.buyIdx = comp.idx.slice(); onGalleryBuyClick(); });
+        ui.galleryResult.querySelectorAll('button[data-gal-target-grade]').forEach(b => b.addEventListener('click',() => onGalleryUpgradeClick(b.getAttribute('data-gal-target-grade'))));
         const check = ui.galleryResult.querySelector('#sbc-opt-gal-check');
         if (check) check.addEventListener('click', onGalleryCheckClick);
         const back = ui.galleryResult.querySelector('#sbc-opt-gal-back');

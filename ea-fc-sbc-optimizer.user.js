@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.3.3
+// @version      6.3.4
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.3.3';
+    const VERSION = '6.3.4';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -9025,6 +9025,8 @@
     /** Index: alle Set-Karten. Liga-Links (ein Pfadsegment) sind keine Sets. */
     function parseFutggGalleryIndex(html) {
         const out = [];
+        let data = null;
+        try { data = parseGallerySsr(html); } catch (e) { /* alter HTML-Pfad bleibt verfuegbar */ }
         const re = /<a aria-label="Explore ([^"]*)" data-gallery-set="(\d+)" href="(\/fut-gallery\/([a-z0-9-]+)\/([a-z0-9-]+)\/)"[^>]*>([\s\S]*?)<\/a>/g;
         let m;
         while ((m = re.exec(String(html || ''))) !== null) {
@@ -9032,6 +9034,8 @@
             const g = /title="Grade ([DCBAS]) is the best possible"/.exec(body);
             const sc = /title="([\d,]+) grading score"[\s\S]*?<span[^>]*>\/ (?:<!-- -->)?([\d,]+)<\/span>/.exec(body);
             const co = /title="Coins needed in hand"[\s\S]*?\/>([\d,]+)<\/span>/.exec(body);
+            const summary = data && data.summaries && data.summaries[m[2]];
+            const peak = summary && Number.isFinite(summary.peak) && summary.peak > 0 ? summary.peak : null;
             const it = /title="(\d+) items to complete"/.exec(body);
             const tk = /title="Gallery tokens[^"]*"[\s\S]*?<span[^>]*>([\d,]+)<\/span><span[^>]*>\/ (?:<!-- -->)?([\d,]+)<\/span>/.exec(body);
             // v5.36.0: EAs ID aus der Bild-URL (2027/club/88, 2027/league/13, 2027/nation/45).
@@ -9041,7 +9045,7 @@
                 eaKind: ea ? ea[1] : null, eaId: ea ? galleryNum(ea[2]) : null,
                 bestGrade: g ? g[1] : null,
                 score: sc ? galleryNum(sc[1]) : null, threshold: sc ? galleryNum(sc[2]) : null,
-                coins: co ? galleryNum(co[1]) : null, items: it ? galleryNum(it[1]) : null,
+                coins: co ? galleryNum(co[1]) : peak, items: it ? galleryNum(it[1]) : null,
                 tokens: tk ? galleryNum(tk[1]) : null, tokensTotal: tk ? galleryNum(tk[2]) : null
             });
         }
@@ -9087,7 +9091,7 @@
     /** Nur Datenliterale aus fut.ggs SSR-Zustand lesen; fremdes JavaScript nie ausfuehren. */
     function parseGallerySsr(html) {
         const s = String(html || '');
-        const start = /\bl:\$R\[\d+\]=\{set:/.exec(s);
+        const start = /\bl:\$R\[\d+\]=\{/.exec(s);
         if (!start) return null;
         let pos = start.index + 2, nodes = 0;
         const refs = new Map();
@@ -9122,7 +9126,7 @@
                     let key;
                     if (!array) {
                         if (s[pos] === '"') key = value(depth + 1);
-                        else { const m = /^[A-Za-z_$][\w$]*/.exec(s.slice(pos)); if (!m) fail(); key = m[0]; pos += key.length; }
+                        else { const m = /^(?:[A-Za-z_$][\w$]*|\d+)/.exec(s.slice(pos)); if (!m) fail(); key = m[0]; pos += key.length; }
                         if (['__proto__', 'constructor', 'prototype'].includes(key)) fail();
                         ws(); if (s[pos++] !== ':') fail();
                     }
@@ -9177,8 +9181,15 @@
             out.coinsInHand = galleryNum(meta[4]); out.coinsTotal = galleryNum(meta[5]);
             out.tokens = galleryNum(meta[6]); out.tokensTotal = galleryNum(meta[7]);
         } else {
-            const m2 = /content="Requires (\d+) /.exec(s);
-            if (m2) out.requires = galleryNum(m2[1]);
+            const modern = /content="Requires (\d+) ([^"]*?) to complete\. The cheapest lineup that reaches grade ([DCBAS]) needs ([\d,]+) coins in hand and ([\d,]+) in total today and earns (?:all )?([\d,]+)(?: of ([\d,]+))? Gallery Tokens/.exec(s);
+            if (modern) {
+                out.requires = galleryNum(modern[1]); out.requirement = galleryDecode(modern[2]); out.bestGrade = modern[3];
+                out.coinsInHand = galleryNum(modern[4]); out.coinsTotal = galleryNum(modern[5]);
+                out.tokens = galleryNum(modern[6]); out.tokensTotal = galleryNum(modern[7] || modern[6]);
+            } else {
+                const m2 = /content="Requires (\d+) /.exec(s);
+                if (m2) out.requires = galleryNum(m2[1]);
+            }
         }
         const rowRe = /<tr[^>]*data-slot="table-row"[^>]*>([\s\S]*?)<\/tr>/g;
         let r;
@@ -9211,7 +9222,21 @@
         if (tot) out.score = galleryNum(tot[1]);
         const tax = /<dt[^>]*>Lost to tax<\/dt>[\s\S]*?\/>([\d,]+)/.exec(s);
         if (tax) out.tax = galleryNum(tax[1]);
-        try { out.upgradeData = parseGallerySsr(s); }
+        try {
+            out.upgradeData = parseGallerySsr(s);
+            // v6.3.4: die HTML-Karten zeigen ebenfalls nur noch Preis-Platzhalter.
+            // Ausschliesslich exakte Definitionen bepreisen; die HTML-Aufstellung
+            // NICHT durch den abweichenden maximalen Score-Plan ersetzen.
+            const solution = out.upgradeData && out.upgradeData.solution;
+            if (solution) {
+                const prices = new Map();
+                const lists = [solution.items].concat((solution.costTiers || []).map(t => t && t.items));
+                lists.forEach(list => (Array.isArray(list) ? list : []).forEach(p => {
+                    if (p && Number.isInteger(p.eaId) && Number.isFinite(p.price) && p.price > 0) prices.set(p.eaId, p.price);
+                }));
+                out.players.forEach(p => { if (!(p.price > 0) && prices.has(p.defId)) p.price = prices.get(p.defId); });
+            }
+        }
         catch (e) { out.upgradeError = e.message; }
         return out;
     }
@@ -9243,6 +9268,7 @@
     /** Echter Wert eines Sets aus der Set-Seite: Summe der Kartenpreise je Token (null ohne Tokens/Preise). */
     function gallerySetTruePerToken(set, tokensFallback) {
         if (!set || !set.players || !set.players.length) return null;
+        if (!set.players.every(p => p && Number.isFinite(p.price) && p.price > 0)) return null;
         const total = set.players.reduce((a, p) => a + (p.price || 0), 0);
         const tokens = set.tokens != null ? set.tokens : tokensFallback;
         if (!(tokens > 0) || !(total > 0)) return null;
@@ -11345,6 +11371,9 @@
             diag.sets = sets.length;
             diag.setsFromIndex = lists[0].length;
             if (!sets.length) throw new Error('Keine Sets auf der fut.gg-Seite gefunden (Seite geändert?).');
+            diag.tokenSets = sets.filter(x => x.tokens > 0).length;
+            diag.pricedTokenSets = sets.filter(x => x.tokens > 0 && x.coins != null).length;
+            if (diag.tokenSets && !diag.pricedTokenSets) throw new Error('Galerie-Sets geladen, aber fut.gg-Preise nicht lesbar. Keine Kaufempfehlung möglich (Preisquelle geändert?).');
             const hideDone = !ui.galleryHideDone || ui.galleryHideDone.checked;
             let ranked = rankGallerySets(sets, hideDone ? galleryDoneIds() : [], null);
             const coins = userCoins();

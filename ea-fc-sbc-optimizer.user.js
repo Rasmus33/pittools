@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.3.14
+// @version      6.3.15
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.3.14';
+    const VERSION = '6.3.15';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -8705,7 +8705,11 @@ const HybridSbcEa = (() => {
         const liveSquad = liveChallenge.squad;
         requireFn(liveSquad, 'getFormation'); requireFn(liveSquad, 'getAllBrickIndices');
         const liveFormation = liveSquad.getFormation();
-        if (!liveFormation || liveFormation.id !== challengeDTO.formation || liveSquad.getAllBrickIndices().length) throw Error('Formation oder Pflicht-Slots nicht unterstützt');
+        // EA führt die API-Formation unter getName() (f352), nicht unter
+        // der separaten Formation-ID. ID bleibt Fallback für ältere Adapter.
+        const liveFormationName = liveFormation && (typeof liveFormation.getName === 'function' ? liveFormation.getName() : liveFormation.name || liveFormation.id);
+        if (!liveFormation || liveFormationName !== challengeDTO.formation) throw Error('Formation der offenen SBC passt nicht zur Vorgabe');
+        if (liveSquad.getAllBrickIndices().length) throw Error('Pflicht-Slots nicht unterstützt');
         if (typeof ea.UTSBCFactory !== 'function') throw Error('EA-Vorgabenfactory fehlt');
         requireFn(ea.factories && ea.factories.Squad, 'createSBCSquad');
         requireFn(ea.factories && ea.factories.Item, 'createItem');

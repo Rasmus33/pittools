@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.3.13
+// @version      6.3.14
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.3.13';
+    const VERSION = '6.3.14';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -8737,8 +8737,17 @@ const HybridSbcEa = (() => {
                 if (r.isCombinedRequirement) continue;
                 const key = r.getFirstKey(), values = r.getValue(key), cmp = r.scope === scopes.GREATER ? 'min' : r.scope === scopes.LOWER ? 'max' : 'exact';
                 const countFields = { NATION_ID: 'nation', LEAGUE_ID: 'league', PLAYER_LEVEL: 'quality', PLAYER_RARITY: 'rarity' };
-                // CLUB_ID benötigt EAs linked-team-Abgleich auch für Zielwerte;
-                // deswegen vorerst ausschließlich der EA-Prüfer.
+                // CLUB_ID benötigt EAs linked-team-Abgleich auch für Zielwerte.
+                // Nur als Mindestzahl lokal: Rohwert UND verlinkter Verein zählen,
+                // die Regel lenkt also nur zu passenden Vereinen (Marquee
+                // Matchups), das Urteil bleibt beim EA-Prüfer.
+                const team = ea.repositories && ea.repositories.TeamConfig;
+                if (key === keys.CLUB_ID && cmp === 'min' && r.count >= 0 && team && typeof team.getLinkedTeam === 'function') {
+                    const clubs = new Set();
+                    values.forEach(v => { clubs.add(Number(v)); const linked = team.getLinkedTeam(Number(v)); if (positiveId(linked)) clubs.add(Number(linked)); });
+                    rules.push({ kind: 'count', field: 'club', values: [...clubs], cmp, value: r.count });
+                    continue;
+                }
                 const sameFields = { SAME_NATION_COUNT: 'nation', SAME_LEAGUE_COUNT: 'league', SAME_CLUB_COUNT: 'club' };
                 const distinctFields = { NATION_COUNT: 'nation', LEAGUE_COUNT: 'league', CLUB_COUNT: 'club' };
                 const name = recognizedNames.find(n => keys[n] === key);
@@ -10992,9 +11001,23 @@ const HybridSbcEa = (() => {
             diag.phase = 'vorgaben';
             setHybridClubResult('<div class="sbc-opt-dim">Lese die Vorgaben der geöffneten SBC …</div>');
             if (!Number.isSafeInteger(Number(live.setId)) || Number(live.setId) <= 0) throw Error('SBC-Set nicht eindeutig erkannt.');
-            const json = await apiGet('sbs/setId/' + Number(live.setId) + '/challenges');
-            if (cancelled()) throw Error('SBC-Planung gestoppt oder Ansicht gewechselt.');
-            const dto = findChallengeNode(json, live.id);
+            // Die App hat die Set-Liste beim Öffnen schon geladen. Vorgaben
+            // ändern sich nicht; ein zweiter GET lief live in HTTP 429
+            // (Marquee Matchups, v6.3.13-Report).
+            const cachedSet = (STATE.setChallengesBySet || {})[Number(live.setId)];
+            let dto = cachedSet && findChallengeNode(cachedSet, live.id);
+            diag.dtoSource = 'cache';
+            if (!dto || !Array.isArray(dto.elgReq)) {
+                diag.dtoSource = 'netz';
+                let json;
+                try { json = await apiGet('sbs/setId/' + Number(live.setId) + '/challenges'); }
+                catch (e) {
+                    if (/\b429\b/.test(String(e.message || e))) throw Error('EA bremst gerade (HTTP 429). Bitte ein paar Minuten warten und die SBC neu öffnen.');
+                    throw e;
+                }
+                if (cancelled()) throw Error('SBC-Planung gestoppt oder Ansicht gewechselt.');
+                dto = findChallengeNode(json, live.id);
+            }
             const oracle = HybridSbcEa.createTeamOracle({ ea: window, challengeDTO: dto, liveChallenge: live });
             diag.requirements = dto.elgReq; diag.localRules = oracle.rules;
             let budget = 0, maxPurchases = 0, market = {cards:[],teams:[],errors:[]};

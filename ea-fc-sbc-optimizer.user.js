@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.3.15
+// @version      6.3.16
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.3.15';
+    const VERSION = '6.3.16';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -8611,11 +8611,21 @@ const HybridSbcEa = (() => {
         const response = await observe(svc.requestSquadList());
         if (!ok(response) || !response.data || !Array.isArray(response.data.squads)) throw Error('Mannschaftsliste nicht frisch vollständig lesbar');
         const squads = response.data.squads;
+        // Der Live-Abbruch v6.3.15 enthält weder die abgelehnte ID noch
+        // ihre Art. Vor jeder Validierung messen, keine Mannschaft auslassen.
+        if (options.diagnostic) {
+            options.diagnostic.listStatus = response.status;
+            options.diagnostic.ids = squads.map(s => {
+                const id = s && typeof s.getId === 'function' ? s.getId() : undefined;
+                return { id: id == null ? null : String(id), type: typeof id };
+            });
+        }
         const ids = new Set(), squadIds = [];
         for (const squad of squads) {
             requireFn(squad, 'getId'); requireFn(squad, 'setCacheTimestamp');
             const id = squad.getId();
-            if (!positiveId(id) || ids.has(String(id))) throw Error('Mannschafts-ID fehlt oder ist doppelt');
+            if (!positiveId(id)) throw Error('Mannschafts-ID ungültig: ' + String(id) + ' (' + typeof id + '). Kartenschutz nicht vollständig prüfbar.');
+            if (ids.has(String(id))) throw Error('Mannschafts-ID doppelt: ' + String(id) + '. Kartenschutz nicht vollständig prüfbar.');
             ids.add(String(id)); squadIds.push(id);
         }
         const protectedIds = new Set();
@@ -11055,7 +11065,9 @@ const HybridSbcEa = (() => {
                 }
             }
             diag.phase = 'mannschaften';
+            diag.squads = {};
             const squads = await HybridSbcEa.readSavedSquads({ ea: window, observe: obsPromise, wait: sleep, cancelled,
+                diagnostic: diag.squads,
                 progress: function (n, total) { setHybridClubResult('<div class="sbc-opt-dim">Schütze Mannschaften einschließlich Bank und Reserve: ' + n + '/' + total + ' …</div>'); } });
             diag.teams = squads.teamCount; diag.squadCardsProtected = squads.itemIds.length;
             const locked = Array.from(readPaletoolsLocks()), lockDiag = STATE.diag.locks;

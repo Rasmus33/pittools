@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.4.0
+// @version      6.5.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.4.0';
+    const VERSION = '6.5.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -206,6 +206,7 @@
             futbinBuyRefresh: null,  // v5.27.0: Live-Preise vor dem Kaufen nachgeholt (asked/priced/errors)
             gallery: null,           // v5.32.0: FUT Gallery (Sets geladen, gewaehlt, Plan)
             galleryEaCollect: null,  // v6.4.0: Sammelstand ueber EAs Konzept-Suche (Roh-Antwort, Urteil)
+            gauntlet: null,          // v6.5.0: Gauntlet-Builder (Formation, Meta-Abfragen, Chemie-Quelle, Varianten)
             galleryCheck: null,      // v5.65.0: Sammelstand je Spieler ueber Marktangebote
             gallerySell: null,       // v5.35.0: Verkauf gekaufter Galerie-Karten (Preise, Schritte)
             tradepileSell: null,     // v5.37.0: Transferliste zum Marktpreis listen
@@ -2297,7 +2298,12 @@
         if (raw.concept === true || raw.isConcept === true || raw.conceptItem === true) return null;
         try { if (typeof raw.isConcept === 'function' && raw.isConcept()) return null; } catch (e) {}
         // EVOLUTIONS niemals verwenden
-        if (isEvolution(raw)) { STATE.diag.evoExcluded++; return null; }
+        if (isEvolution(raw)) {
+            STATE.diag.evoExcluded++;
+            // v6.5.0: fuer den Gauntlet-Builder merken - der SBC-Pool bleibt ohne Evos.
+            if (!fromStorage && (raw.id || raw.itemId) != null) (STATE.evoRaws || (STATE.evoRaws = new Map())).set(String(raw.id || raw.itemId), raw);
+            return null;
+        }
         const id = raw.id || raw.itemId;
         const rating = parseInt(raw.rating != null ? raw.rating : raw.ovr, 10);
         if (id == null || isNaN(rating)) return null;
@@ -7286,6 +7292,11 @@
                     <button type="button" class="sbc-opt-btn primary" id="sbc-opt-tools-sell" style="margin-top:0;"><span>Transferliste zum Marktpreis listen</span></button>
                     <div class="sbc-opt-debug">Liest EAs Transferliste, holt je Karte das günstigste aktuelle Angebot, zeigt eine Vorschau und listet nach Rückfrage nacheinander (1 Stunde). Aktive und verkaufte Karten bleiben unberührt.</div>
                     <div class="sbc-opt-result" id="sbc-opt-tools-result"></div>
+                    <div class="sbc-opt-group-title">Gauntlet</div>
+                    <!-- v6.5.0: Teams aus dem Verein nach Meta-Rating (fut.gg) und Chemie (EA) - nichts wird gekauft. -->
+                    <button type="button" class="sbc-opt-btn primary" id="sbc-opt-gauntlet-open" style="margin-top:0;"><span>Gauntlet-Teams bauen</span></button>
+                    <div class="sbc-opt-debug">Baut aus deinem Verein mehrere Teams ohne gemeinsame Spieler: Chemie plus Ø Meta-Rating je Position (fut.gg). Zeigt die besten 5 Varianten, Anker je Team möglich.</div>
+                    <div class="sbc-opt-result" id="sbc-opt-gauntlet-result"></div>
                     <div class="sbc-opt-group-title">Werkzeuge</div>
                     <button class="sbc-opt-btn ghost" id="sbc-opt-diag" style="margin-top:0;">Diagnose in Konsole schreiben</button>
                     <div class="sbc-opt-debug">Die Diagnose ist ein JSON-Report für die Fehlersuche (Konsole bzw. App-Log).</div>
@@ -7395,6 +7406,8 @@
             gallerySell: panel.querySelector('#sbc-opt-gallery-sell'),
             gallerySort: panel.querySelector('#sbc-opt-gallery-sort'),
             toolsSell: panel.querySelector('#sbc-opt-tools-sell'),
+            gauntletOpen: panel.querySelector('#sbc-opt-gauntlet-open'),
+            gauntletResult: panel.querySelector('#sbc-opt-gauntlet-result'),
             toolsResult: panel.querySelector('#sbc-opt-tools-result'),
             gallerySellClear: panel.querySelector('#sbc-opt-gallery-sell-clear'),
             galleryCode: panel.querySelector('#sbc-opt-gallery-code'),
@@ -10804,6 +10817,525 @@ const HybridSbcEa = (() => {
         return out;
     }
     // [GALLERY-END]
+    // [GAUNTLET-BEGIN]
+    /**
+     * v6.5.0 Gauntlet-Builder (Rasmus 17.11.2026, docs/FUTGENIE-TECHNIK.md §4).
+     * NUR Vereinsspieler, nichts wird gekauft. Wert eines Teams =
+     *   chemWeight * Chemie (0-33) + Durchschnitt Meta-Rating der 11 (je Slot-Position).
+     * X Teams ohne Ueberschneidung (Gauntlet sperrt jede eingesetzte Karte fuer
+     * die naechsten Runden). Anker je Team: diese Spieler MUESSEN in dieses Team.
+     * Ergebnis: bis zu 5 verschiedene Gesamtvarianten, nach Summe sortiert.
+     *
+     * Suche: Startaufstellung (knappste Slots zuerst), lokale Suche (ersetzen /
+     * zwei Slots tauschen), iteriert mit Stoerungen; danach Tausch zwischen den
+     * Teams. Varianten aus anderen Team-Reihenfolgen und aus "ohne Spieler X"
+     * (Tabu je Runde). Heuristik mit Zeitbudget - kein Optimalitaetsbeweis.
+     * Chemie kommt von aussen (chemFn): live EAs UTSquadChemCalculatorUtils,
+     * im Test/Fallback das klassische Modell `simpleChem`.
+     * Zwei Spieler in derselben Person (gleiche assetId, verschiedene Versionen)
+     * duerfen nicht ins selbe Team - EA laesst das nicht zu.
+     */
+    const Gauntlet = (function () {
+        const POS_ID = { GK: 0, RWB: 2, RB: 3, CB: 5, LB: 7, LWB: 8, CDM: 10, RM: 12, CM: 14, LM: 16, CAM: 18, CF: 21, RW: 23, ST: 25, LW: 27 };
+        const POS_NAME = {};
+        Object.keys(POS_ID).forEach(k => { POS_NAME[POS_ID[k]] = k; });
+        // EAs Unique-Positionen (LCB, RS, ...) auf die allgemeine Position.
+        const UNIQUE_TO_GENERAL = { 1: 5, 4: 5, 6: 5, 9: 10, 11: 10, 13: 14, 15: 14, 17: 18, 19: 18, 20: 21, 22: 21, 24: 25, 26: 25 };
+        function generalPos(id) { const n = Number(id); return UNIQUE_TO_GENERAL[n] != null ? UNIQUE_TO_GENERAL[n] : n; }
+        function posIdFromName(name) { const k = String(name || '').toUpperCase(); return POS_ID[k] != null ? POS_ID[k] : null; }
+        function posName(id) { return POS_NAME[generalPos(id)] || String(id); }
+        function metaAt(p, pos) { const v = p && p.meta ? p.meta[pos] : undefined; return (typeof v === 'number' && isFinite(v)) ? v : null; }
+        function eligible(p, pos) { return !!p && Array.isArray(p.positions) && p.positions.indexOf(pos) >= 0 && metaAt(p, pos) != null; }
+        function personOf(p) { return String(p.person != null ? p.person : p.id); }
+        function maxMeta(p) { let m = null; Object.keys(p.meta || {}).forEach(k => { const v = p.meta[k]; if (typeof v === 'number' && isFinite(v) && (m == null || v > m)) m = v; }); return m; }
+        // Klassisches Chemie-Modell (FC 24-26). Live rechnet EA; das hier ist Test und Notbehelf.
+        const SIMPLE_THRESHOLDS = { club: [2, 5, 8], league: [3, 5, 8], nation: [2, 5, 8] };
+        function simpleChem(team) {
+            const cnt = { club: {}, league: {}, nation: {} };
+            team.forEach(p => { ['club', 'league', 'nation'].forEach(k => { const v = p[k]; if (v > 0) cnt[k][v] = (cnt[k][v] || 0) + 1; }); });
+            const perSlot = team.map(p => {
+                let pts = 0;
+                ['club', 'league', 'nation'].forEach(k => { const c = p[k] > 0 ? (cnt[k][p[k]] || 0) : 0; SIMPLE_THRESHOLDS[k].forEach(t => { if (c >= t) pts++; }); });
+                return Math.min(3, pts);
+            });
+            return { total: perSlot.reduce((a, b) => a + b, 0), perSlot: perSlot };
+        }
+        function rngFrom(seed) {
+            let a = (seed >>> 0) || 1;
+            return function () { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+        }
+        function createCtx(input) {
+            const slots = (input.slots || []).map(generalPos);
+            const players = (input.players || []).filter(p => p && p.id != null && Array.isArray(p.positions));
+            const ctx = {
+                slots: slots, players: players, byId: new Map(players.map(p => [String(p.id), p])),
+                chemWeight: input.chemWeight != null && isFinite(+input.chemWeight) ? +input.chemWeight : 1,
+                chemFn: input.chemFn || simpleChem, cache: new Map(), evals: 0, K: input.K || 40,
+                rng: rngFrom(input.seed || 1), now: input.now || (() => Date.now()), deadline: Infinity, hardDeadline: Infinity,
+                yieldFn: input.yieldFn || null, lastYield: 0
+            };
+            ctx.eligibleBySlot = slots.map(pos => players.filter(p => eligible(p, pos)).sort((a, b) => (metaAt(b, pos) - metaAt(a, pos)) || (String(a.id) < String(b.id) ? -1 : 1)));
+            // Kandidaten je Slot: beste nach Meta PLUS die besten je Liga/Nation/Verein
+            // (Chemie-Partner, die nach Meta allein nie drankaemen).
+            ctx.candBySlot = ctx.eligibleBySlot.map((list, i) => {
+                const pos = slots[i], pick = new Set(), out = [];
+                const add = p => { const k = String(p.id); if (!pick.has(k)) { pick.add(k); out.push(p); } };
+                list.slice(0, 20).forEach(add);
+                ['league', 'nation', 'club'].forEach(key => {
+                    const per = {};
+                    list.forEach(p => { const g = p[key]; if (!(g > 0)) return; per[g] = (per[g] || 0) + 1; if (per[g] <= 2) add(p); });
+                });
+                return out.sort((a, b) => metaAt(b, pos) - metaAt(a, pos));
+            });
+            return ctx;
+        }
+        function chemOf(ctx, team) {
+            const key = team.map(p => p.id).join(',');
+            let r = ctx.cache.get(key);
+            if (!r) {
+                ctx.evals++;
+                r = ctx.chemFn(team);
+                if (typeof r === 'number') r = { total: r, perSlot: null };
+                if (ctx.cache.size > 200000) ctx.cache.clear();
+                ctx.cache.set(key, r);
+            }
+            return r;
+        }
+        function scoreTeam(ctx, team) {
+            let sum = 0;
+            for (let i = 0; i < team.length; i++) sum += metaAt(team[i], ctx.slots[i]);
+            const ch = chemOf(ctx, team), avg = sum / team.length;
+            return { score: ctx.chemWeight * ch.total + avg, chem: ch.total, avgMeta: avg, perSlot: ch.perSlot };
+        }
+        function personClash(team, p, skipIdx) {
+            const k = personOf(p);
+            for (let i = 0; i < team.length; i++) if (i !== skipIdx && team[i] && personOf(team[i]) === k) return true;
+            return false;
+        }
+        // Anker per Backtracking auf Slots legen (bevorzugt hohes Meta), dann knappste Slots fuellen.
+        function initialTeam(ctx, blocked, anchors) {
+            const n = ctx.slots.length, team = new Array(n).fill(null);
+            const bad = placeAnchors(ctx, team, anchors);
+            if (bad) return { error: 'anchor', player: bad };
+            const free = [];
+            for (let i = 0; i < n; i++) if (!team[i]) free.push(i);
+            const avail = i => ctx.eligibleBySlot[i].filter(p => !blocked.has(String(p.id))).length;
+            free.sort((i, j) => avail(i) - avail(j));
+            const empty = free.find(i => avail(i) === 0);
+            if (empty != null) return { error: 'slot', slot: empty };
+            // Vollstaendige Suche mit Zuruecksetzen (erste Loesung = gierige Wahl); noetig, weil
+            // mehrere Versionen desselben Spielers die gierige Wahl in Sackgassen fuehren.
+            const used = new Set(team.filter(Boolean).map(p => String(p.id)));
+            if (!dfsFill(ctx, [team], free.map(i => [0, i]), used, p => !blocked.has(String(p.id)), 60000)) return { error: 'slot', slot: free[0] };
+            return { team: team };
+        }
+        /** Offene Slots [team, slot] der Reihe nach belegen (Tiefensuche, Schrittgrenze). */
+        function dfsFill(ctx, teams, open, used, allowed, limit) {
+            let steps = 0;
+            const rec = k => {
+                if (k === open.length) return true;
+                if (++steps > limit) return false;
+                const t = open[k][0], i = open[k][1];
+                for (const p of ctx.eligibleBySlot[i]) {
+                    const id = String(p.id);
+                    if (used.has(id) || !allowed(p) || personClash(teams[t], p, i)) continue;
+                    teams[t][i] = p; used.add(id);
+                    if (rec(k + 1)) return true;
+                    teams[t][i] = null; used.delete(id);
+                }
+                return false;
+            };
+            return rec(0);
+        }
+        /**
+         * Beste Slot-Verteilung einer festen Spielermenge (exakt, Bitmasken-DP ueber die Slots).
+         * Chemie haengt nur an der Menge (alle stehen auf eigener Position), deshalb reicht Meta.
+         */
+        function bestAssign(ctx, members) {
+            const n = ctx.slots.length;
+            if (members.length !== n) return null;
+            const size = 1 << n, dp = new Float64Array(size).fill(-Infinity), par = new Array(size).fill(-1);
+            dp[0] = 0;
+            const w = members.map(p => ctx.slots.map(pos => eligible(p, pos) ? metaAt(p, pos) : -Infinity));
+            for (let mask = 0; mask < size; mask++) {
+                const base = dp[mask];
+                if (base === -Infinity) continue;
+                let k = 0; for (let x = mask; x; x &= x - 1) k++;
+                if (k >= n) continue;
+                const row = w[k];
+                for (let i = 0; i < n; i++) {
+                    if (mask & (1 << i) || row[i] === -Infinity) continue;
+                    const nm = mask | (1 << i), v = base + row[i];
+                    if (v > dp[nm]) { dp[nm] = v; par[nm] = i; }
+                }
+            }
+            if (dp[size - 1] === -Infinity) return null;
+            const out = new Array(n);
+            let mask = size - 1;
+            for (let k = n - 1; k >= 0; k--) { const i = par[mask]; out[i] = members[k]; mask &= ~(1 << i); }
+            return out;
+        }
+        async function maybeYield(ctx) {
+            if (!ctx.yieldFn) return;
+            const t = ctx.now();
+            if (t - ctx.lastYield > 120) { ctx.lastYield = t; await ctx.yieldFn(); }
+        }
+        function localSearch(ctx, team, blocked, anchorIds) {
+            const n = team.length, maxChem = 3 * n;
+            let cur = scoreTeam(ctx, team), improved = true;
+            while (improved && ctx.now() <= ctx.hardDeadline) {
+                improved = false;
+                const inTeam = new Set(team.map(p => String(p.id)));
+                for (let i = 0; i < n && !improved; i++) {
+                    if (anchorIds.has(String(team[i].id))) continue;
+                    const pos = ctx.slots[i], oldM = metaAt(team[i], pos);
+                    let tried = 0;
+                    for (const c of ctx.candBySlot[i]) {
+                        const cid = String(c.id);
+                        if (inTeam.has(cid) || blocked.has(cid) || personClash(team, c, i)) continue;
+                        // Schranke: mehr als (33 - Chemie) kann der Tausch nicht gewinnen; Liste ist nach Meta sortiert.
+                        if ((metaAt(c, pos) - oldM) / n + ctx.chemWeight * (maxChem - cur.chem) <= 1e-9) break;
+                        if (++tried > ctx.K) break;
+                        const old = team[i];
+                        team[i] = c;
+                        const s = scoreTeam(ctx, team);
+                        if (s.score > cur.score + 1e-9) { cur = s; improved = true; break; }
+                        team[i] = old;
+                    }
+                }
+                // Zweite Stufe: Spieler ersetzen und die Positionen im Team neu verteilen
+                // (der Neue passt evtl. nur auf einen anderen Slot).
+                if (!improved) {
+                    const members = team.slice();
+                    const inT = new Set(members.map(p => String(p.id)));
+                    for (let i = 0; i < n && !improved; i++) {
+                        if (anchorIds.has(String(members[i].id))) continue;
+                        let tried = 0;
+                        const seenC = new Set();
+                        for (let sl = 0; sl < n && !improved; sl++) for (const c of ctx.candBySlot[sl]) {
+                            const cid = String(c.id);
+                            if (seenC.has(cid) || inT.has(cid) || blocked.has(cid) || personClash(members, c, i)) continue;
+                            seenC.add(cid);
+                            if (++tried > ctx.K) break;
+                            const trial = members.slice(); trial[i] = c;
+                            const arr = bestAssign(ctx, trial);
+                            if (!arr) continue;
+                            const s = scoreTeam(ctx, arr);
+                            if (s.score > cur.score + 1e-9) { for (let q = 0; q < n; q++) team[q] = arr[q]; cur = s; improved = true; break; }
+                        }
+                    }
+                }
+                // Zwei Slots tauschen: Chemie bleibt (beide stehen auf eigener Position), nur Meta zaehlt.
+                for (let i = 0; i < n && !improved; i++) for (let j = i + 1; j < n && !improved; j++) {
+                    const a = team[i], b = team[j];
+                    if (!eligible(a, ctx.slots[j]) || !eligible(b, ctx.slots[i])) continue;
+                    const d = metaAt(a, ctx.slots[j]) + metaAt(b, ctx.slots[i]) - metaAt(a, ctx.slots[i]) - metaAt(b, ctx.slots[j]);
+                    if (d > 1e-9) { team[i] = b; team[j] = a; cur = scoreTeam(ctx, team); improved = true; }
+                }
+            }
+            return cur;
+        }
+        function perturb(ctx, team, blocked, anchorIds, k) {
+            const inTeam = new Set(team.map(p => String(p.id)));
+            const idx = [];
+            for (let i = 0; i < team.length; i++) if (!anchorIds.has(String(team[i].id))) idx.push(i);
+            for (let r = 0; r < k && idx.length; r++) {
+                const i = idx.splice(Math.floor(ctx.rng() * idx.length), 1)[0];
+                const ok = p => !inTeam.has(String(p.id)) && !blocked.has(String(p.id)) && !personClash(team, p, i);
+                let cands;
+                if (ctx.rng() < 0.5) {
+                    // Chemie-Partner eines zufaelligen Mitspielers (Liga oder Nation)
+                    const mate = team[Math.floor(ctx.rng() * team.length)], key = ctx.rng() < 0.5 ? 'league' : 'nation';
+                    cands = ctx.eligibleBySlot[i].filter(p => ok(p) && mate && p[key] > 0 && p[key] === mate[key]).slice(0, ctx.K);
+                }
+                if (!cands || !cands.length) cands = ctx.candBySlot[i].filter(ok).slice(0, ctx.K);
+                if (!cands.length) continue;
+                const c = cands[Math.floor(ctx.rng() * cands.length)];
+                inTeam.delete(String(team[i].id)); team[i] = c; inTeam.add(String(c.id));
+            }
+        }
+        async function buildTeam(ctx, blocked, anchors, iters, start) {
+            const anchorIds = new Set(anchors.map(a => String(a.id)));
+            const init = start ? { team: start } : initialTeam(ctx, blocked, anchors);
+            if (init.error) return init;
+            const team = init.team;
+            const s0 = localSearch(ctx, team, blocked, anchorIds); // ERST suchen, dann kopieren (sonst passen Aufstellung und Wert nicht)
+            let best = { team: team.slice(), s: s0 };
+            for (let it = 0; it < iters && ctx.now() <= ctx.deadline; it++) {
+                await maybeYield(ctx);
+                const t = best.team.slice();
+                perturb(ctx, t, blocked, anchorIds, 2 + (it % 3));
+                const s = localSearch(ctx, t, blocked, anchorIds);
+                if (s.score > best.s.score + 1e-9) best = { team: t, s: s };
+            }
+            return best;
+        }
+        // Tausch zwischen zwei Teams, wenn die Summe steigt (Anker bleiben in ihrem Team).
+        function improvePlan(ctx, plan, anchorTeamOf, taboo) {
+            let improved = true;
+            while (improved && ctx.now() <= ctx.hardDeadline) {
+                improved = false;
+                // Ketten-Zug: x wechselt von Team a nach Team b (Slot j), Team a bekommt einen freien Spieler.
+                const usedAll = new Set(plan.teams.flat().map(p => String(p.id)));
+                for (let a = 0; a < plan.teams.length && !improved; a++) for (let b = 0; b < plan.teams.length && !improved; b++) {
+                    if (a === b) continue;
+                    const A = plan.teams[a], B = plan.teams[b];
+                    for (let i = 0; i < A.length && !improved; i++) for (let j = 0; j < B.length && !improved; j++) {
+                        const x = A[i], y = B[j];
+                        if (anchorTeamOf.has(String(x.id)) || anchorTeamOf.has(String(y.id))) continue;
+                        if (!eligible(x, ctx.slots[j]) || personClash(B, x, j)) continue;
+                        let tried = 0;
+                        for (const f of ctx.eligibleBySlot[i]) {
+                            const fid = String(f.id);
+                            if (usedAll.has(fid) || (taboo && taboo.has(fid)) || anchorTeamOf.has(fid) || personClash(A, f, i)) continue;
+                            if (++tried > 3) break;
+                            A[i] = f; B[j] = x;
+                            const sa = scoreTeam(ctx, A), sb = scoreTeam(ctx, B);
+                            if (sa.score + sb.score > plan.scores[a].score + plan.scores[b].score + 1e-9) { plan.scores[a] = sa; plan.scores[b] = sb; improved = true; break; }
+                            A[i] = x; B[j] = y;
+                        }
+                    }
+                }
+                for (let a = 0; a < plan.teams.length && !improved; a++) for (let b = a + 1; b < plan.teams.length && !improved; b++) {
+                    const A = plan.teams[a], B = plan.teams[b];
+                    for (let i = 0; i < A.length && !improved; i++) for (let j = 0; j < B.length && !improved; j++) {
+                        const x = A[i], y = B[j];
+                        if (anchorTeamOf.has(String(x.id)) || anchorTeamOf.has(String(y.id))) continue;
+                        if (!eligible(y, ctx.slots[i]) || !eligible(x, ctx.slots[j])) continue;
+                        if (personClash(A, y, i) || personClash(B, x, j)) continue;
+                        A[i] = y; B[j] = x;
+                        const sa = scoreTeam(ctx, A), sb = scoreTeam(ctx, B);
+                        if (sa.score + sb.score > plan.scores[a].score + plan.scores[b].score + 1e-9) {
+                            plan.scores[a] = sa; plan.scores[b] = sb; improved = true;
+                        } else { A[i] = x; B[j] = y; }
+                    }
+                }
+            }
+            // Tausch zwischen Teams mit Neuverteilung der Positionen (x und y passen evtl. nur auf andere Slots).
+            improved = true;
+            while (improved && ctx.now() <= ctx.hardDeadline) {
+                improved = false;
+                for (let a = 0; a < plan.teams.length && !improved; a++) for (let b = a + 1; b < plan.teams.length && !improved; b++) {
+                    const A = plan.teams[a], B = plan.teams[b];
+                    for (let i = 0; i < A.length && !improved; i++) for (let j = 0; j < B.length && !improved; j++) {
+                        const x = A[i], y = B[j];
+                        if (anchorTeamOf.has(String(x.id)) || anchorTeamOf.has(String(y.id))) continue;
+                        if (personClash(A, y, i) || personClash(B, x, j)) continue;
+                        const ta = A.slice(); ta[i] = y;
+                        const tb = B.slice(); tb[j] = x;
+                        const na = bestAssign(ctx, ta), nb = na && bestAssign(ctx, tb);
+                        if (!na || !nb) continue;
+                        const sa = scoreTeam(ctx, na), sb = scoreTeam(ctx, nb);
+                        if (sa.score + sb.score > plan.scores[a].score + plan.scores[b].score + 1e-9) {
+                            for (let q = 0; q < A.length; q++) { A[q] = na[q]; B[q] = nb[q]; }
+                            plan.scores[a] = sa; plan.scores[b] = sb; improved = true;
+                        }
+                    }
+                }
+            }
+            plan.total = plan.scores.reduce((s, x) => s + x.score, 0);
+        }
+        // Anker eines Teams per Backtracking platzieren (Teil von initialTeam, auch fuer die gemeinsame Verteilung).
+        function placeAnchors(ctx, team, anchors) {
+            const n = ctx.slots.length;
+            const order = anchors.slice().sort((a, b) => ctx.slots.filter(s => eligible(a, s)).length - ctx.slots.filter(s => eligible(b, s)).length);
+            const place = k => {
+                if (k === order.length) return true;
+                const a = order[k], opts = [];
+                for (let i = 0; i < n; i++) if (!team[i] && eligible(a, ctx.slots[i])) opts.push(i);
+                opts.sort((i, j) => metaAt(a, ctx.slots[j]) - metaAt(a, ctx.slots[i]));
+                for (const i of opts) { team[i] = a; if (place(k + 1)) return true; team[i] = null; }
+                return false;
+            };
+            return place(0) ? null : (order.find(a => !ctx.slots.some(s => eligible(a, s))) || order[order.length - 1]);
+        }
+        /**
+         * Alle Slots aller Teams gemeinsam belegen (Zuordnung mit Umbelegen, wie Kuhn):
+         * findet eine Verteilung, wo das Nacheinander scheitert, weil Team 1 einem
+         * spaeteren Team den einzigen passenden Spieler wegnimmt.
+         */
+        function jointInitial(ctx, teamsN, anchorsByTeam, anchorTeamOf, taboo) {
+            const n = ctx.slots.length;
+            const teams = Array.from({ length: teamsN }, () => new Array(n).fill(null));
+            const owner = new Map();
+            for (let t = 0; t < teamsN; t++) {
+                const bad = placeAnchors(ctx, teams[t], anchorsByTeam[t] || []);
+                if (bad) return { error: 'anchor', team: t, player: bad };
+                teams[t].forEach((p, i) => { if (p) owner.set(String(p.id), [t, i]); });
+            }
+            const tryAssign = (t, i, visited) => {
+                for (const p of ctx.eligibleBySlot[i]) {
+                    const id = String(p.id);
+                    if (visited.has(id) || taboo.has(id) || anchorTeamOf.has(id) || personClash(teams[t], p, i)) continue;
+                    visited.add(id);
+                    const cur = owner.get(id);
+                    if (!cur) { teams[t][i] = p; owner.set(id, [t, i]); return true; }
+                    teams[cur[0]][cur[1]] = null;
+                    if (tryAssign(cur[0], cur[1], visited)) { teams[t][i] = p; owner.set(id, [t, i]); return true; }
+                    teams[cur[0]][cur[1]] = p;
+                }
+                return false;
+            };
+            const open = [];
+            for (let t = 0; t < teamsN; t++) for (let i = 0; i < n; i++) if (!teams[t][i]) open.push([t, i]);
+            open.sort((x, y) => ctx.eligibleBySlot[x[1]].length - ctx.eligibleBySlot[y[1]].length);
+            let failed = null;
+            for (const [t, i] of open) if (!tryAssign(t, i, new Set())) { failed = [t, i]; break; }
+            if (!failed) return { teams: teams };
+            // Umbelegen scheitert an Personen-Konflikten -> vollstaendige Suche ueber alle offenen Slots.
+            open.forEach(([t, i]) => { teams[t][i] = null; });
+            const used = new Set();
+            teams.forEach(tm => tm.forEach(p => { if (p) used.add(String(p.id)); }));
+            if (dfsFill(ctx, teams, open, used, p => !taboo.has(String(p.id)) && !anchorTeamOf.has(String(p.id)), 200000)) return { teams: teams };
+            return { error: 'slot', team: failed[0], slot: failed[1] };
+        }
+        async function buildPlan(ctx, teamsN, anchorsByTeam, order, iters, taboo, joint) {
+            const tabooSet = new Set(taboo || []);
+            const teams = new Array(teamsN), scores = new Array(teamsN), used = new Set(tabooSet);
+            const anchorTeamOf = new Map();
+            anchorsByTeam.forEach((list, t) => (list || []).forEach(a => anchorTeamOf.set(String(a.id), t)));
+            const blockedFor = (t, extra) => {
+                const blocked = new Set(extra);
+                anchorTeamOf.forEach((tt, id) => { if (tt !== t) blocked.add(id); });
+                (anchorsByTeam[t] || []).forEach(a => blocked.delete(String(a.id)));
+                return blocked;
+            };
+            let seqError = null;
+            if (!joint) {
+                for (const t of order) {
+                    const r = await buildTeam(ctx, blockedFor(t, used), anchorsByTeam[t] || [], iters);
+                    if (r.error) { seqError = { error: r.error, team: t, slot: r.slot, player: r.player }; break; }
+                    teams[t] = r.team; scores[t] = r.s;
+                    r.team.forEach(p => used.add(String(p.id)));
+                }
+                if (seqError && seqError.error !== 'slot') return seqError;
+            }
+            if (joint || seqError) {
+                const ji = jointInitial(ctx, teamsN, anchorsByTeam, anchorTeamOf, tabooSet);
+                if (ji.error) return ji;
+                for (let t = 0; t < teamsN; t++) teams[t] = ji.teams[t];
+                for (const t of order) {
+                    const others = new Set(tabooSet);
+                    teams.forEach((tm, k) => { if (k !== t) tm.forEach(p => others.add(String(p.id))); });
+                    const r = await buildTeam(ctx, blockedFor(t, others), anchorsByTeam[t] || [], iters, teams[t].slice());
+                    teams[t] = r.team; scores[t] = r.s;
+                }
+            }
+            let plan = { teams: teams, scores: scores, total: 0, joint: !!(joint || seqError) };
+            improvePlan(ctx, plan, anchorTeamOf, tabooSet);
+            // Stoersuche ueber den ganzen Plan: ein Team stoeren, neu optimieren, Tausch zwischen Teams.
+            for (let it = 0; teamsN > 1 && it < iters && ctx.now() <= ctx.deadline; it++) {
+                await maybeYield(ctx);
+                const cand = { teams: plan.teams.map(t => t.slice()), scores: plan.scores.slice(), total: 0, joint: plan.joint };
+                const t = Math.floor(ctx.rng() * teamsN);
+                const others = new Set(tabooSet);
+                cand.teams.forEach((tm, k) => { if (k !== t) tm.forEach(p => others.add(String(p.id))); });
+                const blocked = blockedFor(t, others), anchorIds = new Set((anchorsByTeam[t] || []).map(a => String(a.id)));
+                perturb(ctx, cand.teams[t], blocked, anchorIds, 2 + (it % 3));
+                cand.scores[t] = localSearch(ctx, cand.teams[t], blocked, anchorIds);
+                improvePlan(ctx, cand, anchorTeamOf, tabooSet);
+                if (cand.total > plan.total + 1e-9) plan = cand;
+            }
+            return plan;
+        }
+        function signature(plan, ordered) {
+            const parts = plan.teams.map(t => t.map(p => String(p.id)).sort().join('.'));
+            return (ordered ? parts : parts.slice().sort()).join('|');
+        }
+        function permutations(n) {
+            const out = [], a = [];
+            const rec = rest => { if (!rest.length) { out.push(a.slice()); return; } rest.forEach((x, i) => { a.push(x); rec(rest.slice(0, i).concat(rest.slice(i + 1))); a.pop(); }); };
+            rec(Array.from({ length: n }, (_, i) => i));
+            return out.slice(0, 24);
+        }
+        /** Bank-Vorschlag: je Team die schwaechsten freien Spieler (auch die Bank wird im Gauntlet gesperrt). */
+        function benchFor(ctx, plan, size, reserved) {
+            const used = new Set(reserved || []);
+            plan.teams.forEach(t => t.forEach(p => used.add(String(p.id))));
+            const free = ctx.players.filter(p => !used.has(String(p.id)))
+                .sort((a, b) => ((maxMeta(a) != null ? maxMeta(a) : a.rating || 0) - (maxMeta(b) != null ? maxMeta(b) : b.rating || 0)) || (String(a.id) < String(b.id) ? -1 : 1));
+            return plan.teams.map(team => {
+                const persons = new Set(team.map(personOf)), out = [];
+                for (const p of free) {
+                    if (out.length >= size) break;
+                    if (used.has(String(p.id)) || persons.has(personOf(p))) continue;
+                    out.push(p); used.add(String(p.id)); persons.add(personOf(p));
+                }
+                return out;
+            });
+        }
+        /**
+         * input: { slots[11], players[], teams, variants=5, chemWeight=1, anchors: [[ids] je Team],
+         *          chemFn, timeBudgetMs=8000, benchSize=7, seed, now, yieldFn }
+         * Liefert { variants: [{ total, teams:[[spieler je Slot]], scores:[{score,chem,avgMeta,perSlot}], bench }], evals, rounds } oder { error }.
+         */
+        async function solve(input) {
+            const ctx = createCtx(input);
+            const teamsN = Math.max(1, Math.min(6, input.teams | 0 || 1));
+            const want = Math.max(1, input.variants || 5);
+            const n = ctx.slots.length;
+            if (!n) return { error: 'formation' };
+            const anchorIds = (input.anchors || []).slice(0, teamsN);
+            const seen = new Map(), anchorsByTeam = [];
+            for (let t = 0; t < teamsN; t++) {
+                const list = [];
+                for (const id of (anchorIds[t] || [])) {
+                    const p = ctx.byId.get(String(id));
+                    if (!p) return { error: 'anchor-unknown', team: t, id: id };
+                    if (seen.has(String(id))) return { error: 'anchor-twice', team: t, player: p };
+                    if (list.some(q => personOf(q) === personOf(p))) return { error: 'anchor-person', team: t, player: p };
+                    seen.set(String(id), t); list.push(p);
+                }
+                if (list.length > n) return { error: 'anchor-too-many', team: t };
+                anchorsByTeam.push(list);
+            }
+            const ordered = anchorsByTeam.some(l => l.length);
+            const budget = input.timeBudgetMs || 8000, start = ctx.now(), end = start + budget;
+            // Lokale Suche laeuft immer bis zum lokalen Optimum - nur diese harte Grenze bricht sie ab.
+            ctx.hardDeadline = end + budget / 2;
+            const orders = permutations(teamsN);
+            // Erste Runde bekommt ein Drittel (beste Loesung), die uebrigen teilen sich den Rest (Varianten).
+            const firstSlice = budget * 0.35, laterSlice = (budget - firstSlice) / (want * 2 + 2);
+            const top = [];
+            let rounds = 0, firstError = null, best = null, tabooQueue = [];
+            const addTop = plan => {
+                const sig = signature(plan, ordered);
+                if (top.some(x => x.sig === sig)) return;
+                top.push({ sig: sig, plan: plan });
+                top.sort((a, b) => b.plan.total - a.plan.total);
+                if (top.length > want) top.length = want;
+            };
+            while (ctx.now() < end && rounds < 60) {
+                ctx.deadline = Math.min(end, ctx.now() + (rounds === 0 ? firstSlice : laterSlice));
+                ctx.rng = rngFrom((input.seed || 1) * 7919 + rounds);
+                const order = orders[rounds % orders.length];
+                let taboo = null;
+                if (rounds >= orders.length && best && (rounds - orders.length) % 2 === 1) {
+                    // Varianten "ohne Spieler X": nacheinander je einen Spieler der besten Loesung sperren.
+                    if (!tabooQueue.length) tabooQueue = best.teams.flat().filter(p => !seen.has(String(p.id)))
+                        .sort((a, b) => (maxMeta(b) || 0) - (maxMeta(a) || 0)).map(p => String(p.id));
+                    const id = tabooQueue.shift();
+                    if (id == null) break;
+                    taboo = [id];
+                }
+                const plan = await buildPlan(ctx, teamsN, anchorsByTeam, order, rounds === 0 ? 40 : 12, taboo, teamsN > 1 && rounds % 2 === 1);
+                rounds++;
+                if (plan.error) { if (!firstError) firstError = plan; if (!best) break; continue; }
+                addTop(plan);
+                if (!best || plan.total > best.total) best = plan;
+                await maybeYield(ctx);
+            }
+            if (!top.length) return firstError || { error: 'none' };
+            const reserved = Array.from(seen.keys());
+            return {
+                variants: top.map(x => ({ total: x.plan.total, teams: x.plan.teams, scores: x.plan.scores, bench: benchFor(ctx, x.plan, input.benchSize != null ? input.benchSize : 7, reserved) })),
+                evals: ctx.evals, rounds: rounds, ms: ctx.now() - start, candidates: ctx.eligibleBySlot.map(l => l.length)
+            };
+        }
+        return { solve: solve, simpleChem: simpleChem, generalPos: generalPos, posIdFromName: posIdFromName, posName: posName,
+                 metaAt: metaAt, eligible: eligible, maxMeta: maxMeta, POS_ID: POS_ID };
+    })();
+    // [GAUNTLET-END]
     // ---- Bruecke zu futbin (CORS) ------------------------------------------
     // Zwei Anbieter, EIN Protokoll: in der App das native Objekt
     // PitBridgeNative (App >= 1.11.0), im Browser das Helfer-Userscript
@@ -12716,6 +13248,7 @@ const HybridSbcEa = (() => {
             });
         }
         if (ui.toolsSell && !ui.toolsSell.dataset.wired) { ui.toolsSell.dataset.wired = '1'; ui.toolsSell.addEventListener('click', onTradepileSellClick); }
+        if (ui.gauntletOpen && !ui.gauntletOpen.dataset.wired) { ui.gauntletOpen.dataset.wired = '1'; ui.gauntletOpen.addEventListener('click', onGauntletOpenClick); }
         // v5.36.0: Sortierung (localStorage), Wechsel ordnet die geladene Liste ohne Neuladen.
         if (ui.gallerySort && !ui.gallerySort.dataset.wired) {
             ui.gallerySort.dataset.wired = '1';
@@ -13984,6 +14517,281 @@ const HybridSbcEa = (() => {
         renderSellPreview(rows, sellable, byMode);
     }
     /** v5.37.0: alle unverkauften Spieler der Transferliste zum Marktpreis listen (Reiter "Mehr"). */
+    // ===================== v6.5.0 Gauntlet-Builder (Daten + Oberflaeche) =====================
+    // Nur Vereinsspieler (Pool ohne Storage + Evos aus STATE.evoRaws). Kein Kauf, kein Speichern
+    // bei EA - die Vorschau zeigt Aufstellungen, Rasmus stellt sie im Spiel auf.
+    const GAUNTLET_FUTGG_GAME = 27;
+    const GAUNTLET_META_KEY = 'sbcOptMetaRank';
+    const GAUNTLET_META_TTL_MS = 24 * 3600 * 1000;
+    const GAUNTLET_SETTINGS_KEY = 'sbcOptGauntlet';
+    let gauntletBusy = false;
+    const gauntletState = { anchors: [], players: null, last: null, anchorTeam: 0 };
+    function gauntletSettings() {
+        let s = {};
+        try { s = JSON.parse(localStorage.getItem(GAUNTLET_SETTINGS_KEY) || '{}') || {}; } catch (e) { s = {}; }
+        return { formation: s.formation || null, teams: Math.max(1, Math.min(4, Number(s.teams) || 2)),
+                 chemWeight: (s.chemWeight != null && isFinite(+s.chemWeight) && +s.chemWeight >= 0) ? +s.chemWeight : 1 };
+    }
+    function gauntletSettingsSave(s) { try { localStorage.setItem(GAUNTLET_SETTINGS_KEY, JSON.stringify(s)); } catch (e) {} }
+    function gauntletFormations() {
+        try {
+            const repo = window.repositories && window.repositories.Squad;
+            const list = repo && typeof repo.getFormations === 'function' ? repo.getFormations() : [];
+            return (list || []).map(f => {
+                const slots = [];
+                for (let i = 0; i < 11; i++) { const p = typeof f.getPosition === 'function' ? f.getPosition(i) : (f.positions || [])[i]; slots.push(p ? Number(p.typeId) : null); }
+                return { name: f.name || (typeof f.getName === 'function' ? f.getName() : ''), label: f.displayName || f.name, dto: f, slots: slots };
+            }).filter(f => f.name && f.slots.every(x => x != null && !isNaN(x)));
+        } catch (e) { reportError('Gauntlet: Formationen', e); return []; }
+    }
+    /** Vereinsspieler als Gauntlet-Eingabe (ohne Meta). */
+    function gauntletClubPlayers() {
+        const raws = [], seen = new Set();
+        (STATE.pool || []).forEach(p => { if (p && !p.isStorage && p.raw) { const k = String(p.id); if (!seen.has(k)) { seen.add(k); raws.push(p.raw); } } });
+        (STATE.evoRaws ? Array.from(STATE.evoRaws.values()) : []).forEach(r => { const k = String(r.id || r.itemId); if (!seen.has(k)) { seen.add(k); raws.push(r); } });
+        const fac = typeof window.UTItemEntityFactory === 'function' ? new window.UTItemEntityFactory() : null;
+        const out = [];
+        raws.forEach(raw => {
+            if (!raw || (raw.loans != null && Number(raw.loans) > 0)) return;
+            let ent = null;
+            try { ent = fac ? fac.createItem(raw) : null; } catch (e) { ent = null; }
+            let pos = [];
+            if (ent && Array.isArray(ent.possiblePositions) && ent.possiblePositions.length) pos = ent.possiblePositions.map(Gauntlet.generalPos);
+            else if (Array.isArray(raw.possiblePositions)) pos = raw.possiblePositions.map(x => typeof x === 'number' ? Gauntlet.generalPos(x) : Gauntlet.posIdFromName(x)).filter(x => x != null);
+            if (!pos.length && raw.preferredPosition != null) { const x = typeof raw.preferredPosition === 'number' ? raw.preferredPosition : Gauntlet.posIdFromName(raw.preferredPosition); if (x != null) pos = [Gauntlet.generalPos(x)]; }
+            pos = Array.from(new Set(pos));
+            if (!pos.length) return;
+            const def = Number(raw.resourceId || raw.definitionId || raw.assetId || 0);
+            out.push({
+                id: raw.id || raw.itemId, def: def, person: raw.assetId || def, rating: Number(raw.rating) || 0,
+                name: (ent && entityName(ent)) || resolvePlayerName(raw), positions: pos,
+                club: Number(raw.teamid != null ? raw.teamid : raw.teamId) || 0, league: Number(raw.leagueId) || 0, nation: Number(raw.nation) || 0,
+                evo: isEvolution(raw), ent: ent, meta: {}
+            });
+        });
+        return out;
+    }
+    function gauntletMetaCacheLoad() {
+        try { const o = JSON.parse(localStorage.getItem(GAUNTLET_META_KEY) || '{}'); return (o && typeof o === 'object') ? o : {}; } catch (e) { return {}; }
+    }
+    function gauntletMetaCacheSave(c) {
+        try {
+            const now = Date.now(), keep = {};
+            Object.keys(c).forEach(k => { if (c[k] && now - c[k][1] < GAUNTLET_META_TTL_MS) keep[k] = c[k]; });
+            localStorage.setItem(GAUNTLET_META_KEY, JSON.stringify(keep));
+        } catch (e) {}
+    }
+    /** fut.gg Meta-Rating je "defId:Position" (50 je Anfrage, 24 h Cache). Fehlt eins, gilt das Rating als Notwert. */
+    async function gauntletLoadMeta(players, onProgress, diag) {
+        const cache = gauntletMetaCacheLoad(), now = Date.now();
+        const reqs = [];
+        players.forEach(p => p.positions.forEach(pos => { if (p.def > 0) reqs.push(p.def + ':' + pos); }));
+        const uniq = Array.from(new Set(reqs));
+        const missing = uniq.filter(k => !(cache[k] && now - cache[k][1] < GAUNTLET_META_TTL_MS));
+        diag.metaAsked = uniq.length; diag.metaFromCache = uniq.length - missing.length; diag.metaFetched = 0; diag.metaRequests = 0;
+        for (let i = 0; i < missing.length; i += 50) {
+            const chunk = missing.slice(i, i + 50);
+            onProgress(Math.min(missing.length, i + 50), missing.length);
+            const url = 'https://www.fut.gg/api/fut/metarank/players/v2/?game=' + GAUNTLET_FUTGG_GAME + '&requests=' + chunk.join(',');
+            const r = await bridgeFetch(url, 30000);
+            diag.metaRequests++;
+            if (r.status !== 200) throw new Error('fut.gg antwortet mit HTTP ' + r.status);
+            let data = [];
+            try { data = (JSON.parse(r.text) || {}).data || []; } catch (e) { throw new Error('fut.gg-Antwort nicht lesbar'); }
+            chunk.forEach((k, j) => {
+                const d = data[j];
+                const def = Number(k.split(':')[0]);
+                const v = d && Number(d.eaId) === def && typeof d.score === 'number' ? d.score : null;
+                cache[k] = [v, now];
+                if (v != null) diag.metaFetched++;
+            });
+            if (i + 50 < missing.length) await futbinSleep(randomBetween(300, 700));
+        }
+        gauntletMetaCacheSave(cache);
+        let fallback = 0;
+        players.forEach(p => {
+            p.metaFallback = [];
+            p.positions.forEach(pos => {
+                const c = cache[p.def + ':' + pos];
+                if (c && typeof c[0] === 'number') p.meta[pos] = c[0];
+                else { p.meta[pos] = p.rating; p.metaFallback.push(pos); fallback++; }
+            });
+        });
+        diag.metaFallback = fallback;
+    }
+    /** EAs eigener Chemie-Rechner; null, wenn nicht verfuegbar. */
+    function gauntletEaChemFn(formation) {
+        const C = window.UTSquadChemCalculatorUtils;
+        if (typeof C !== 'function' || !window.services || !window.services.Chemistry || !window.repositories || !window.repositories.TeamConfig) return null;
+        const calc = new C(window.services.Chemistry, window.repositories.TeamConfig);
+        return function (team) {
+            const vo = calc.calculate(formation.dto, team.map(p => p.ent), []);
+            const perSlot = Array.isArray(vo && vo.slots) ? vo.slots.map(s => Number(s.points) || 0) : null;
+            const total = vo && typeof vo.value === 'function' ? Number(vo.value()) : (vo && vo.chemistry != null ? Number(vo.chemistry) : (perSlot ? perSlot.reduce((a, b) => a + b, 0) : 0));
+            return { total: total, perSlot: perSlot };
+        };
+    }
+    function setGauntletResult(html) { if (!ui.gauntletResult) return; ui.gauntletResult.innerHTML = html; ui.gauntletResult.classList.toggle('show', !!html); }
+    function gauntletFmt(n, d) { return Number(n).toLocaleString('de-DE', { minimumFractionDigits: d, maximumFractionDigits: d }); }
+    function onGauntletOpenClick() {
+        if (gauntletBusy) return;
+        if (!(STATE.pool || []).some(p => p && !p.isStorage)) {
+            setGauntletResult(warnHtml('Noch kein Verein geladen. Bitte zuerst oben „Spieler laden“.'));
+            return;
+        }
+        const players = gauntletClubPlayers();
+        gauntletState.players = players;
+        const forms = gauntletFormations();
+        if (!forms.length) { setGauntletResult(warnHtml('EAs Formationen sind noch nicht geladen. Einmal „Kader“ im Spiel öffnen, dann erneut.')); return; }
+        const st = gauntletSettings();
+        if (gauntletState.anchors.length !== st.teams) gauntletState.anchors = Array.from({ length: st.teams }, (_, t) => gauntletState.anchors[t] || []);
+        const fName = forms.some(f => f.name === st.formation) ? st.formation : ((forms.find(f => /433$/.test(f.name)) || forms[0]).name);
+        const byId = new Map(players.map(p => [String(p.id), p]));
+        const label = p => p.name + ' · ' + p.rating + ' · ' + p.positions.map(Gauntlet.posName).join('/') + (p.evo ? ' · Evo' : '');
+        const evoNote = (!STATE.evoRaws || !STATE.evoRaws.size) ? '<div class="sbc-opt-dim">Evos fehlen noch: sie werden erst beim Laden des Vereins erfasst („↻ Verein neu laden“).</div>' : '';
+        let h = '<div class="sbc-opt-card">' +
+            '<label class="sbc-opt-chiplabel">Aufstellung</label><select id="sbc-opt-gt-formation" style="width:100%;">' +
+            forms.map(f => '<option value="' + escapeHtml(f.name) + '"' + (f.name === fName ? ' selected' : '') + '>' + escapeHtml(f.label) + '</option>').join('') + '</select>' +
+            '<label class="sbc-opt-chiplabel">Anzahl Teams (Runden)</label><div class="sbc-opt-chips" id="sbc-opt-gt-teams">' +
+            [1, 2, 3, 4].map(n => '<button type="button" class="sbc-opt-chip' + (n === st.teams ? ' on' : '') + '" data-n="' + n + '">' + n + '</button>').join('') + '</div>' +
+            '<div class="sbc-opt-compact" style="margin-top:8px;"><label>Gewicht Chemie (je Punkt)</label><input type="number" id="sbc-opt-gt-weight" min="0" step="0.1" value="' + st.chemWeight + '" style="width:72px;flex:0 0 auto;"></div>' +
+            '<div class="sbc-opt-dim">Wert eines Teams = Chemie × Gewicht + Ø Meta-Rating der elf (fut.gg, je Position). Bei Gewicht 1 höchstens 133.</div>' +
+            '<label class="sbc-opt-chiplabel">Anker (Spieler, um die ein Team gebaut wird)</label>' +
+            '<div class="sbc-opt-chips" id="sbc-opt-gt-anchor-team">' + Array.from({ length: st.teams }, (_, t) =>
+                '<button type="button" class="sbc-opt-chip' + (t === Math.min(gauntletState.anchorTeam, st.teams - 1) ? ' on' : '') + '" data-t="' + t + '">Team ' + (t + 1) + '</button>').join('') + '</div>' +
+            '<div class="sbc-opt-inline" style="margin-top:6px;"><input type="text" id="sbc-opt-gt-anchor-input" list="sbc-opt-gt-anchor-list" placeholder="Spieler suchen …" style="flex:1;min-width:0;">' +
+            '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gt-anchor-add" style="margin:0;width:auto;flex:0 0 auto;">+</button></div>' +
+            '<datalist id="sbc-opt-gt-anchor-list">' + players.slice().sort((a, b) => b.rating - a.rating).map(p => '<option value="' + escapeHtml(label(p)) + '"></option>').join('') + '</datalist>';
+        gauntletState.anchors.forEach((ids, t) => {
+            if (!ids.length) return;
+            h += '<div class="sbc-opt-fb-meta">Team ' + (t + 1) + ': ' + ids.map(id => { const p = byId.get(String(id)); return '<span class="sbc-opt-gt-anchor">' + escapeHtml(p ? p.name : '#' + id) +
+                ' <button type="button" class="sbc-opt-btn ghost" data-gt-del="' + t + ':' + escapeHtml(String(id)) + '" style="margin:0;padding:0 6px;width:auto;display:inline;">✕</button></span>'; }).join(' ') + '</div>';
+        });
+        h += '</div><button type="button" class="sbc-opt-btn primary" id="sbc-opt-gt-run"><span>Teams bauen</span></button>' +
+             '<div class="sbc-opt-dim">' + players.length + ' Vereinsspieler (ohne Storage und Leihspieler)' + (STATE.evoRaws && STATE.evoRaws.size ? ', Evos eingeschlossen' : '') +
+             '. Nichts wird gekauft und nichts bei EA gespeichert.</div>' + evoNote;
+        setGauntletResult(h);
+        const root = ui.gauntletResult;
+        const save = patch => { const s = Object.assign(gauntletSettings(), patch); gauntletSettingsSave(s); };
+        root.querySelector('#sbc-opt-gt-formation').addEventListener('change', ev => save({ formation: ev.target.value }));
+        root.querySelector('#sbc-opt-gt-teams').addEventListener('click', ev => {
+            const b = ev.target.closest('.sbc-opt-chip'); if (!b) return;
+            save({ teams: Number(b.getAttribute('data-n')) }); onGauntletOpenClick();
+        });
+        root.querySelector('#sbc-opt-gt-weight').addEventListener('change', ev => { const v = parseFloat(String(ev.target.value).replace(',', '.')); if (isFinite(v) && v >= 0) save({ chemWeight: v }); });
+        root.querySelector('#sbc-opt-gt-anchor-team').addEventListener('click', ev => {
+            const b = ev.target.closest('.sbc-opt-chip'); if (!b) return;
+            gauntletState.anchorTeam = Number(b.getAttribute('data-t'));
+            Array.from(root.querySelectorAll('#sbc-opt-gt-anchor-team .sbc-opt-chip')).forEach(x => x.classList.toggle('on', x === b));
+        });
+        root.querySelector('#sbc-opt-gt-anchor-add').addEventListener('click', () => {
+            const inp = root.querySelector('#sbc-opt-gt-anchor-input');
+            const val = String(inp.value || '').trim();
+            const p = players.find(x => label(x) === val) || players.filter(x => x.name.toLowerCase() === val.toLowerCase()).sort((a, b) => b.rating - a.rating)[0];
+            if (!p) { toast('Spieler nicht im Verein gefunden - bitte aus der Liste wählen.', 'warn'); return; }
+            const t = Math.min(gauntletState.anchorTeam, gauntletState.anchors.length - 1);
+            if (gauntletState.anchors.some(list => list.indexOf(String(p.id)) >= 0)) { toast(p.name + ' ist schon Anker.', 'warn'); return; }
+            gauntletState.anchors[t].push(String(p.id));
+            onGauntletOpenClick();
+        });
+        root.querySelectorAll('button[data-gt-del]').forEach(b => b.addEventListener('click', () => {
+            const parts = b.getAttribute('data-gt-del').split(':'), t = Number(parts[0]), id = parts.slice(1).join(':');
+            gauntletState.anchors[t] = (gauntletState.anchors[t] || []).filter(x => x !== id);
+            onGauntletOpenClick();
+        }));
+        root.querySelector('#sbc-opt-gt-run').addEventListener('click', onGauntletRunClick);
+    }
+    async function onGauntletRunClick() {
+        if (gauntletBusy) return;
+        const st = gauntletSettings();
+        const formation = gauntletFormations().find(f => f.name === (st.formation || '')) || gauntletFormations().find(f => /433$/.test(f.name)) || gauntletFormations()[0];
+        if (!formation) { toast('Keine Formation verfügbar.', 'warn'); return; }
+        const players = gauntletState.players || gauntletClubPlayers();
+        const diag = { at: Date.now(), formation: formation.name, slots: formation.slots, teams: st.teams, chemWeight: st.chemWeight, players: players.length,
+                       evos: players.filter(p => p.evo).length, anchors: gauntletState.anchors.map(l => l.length), chem: null, error: null };
+        STATE.diag.gauntlet = diag;
+        gauntletBusy = true;
+        try {
+            setGauntletResult(progressHtml('Meta-Ratings von fut.gg holen …', 0, 1));
+            await gauntletLoadMeta(players, (k, n) => setGauntletResult(progressHtml('Meta-Ratings von fut.gg holen … ' + k + ' von ' + n, k, n)), diag);
+            let chemFn = gauntletEaChemFn(formation), chemKind = 'ea';
+            if (chemFn) {
+                // Probelauf: wirft EAs Rechner, nehmen wir das klassische Modell (und sagen es).
+                try { const probe = players.filter(p => p.ent).slice(0, 11); if (probe.length === 11) chemFn(probe); }
+                catch (e) { reportError('Gauntlet: EA-Chemie', e); chemFn = null; }
+            }
+            if (!chemFn) { chemFn = Gauntlet.simpleChem; chemKind = 'simple'; }
+            diag.chem = chemKind;
+            const budgetMs = 6000 + 2000 * st.teams;
+            setGauntletResult(progressHtml('Teams bauen … (etwa ' + Math.round(budgetMs / 1000) + ' Sekunden)', 1, 2));
+            const t0 = Date.now();
+            const res = await Gauntlet.solve({
+                slots: formation.slots, players: players, teams: st.teams, variants: 5, chemWeight: st.chemWeight,
+                anchors: gauntletState.anchors, chemFn: chemFn, timeBudgetMs: budgetMs, benchSize: 7,
+                seed: 1, yieldFn: () => new Promise(r => setTimeout(r, 0))
+            });
+            diag.ms = Date.now() - t0;
+            if (res.error) { diag.error = res.error; setGauntletResult(warnHtml(gauntletErrorText(res, formation)) + gauntletBackBtn()); wireGauntletBack(); return; }
+            diag.evals = res.evals; diag.rounds = res.rounds; diag.candidates = res.candidates;
+            diag.variants = res.variants.map(v => ({ total: Math.round(v.total * 100) / 100, teams: v.scores.map(s => ({ score: Math.round(s.score * 100) / 100, chem: s.chem, avgMeta: Math.round(s.avgMeta * 100) / 100 })) }));
+            gauntletState.last = { res: res, formation: formation, chemKind: chemKind };
+            renderGauntletVariants();
+        } catch (e) {
+            reportError('Gauntlet', e);
+            diag.error = String(e && e.message || e);
+            setGauntletResult(warnHtml('Gauntlet-Teams bauen fehlgeschlagen: ' + escapeHtml(bridgeErrorText(diag.error))) + gauntletBackBtn());
+            wireGauntletBack();
+        } finally {
+            gauntletBusy = false;
+        }
+    }
+    function gauntletErrorText(res, formation) {
+        const pn = i => Gauntlet.posName(formation.slots[i]);
+        if (res.error === 'slot') return 'Für Team ' + (res.team + 1) + ' fehlt ein freier Spieler auf Position ' + pn(res.slot) + '. Weniger Teams, andere Aufstellung oder Anker lockern.';
+        if (res.error === 'anchor') return 'Anker ' + (res.player ? res.player.name : '') + ' passt in Team ' + (res.team + 1) + ' auf keine freie Position dieser Aufstellung.';
+        if (res.error === 'anchor-person') return 'Zwei Versionen desselben Spielers als Anker in Team ' + (res.team + 1) + ' - EA erlaubt nur eine.';
+        if (res.error === 'anchor-twice') return 'Ein Spieler ist Anker in zwei Teams.';
+        if (res.error === 'anchor-too-many') return 'Mehr als elf Anker in Team ' + (res.team + 1) + '.';
+        return 'Keine Aufstellung gefunden (' + res.error + ').';
+    }
+    function gauntletBackBtn() { return '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gt-back">Zurück zu den Einstellungen</button>'; }
+    function wireGauntletBack() { const b = ui.gauntletResult && ui.gauntletResult.querySelector('#sbc-opt-gt-back'); if (b) b.addEventListener('click', onGauntletOpenClick); }
+    function renderGauntletVariants() {
+        const L = gauntletState.last;
+        if (!L) return;
+        const f = L.formation, res = L.res;
+        let h = '<div class="sbc-opt-summary">' + res.variants.length + ' Variante' + (res.variants.length === 1 ? '' : 'n') + ' · ' + escapeHtml(f.label) + '</div>' +
+                (L.chemKind === 'simple' ? warnHtml('EAs Chemie-Rechner war nicht erreichbar - Chemie nach klassischem Modell geschätzt.') : '') +
+                '<div class="sbc-opt-dim">Wert = Chemie × Gewicht + Ø Meta-Rating. „Team übernehmen“ hält ein Team fest und plant die übrigen neu.</div>';
+        res.variants.forEach((v, vi) => {
+            h += '<details class="sbc-opt-details-toggle"' + (vi === 0 ? ' open' : '') + '><summary><b>Variante ' + (vi + 1) + '</b> · Summe ' + gauntletFmt(v.total, 1) + '</summary>';
+            v.teams.forEach((team, t) => {
+                const s = v.scores[t];
+                h += '<div class="sbc-opt-fb-meta" style="margin-top:6px;"><b>Team ' + (t + 1) + '</b> · ' + gauntletFmt(s.score, 1) + ' (Chemie ' + s.chem + ' · Meta Ø ' + gauntletFmt(s.avgMeta, 1) + ')</div>';
+                team.forEach((p, i) => {
+                    const pos = f.slots[i], m = Gauntlet.metaAt(p, Gauntlet.generalPos(pos));
+                    const ch = s.perSlot ? s.perSlot[i] : null;
+                    h += '<div>' + escapeHtml(Gauntlet.posName(pos)) + ' · ' + escapeHtml(p.name) + ' <span class="sbc-opt-muted">(' + p.rating + (p.evo ? ', Evo' : '') + ')</span> · Meta ' +
+                         (m != null ? gauntletFmt(m, 1) : '–') + ((p.metaFallback || []).indexOf(Gauntlet.generalPos(pos)) >= 0 ? '*' : '') + (ch != null ? ' · Chemie ' + ch : '') + '</div>';
+                });
+                const bench = (v.bench && v.bench[t]) || [];
+                if (bench.length) h += '<div class="sbc-opt-dim">Bank-Vorschlag (wird mitgesperrt): ' + bench.map(p => escapeHtml(p.name) + ' ' + p.rating).join(', ') + '</div>';
+                h += '<button type="button" class="sbc-opt-btn ghost" data-gt-take="' + vi + ':' + t + '">Team ' + (t + 1) + ' übernehmen, Rest neu planen</button>';
+            });
+            h += '</details>';
+        });
+        if (res.variants.some(v => v.teams.some(t => t.some(p => (p.metaFallback || []).length)))) h += '<div class="sbc-opt-dim">* kein fut.gg-Wert für diese Position - Rating als Notwert.</div>';
+        h += gauntletBackBtn();
+        setGauntletResult(h);
+        ui.gauntletResult.querySelectorAll('button[data-gt-take]').forEach(b => b.addEventListener('click', () => {
+            const parts = b.getAttribute('data-gt-take').split(':').map(Number);
+            const team = L.res.variants[parts[0]].teams[parts[1]];
+            const ids = team.map(p => String(p.id));
+            gauntletState.anchors = gauntletState.anchors.map((list, t) => t === parts[1] ? ids : list.filter(id => ids.indexOf(id) < 0));
+            onGauntletRunClick();
+        }));
+        wireGauntletBack();
+    }
     async function onTradepileSellClick() {
         if (sellBusy || buyBusy || galleryBusy) { toast('Es läuft schon ein Lauf.', 'warn'); return; }
         if (!sessionReady()) { toast('EA-Sitzung noch nicht erfasst - einmal im Spiel klicken, dann erneut.', 'warn'); return; }
@@ -14794,7 +15602,7 @@ const HybridSbcEa = (() => {
             // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten mit
             // Kosten, Marktabfragen, Fehler, eingefuegte Loesung.
             hybridSbc: STATE.diag.hybridSbc || null,
-            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null,
+            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null,
             futbinBuy: STATE.diag.futbinBuy || null,
             futbinBuyPlan: STATE.diag.futbinBuyPlan || null,
             marketUrls: STATE.diag.marketUrls,

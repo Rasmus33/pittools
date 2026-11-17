@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.5.0
+// @version      6.6.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.5.0';
+    const VERSION = '6.6.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -207,6 +207,7 @@
             gallery: null,           // v5.32.0: FUT Gallery (Sets geladen, gewaehlt, Plan)
             galleryEaCollect: null,  // v6.4.0: Sammelstand ueber EAs Konzept-Suche (Roh-Antwort, Urteil)
             gauntlet: null,          // v6.5.0: Gauntlet-Builder (Formation, Meta-Abfragen, Chemie-Quelle, Varianten)
+            clubView: null,          // v6.6.0: Verein im Ueberblick (Zusammenfassung, Stufen)
             galleryCheck: null,      // v5.65.0: Sammelstand je Spieler ueber Marktangebote
             gallerySell: null,       // v5.35.0: Verkauf gekaufter Galerie-Karten (Preise, Schritte)
             tradepileSell: null,     // v5.37.0: Transferliste zum Marktpreis listen
@@ -6445,6 +6446,10 @@
             border-radius:var(--pt-radius-md); padding:10px; display:none;
         }
         .sbc-opt-result.show { display:block; }
+        .sbc-opt-cv-row { display:grid; grid-template-columns: minmax(70px, 34%) 1fr; gap:2px 8px; align-items:center; margin:6px 0; }
+        .sbc-opt-cv-row .sbc-opt-bar { margin:0; }
+        .sbc-opt-cv-label { font-size:var(--pt-text-sm); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .sbc-opt-cv-num { grid-column: 1 / -1; font-size:var(--pt-text-sm); color:var(--pt-fg-muted); font-variant-numeric: tabular-nums; }
         /* Futbin-Kandidaten (v5.16.0): eine Zeile pro Loesung, Empfehlung
            mit Akzent-Rand; Knopf in voller Breite fuer den Daumen. */
         .sbc-opt-fb-row {
@@ -7292,6 +7297,11 @@
                     <button type="button" class="sbc-opt-btn primary" id="sbc-opt-tools-sell" style="margin-top:0;"><span>Transferliste zum Marktpreis listen</span></button>
                     <div class="sbc-opt-debug">Liest EAs Transferliste, holt je Karte das günstigste aktuelle Angebot, zeigt eine Vorschau und listet nach Rückfrage nacheinander (1 Stunde). Aktive und verkaufte Karten bleiben unberührt.</div>
                     <div class="sbc-opt-result" id="sbc-opt-tools-result"></div>
+                    <div class="sbc-opt-group-title">Verein</div>
+                    <!-- v6.6.0: Bestand nach Rating/Seltenheit/Liga/Nation/Verein - nur aus dem geladenen Pool. -->
+                    <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-clubview" style="margin-top:0;">Verein im Überblick</button>
+                    <div class="sbc-opt-debug">Zählt den geladenen SBC-Pool nach Rating, Seltenheit, Liga, Nation und Verein, mit Item-Score-Summen. Keine Anfrage bei EA.</div>
+                    <div class="sbc-opt-result" id="sbc-opt-clubview-result"></div>
                     <div class="sbc-opt-group-title">Gauntlet</div>
                     <!-- v6.5.0: Teams aus dem Verein nach Meta-Rating (fut.gg) und Chemie (EA) - nichts wird gekauft. -->
                     <button type="button" class="sbc-opt-btn primary" id="sbc-opt-gauntlet-open" style="margin-top:0;"><span>Gauntlet-Teams bauen</span></button>
@@ -7407,6 +7417,8 @@
             gallerySort: panel.querySelector('#sbc-opt-gallery-sort'),
             toolsSell: panel.querySelector('#sbc-opt-tools-sell'),
             gauntletOpen: panel.querySelector('#sbc-opt-gauntlet-open'),
+            clubView: panel.querySelector('#sbc-opt-clubview'),
+            clubViewResult: panel.querySelector('#sbc-opt-clubview-result'),
             gauntletResult: panel.querySelector('#sbc-opt-gauntlet-result'),
             toolsResult: panel.querySelector('#sbc-opt-tools-result'),
             gallerySellClear: panel.querySelector('#sbc-opt-gallery-sell-clear'),
@@ -11336,6 +11348,54 @@ const HybridSbcEa = (() => {
                  metaAt: metaAt, eligible: eligible, maxMeta: maxMeta, POS_ID: POS_ID };
     })();
     // [GAUNTLET-END]
+    // [CLUBVIEW-BEGIN]
+    /**
+     * v6.6.0 Verein im Ueberblick (FUTGenie "Club Insights", Gap-Analyse Paket 4).
+     * NUR aus dem geladenen SBC-Pool (keine Marktabfrage, keine EA-Anfrage).
+     * Wertmass ist Rasmus' eigenes aus dem Hybrid-Loeser: Summe der Item Scores
+     * (gradingScore) - kein Coin-Wert, keine Schaetzung.
+     * pool: normalisierte Pool-Spieler; opts: { source: 'all'|'club'|'storage', locked: Set(ids/assetIds) }.
+     */
+    function clubOverview(pool, opts) {
+        const o = opts || {};
+        const src = o.source || 'all';
+        const locked = o.locked || new Set();
+        const isLocked = p => locked.has(String(p.id)) || (p.assetId != null && locked.has(String(p.assetId))) ||
+            (p.raw && p.raw.resourceId != null && locked.has(String(p.raw.resourceId)));
+        const list = (pool || []).filter(p => p && (src === 'all' || (src === 'storage' ? p.isStorage : !p.isStorage)));
+        const score = p => Number(p.raw && p.raw.gradingScore) || 0;
+        const sum = { total: list.length, club: 0, storage: 0, untradeable: 0, special: 0, locked: 0, score: 0, scoreKnown: 0 };
+        const groups = { rating: new Map(), rarity: new Map(), league: new Map(), nation: new Map(), team: new Map() };
+        const add = (map, key, p) => {
+            let g = map.get(key);
+            if (!g) { g = { key: key, count: 0, storage: 0, untradeable: 0, score: 0 }; map.set(key, g); }
+            g.count++; if (p.isStorage) g.storage++; if (p.untradeable) g.untradeable++; g.score += score(p);
+        };
+        list.forEach(p => {
+            const r = p.raw || {};
+            if (p.isStorage) sum.storage++; else sum.club++;
+            if (p.untradeable) sum.untradeable++;
+            if (p.isSpecial) sum.special++;
+            if (isLocked(p)) sum.locked++;
+            if (r.gradingScore != null) sum.scoreKnown++;
+            sum.score += score(p);
+            add(groups.rating, Number(p.rating) || 0, p);
+            add(groups.rarity, p.rareflag != null ? Number(p.rareflag) : -1, p);
+            add(groups.league, Number(r.leagueId) || 0, p);
+            add(groups.nation, Number(r.nation) || 0, p);
+            add(groups.team, Number(r.teamid != null ? r.teamid : r.teamId) || 0, p);
+        });
+        const byCount = m => Array.from(m.values()).sort((a, b) => (b.count - a.count) || (a.key - b.key));
+        const ratings = Array.from(groups.rating.values()).sort((a, b) => b.key - a.key)
+            .map(g => Object.assign(g, { level: g.key >= 75 ? 'gold' : g.key >= 65 ? 'silver' : 'bronze' }));
+        const levels = ['gold', 'silver', 'bronze'].map(l => {
+            const rows = ratings.filter(g => g.level === l);
+            return { level: l, count: rows.reduce((a, g) => a + g.count, 0), score: rows.reduce((a, g) => a + g.score, 0) };
+        });
+        return { summary: sum, ratings: ratings, levels: levels, rarity: byCount(groups.rarity),
+                 league: byCount(groups.league), nation: byCount(groups.nation), team: byCount(groups.team) };
+    }
+    // [CLUBVIEW-END]
     // ---- Bruecke zu futbin (CORS) ------------------------------------------
     // Zwei Anbieter, EIN Protokoll: in der App das native Objekt
     // PitBridgeNative (App >= 1.11.0), im Browser das Helfer-Userscript
@@ -13249,6 +13309,7 @@ const HybridSbcEa = (() => {
         }
         if (ui.toolsSell && !ui.toolsSell.dataset.wired) { ui.toolsSell.dataset.wired = '1'; ui.toolsSell.addEventListener('click', onTradepileSellClick); }
         if (ui.gauntletOpen && !ui.gauntletOpen.dataset.wired) { ui.gauntletOpen.dataset.wired = '1'; ui.gauntletOpen.addEventListener('click', onGauntletOpenClick); }
+        if (ui.clubView && !ui.clubView.dataset.wired) { ui.clubView.dataset.wired = '1'; ui.clubView.addEventListener('click', onClubViewClick); }
         // v5.36.0: Sortierung (localStorage), Wechsel ordnet die geladene Liste ohne Neuladen.
         if (ui.gallerySort && !ui.gallerySort.dataset.wired) {
             ui.gallerySort.dataset.wired = '1';
@@ -14517,6 +14578,72 @@ const HybridSbcEa = (() => {
         renderSellPreview(rows, sellable, byMode);
     }
     /** v5.37.0: alle unverkauften Spieler der Transferliste zum Marktpreis listen (Reiter "Mehr"). */
+    // ===================== v6.6.0 Verein im Ueberblick (Anzeige) =====================
+    const clubViewState = { tab: 'rating', source: 'all', all: false };
+    function eaName(kind, id) {
+        try {
+            const U = window.UTLocalizationUtil, L = window.services && window.services.Localization;
+            let n = null;
+            if (U && L) {
+                if (kind === 'league' && typeof U.leagueIdToName === 'function') n = U.leagueIdToName(id, L);
+                else if (kind === 'nation' && typeof U.nationIdToName === 'function') n = U.nationIdToName(id, L);
+                else if (kind === 'team' && typeof U.teamIdToAbbr15 === 'function') n = U.teamIdToAbbr15(id, L);
+            }
+            if (kind === 'rarity' && L && typeof L.localize === 'function') n = L.localize('item.raretype' + id);
+            if (typeof n === 'string') { n = n.replace(/^\*/, '').trim(); if (n && !/^(global|search|item)\./.test(n)) return n; }
+        } catch (e) {}
+        if (kind === 'rarity') return id === 0 ? 'Common' : id === 1 ? 'Rare' : id === 3 ? 'TOTW' : (id < 0 ? 'unbekannt' : 'Seltenheit ' + id);
+        return id ? '#' + id : 'unbekannt';
+    }
+    function onClubViewClick() {
+        const pool = STATE.pool || [];
+        if (!pool.length) { setClubViewResult(warnHtml('Noch kein Verein geladen. Bitte zuerst oben „Spieler laden“.')); return; }
+        let locked = new Set();
+        try { locked = readPaletoolsLocks(); } catch (e) {}
+        const ov = clubOverview(pool, { source: clubViewState.source, locked: locked });
+        STATE.diag.clubView = { at: Date.now(), source: clubViewState.source, summary: ov.summary, levels: ov.levels };
+        const fmt = n => Number(n).toLocaleString('de-DE');
+        const s = ov.summary;
+        const evos = STATE.evoRaws ? STATE.evoRaws.size : 0;
+        let h = '<div class="sbc-opt-stats sbc-opt-card">' +
+            '<div class="sbc-opt-stat"><span class="k">Spieler</span><b>' + fmt(s.total) + '</b></div>' +
+            '<div class="sbc-opt-stat"><span class="k">Verein / Storage</span><b>' + fmt(s.club) + ' / ' + fmt(s.storage) + '</b></div>' +
+            '<div class="sbc-opt-stat"><span class="k">Unverkäuflich</span><b>' + fmt(s.untradeable) + '</b></div>' +
+            '<div class="sbc-opt-stat"><span class="k">Specials</span><b>' + fmt(s.special) + '</b></div>' +
+            '<div class="sbc-opt-stat"><span class="k">Item Score gesamt</span><b>' + (s.scoreKnown ? fmt(s.score) : '–') + '</b></div>' +
+            '<div class="sbc-opt-stat"><span class="k">Gesperrt (PaleTools)</span><b>' + fmt(s.locked) + '</b></div></div>' +
+            '<div class="sbc-opt-dim">SBC-Pool ohne Evos' + (evos ? ' (' + evos + ' Evos separat)' : '') + ' und ohne Leihspieler. Item Score = Galerie-/Streamlined-Punkte der Karte' +
+            (s.scoreKnown < s.total ? ', bei ' + fmt(s.total - s.scoreKnown) + ' Karten unbekannt' : '') + '.</div>' +
+            '<label class="sbc-opt-chiplabel">Bestand</label><div class="sbc-opt-chips" id="sbc-opt-cv-source">' +
+            [['all', 'Alle'], ['club', 'Verein'], ['storage', 'Storage']].map(x => '<button type="button" class="sbc-opt-chip' + (clubViewState.source === x[0] ? ' on' : '') + '" data-src="' + x[0] + '">' + x[1] + '</button>').join('') + '</div>' +
+            '<label class="sbc-opt-chiplabel">Aufteilung</label><div class="sbc-opt-chips sbc-opt-chips-sm" id="sbc-opt-cv-tab">' +
+            [['rating', 'Rating'], ['rarity', 'Seltenheit'], ['league', 'Liga'], ['nation', 'Nation'], ['team', 'Verein']].map(x => '<button type="button" class="sbc-opt-chip' + (clubViewState.tab === x[0] ? ' on' : '') + '" data-tab-cv="' + x[0] + '">' + x[1] + '</button>').join('') + '</div>';
+        const row = (label, g, max) => '<div class="sbc-opt-cv-row"><div class="sbc-opt-cv-label">' + escapeHtml(label) + '</div>' +
+            '<div class="sbc-opt-bar"><div class="sbc-opt-bar-fill" style="width:' + Math.max(2, Math.round(100 * g.count / Math.max(1, max))) + '%"></div></div>' +
+            '<div class="sbc-opt-cv-num"><b>' + fmt(g.count) + '</b>' + (g.storage && clubViewState.source === 'all' ? ' <span class="sbc-opt-muted">(' + g.storage + ' Storage)</span>' : '') +
+            (s.scoreKnown ? ' · Score ' + fmt(g.score) : '') + '</div></div>';
+        if (clubViewState.tab === 'rating') {
+            const lvName = { gold: 'Gold (75+)', silver: 'Silber (65–74)', bronze: 'Bronze (bis 64)' };
+            ov.levels.forEach(l => {
+                if (!l.count) return;
+                const rows = ov.ratings.filter(g => g.level === l.level), max = Math.max.apply(null, rows.map(g => g.count));
+                h += '<div class="sbc-opt-group-title">' + lvName[l.level] + ' · ' + fmt(l.count) + ' Karten' + (s.scoreKnown ? ' · Score ' + fmt(l.score) : '') + '</div>';
+                rows.forEach(g => { h += row(String(g.key), g, max); });
+            });
+        } else {
+            const rows = ov[clubViewState.tab], max = rows.length ? rows[0].count : 1;
+            const shown = clubViewState.all ? rows : rows.slice(0, 25);
+            shown.forEach(g => { h += row(eaName(clubViewState.tab, g.key), g, max); });
+            if (rows.length > shown.length) h += '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-cv-all">Alle ' + rows.length + ' anzeigen</button>';
+        }
+        setClubViewResult(h);
+        const root = ui.clubViewResult;
+        root.querySelector('#sbc-opt-cv-source').addEventListener('click', ev => { const b = ev.target.closest('.sbc-opt-chip'); if (!b) return; clubViewState.source = b.getAttribute('data-src'); onClubViewClick(); });
+        root.querySelector('#sbc-opt-cv-tab').addEventListener('click', ev => { const b = ev.target.closest('.sbc-opt-chip'); if (!b) return; clubViewState.tab = b.getAttribute('data-tab-cv'); clubViewState.all = false; onClubViewClick(); });
+        const all = root.querySelector('#sbc-opt-cv-all');
+        if (all) all.addEventListener('click', () => { clubViewState.all = true; onClubViewClick(); });
+    }
+    function setClubViewResult(html) { if (!ui.clubViewResult) return; ui.clubViewResult.innerHTML = html; ui.clubViewResult.classList.toggle('show', !!html); }
     // ===================== v6.5.0 Gauntlet-Builder (Daten + Oberflaeche) =====================
     // Nur Vereinsspieler (Pool ohne Storage + Evos aus STATE.evoRaws). Kein Kauf, kein Speichern
     // bei EA - die Vorschau zeigt Aufstellungen, Rasmus stellt sie im Spiel auf.
@@ -14525,14 +14652,45 @@ const HybridSbcEa = (() => {
     const GAUNTLET_META_TTL_MS = 24 * 3600 * 1000;
     const GAUNTLET_SETTINGS_KEY = 'sbcOptGauntlet';
     let gauntletBusy = false;
-    const gauntletState = { anchors: [], players: null, last: null, anchorTeam: 0 };
+    const gauntletState = { anchors: null, players: null, last: null, anchorTeam: 0 };
+    // v6.6.0: Gauntlet sperrt jede eingesetzte Karte (Startelf UND Bank) fuer die
+    // folgenden Runden. "Gespielt" merkt sie dauerhaft (localStorage), damit ein
+    // spaeterer Lauf - auch nach Neuladen - sie nicht wieder einplant.
+    const GAUNTLET_USED_KEY = 'sbcOptGauntletUsed';
+    function gauntletUsedLoad() {
+        try { const o = JSON.parse(localStorage.getItem(GAUNTLET_USED_KEY) || '{}'); return { ids: Array.isArray(o.ids) ? o.ids.map(String) : [], at: o.at || null }; }
+        catch (e) { return { ids: [], at: null }; }
+    }
+    function gauntletUsedSave(u) { try { localStorage.setItem(GAUNTLET_USED_KEY, JSON.stringify({ ids: u.ids, at: u.at })); } catch (e) {} }
+    function gauntletAnchorsLoad(teams) {
+        if (!gauntletState.anchors) {
+            let a = [];
+            try { const s = JSON.parse(localStorage.getItem(GAUNTLET_SETTINGS_KEY) || '{}'); a = Array.isArray(s.anchors) ? s.anchors : []; } catch (e) { a = []; }
+            gauntletState.anchors = a.map(l => Array.isArray(l) ? l.map(String) : []);
+        }
+        gauntletState.anchors = Array.from({ length: teams }, (_, t) => gauntletState.anchors[t] || []);
+        return gauntletState.anchors;
+    }
+    function gauntletAnchorsSave() {
+        try { const s = JSON.parse(localStorage.getItem(GAUNTLET_SETTINGS_KEY) || '{}') || {}; s.anchors = gauntletState.anchors; localStorage.setItem(GAUNTLET_SETTINGS_KEY, JSON.stringify(s)); } catch (e) {}
+    }
+    /** Gespielte Karten aus Spielerliste und Ankern nehmen; liefert die Zahl entfernter Anker. */
+    function gauntletApplyUsed(players, anchors, used) {
+        const set = new Set(used.map(String));
+        const left = players.filter(p => !set.has(String(p.id)));
+        let dropped = 0;
+        const anc = anchors.map(l => l.filter(id => { if (set.has(String(id))) { dropped++; return false; } return true; }));
+        return { players: left, anchors: anc, dropped: dropped, removed: players.length - left.length };
+    }
     function gauntletSettings() {
         let s = {};
         try { s = JSON.parse(localStorage.getItem(GAUNTLET_SETTINGS_KEY) || '{}') || {}; } catch (e) { s = {}; }
         return { formation: s.formation || null, teams: Math.max(1, Math.min(4, Number(s.teams) || 2)),
                  chemWeight: (s.chemWeight != null && isFinite(+s.chemWeight) && +s.chemWeight >= 0) ? +s.chemWeight : 1 };
     }
-    function gauntletSettingsSave(s) { try { localStorage.setItem(GAUNTLET_SETTINGS_KEY, JSON.stringify(s)); } catch (e) {} }
+    function gauntletSettingsSave(s) {
+        try { const old = JSON.parse(localStorage.getItem(GAUNTLET_SETTINGS_KEY) || '{}') || {}; localStorage.setItem(GAUNTLET_SETTINGS_KEY, JSON.stringify(Object.assign(old, s))); } catch (e) {}
+    }
     function gauntletFormations() {
         try {
             const repo = window.repositories && window.repositories.Squad;
@@ -14644,7 +14802,8 @@ const HybridSbcEa = (() => {
         const forms = gauntletFormations();
         if (!forms.length) { setGauntletResult(warnHtml('EAs Formationen sind noch nicht geladen. Einmal „Kader“ im Spiel öffnen, dann erneut.')); return; }
         const st = gauntletSettings();
-        if (gauntletState.anchors.length !== st.teams) gauntletState.anchors = Array.from({ length: st.teams }, (_, t) => gauntletState.anchors[t] || []);
+        gauntletAnchorsLoad(st.teams);
+        const used = gauntletUsedLoad();
         const fName = forms.some(f => f.name === st.formation) ? st.formation : ((forms.find(f => /433$/.test(f.name)) || forms[0]).name);
         const byId = new Map(players.map(p => [String(p.id), p]));
         const label = p => p.name + ' · ' + p.rating + ' · ' + p.positions.map(Gauntlet.posName).join('/') + (p.evo ? ' · Evo' : '');
@@ -14667,6 +14826,12 @@ const HybridSbcEa = (() => {
             h += '<div class="sbc-opt-fb-meta">Team ' + (t + 1) + ': ' + ids.map(id => { const p = byId.get(String(id)); return '<span class="sbc-opt-gt-anchor">' + escapeHtml(p ? p.name : '#' + id) +
                 ' <button type="button" class="sbc-opt-btn ghost" data-gt-del="' + t + ':' + escapeHtml(String(id)) + '" style="margin:0;padding:0 6px;width:auto;display:inline;">✕</button></span>'; }).join(' ') + '</div>';
         });
+        if (used.ids.length) {
+            h += '<div class="sbc-opt-fb-meta" style="margin-top:8px;">Schon gespielt (gesperrt): <b>' + used.ids.length + '</b> Karten' +
+                 (used.at ? ' <span class="sbc-opt-muted">seit ' + escapeHtml(new Date(used.at).toLocaleString('de-DE')) + '</span>' : '') +
+                 ' <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gt-used-reset" style="margin:0;padding:0 8px;width:auto;display:inline;">Neues Event</button></div>' +
+                 '<div class="sbc-opt-dim">Diese Karten plant PitTools nicht mehr ein. „Neues Event“ gibt sie wieder frei.</div>';
+        }
         h += '</div><button type="button" class="sbc-opt-btn primary" id="sbc-opt-gt-run"><span>Teams bauen</span></button>' +
              '<div class="sbc-opt-dim">' + players.length + ' Vereinsspieler (ohne Storage und Leihspieler)' + (STATE.evoRaws && STATE.evoRaws.size ? ', Evos eingeschlossen' : '') +
              '. Nichts wird gekauft und nichts bei EA gespeichert.</div>' + evoNote;
@@ -14691,24 +14856,33 @@ const HybridSbcEa = (() => {
             if (!p) { toast('Spieler nicht im Verein gefunden - bitte aus der Liste wählen.', 'warn'); return; }
             const t = Math.min(gauntletState.anchorTeam, gauntletState.anchors.length - 1);
             if (gauntletState.anchors.some(list => list.indexOf(String(p.id)) >= 0)) { toast(p.name + ' ist schon Anker.', 'warn'); return; }
+            if (gauntletUsedLoad().ids.indexOf(String(p.id)) >= 0) { toast(p.name + ' wurde schon gespielt und ist gesperrt.', 'warn'); return; }
             gauntletState.anchors[t].push(String(p.id));
+            gauntletAnchorsSave();
             onGauntletOpenClick();
         });
         root.querySelectorAll('button[data-gt-del]').forEach(b => b.addEventListener('click', () => {
             const parts = b.getAttribute('data-gt-del').split(':'), t = Number(parts[0]), id = parts.slice(1).join(':');
             gauntletState.anchors[t] = (gauntletState.anchors[t] || []).filter(x => x !== id);
+            gauntletAnchorsSave();
             onGauntletOpenClick();
         }));
         root.querySelector('#sbc-opt-gt-run').addEventListener('click', onGauntletRunClick);
+        const reset = root.querySelector('#sbc-opt-gt-used-reset');
+        if (reset) reset.addEventListener('click', () => { gauntletUsedSave({ ids: [], at: null }); toast('Gespielt-Liste geleert - alle Karten wieder frei.', 'ok'); onGauntletOpenClick(); });
     }
     async function onGauntletRunClick() {
         if (gauntletBusy) return;
         const st = gauntletSettings();
         const formation = gauntletFormations().find(f => f.name === (st.formation || '')) || gauntletFormations().find(f => /433$/.test(f.name)) || gauntletFormations()[0];
         if (!formation) { toast('Keine Formation verfügbar.', 'warn'); return; }
-        const players = gauntletState.players || gauntletClubPlayers();
+        const allPlayers = gauntletState.players || gauntletClubPlayers();
+        const usedNow = gauntletUsedLoad();
+        const ap = gauntletApplyUsed(allPlayers, gauntletAnchorsLoad(st.teams), usedNow.ids);
+        const players = ap.players;
+        if (ap.dropped) { gauntletState.anchors = ap.anchors; gauntletAnchorsSave(); toast(ap.dropped + ' Anker schon gespielt - entfernt.', 'warn'); }
         const diag = { at: Date.now(), formation: formation.name, slots: formation.slots, teams: st.teams, chemWeight: st.chemWeight, players: players.length,
-                       evos: players.filter(p => p.evo).length, anchors: gauntletState.anchors.map(l => l.length), chem: null, error: null };
+                       evos: players.filter(p => p.evo).length, anchors: gauntletState.anchors.map(l => l.length), usedExcluded: ap.removed, chem: null, error: null };
         STATE.diag.gauntlet = diag;
         gauntletBusy = true;
         try {
@@ -14776,7 +14950,8 @@ const HybridSbcEa = (() => {
                 });
                 const bench = (v.bench && v.bench[t]) || [];
                 if (bench.length) h += '<div class="sbc-opt-dim">Bank-Vorschlag (wird mitgesperrt): ' + bench.map(p => escapeHtml(p.name) + ' ' + p.rating).join(', ') + '</div>';
-                h += '<button type="button" class="sbc-opt-btn ghost" data-gt-take="' + vi + ':' + t + '">Team ' + (t + 1) + ' übernehmen, Rest neu planen</button>';
+                h += '<div class="sbc-opt-inline" style="margin-top:4px;"><button type="button" class="sbc-opt-btn ghost" data-gt-take="' + vi + ':' + t + '" style="margin:0;">Team ' + (t + 1) + ' übernehmen, Rest neu planen</button>' +
+                     '<button type="button" class="sbc-opt-btn ghost" data-gt-played="' + vi + ':' + t + '" style="margin:0;" title="Startelf und Bank-Vorschlag für die nächsten Runden sperren">Gespielt</button></div>';
             });
             h += '</details>';
         });
@@ -14788,7 +14963,28 @@ const HybridSbcEa = (() => {
             const team = L.res.variants[parts[0]].teams[parts[1]];
             const ids = team.map(p => String(p.id));
             gauntletState.anchors = gauntletState.anchors.map((list, t) => t === parts[1] ? ids : list.filter(id => ids.indexOf(id) < 0));
+            gauntletAnchorsSave();
             onGauntletRunClick();
+        }));
+        ui.gauntletResult.querySelectorAll('button[data-gt-played]').forEach(b => b.addEventListener('click', () => {
+            const parts = b.getAttribute('data-gt-played').split(':').map(Number);
+            const v = L.res.variants[parts[0]];
+            const ids = v.teams[parts[1]].concat((v.bench && v.bench[parts[1]]) || []).map(p => String(p.id));
+            const u = gauntletUsedLoad();
+            const merged = Array.from(new Set(u.ids.concat(ids)));
+            gauntletUsedSave({ ids: merged, at: u.at || Date.now() });
+            // Der gespielte Anker-Satz ist erledigt - Anker dieses Teams loesen.
+            gauntletState.anchors = gauntletState.anchors.map(list => list.filter(id => ids.indexOf(id) < 0));
+            gauntletAnchorsSave();
+            // Eine Runde ist erledigt: die naechste Planung braucht ein Team weniger.
+            const stNow = gauntletSettings();
+            if (stNow.teams > 1) {
+                gauntletState.anchors.splice(parts[1], 1);
+                gauntletSettingsSave({ teams: stNow.teams - 1 });
+                gauntletAnchorsSave();
+            }
+            toast('Team ' + (parts[1] + 1) + ' als gespielt gesperrt (' + ids.length + ' Karten inkl. Bank)' + (stNow.teams > 1 ? ' - jetzt ' + (stNow.teams - 1) + ' Team(s) zu planen.' : '.'), 'ok');
+            onGauntletOpenClick();
         }));
         wireGauntletBack();
     }
@@ -15602,7 +15798,7 @@ const HybridSbcEa = (() => {
             // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten mit
             // Kosten, Marktabfragen, Fehler, eingefuegte Loesung.
             hybridSbc: STATE.diag.hybridSbc || null,
-            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null,
+            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null,
             futbinBuy: STATE.diag.futbinBuy || null,
             futbinBuyPlan: STATE.diag.futbinBuyPlan || null,
             marketUrls: STATE.diag.marketUrls,

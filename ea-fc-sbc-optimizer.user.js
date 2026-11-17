@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.7.0
+// @version      6.8.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.7.0';
+    const VERSION = '6.8.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -209,6 +209,7 @@
             gauntlet: null,          // v6.5.0: Gauntlet-Builder (Formation, Meta-Abfragen, Chemie-Quelle, Varianten)
             clubView: null,          // v6.6.0: Verein im Ueberblick (Zusammenfassung, Stufen)
             batchSpare: null,        // v6.7.0: Vorschau-Tausch (geschonte Karten, neu geplant)
+            mcp: null,               // v6.8.0: KI-Verbindung (letzte Aufrufe: Werkzeug, ok, Fehler)
             galleryCheck: null,      // v5.65.0: Sammelstand je Spieler ueber Marktangebote
             gallerySell: null,       // v5.35.0: Verkauf gekaufter Galerie-Karten (Preise, Schritte)
             tradepileSell: null,     // v5.37.0: Transferliste zum Marktpreis listen
@@ -7311,6 +7312,13 @@
                     <button type="button" class="sbc-opt-btn primary" id="sbc-opt-gauntlet-open" style="margin-top:0;"><span>Gauntlet-Teams bauen</span></button>
                     <div class="sbc-opt-debug">Baut aus deinem Verein mehrere Teams ohne gemeinsame Spieler: Chemie plus Ø Meta-Rating je Position (fut.gg). Zeigt die besten 5 Varianten, Anker je Team möglich.</div>
                     <div class="sbc-opt-result" id="sbc-opt-gauntlet-result"></div>
+                    <div class="sbc-opt-group-title">KI-Verbindung (Claude)</div>
+                    <!-- v6.8.0: Claude Desktop / Claude Code am PC ruft ueber den lokalen PitTools-MCP-Server Werkzeuge auf (nur lesen/planen/anzeigen). -->
+                    <label class="sbc-opt-toggle"><input type="checkbox" id="sbc-opt-mcp-on"> Claude darf PitTools lesen und planen</label>
+                    <div class="sbc-opt-fb-meta">Status: <b id="sbc-opt-mcp-status">Aus</b></div>
+                    <div class="sbc-opt-debug">Nur am PC mit Claude Desktop oder Claude Code und der PitTools Bridge ab 1.2.0. Claude kann den Verein lesen, SBCs und Gauntlet-Teams planen, die Galerie-Liste und die Diagnose sehen und dir Nachrichten zeigen. Kaufen, Verkaufen, Eintragen und Abgeben kann Claude nicht.</div>
+                    <div class="sbc-opt-summary" id="sbc-opt-mcp-message" hidden></div>
+                    <div class="sbc-opt-dim" id="sbc-opt-mcp-log"></div>
                     <div class="sbc-opt-group-title">Werkzeuge</div>
                     <button class="sbc-opt-btn ghost" id="sbc-opt-diag" style="margin-top:0;">Diagnose in Konsole schreiben</button>
                     <div class="sbc-opt-debug">Die Diagnose ist ein JSON-Report für die Fehlersuche (Konsole bzw. App-Log).</div>
@@ -7422,6 +7430,10 @@
             toolsSell: panel.querySelector('#sbc-opt-tools-sell'),
             gauntletOpen: panel.querySelector('#sbc-opt-gauntlet-open'),
             clubView: panel.querySelector('#sbc-opt-clubview'),
+            mcpOn: panel.querySelector('#sbc-opt-mcp-on'),
+            mcpStatus: panel.querySelector('#sbc-opt-mcp-status'),
+            mcpLog: panel.querySelector('#sbc-opt-mcp-log'),
+            mcpMessage: panel.querySelector('#sbc-opt-mcp-message'),
             clubViewResult: panel.querySelector('#sbc-opt-clubview-result'),
             gauntletResult: panel.querySelector('#sbc-opt-gauntlet-result'),
             toolsResult: panel.querySelector('#sbc-opt-tools-result'),
@@ -13314,6 +13326,12 @@ const HybridSbcEa = (() => {
         if (ui.toolsSell && !ui.toolsSell.dataset.wired) { ui.toolsSell.dataset.wired = '1'; ui.toolsSell.addEventListener('click', onTradepileSellClick); }
         if (ui.gauntletOpen && !ui.gauntletOpen.dataset.wired) { ui.gauntletOpen.dataset.wired = '1'; ui.gauntletOpen.addEventListener('click', onGauntletOpenClick); }
         if (ui.clubView && !ui.clubView.dataset.wired) { ui.clubView.dataset.wired = '1'; ui.clubView.addEventListener('click', onClubViewClick); }
+        if (ui.mcpOn && !ui.mcpOn.dataset.wired) {
+            ui.mcpOn.dataset.wired = '1';
+            ui.mcpOn.checked = mcpEnabledSaved();
+            ui.mcpOn.addEventListener('change', () => mcpSetEnabled(ui.mcpOn.checked));
+            if (ui.mcpOn.checked) setTimeout(() => mcpSetEnabled(true), 500);
+        }
         // v5.36.0: Sortierung (localStorage), Wechsel ordnet die geladene Liste ohne Neuladen.
         if (ui.gallerySort && !ui.gallerySort.dataset.wired) {
             ui.gallerySort.dataset.wired = '1';
@@ -14582,6 +14600,188 @@ const HybridSbcEa = (() => {
         renderSellPreview(rows, sellable, byMode);
     }
     /** v5.37.0: alle unverkauften Spieler der Transferliste zum Marktpreis listen (Reiter "Mehr"). */
+    // ===================== v6.8.0 KI-Verbindung (Claude ueber MCP) =====================
+    // Rasmus' Claude-Abo (Claude Desktop / Claude Code am PC) ruft ueber den lokalen
+    // PitTools-MCP-Server (pittools-mcp/server.js) und die Bridge (ab 1.2.0) diese
+    // Werkzeuge auf. NUR lesen, planen, anzeigen - kein Kauf, keine Abgabe, kein
+    // Verkauf, kein Eintragen. Unbekannte Namen werden abgewiesen. Default AUS.
+    const MCP_KEY = 'sbcOptMcp';
+    const MCP_TOOLS = ['pittools_status', 'pittools_club_overview', 'pittools_club_players', 'pittools_sbc_current', 'pittools_sbc_preview',
+                       'pittools_gauntlet_build', 'pittools_gallery_overview', 'pittools_diagnostics', 'pittools_show_message'];
+    const mcpState = { on: false, status: 'aus', log: [] };
+    function mcpEnabledSaved() { try { return localStorage.getItem(MCP_KEY) === '1'; } catch (e) { return false; } }
+    function mcpSetEnabled(on) {
+        mcpState.on = !!on;
+        try { localStorage.setItem(MCP_KEY, on ? '1' : '0'); } catch (e) {}
+        try { document.dispatchEvent(new CustomEvent('pittools-mcp-enable', { detail: JSON.stringify({ on: !!on }) })); } catch (e) {}
+        if (!on) mcpState.status = 'aus';
+        renderMcpStatus();
+    }
+    function renderMcpStatus() {
+        if (ui.mcpStatus) {
+            const st = mcpState.on ? mcpState.status : 'aus';
+            const txt = !mcpState.on ? 'Aus' : st === 'verbunden' ? 'Verbunden mit Claude' : st === 'kein Server' ? 'Warte auf den PitTools-MCP-Server (Claude Desktop / Claude Code starten)' :
+                        st === 'aus' ? (document.documentElement.getAttribute('data-pittools-bridge-mcp') ? 'Startet …' : 'PitTools Bridge ab 1.2.0 fehlt') : st;
+            if (ui.mcpStatus.textContent !== txt) ui.mcpStatus.textContent = txt;
+        }
+        if (ui.mcpLog) {
+            const html = mcpState.log.slice(-8).reverse().map(l => '<div>' + escapeHtml(new Date(l.at).toLocaleTimeString('de-DE')) + ' · ' + escapeHtml(l.tool.replace(/^pittools_/, '')) +
+                (l.ok ? ' ✓' : ' ✗ ' + escapeHtml(String(l.error || '').slice(0, 80))) + '</div>').join('');
+            if (ui.mcpLog.innerHTML !== html) ui.mcpLog.innerHTML = html;
+        }
+    }
+    /** Pure: Argumente auf das erlaubte Mass bringen (Zahlen begrenzen, Strings kuerzen). */
+    function mcpSanitizeArgs(args) {
+        const a = (args && typeof args === 'object' && !Array.isArray(args)) ? args : {};
+        const out = {};
+        Object.keys(a).slice(0, 20).forEach(k => {
+            const v = a[k];
+            if (typeof v === 'string') out[k] = v.slice(0, 1000);
+            else if (typeof v === 'number' && isFinite(v)) out[k] = v;
+            else if (typeof v === 'boolean') out[k] = v;
+            else if (Array.isArray(v)) out[k] = v.slice(0, 10).map(x => Array.isArray(x) ? x.slice(0, 11).map(y => String(y).slice(0, 80)) : String(x).slice(0, 80));
+        });
+        return out;
+    }
+    /** Pure: Spielerfilter fuer pittools_club_players. rows = [{name, rating, positions, league, leagueName, ...}] */
+    function mcpFilterPlayers(rows, f) {
+        const has = (val, id, name) => { if (val == null || val === '') return true; const s = String(val).toLowerCase(); return String(id) === s || String(name || '').toLowerCase().indexOf(s) >= 0; };
+        return rows.filter(r => (f.minRating == null || r.rating >= f.minRating) && (f.maxRating == null || r.rating <= f.maxRating) &&
+            (!f.position || r.positions.indexOf(String(f.position).toUpperCase()) >= 0) &&
+            has(f.league, r.leagueId, r.league) && has(f.nation, r.nationId, r.nation) && has(f.club, r.clubId, r.club) &&
+            (f.storage == null || r.storage === f.storage) && (f.untradeable == null || r.untradeable === f.untradeable) &&
+            (f.special == null || r.special === f.special))
+            .sort((a, b) => b.rating - a.rating || String(a.name).localeCompare(String(b.name)))
+            .slice(0, Math.max(1, Math.min(500, f.limit || 100)));
+    }
+    function mcpPlayerRow(p, locked, evo) {
+        const r = p.raw || p;
+        const pos = Array.isArray(r.possiblePositions) ? r.possiblePositions.map(String) : (r.preferredPosition != null ? [String(r.preferredPosition)] : []);
+        const leagueId = Number(r.leagueId) || 0, nationId = Number(r.nation) || 0, clubId = Number(r.teamid != null ? r.teamid : r.teamId) || 0;
+        return { id: String(p.id != null ? p.id : r.id), name: evo ? resolvePlayerName(r) : displayName(p), rating: Number(p.rating != null ? p.rating : r.rating) || 0, positions: pos,
+                 league: eaName('league', leagueId), leagueId: leagueId, nation: eaName('nation', nationId), nationId: nationId, club: eaName('team', clubId), clubId: clubId,
+                 rareflag: r.rareflag != null ? Number(r.rareflag) : null, special: evo ? true : !!p.isSpecial, storage: !!p.isStorage, untradeable: evo ? true : !!p.untradeable,
+                 itemScore: r.gradingScore != null ? Number(r.gradingScore) : null, evo: !!evo,
+                 locked: !!(locked && (locked.has(String(p.id)) || (p.assetId != null && locked.has(String(p.assetId))) || (r.resourceId != null && locked.has(String(r.resourceId))))) };
+    }
+    async function mcpRun(tool, args) {
+        const a = mcpSanitizeArgs(args);
+        let locked = new Set();
+        const locks = () => { try { locked = readPaletoolsLocks(); } catch (e) { locked = new Set(); } return locked; };
+        if (tool === 'pittools_status') {
+            const pool = STATE.pool || [];
+            return { version: VERSION, sbcOpen: !!STATE.sbc.challengeId, targetOVR: STATE.sbc.targetOVR || null,
+                     pool: { total: pool.length, club: pool.filter(p => !p.isStorage).length, storage: pool.filter(p => p.isStorage).length,
+                             fullyLoaded: !!STATE.poolFullLoadDone, incomplete: !!STATE.loadIncomplete, evos: STATE.evoRaws ? STATE.evoRaws.size : 0 },
+                     bridge: bridgeKind() || null, galleryLoaded: galleryLast && galleryLast.ranked ? galleryLast.ranked.length : 0,
+                     hint: pool.length ? null : 'Kein Verein geladen - Rasmus muss in PitTools "Spieler laden" tippen.' };
+        }
+        if (tool === 'pittools_club_overview') {
+            const ov = clubOverview(STATE.pool || [], { source: a.source || 'all', locked: locks() });
+            const top = Math.max(1, Math.min(100, a.top || 15));
+            const named = (kind, list) => list.slice(0, top).map(g => ({ name: eaName(kind, g.key), id: g.key, count: g.count, storage: g.storage, untradeable: g.untradeable, itemScore: g.score }));
+            return { summary: ov.summary, levels: ov.levels, ratings: ov.ratings.map(g => ({ rating: g.key, count: g.count, storage: g.storage, itemScore: g.score })),
+                     rarity: named('rarity', ov.rarity), leagues: named('league', ov.league), nations: named('nation', ov.nation), clubs: named('team', ov.team) };
+        }
+        if (tool === 'pittools_club_players') {
+            locks();
+            let rows = (STATE.pool || []).map(p => mcpPlayerRow(p, locked, false));
+            if (a.includeEvos && STATE.evoRaws) rows = rows.concat(Array.from(STATE.evoRaws.values()).map(r => mcpPlayerRow({ id: r.id || r.itemId, raw: r, rating: r.rating }, locked, true)));
+            const out = mcpFilterPlayers(rows, a);
+            return { count: out.length, players: out };
+        }
+        if (tool === 'pittools_sbc_current') {
+            const sb = STATE.sbc;
+            if (!sb.challengeId && !sb.targetOVR) return { open: false, hint: 'Keine SBC geöffnet.' };
+            return { open: true, setId: sb.setId, challengeId: sb.challengeId, targetOVR: sb.targetOVR, slots: sb.formationSlots,
+                     rarityConstraints: sb.rarityConstraints, playerLevelConstraints: sb.playerLevelConstraints, qualityConstraints: sb.qualityConstraints || [],
+                     requirements: (sb.reqDump || []).slice(0, 40) };
+        }
+        if (tool === 'pittools_sbc_preview') {
+            const sb = STATE.sbc;
+            if (!sb.targetOVR && !(sb.playerLevelConstraints || []).length && !(sb.rarityConstraints || []).length && !(sb.qualityConstraints || []).length)
+                throw new Error('Keine SBC-Vorgaben erkannt - bitte im Spiel eine Challenge öffnen.');
+            if (!(STATE.pool || []).length) throw new Error('Kein Verein geladen.');
+            const res = SolverCore.solve(STATE.pool, readConfig());
+            if (!res || !res.ok) return { ok: false, reason: (res && res.reason) || 'Keine Lösung.' };
+            return { ok: true, ovr: res.ovr, ovrExact: res.ovrExact, warnings: res.warnings || [], note: 'Nur geplant - nichts eingetragen.',
+                     players: res.players.map(p => ({ name: displayName(p), rating: p.rating, storage: !!p.isStorage, untradeable: !!p.untradeable, rarity: rarityLabel(p) })) };
+        }
+        if (tool === 'pittools_gauntlet_build') {
+            const patch = {};
+            if (a.formation) patch.formation = String(a.formation);
+            if (a.teams) patch.teams = Math.max(1, Math.min(4, Math.round(a.teams)));
+            if (a.chemWeight != null && a.chemWeight >= 0) patch.chemWeight = a.chemWeight;
+            if (Object.keys(patch).length) gauntletSettingsSave(patch);
+            const st = gauntletSettings();
+            if (a.formation && !gauntletFormations().some(f => f.name === a.formation)) throw new Error('Formation unbekannt: ' + a.formation + '. Verfügbar: ' + gauntletFormations().map(f => f.name).join(', '));
+            if (Array.isArray(a.anchors)) {
+                const players = gauntletClubPlayers();
+                const find = key => { const k = String(key).toLowerCase(); return players.find(p => String(p.id) === String(key)) ||
+                    players.filter(p => String(p.name).toLowerCase() === k).sort((x, y) => y.rating - x.rating)[0] ||
+                    players.filter(p => String(p.name).toLowerCase().indexOf(k) >= 0).sort((x, y) => y.rating - x.rating)[0]; };
+                const missing = [];
+                gauntletState.anchors = Array.from({ length: st.teams }, (_, t) => (a.anchors[t] || []).map(key => { const p = find(key); if (!p) missing.push(key); return p ? String(p.id) : null; }).filter(Boolean));
+                if (missing.length) throw new Error('Nicht im Verein gefunden: ' + missing.join(', '));
+                gauntletAnchorsSave();
+            }
+            if (gauntletBusy) throw new Error('Es läuft schon ein Gauntlet-Lauf.');
+            if (!(STATE.pool || []).some(p => p && !p.isStorage)) throw new Error('Kein Verein geladen - Rasmus muss in PitTools "Spieler laden" tippen.');
+            gauntletState.players = null;
+            if (tabCurrent !== 'mehr') setTab('mehr');
+            STATE.diag.gauntlet = null;
+            await onGauntletRunClick();
+            if (!STATE.diag.gauntlet) throw new Error('Gauntlet konnte nicht starten (EAs Formationen noch nicht geladen? Einmal "Kader" im Spiel öffnen).');
+            const d = STATE.diag.gauntlet;
+            if (d.error) throw new Error(d.error === 'slot' || d.error === 'anchor' ? (ui.gauntletResult ? ui.gauntletResult.innerText.split('\n')[0] : d.error) : d.error);
+            const L = gauntletState.last;
+            if (!L) throw new Error('Kein Ergebnis.');
+            return { formation: L.formation.label, chem: L.chemKind === 'ea' ? 'EA-Rechner' : 'klassisch geschätzt', shownInPanel: true,
+                     variants: L.res.variants.map(v => ({ total: Math.round(v.total * 10) / 10, teams: v.teams.map((team, t) => ({
+                         score: Math.round(v.scores[t].score * 10) / 10, chem: v.scores[t].chem, avgMeta: Math.round(v.scores[t].avgMeta * 10) / 10,
+                         players: team.map((p, i) => ({ pos: Gauntlet.posName(L.formation.slots[i]), name: p.name, rating: p.rating, meta: Gauntlet.metaAt(p, Gauntlet.generalPos(L.formation.slots[i])), evo: !!p.evo })),
+                         bench: ((v.bench && v.bench[t]) || []).map(p => p.name + ' ' + p.rating) })) })) };
+        }
+        if (tool === 'pittools_gallery_overview') {
+            if (!galleryLast || !galleryLast.ranked) return { loaded: false, hint: 'Galerie noch nicht geladen - Rasmus muss im Reiter "Galerie" die Sets laden.' };
+            const top = Math.max(1, Math.min(100, a.top || 20));
+            return { loaded: true, at: galleryLast.at || null, count: galleryLast.ranked.length,
+                     sets: galleryLast.ranked.slice(0, top).map(x => ({ name: x.name, tokens: x.tokens, coinsAtLeast: x.coins, total: x.total != null ? x.total : null,
+                         perToken: x.truePerToken != null ? x.truePerToken : (isFinite(x.perToken) ? x.perToken : null), checked: x.truePerToken != null, bestGrade: x.bestGrade || null, items: x.items || null })) };
+        }
+        if (tool === 'pittools_diagnostics') {
+            const rep = buildDiagReport();
+            if (Array.isArray(a.sections) && a.sections.length) { const o = {}; a.sections.forEach(k => { if (Object.prototype.hasOwnProperty.call(rep, k)) o[k] = rep[k]; }); return o; }
+            return rep;
+        }
+        if (tool === 'pittools_show_message') {
+            const text = String(a.text || '').slice(0, 1000);
+            if (ui.mcpMessage) { ui.mcpMessage.textContent = 'Claude: ' + text; ui.mcpMessage.hidden = false; }
+            toast('Claude: ' + text.slice(0, 160), '');
+            return { shown: true };
+        }
+        throw new Error('Werkzeug nicht erlaubt: ' + tool);
+    }
+    document.addEventListener('pittools-mcp-call', function (ev) {
+        let job = null;
+        try { job = JSON.parse(ev.detail); } catch (e) { return; }
+        if (!job || !job.id) return;
+        const done = (ok, result, error) => {
+            mcpState.log.push({ at: Date.now(), tool: String(job.tool || '?'), ok: ok, error: error || null });
+            if (mcpState.log.length > 30) mcpState.log.shift();
+            STATE.diag.mcp = { calls: mcpState.log.slice(-15) };
+            renderMcpStatus();
+            try { document.dispatchEvent(new CustomEvent('pittools-mcp-result', { detail: JSON.stringify({ id: job.id, ok: ok, result: result, error: error }) })); } catch (e) {}
+        };
+        if (!mcpState.on) { done(false, null, 'KI-Verbindung ist in PitTools ausgeschaltet.'); return; }
+        if (MCP_TOOLS.indexOf(job.tool) < 0) { done(false, null, 'Werkzeug nicht erlaubt: ' + job.tool); return; }
+        Promise.resolve().then(() => mcpRun(job.tool, job.args)).then(r => done(true, r, null), e => done(false, null, String(e && e.message || e)));
+    });
+    document.addEventListener('pittools-mcp-status', function (ev) {
+        let d = {};
+        try { d = JSON.parse(ev.detail || '{}') || {}; } catch (e) {}
+        if (d.state && mcpState.on) { mcpState.status = d.state; renderMcpStatus(); }
+    });
     // ===================== v6.6.0 Verein im Ueberblick (Anzeige) =====================
     const clubViewState = { tab: 'rating', source: 'all', all: false };
     function eaName(kind, id) {
@@ -15802,7 +16002,7 @@ const HybridSbcEa = (() => {
             // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten mit
             // Kosten, Marktabfragen, Fehler, eingefuegte Loesung.
             hybridSbc: STATE.diag.hybridSbc || null,
-            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, batchSpare: STATE.diag.batchSpare || null, galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null,
+            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, batchSpare: STATE.diag.batchSpare || null, mcp: STATE.diag.mcp || null, galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null,
             futbinBuy: STATE.diag.futbinBuy || null,
             futbinBuyPlan: STATE.diag.futbinBuyPlan || null,
             marketUrls: STATE.diag.marketUrls,

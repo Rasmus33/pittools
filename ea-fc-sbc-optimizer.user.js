@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.8.0
+// @version      6.9.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.8.0';
+    const VERSION = '6.9.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -14005,6 +14005,66 @@ const HybridSbcEa = (() => {
     const GALLERY_EA_PAGE_SIZE = 91;    // EAs Seitengroesse (wie FUTGenie)
     const GALLERY_EA_MAX_PAGES = 3;     // Verein passt fast immer auf eine Seite; Ligen bleiben Teilstand
     let galleryEaLast = null;            // letzte Messung (fuer "uebernehmen")
+    /**
+     * v6.9.0: die Messung aus onGalleryEaCollectClick als eigene Funktion - derselbe
+     * Ablauf fuer den Knopf in der Set-Ansicht und fuer die Live-Pruefung ueber Claude.
+     * Liefert { sum } oder { sessionLost: true }; diag wird unterwegs gefuellt.
+     */
+    async function galleryEaMeasure(kind, id, lineupDefIds, diag, onProgress) {
+        const raw = [];
+        let asArray = false;
+        for (let page = 0; page < GALLERY_EA_MAX_PAGES; page++) {
+            if (onProgress) onProgress(page + 1);
+            let r;
+            try { r = await conceptSearchRawPage(kind, id, page, asArray); }
+            catch (e) {
+                const st = e && e.status;
+                if (isSessionExpired(st)) { diag.stopped = 'Session abgelaufen'; return { sessionLost: true }; }
+                if (isRateLimit(st)) { diag.stopped = 'Rate-Limit'; break; }
+                throw e;
+            }
+            diag.pages++; diag.captured += r.captured; diag.entities += r.entities.length;
+            if (!r.raw && r.entities.length) diag.noRaw = (diag.noRaw || 0) + 1;
+            // Traegt EAs fertiges Item das Feld doch (neues Bundle)? Nur zaehlen.
+            r.entities.forEach(it => { const v = it ? it.isCollected : undefined; const k = v === undefined ? 'fehlt' : String(v);
+                (diag.entityIsCollected || (diag.entityIsCollected = {}))[k] = ((diag.entityIsCollected || {})[k] || 0) + 1; });
+            if (r.url && !diag.url) diag.url = String(r.url).replace(/^https?:\/\/[^/]+/, '').slice(0, 200);
+            // Erste Seite: hat EA das Kriterium beachtet? Sonst einmal als Liste.
+            if (page === 0 && r.raw && r.raw.length && !asArray &&
+                r.raw.some(x => conceptHasSetField(x, kind)) && !r.raw.some(x => conceptMatchesSet(x, kind, id))) {
+                asArray = true; diag.form = 'array';
+                page = -1; diag.pages = 0; diag.entities = 0; diag.noRaw = 0; diag.entityIsCollected = null;
+                await futbinSleep(randomBetween(MARKET_STEP_GAP_MIN_MS, MARKET_STEP_GAP_MAX_MS));
+                continue;
+            }
+            if (r.raw) {
+                r.raw.forEach(x => raw.push(x));
+                if (!diag.sample && r.raw[0]) {
+                    diag.rawKeys = Object.keys(r.raw[0]).sort().slice(0, 80);
+                    const s = r.raw[0];
+                    diag.sample = { definitionId: s.definitionId, rating: s.rating, teamid: s.teamid, leagueId: s.leagueId, nation: s.nation,
+                                    isCollected: s.isCollected === undefined ? 'fehlt' : s.isCollected, gradingScore: s.gradingScore === undefined ? 'fehlt' : s.gradingScore };
+                }
+            }
+            if (r.entities.length < GALLERY_EA_PAGE_SIZE) break;
+            if (page < GALLERY_EA_MAX_PAGES - 1) await futbinSleep(randomBetween(MARKET_STEP_GAP_MIN_MS, MARKET_STEP_GAP_MAX_MS));
+        }
+        diag.raw = raw.length;
+        diag.partial = diag.entities >= GALLERY_EA_PAGE_SIZE * GALLERY_EA_MAX_PAGES;
+        const poolDefs = new Set();
+        (STATE.pool || []).forEach(p => { const r = (p && p.raw) || {}; const d = Number(r.definitionId || r.resourceId || 0); if (d > 0) poolDefs.add(String(d)); });
+        const hasField = raw.some(x => conceptHasSetField(x, kind));
+        diag.filtered = hasField;
+        const sum = galleryEaCollectSummary(hasField ? raw.filter(x => conceptMatchesSet(x, kind, id)) : raw, {
+            kind: kind, id: id, poolDefIds: poolDefs, memoryDefIds: collectedIdSet(collectedLoad()),
+            lineupDefIds: lineupDefIds || []
+        });
+        diag.summary = { items: sum.items, defs: sum.defs, hist: sum.hist, scoreKnown: sum.scoreKnown, verdict: sum.verdict,
+                         inClub: { n: sum.inClub.n, yes: sum.inClub.yes, no: sum.inClub.no.slice(0, 10) },
+                         memory: { n: sum.memory.n, yes: sum.memory.yes, no: sum.memory.no.slice(0, 10) },
+                         lineup: sum.lineup };
+        return { sum: sum };
+    }
     async function onGalleryEaCollectClick() {
         const ch = galleryLast && galleryLast.chosen;
         if (!ch || !ch.set || !ch.meta) return;
@@ -14016,59 +14076,11 @@ const HybridSbcEa = (() => {
         const diag = { at: Date.now(), set: ch.meta.name, kind: kind, id: id, pages: 0, form: 'number', url: null, captured: 0,
                        entities: 0, raw: 0, sample: null, rawKeys: null, stopped: null };
         STATE.diag.galleryEaCollect = diag;
-        const raw = [];
         try {
-            let asArray = false;
-            for (let page = 0; page < GALLERY_EA_MAX_PAGES; page++) {
-                setGalleryResult(progressHtml('EA-Konzeptsuche, Seite ' + (page + 1) + ' ...', page + 1, GALLERY_EA_MAX_PAGES));
-                let r;
-                try { r = await conceptSearchRawPage(kind, id, page, asArray); }
-                catch (e) {
-                    const st = e && e.status;
-                    if (isSessionExpired(st)) { diag.stopped = 'Session abgelaufen'; setGalleryResult(warnHtml(SESSION_LOST_TEXT)); return; }
-                    if (isRateLimit(st)) { diag.stopped = 'Rate-Limit'; break; }
-                    throw e;
-                }
-                diag.pages++; diag.captured += r.captured; diag.entities += r.entities.length;
-                if (!r.raw && r.entities.length) diag.noRaw = (diag.noRaw || 0) + 1;
-                // Traegt EAs fertiges Item das Feld doch (neues Bundle)? Nur zaehlen.
-                r.entities.forEach(it => { const v = it ? it.isCollected : undefined; const k = v === undefined ? 'fehlt' : String(v);
-                    (diag.entityIsCollected || (diag.entityIsCollected = {}))[k] = ((diag.entityIsCollected || {})[k] || 0) + 1; });
-                if (r.url && !diag.url) diag.url = String(r.url).replace(/^https?:\/\/[^/]+/, '').slice(0, 200);
-                // Erste Seite: hat EA das Kriterium beachtet? Sonst einmal als Liste.
-                if (page === 0 && r.raw && r.raw.length && !asArray &&
-                    r.raw.some(x => conceptHasSetField(x, kind)) && !r.raw.some(x => conceptMatchesSet(x, kind, id))) {
-                    asArray = true; diag.form = 'array';
-                    page = -1; diag.pages = 0; diag.entities = 0; diag.noRaw = 0; diag.entityIsCollected = null;
-                    await futbinSleep(randomBetween(MARKET_STEP_GAP_MIN_MS, MARKET_STEP_GAP_MAX_MS));
-                    continue;
-                }
-                if (r.raw) {
-                    r.raw.forEach(x => raw.push(x));
-                    if (!diag.sample && r.raw[0]) {
-                        diag.rawKeys = Object.keys(r.raw[0]).sort().slice(0, 80);
-                        const s = r.raw[0];
-                        diag.sample = { definitionId: s.definitionId, rating: s.rating, teamid: s.teamid, leagueId: s.leagueId, nation: s.nation,
-                                        isCollected: s.isCollected === undefined ? 'fehlt' : s.isCollected, gradingScore: s.gradingScore === undefined ? 'fehlt' : s.gradingScore };
-                    }
-                }
-                if (r.entities.length < GALLERY_EA_PAGE_SIZE) break;
-                if (page < GALLERY_EA_MAX_PAGES - 1) await futbinSleep(randomBetween(MARKET_STEP_GAP_MIN_MS, MARKET_STEP_GAP_MAX_MS));
-            }
-            diag.raw = raw.length;
-            diag.partial = diag.entities >= GALLERY_EA_PAGE_SIZE * GALLERY_EA_MAX_PAGES;
-            const poolDefs = new Set();
-            (STATE.pool || []).forEach(p => { const r = (p && p.raw) || {}; const d = Number(r.definitionId || r.resourceId || 0); if (d > 0) poolDefs.add(String(d)); });
-            const hasField = raw.some(x => conceptHasSetField(x, kind));
-            diag.filtered = hasField;
-            const sum = galleryEaCollectSummary(hasField ? raw.filter(x => conceptMatchesSet(x, kind, id)) : raw, {
-                kind: kind, id: id, poolDefIds: poolDefs, memoryDefIds: collectedIdSet(collectedLoad()),
-                lineupDefIds: (ch.set.players || []).map(p => p.defId)
-            });
-            diag.summary = { items: sum.items, defs: sum.defs, hist: sum.hist, scoreKnown: sum.scoreKnown, verdict: sum.verdict,
-                             inClub: { n: sum.inClub.n, yes: sum.inClub.yes, no: sum.inClub.no.slice(0, 10) },
-                             memory: { n: sum.memory.n, yes: sum.memory.yes, no: sum.memory.no.slice(0, 10) },
-                             lineup: sum.lineup };
+            const m = await galleryEaMeasure(kind, id, (ch.set.players || []).map(p => p.defId), diag,
+                page => setGalleryResult(progressHtml('EA-Konzeptsuche, Seite ' + page + ' ...', page, GALLERY_EA_MAX_PAGES)));
+            if (m.sessionLost) { setGalleryResult(warnHtml(SESSION_LOST_TEXT)); return; }
+            const sum = m.sum;
             galleryEaLast = { setId: ch.meta.id, sum: sum };
             renderGalleryEaCollect(ch, sum, diag);
         } catch (e) {
@@ -14607,7 +14619,8 @@ const HybridSbcEa = (() => {
     // Verkauf, kein Eintragen. Unbekannte Namen werden abgewiesen. Default AUS.
     const MCP_KEY = 'sbcOptMcp';
     const MCP_TOOLS = ['pittools_status', 'pittools_club_overview', 'pittools_club_players', 'pittools_sbc_current', 'pittools_sbc_preview',
-                       'pittools_gauntlet_build', 'pittools_gallery_overview', 'pittools_diagnostics', 'pittools_show_message'];
+                       'pittools_gauntlet_build', 'pittools_gallery_overview', 'pittools_diagnostics', 'pittools_show_message',
+                       'pittools_checks_list', 'pittools_check_run'];
     const mcpState = { on: false, status: 'aus', log: [] };
     function mcpEnabledSaved() { try { return localStorage.getItem(MCP_KEY) === '1'; } catch (e) { return false; } }
     function mcpSetEnabled(on) {
@@ -14663,6 +14676,176 @@ const HybridSbcEa = (() => {
                  rareflag: r.rareflag != null ? Number(r.rareflag) : null, special: evo ? true : !!p.isSpecial, storage: !!p.isStorage, untradeable: evo ? true : !!p.untradeable,
                  itemScore: r.gradingScore != null ? Number(r.gradingScore) : null, evo: !!evo,
                  locked: !!(locked && (locked.has(String(p.id)) || (p.assetId != null && locked.has(String(p.assetId))) || (r.resourceId != null && locked.has(String(r.resourceId))))) };
+    }
+    // ---------- v6.9.0 Live-Pruefungen (fuer Claude ueber MCP) ----------
+    // Vorgegebene, NUR lesende Messungen fuer die naechsten Ausbaustufen. Jede
+    // Pruefung liefert status ok | needs (Rasmus muss etwas oeffnen/laden) | fail,
+    // eine kurze Zusammenfassung und Rohdaten fuer die Entwicklung. Ergebnisse
+    // landen zusaetzlich in localStorage (letzte 15) und im Diagnose-Report
+    // (`liveChecks`), damit sie auch ohne MCP beim Entwickler ankommen.
+    const LIVE_CHECKS_KEY = 'sbcOptLiveChecks';
+    const LIVE_CHECKS = [
+        { id: 'umgebung', title: 'Umgebung und EA-Bundle', purpose: 'Version, EA-Build, Brücke, Pool-Stand, verfügbare EA-Dienste (für alle weiteren Schritte).', requests: 0 },
+        { id: 'galerie_sammelstand', title: 'Galerie-Sammelstand über EAs Konzeptsuche', purpose: 'Liefert EA "isCollected" roh mit? Entscheidet den nächsten Galerie-Umbau. Am besten ein komplett verkauftes Set (z. B. Costa Adeje Tenerife).', requests: '1-4 EA', params: 'set (Name aus der geladenen Galerie-Liste) oder clubId' },
+        { id: 'chemie_vergleich', title: 'Chemie: EAs Rechner gegen klassisches Modell', purpose: 'Läuft EAs Chemie-Rechner live, sind FC-27-Profile aktiv, wo weicht er vom klassischen Modell ab (Gauntlet, Vorgaben-Löser).', requests: 0 },
+        { id: 'meta_abdeckung', title: 'Meta-Rating-Abdeckung (fut.gg)', purpose: 'Für wie viele Vereinsspieler/Positionen liefert fut.gg einen Wert, wo greift der Notwert (Evos, neue Specials).', requests: '1-2 fut.gg', params: 'sample (Default 40)' },
+        { id: 'formationen', title: 'EAs Formationen', purpose: 'Welche Formationen und Slot-Positionen EA liefert (Gauntlet, Kader speichern).', requests: 0 },
+        { id: 'streamlined_spuren', title: 'Streamlined-SBC-Spuren', purpose: 'EA-Klassen, SBC-Dienstmethoden, Schema und Netzverkehr rund um Streamlined/One-Click-SBCs (für den Punkte-Löser).', requests: 0 },
+        { id: 'sbc_vorschau', title: 'Offene SBC planen (Zeit und Ergebnis)', purpose: 'Löst die geöffnete SBC mit den aktuellen Einstellungen, misst die Zeit, nennt Warnungen. Trägt nichts ein.', requests: 0 }
+    ];
+    function liveChecksLoad() { try { const a = JSON.parse(localStorage.getItem(LIVE_CHECKS_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
+    function liveChecksStore(rec) {
+        try {
+            let s = JSON.stringify(rec);
+            if (s.length > 20000) { rec = Object.assign({}, rec, { data: { truncated: true, preview: s.slice(0, 18000) } }); }
+            const list = liveChecksLoad().concat([rec]).slice(-15);
+            localStorage.setItem(LIVE_CHECKS_KEY, JSON.stringify(list));
+        } catch (e) {}
+    }
+    function liveNeeds(text, data) { return { status: 'needs', needs: text, data: data || null }; }
+    function webAppBuildFromDom() {
+        try {
+            const s = Array.from(document.querySelectorAll('script[src]')).map(x => x.getAttribute('src')).find(u => /compiled_\d\.js\?_=\d+/.test(u || ''));
+            const m = s && s.match(/_=(\d+)/);
+            return m ? m[1] : null;
+        } catch (e) { return null; }
+    }
+    function protoMethodNames(obj, re) {
+        const out = new Set();
+        try {
+            let o = obj, depth = 0;
+            while (o && o !== Object.prototype && depth < 4) {
+                Object.getOwnPropertyNames(o).forEach(k => { try { if (typeof obj[k] === 'function' && (!re || re.test(k))) out.add(k); } catch (e) {} });
+                o = Object.getPrototypeOf(o); depth++;
+            }
+        } catch (e) {}
+        return Array.from(out).sort();
+    }
+    async function runLiveCheck(id, params) {
+        const p = params || {};
+        if (id === 'umgebung') {
+            const pool = STATE.pool || [];
+            const build = webAppBuildFromDom();
+            const svc = window.services || {};
+            return { status: 'ok', summary: 'PitTools ' + VERSION + ', EA-Build ' + (build || '?') + (build && build !== KNOWN_WEBAPP_BUILD ? ' (NEU gegenüber ' + KNOWN_WEBAPP_BUILD + ')' : '') +
+                     ', Pool ' + pool.length + (STATE.poolFullLoadDone ? ' (vollständig geladen)' : ' (nicht vollständig geladen)'),
+                     data: { version: VERSION, webAppBuild: build, knownBuild: KNOWN_WEBAPP_BUILD, futYear: window.fut_year || null, bridge: bridgeKind() || null,
+                             pool: { total: pool.length, storage: pool.filter(x => x.isStorage).length, full: !!STATE.poolFullLoadDone, incomplete: !!STATE.loadIncomplete, evos: STATE.evoRaws ? STATE.evoRaws.size : 0 },
+                             services: { conceptSearch: !!(svc.Item && typeof svc.Item.searchConceptItems === 'function'), chemCalculator: typeof window.UTSquadChemCalculatorUtils === 'function',
+                                         chemProfilesEnabled: (() => { try { return svc.Chemistry && typeof svc.Chemistry.isFeatureEnabled === 'function' ? !!svc.Chemistry.isFeatureEnabled() : null; } catch (e) { return null; } })(),
+                                         formations: gauntletFormations().length, localization: !!(window.UTLocalizationUtil && svc.Localization) },
+                             sbcOpen: !!STATE.sbc.challengeId, session: sessionReady() } };
+        }
+        if (id === 'galerie_sammelstand') {
+            if (!(STATE.pool || []).length) return liveNeeds('Erst in PitTools „Spieler laden“ tippen (der Abgleich mit dem Verein ist Teil der Prüfung).');
+            if (!sessionReady()) return liveNeeds('EA-Sitzung noch nicht erfasst - einmal im Spiel irgendwo klicken, dann erneut.');
+            let kind = null, eid = 0, label = null;
+            if (p.clubId) { kind = 'club'; eid = Number(p.clubId) || 0; label = 'Verein ' + eid; }
+            else {
+                if (!p.set) return liveNeeds('Welches Set? Am besten eines, das komplett gekauft UND wieder verkauft wurde (z. B. Costa Adeje Tenerife). Parameter set = Name.');
+                if (!galleryLast || !galleryLast.sets) return liveNeeds('Im Reiter „Galerie“ einmal „Sets laden“ tippen, dann die Prüfung wiederholen.');
+                const q = String(p.set).toLowerCase();
+                const hits = (galleryLast.sets || []).filter(x => String(x.name || '').toLowerCase().indexOf(q) >= 0);
+                if (!hits.length) return liveNeeds('Kein Galerie-Set mit „' + p.set + '“ in der geladenen Liste.', { examples: (galleryLast.sets || []).slice(0, 15).map(x => x.name) });
+                const x = hits.find(h => String(h.name).toLowerCase() === q) || hits[0];
+                kind = x.eaKind; eid = Number(x.eaId) || 0; label = x.name;
+                if (!kind || !(eid > 0)) return { status: 'fail', summary: 'Für „' + x.name + '“ kennt PitTools kein EA-Kriterium.', data: { set: x.name } };
+            }
+            if (galleryBusy || buyBusy || sellBusy) return liveNeeds('In PitTools läuft gerade ein Lauf - kurz warten.');
+            const diag = { at: Date.now(), set: label, kind: kind, id: eid, pages: 0, form: 'number', url: null, captured: 0, entities: 0, raw: 0, sample: null, rawKeys: null, stopped: null, via: 'live-check' };
+            STATE.diag.galleryEaCollect = diag;
+            galleryBusy = true;
+            let m;
+            try { m = await galleryEaMeasure(kind, eid, [], diag, null); } finally { galleryBusy = false; }
+            if (m.sessionLost) return { status: 'fail', summary: 'EA-Sitzung abgelaufen - neu einloggen.', data: diag };
+            const v = m.sum.verdict;
+            const text = { plausible: 'EA liefert den Sammelstand roh mit und er ist stimmig - der Galerie-Umbau auf EA-Daten kann kommen.',
+                           missing: 'EA liefert das Feld auch roh nicht - der Befund aus v5.61 bleibt.', 'all-true': 'Nur "gesammelt" - Nutzerbezug nicht belegt; ein verkauftes Set mit fehlenden Karten wählen.',
+                           implausible: 'Widerspruch zu Verein/Merkliste - Feld bedeutet etwas anderes.', empty: 'Keine Karten geliefert.' }[v] || v;
+            return { status: 'ok', summary: label + ': ' + text + ' (ja ' + m.sum.hist.yes + ', nein ' + m.sum.hist.no + ', fehlt ' + m.sum.hist.missing + ')', data: diag };
+        }
+        if (id === 'chemie_vergleich') {
+            if (!(STATE.pool || []).length) return liveNeeds('Erst in PitTools „Spieler laden“ tippen.');
+            const forms = gauntletFormations();
+            if (!forms.length) return liveNeeds('EAs Formationen fehlen - einmal „Kader“ im Spiel öffnen, dann erneut.');
+            const f = forms.find(x => /433$/.test(x.name)) || forms[0];
+            const chemFn = gauntletEaChemFn(f);
+            const players = gauntletClubPlayers().filter(x => x.ent);
+            let profiles = null;
+            try { profiles = window.services.Chemistry.isFeatureEnabled(); } catch (e) {}
+            const params = {};
+            try { const CP = window.ChemistryParamId; if (CP) ['CLUB', 'LEAGUE', 'NATION'].forEach(k => { const prm = window.services.Chemistry.getParameter(CP[k]); params[k] = prm ? { requirement: prm.requirement, thresholds: (prm.thresholds || []).map(t => [t.requirement, t.points]) } : null; }); } catch (e) {}
+            if (!chemFn) return { status: 'fail', summary: 'EAs Chemie-Rechner ist nicht erreichbar - der Gauntlet rechnet mit dem klassischen Modell.', data: { profiles: profiles, params: params } };
+            const slots = f.slots.map(Gauntlet.generalPos);
+            const teams = [];
+            for (let tries = 0; tries < 400 && teams.length < 40; tries++) {
+                const used = new Set(), persons = new Set(), team = [];
+                for (const pos of slots) {
+                    const cand = players.filter(x => x.positions.indexOf(pos) >= 0 && !used.has(String(x.id)) && !persons.has(String(x.person)));
+                    if (!cand.length) break;
+                    // Gewichtet nach Liga: so entstehen auch Teams mit hoher Chemie.
+                    const pick = (team.length && Math.random() < 0.6) ? (cand.find(x => x.league === team[0].league) || cand[Math.floor(Math.random() * cand.length)]) : cand[Math.floor(Math.random() * cand.length)];
+                    team.push(pick); used.add(String(pick.id)); persons.add(String(pick.person));
+                }
+                if (team.length === slots.length) teams.push(team);
+            }
+            let equal = 0; const diffs = [];
+            teams.forEach(t => {
+                let ea = null, err = null;
+                try { ea = chemFn(t); } catch (e) { err = String(e && e.message || e); }
+                const simple = Gauntlet.simpleChem(t);
+                if (ea && ea.total === simple.total) equal++;
+                else if (diffs.length < 8) diffs.push({ ea: ea ? ea.total : null, eaSlots: ea ? ea.perSlot : null, simple: simple.total, simpleSlots: simple.perSlot, error: err,
+                    cards: t.map(x => ({ rf: x.ent && x.ent.rareflag, league: x.league, nation: x.nation, club: x.club, icon: !!(x.ent && typeof x.ent.isLegend === 'function' && x.ent.isLegend()) })) });
+            });
+            return { status: 'ok', summary: 'EA-Rechner läuft. ' + teams.length + ' Zufallsteams: ' + equal + ' gleich mit klassischem Modell, ' + (teams.length - equal) + ' abweichend' + (profiles ? ' (FC-27-Profile aktiv)' : ''),
+                     data: { formation: f.name, profiles: profiles, params: params, compared: teams.length, equal: equal, diffs: diffs } };
+        }
+        if (id === 'meta_abdeckung') {
+            if (!(STATE.pool || []).length) return liveNeeds('Erst in PitTools „Spieler laden“ tippen.');
+            if (!bridgeKind()) return { status: 'fail', summary: 'Keine Brücke zu fut.gg.', data: null };
+            const n = Math.max(5, Math.min(120, Number(p.sample) || 40));
+            const all = gauntletClubPlayers();
+            const sample = all.slice().sort((a, b) => b.rating - a.rating).slice(0, n).concat(all.filter(x => x.evo).slice(0, 10))
+                .filter((x, i, arr) => arr.indexOf(x) === i).map(x => Object.assign({}, x, { meta: {} }));
+            const d = {};
+            await gauntletLoadMeta(sample, () => {}, d);
+            const fb = sample.filter(x => (x.metaFallback || []).length);
+            return { status: 'ok', summary: (d.metaAsked - d.metaFallback) + ' von ' + d.metaAsked + ' Spieler-Positionen mit fut.gg-Wert, ' + fb.length + ' Spieler mit Notwert',
+                     data: { asked: d.metaAsked, fromCache: d.metaFromCache, fetched: d.metaFetched, requests: d.metaRequests, fallback: d.metaFallback,
+                             fallbackPlayers: fb.slice(0, 25).map(x => ({ name: x.name, rating: x.rating, def: x.def, evo: x.evo, positions: x.metaFallback.map(Gauntlet.posName), rf: x.ent ? x.ent.rareflag : null })) } };
+        }
+        if (id === 'formationen') {
+            const forms = gauntletFormations();
+            if (!forms.length) return liveNeeds('EAs Formationen fehlen - einmal „Kader“ im Spiel öffnen, dann erneut.');
+            return { status: 'ok', summary: forms.length + ' Formationen', data: forms.map(f => ({ name: f.name, label: f.label, slots: f.slots.map(Gauntlet.posName) })) };
+        }
+        if (id === 'streamlined_spuren') {
+            let keys = [];
+            try { keys = Object.keys(window).filter(k => /OneClick|Streamlin|ScoreRequirement|SBCScore|Grading/i.test(k)).sort().slice(0, 60); } catch (e) {}
+            const sbcSvc = window.services && window.services.SBC;
+            const rep = (() => { try { return buildDiagReport(); } catch (e) { return {}; } })();
+            const fc = rep.fc27 || {};
+            const ent = STATE.sbc.entity;
+            const entInfo = ent ? (() => { const o = {}; try { Object.keys(ent).filter(k => /type|score|streamlin|oneclick|requirement/i.test(k)).slice(0, 20).forEach(k => { const v = ent[k]; o[k] = (v && typeof v === 'object') ? Object.keys(v).slice(0, 10) : v; }); } catch (e) {} return o; })() : null;
+            const res = { classes: keys, sbcMethods: sbcSvc ? protoMethodNames(sbcSvc, /oneclick|score|stream|submit|open|requirement/i) : [], openChallenge: entInfo,
+                          sbcSchema: fc.sbcSchema || STATE.diag.sbcSchema || null, sbsTraffic: (STATE.diag.sbsTraffic || []).slice(-15), featureFlips: STATE.diag.featureFlips || null };
+            return { status: ent ? 'ok' : 'needs', needs: ent ? undefined : 'Für die vollständige Messung eine Streamlined-SBC (falls vorhanden) im Spiel öffnen und die Prüfung wiederholen.',
+                     summary: keys.length + ' passende EA-Klassen, ' + res.sbcMethods.length + ' SBC-Methoden' + (ent ? ', offene Challenge gemessen' : ''), data: res };
+        }
+        if (id === 'sbc_vorschau') {
+            const sb = STATE.sbc;
+            if (!sb.targetOVR && !(sb.playerLevelConstraints || []).length && !(sb.rarityConstraints || []).length && !(sb.qualityConstraints || []).length)
+                return liveNeeds('Eine SBC im Spiel öffnen (Kader-Ansicht der Challenge), dann erneut.');
+            if (!(STATE.pool || []).length) return liveNeeds('Erst in PitTools „Spieler laden“ tippen.');
+            const t0 = Date.now();
+            const res = SolverCore.solve(STATE.pool, readConfig());
+            const ms = Date.now() - t0;
+            return { status: 'ok', summary: res && res.ok ? 'Gelöst in ' + ms + ' ms, OVR ' + res.ovrExact.toFixed(2) : 'Keine Lösung (' + ((res && res.reason) || '?') + ')',
+                     data: { ms: ms, ok: !!(res && res.ok), ovrExact: res && res.ovrExact, reason: res && res.reason, warnings: (res && res.warnings) || [], pool: STATE.pool.length, targetOVR: sb.targetOVR,
+                             constraints: { rarity: sb.rarityConstraints, level: sb.playerLevelConstraints, quality: sb.qualityConstraints || [] } } };
+        }
+        return { status: 'fail', summary: 'Unbekannte Prüfung: ' + id, data: { available: LIVE_CHECKS.map(c => c.id) } };
     }
     async function mcpRun(tool, args) {
         const a = mcpSanitizeArgs(args);
@@ -14759,6 +14942,23 @@ const HybridSbcEa = (() => {
             if (ui.mcpMessage) { ui.mcpMessage.textContent = 'Claude: ' + text; ui.mcpMessage.hidden = false; }
             toast('Claude: ' + text.slice(0, 160), '');
             return { shown: true };
+        }
+        if (tool === 'pittools_checks_list') {
+            return { checks: LIVE_CHECKS, recent: liveChecksLoad().slice(-5).map(r => ({ id: r.id, at: r.at, status: r.status, summary: r.summary })) };
+        }
+        if (tool === 'pittools_check_run') {
+            const id = String(a.id || '');
+            if (!LIVE_CHECKS.some(c => c.id === id)) throw new Error('Unbekannte Prüfung: ' + id + '. Verfügbar: ' + LIVE_CHECKS.map(c => c.id).join(', '));
+            let params = {};
+            if (typeof a.params === 'string') { try { params = mcpSanitizeArgs(JSON.parse(a.params)); } catch (e) { params = {}; } }
+            ['set', 'clubId', 'sample'].forEach(k => { if (a[k] != null) params[k] = a[k]; });
+            const t0 = Date.now();
+            let r;
+            try { r = await runLiveCheck(id, params); }
+            catch (e) { r = { status: 'fail', summary: 'Prüfung warf einen Fehler: ' + String(e && e.message || e), data: null }; reportError('Live-Prüfung ' + id, e); }
+            const rec = Object.assign({ id: id, at: Date.now(), ms: Date.now() - t0, version: VERSION, params: params }, r);
+            liveChecksStore(rec);
+            return rec;
         }
         throw new Error('Werkzeug nicht erlaubt: ' + tool);
     }
@@ -16002,7 +16202,7 @@ const HybridSbcEa = (() => {
             // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten mit
             // Kosten, Marktabfragen, Fehler, eingefuegte Loesung.
             hybridSbc: STATE.diag.hybridSbc || null,
-            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, batchSpare: STATE.diag.batchSpare || null, mcp: STATE.diag.mcp || null, galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null,
+            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, batchSpare: STATE.diag.batchSpare || null, mcp: STATE.diag.mcp || null, liveChecks: liveChecksLoad(), galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null,
             futbinBuy: STATE.diag.futbinBuy || null,
             futbinBuyPlan: STATE.diag.futbinBuyPlan || null,
             marketUrls: STATE.diag.marketUrls,

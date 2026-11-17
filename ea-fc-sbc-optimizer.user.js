@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.3.16
+// @version      6.4.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.3.16';
+    const VERSION = '6.4.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -205,6 +205,8 @@
             futbinBuy: null,         // schrittweises Kaufen (v5.19.0): Plan, Schritte, gekauft/ausgegeben, Stopp-Grund (buyPlannedPlayers)
             futbinBuyRefresh: null,  // v5.27.0: Live-Preise vor dem Kaufen nachgeholt (asked/priced/errors)
             gallery: null,           // v5.32.0: FUT Gallery (Sets geladen, gewaehlt, Plan)
+            galleryEaCollect: null,  // v6.4.0: Sammelstand ueber EAs Konzept-Suche (Roh-Antwort, Urteil)
+            galleryCheck: null,      // v5.65.0: Sammelstand je Spieler ueber Marktangebote
             gallerySell: null,       // v5.35.0: Verkauf gekaufter Galerie-Karten (Preise, Schritte)
             tradepileSell: null,     // v5.37.0: Transferliste zum Marktpreis listen
             clientTradeSamples: null, // v5.49.0: Handels-Requests der EA-Oberflaeche (Header-Namen, Body, Status)
@@ -615,6 +617,23 @@
         } catch (e) {}
     }
     // [URLCLS-END]
+    // v6.4.0: Roh-Antworten NUR waehrend einer Konzept-Messung der Galerie
+    // mitschneiden (galleryEaCollectRun). EAs Item-Fabrik verwirft isCollected,
+    // deshalb muss die Antwort vor der Fabrik gelesen werden. Ausserhalb des
+    // Zeitfensters passiert hier nichts.
+    function conceptCaptureWants(url) {
+        const c = STATE.conceptCapture;
+        return !!(c && c.until > Date.now() && /\/ut\/game\//i.test(String(url || '')));
+    }
+    function conceptCaptureTake(url, data) {
+        const c = STATE.conceptCapture;
+        if (!c || !data) return;
+        try {
+            const json = (typeof data === 'string') ? JSON.parse(data) : data;
+            c.hits.push({ url: String(url), json: json, at: Date.now() });
+            if (c.hits.length > 20) c.hits.shift();
+        } catch (e) {}
+    }
     // ---- fetch() Wrapper ---------------------------------------------------
     const _origFetch = window.fetch ? window.fetch.bind(window) : null;
     if (_origFetch) {
@@ -638,6 +657,9 @@
                         resp.clone().text().then(function (txt) {
                             handleResponseBody(url, txt);
                         }).catch(function () {});
+                    }
+                    if (url && conceptCaptureWants(url)) {
+                        resp.clone().text().then(function (txt) { conceptCaptureTake(url, txt); }).catch(function () {});
                     }
                 } catch (e) {}
                 return resp;
@@ -711,6 +733,14 @@
                         ring.push(String(url).replace(/^https?:\/\/[^/]+/, '').slice(0, 300));
                         if (ring.length > 6) ring.shift();
                     } catch (e) {}
+                }
+                if (url && conceptCaptureWants(url)) {
+                    this.addEventListener('load', function () {
+                        try {
+                            const rt = this.responseType;
+                            conceptCaptureTake(url, (!rt || rt === 'text') ? this.responseText : (rt === 'json' ? this.response : null));
+                        } catch (e) {}
+                    });
                 }
                 if (url && classifyUrl(url)) {
                     this.addEventListener('load', function () {
@@ -10689,6 +10719,90 @@ const HybridSbcEa = (() => {
         const cost = x => (x.total != null ? x.total : x.coins);
         return ranked.slice().sort((a, b) => ((b.tokens || 0) - (a.tokens || 0)) || (cost(a) - cost(b)));
     }
+    /**
+     * v6.4.0 Sammelstand ueber EAs Konzept-Suche (FUTGenie-Weg, docs/FUTGENIE-TECHNIK.md §2).
+     * FUTGenie fragt je Set `searchConceptItems` (Verein/Liga, 91 je Seite) und
+     * liest dort `isCollected`. EAs Item-Fabrik uebernimmt das Feld NICHT - FUTGenie
+     * patcht deshalb createItem. Unsere Sonde aus v5.60 las die Fabrik-Objekte
+     * und meldete "fehlt". Hier wird die ROHE Antwort ausgewertet (mitgeschnitten
+     * im XHR-/fetch-Wrapper), createItem bleibt unangetastet (Submit-Weg 0).
+     */
+    function conceptRawItems(json) {
+        if (!json || typeof json !== 'object') return [];
+        const isItemList = a => Array.isArray(a) && a.length > 0 && a.every(o => o && typeof o === 'object' && (o.definitionId != null || o.resourceId != null));
+        if (isItemList(json)) return json;
+        for (const k of ['itemData', 'items', 'auctionInfo']) if (isItemList(json[k])) return json[k];
+        for (const k of Object.keys(json)) if (isItemList(json[k])) return json[k];
+        return [];
+    }
+    /** Traegt die Roh-Karte das Feld des Kriteriums ueberhaupt? */
+    function conceptHasSetField(raw, kind) {
+        if (!raw) return false;
+        if (kind === 'club') return raw.teamid != null || raw.teamId != null;
+        if (kind === 'league') return raw.leagueId != null;
+        if (kind === 'nation') return raw.nation != null;
+        return false;
+    }
+    /** Passt eine Roh-Karte zum Set-Kriterium (club/league/nation)? */
+    function conceptMatchesSet(raw, kind, id) {
+        if (!raw || !(id > 0)) return false;
+        if (kind === 'club') return Number(raw.teamid != null ? raw.teamid : raw.teamId) === id;
+        if (kind === 'league') return Number(raw.leagueId) === id;
+        if (kind === 'nation') return Number(raw.nation) === id;
+        return false;
+    }
+    /**
+     * Auswertung einer Konzept-Messung. ctx: { kind, id, poolDefIds:Set, memoryDefIds:Set, lineupDefIds:[] }.
+     * Urteil (verdict):
+     *  - 'empty'        keine Karten fuer das Kriterium
+     *  - 'missing'      Feld fehlt auch roh -> v5.61-Befund bleibt
+     *  - 'implausible'  EA sagt "nein" zu einer Karte, die im Verein liegt oder gemerkt ist
+     *  - 'all-true'     nur "ja" - kein Beleg, dass das Feld nutzerbezogen ist
+     *  - 'plausible'    ja/nein gemischt UND alle sicheren Karten "ja"
+     * Nur 'plausible' darf (nach Bestaetigung) in die Merkliste.
+     */
+    function galleryEaCollectSummary(rawItems, ctx) {
+        const c = ctx || {};
+        const pool = c.poolDefIds || new Set(), mem = c.memoryDefIds || new Set();
+        const byDef = new Map();
+        let matching = 0;
+        (rawItems || []).forEach(r => {
+            const d = Number(r && (r.definitionId != null ? r.definitionId : r.resourceId));
+            if (!(d > 0)) return;
+            if (conceptMatchesSet(r, c.kind, c.id)) matching++;
+            const v = r.isCollected;
+            const val = (v === true || v === 1) ? true : (v === false || v === 0) ? false : null;
+            const prev = byDef.get(d);
+            if (prev && prev.c === true) return; // dieselbe Definition doppelt: "ja" gewinnt
+            byDef.set(d, { c: val, s: Number(r.gradingScore) || 0, r: Number(r.rating) || 0,
+                           t: Number(r.teamid != null ? r.teamid : r.teamId) || 0, l: Number(r.leagueId) || 0, n: Number(r.nation) || 0,
+                           scoreKnown: r.gradingScore != null });
+        });
+        const hist = { yes: 0, no: 0, missing: 0 };
+        let scoreKnown = 0;
+        byDef.forEach(x => { if (x.c === true) hist.yes++; else if (x.c === false) hist.no++; else hist.missing++; if (x.scoreKnown) scoreKnown++; });
+        const inClub = { n: 0, yes: 0, no: [] }, memory = { n: 0, yes: 0, no: [] };
+        byDef.forEach((x, d) => {
+            if (pool.has(String(d))) { inClub.n++; if (x.c === true) inClub.yes++; else if (x.c === false) inClub.no.push(d); }
+            else if (mem.has(String(d))) { memory.n++; if (x.c === true) memory.yes++; else if (x.c === false) memory.no.push(d); }
+        });
+        const lineup = (c.lineupDefIds || []).map(d => { const x = byDef.get(Number(d)); return { defId: Number(d), collected: x ? x.c : undefined }; });
+        let verdict;
+        if (!byDef.size) verdict = 'empty';
+        else if (hist.missing === byDef.size) verdict = 'missing';
+        else if (inClub.no.length || memory.no.length) verdict = 'implausible';
+        else if (hist.no === 0) verdict = 'all-true';
+        else verdict = 'plausible';
+        return { items: (rawItems || []).length, defs: byDef.size, matching: matching, hist: hist, scoreKnown: scoreKnown,
+                 inClub: inClub, memory: memory, lineup: lineup, verdict: verdict, byDef: byDef };
+    }
+    /** Merksaetze (Format von sbcOptCollectedDefs) fuer alle Karten, die EA als gesammelt meldet. */
+    function galleryEaCollectRecords(summary) {
+        const out = [];
+        if (!summary || !summary.byDef) return out;
+        summary.byDef.forEach((x, d) => { if (x.c === true) out.push({ d: d, t: x.t, l: x.l, n: x.n, s: x.s, r: x.r }); });
+        return out;
+    }
     // [GALLERY-END]
     // ---- Bruecke zu futbin (CORS) ------------------------------------------
     // Zwei Anbieter, EIN Protokoll: in der App das native Objekt
@@ -13113,6 +13227,12 @@ const HybridSbcEa = (() => {
             h += '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-check">Sammelstand bei EA prüfen (' + checkIdx.length + ' Abfragen)</button>' +
                  '<div class="sbc-opt-dim">Fragt für jeden noch unbekannten Spieler den Markt - EAs Antwort verrät, ob du die Karte schon einmal gesammelt hast. Ist das Set damit voll, wird es als erledigt markiert. Dauert rund ' + Math.ceil(checkIdx.length * 2) + ' Sekunden.</div>';
         }
+        // v6.4.0: Messung FUTGenie-Weg - Sammelstand direkt aus EAs Konzept-Suche.
+        if (x.eaKind && x.eaId > 0) {
+            h += '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-eacollect">Sammelstand über EA-Konzeptsuche lesen (Test)</button>' +
+                 '<div class="sbc-opt-dim">Höchstens vier Anfragen, keine Marktsuche. Prüft, ob EA den Sammelstand aller Karten dieses ' +
+                 (x.eaKind === 'club' ? 'Vereins' : x.eaKind === 'league' ? 'Liga' : 'Kriteriums') + ' direkt mitliefert. Übernimmt nichts ohne deinen Tipp.</div>';
+        }
         h += '<div class="sbc-opt-inline" style="margin-top:8px;">' +
              '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-back" style="margin:0;">Zurück</button>' +
              '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-done" style="margin:0;">Als erledigt markieren</button></div>';
@@ -13134,6 +13254,8 @@ const HybridSbcEa = (() => {
         ui.galleryResult.querySelectorAll('button[data-gal-target-grade]').forEach(b => b.addEventListener('click',() => onGalleryUpgradeClick(b.getAttribute('data-gal-target-grade'))));
         const check = ui.galleryResult.querySelector('#sbc-opt-gal-check');
         if (check) check.addEventListener('click', onGalleryCheckClick);
+        const eaColl = ui.galleryResult.querySelector('#sbc-opt-gal-eacollect');
+        if (eaColl) eaColl.addEventListener('click', onGalleryEaCollectClick);
         const back = ui.galleryResult.querySelector('#sbc-opt-gal-back');
         if (back) back.addEventListener('click', function () { renderGallerySets(galleryLast.ranked); setGalleryStep(2); });
         const done = ui.galleryResult.querySelector('#sbc-opt-gal-done');
@@ -13221,6 +13343,175 @@ const HybridSbcEa = (() => {
         } finally {
             galleryBusy = false;
         }
+    }
+    /**
+     * v6.4.0: eine Seite von EAs Konzept-Suche fuer ein Set-Kriterium holen und
+     * dabei die ROHE Antwort mitschneiden. Liefert { raw, entities, url }.
+     * `asArray` = Kriterium als Liste ([id], wie FUTGenie) statt als Zahl (wie
+     * EAs eigener SBC-Code) - wird nur genutzt, wenn die Zahl ignoriert wurde.
+     */
+    async function conceptSearchRawPage(kind, id, page, asArray) {
+        if (typeof window.UTSearchCriteriaDTO !== 'function' || !window.services || !window.services.Item ||
+            typeof window.services.Item.searchConceptItems !== 'function') {
+            throw new Error('EA-Konzept-Suche nicht verfügbar');
+        }
+        const crit = new window.UTSearchCriteriaDTO();
+        try { crit.type = window.SearchType ? window.SearchType.PLAYER : 'player'; } catch (e) {}
+        crit.count = GALLERY_EA_PAGE_SIZE;
+        crit.offset = page * GALLERY_EA_PAGE_SIZE;
+        crit[kind] = asArray ? [id] : id;
+        const cap = { until: Date.now() + 35000, hits: [] };
+        STATE.conceptCapture = cap;
+        let resp, entities = [], best = null;
+        try {
+            resp = await obsPromise(window.services.Item.searchConceptItems(crit));
+            entities = responseOk(resp) ? responseItems(resp) : [];
+            const entDefs = new Set(entities.map(it => String(it && (it.definitionId || it.resourceId))));
+            // Den Mitschnitt nehmen, der am besten zu den gelieferten Karten passt.
+            // Der fetch-Klon wird asynchron gelesen, andere EA-Requests koennen im
+            // Fenster liegen - deshalb auf einen PASSENDEN Mitschnitt warten (max. 1,5 s).
+            const pick = () => {
+                let b = null, bestHit = 0;
+                cap.hits.forEach(h => {
+                    const raw = conceptRawItems(h.json);
+                    const hit = raw.filter(r => entDefs.has(String(r.definitionId != null ? r.definitionId : r.resourceId))).length;
+                    if (raw.length && hit > bestHit) { b = { raw: raw, url: h.url }; bestHit = hit; }
+                });
+                return b;
+            };
+            for (let w = 0; w < 15 && entities.length && !(best = pick()); w++) await futbinSleep(100);
+        } finally {
+            STATE.conceptCapture = null;
+        }
+        if (!responseOk(resp)) { const e = new Error('Konzept-Suche abgelehnt (Status ' + (resp && resp.status) + ')'); e.status = resp && resp.status; throw e; }
+        return { raw: best ? best.raw : null, url: best ? best.url : null, entities: entities, captured: cap.hits.length };
+    }
+    const GALLERY_EA_PAGE_SIZE = 91;    // EAs Seitengroesse (wie FUTGenie)
+    const GALLERY_EA_MAX_PAGES = 3;     // Verein passt fast immer auf eine Seite; Ligen bleiben Teilstand
+    let galleryEaLast = null;            // letzte Messung (fuer "uebernehmen")
+    async function onGalleryEaCollectClick() {
+        const ch = galleryLast && galleryLast.chosen;
+        if (!ch || !ch.set || !ch.meta) return;
+        const kind = ch.meta.eaKind, id = Number(ch.meta.eaId) || 0;
+        if (!kind || !(id > 0)) { toast('Für dieses Set kennt PitTools kein EA-Kriterium (Verein/Liga/Nation).', 'warn'); return; }
+        if (galleryBusy || buyBusy || sellBusy) { toast('Es läuft schon ein Lauf.', 'warn'); return; }
+        if (!sessionReady()) { toast('EA-Sitzung noch nicht erfasst - einmal im Spiel klicken, dann erneut.', 'warn'); return; }
+        galleryBusy = true;
+        const diag = { at: Date.now(), set: ch.meta.name, kind: kind, id: id, pages: 0, form: 'number', url: null, captured: 0,
+                       entities: 0, raw: 0, sample: null, rawKeys: null, stopped: null };
+        STATE.diag.galleryEaCollect = diag;
+        const raw = [];
+        try {
+            let asArray = false;
+            for (let page = 0; page < GALLERY_EA_MAX_PAGES; page++) {
+                setGalleryResult(progressHtml('EA-Konzeptsuche, Seite ' + (page + 1) + ' ...', page + 1, GALLERY_EA_MAX_PAGES));
+                let r;
+                try { r = await conceptSearchRawPage(kind, id, page, asArray); }
+                catch (e) {
+                    const st = e && e.status;
+                    if (isSessionExpired(st)) { diag.stopped = 'Session abgelaufen'; setGalleryResult(warnHtml(SESSION_LOST_TEXT)); return; }
+                    if (isRateLimit(st)) { diag.stopped = 'Rate-Limit'; break; }
+                    throw e;
+                }
+                diag.pages++; diag.captured += r.captured; diag.entities += r.entities.length;
+                if (!r.raw && r.entities.length) diag.noRaw = (diag.noRaw || 0) + 1;
+                // Traegt EAs fertiges Item das Feld doch (neues Bundle)? Nur zaehlen.
+                r.entities.forEach(it => { const v = it ? it.isCollected : undefined; const k = v === undefined ? 'fehlt' : String(v);
+                    (diag.entityIsCollected || (diag.entityIsCollected = {}))[k] = ((diag.entityIsCollected || {})[k] || 0) + 1; });
+                if (r.url && !diag.url) diag.url = String(r.url).replace(/^https?:\/\/[^/]+/, '').slice(0, 200);
+                // Erste Seite: hat EA das Kriterium beachtet? Sonst einmal als Liste.
+                if (page === 0 && r.raw && r.raw.length && !asArray &&
+                    r.raw.some(x => conceptHasSetField(x, kind)) && !r.raw.some(x => conceptMatchesSet(x, kind, id))) {
+                    asArray = true; diag.form = 'array';
+                    page = -1; diag.pages = 0; diag.entities = 0; diag.noRaw = 0; diag.entityIsCollected = null;
+                    await futbinSleep(randomBetween(MARKET_STEP_GAP_MIN_MS, MARKET_STEP_GAP_MAX_MS));
+                    continue;
+                }
+                if (r.raw) {
+                    r.raw.forEach(x => raw.push(x));
+                    if (!diag.sample && r.raw[0]) {
+                        diag.rawKeys = Object.keys(r.raw[0]).sort().slice(0, 80);
+                        const s = r.raw[0];
+                        diag.sample = { definitionId: s.definitionId, rating: s.rating, teamid: s.teamid, leagueId: s.leagueId, nation: s.nation,
+                                        isCollected: s.isCollected === undefined ? 'fehlt' : s.isCollected, gradingScore: s.gradingScore === undefined ? 'fehlt' : s.gradingScore };
+                    }
+                }
+                if (r.entities.length < GALLERY_EA_PAGE_SIZE) break;
+                if (page < GALLERY_EA_MAX_PAGES - 1) await futbinSleep(randomBetween(MARKET_STEP_GAP_MIN_MS, MARKET_STEP_GAP_MAX_MS));
+            }
+            diag.raw = raw.length;
+            diag.partial = diag.entities >= GALLERY_EA_PAGE_SIZE * GALLERY_EA_MAX_PAGES;
+            const poolDefs = new Set();
+            (STATE.pool || []).forEach(p => { const r = (p && p.raw) || {}; const d = Number(r.definitionId || r.resourceId || 0); if (d > 0) poolDefs.add(String(d)); });
+            const hasField = raw.some(x => conceptHasSetField(x, kind));
+            diag.filtered = hasField;
+            const sum = galleryEaCollectSummary(hasField ? raw.filter(x => conceptMatchesSet(x, kind, id)) : raw, {
+                kind: kind, id: id, poolDefIds: poolDefs, memoryDefIds: collectedIdSet(collectedLoad()),
+                lineupDefIds: (ch.set.players || []).map(p => p.defId)
+            });
+            diag.summary = { items: sum.items, defs: sum.defs, hist: sum.hist, scoreKnown: sum.scoreKnown, verdict: sum.verdict,
+                             inClub: { n: sum.inClub.n, yes: sum.inClub.yes, no: sum.inClub.no.slice(0, 10) },
+                             memory: { n: sum.memory.n, yes: sum.memory.yes, no: sum.memory.no.slice(0, 10) },
+                             lineup: sum.lineup };
+            galleryEaLast = { setId: ch.meta.id, sum: sum };
+            renderGalleryEaCollect(ch, sum, diag);
+        } catch (e) {
+            reportError('Galerie: EA-Konzeptsuche', e);
+            diag.stopped = String(e && e.message || e);
+            setGalleryResult(warnHtml('EA-Konzeptsuche fehlgeschlagen: ' + escapeHtml(diag.stopped)) +
+                             '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-ea-back">Zurück zum Set</button>');
+            const back = ui.galleryResult.querySelector('#sbc-opt-gal-ea-back');
+            if (back) back.addEventListener('click', function () { onGalleryPick(ch.idx); });
+        } finally {
+            galleryBusy = false;
+        }
+    }
+    function renderGalleryEaCollect(ch, sum, diag) {
+        const VERDICT = {
+            empty: 'EA hat für dieses Kriterium keine Karten geliefert - keine Aussage.',
+            missing: 'EA liefert das Sammel-Feld auch in der Roh-Antwort NICHT. Der Befund aus v5.61 bleibt; bitte Report schicken.',
+            implausible: 'Unstimmig: EA meldet Karten als NICHT gesammelt, die im Verein liegen oder gemerkt sind. Nicht übernehmen - bitte Report schicken.',
+            'all-true': 'EA meldet ALLE Karten als gesammelt. Das kann stimmen, beweist aber nicht, dass das Feld zu deinem Konto gehört. Nicht übernehmen - bitte Report schicken.',
+            plausible: 'Stimmig: EA unterscheidet gesammelt/nicht gesammelt, und alle Karten im Verein bzw. in der Merkliste stehen auf "gesammelt".'
+        };
+        const names = new Map((ch.set.players || []).map(p => [Number(p.defId), p.name]));
+        const known = collectedIdSet(collectedLoad());
+        const fresh = galleryEaCollectRecords(sum).filter(r => !known.has(String(r.d)));
+        let h = '<div class="sbc-opt-summary">' + escapeHtml(ch.set.name || ch.meta.name) + ': EA-Konzeptsuche (Messung)</div>' +
+                '<div class="sbc-opt-fb-meta">' + sum.defs + ' Kartenversionen · gesammelt <b>' + sum.hist.yes + '</b> · nicht gesammelt <b>' + sum.hist.no +
+                '</b> · ohne Angabe ' + sum.hist.missing + (diag.partial ? ' · <b>Teilstand</b> (mehr als ' + (GALLERY_EA_PAGE_SIZE * GALLERY_EA_MAX_PAGES) + ' Karten)' : '') + '</div>' +
+                '<div class="sbc-opt-fb-meta">Abgleich: im Verein ' + sum.inClub.yes + ' von ' + sum.inClub.n + ' als gesammelt · Merkliste ' +
+                sum.memory.yes + ' von ' + sum.memory.n + '</div>' +
+                (sum.verdict === 'plausible' ? '<div class="sbc-opt-summary">' + escapeHtml(VERDICT[sum.verdict]) + '</div>' : warnHtml(VERDICT[sum.verdict]));
+        if (sum.lineup.length) {
+            h += '<details class="sbc-opt-details-toggle"' + (sum.verdict === 'plausible' ? ' open' : '') + '><summary>fut.gg-Aufstellung laut EA</summary>' +
+                 sum.lineup.map(l => '<div>' + (l.collected === true ? '✓' : l.collected === false ? '✗' : '?') + ' ' +
+                     escapeHtml(names.get(l.defId) || ('#' + l.defId)) + ' <span class="sbc-opt-muted">(ID ' + l.defId + ')</span></div>').join('') +
+                 '<div class="sbc-opt-dim">✓ gesammelt · ✗ nicht gesammelt · ? nicht in EAs Antwort</div></details>';
+        }
+        if (sum.verdict === 'plausible' && fresh.length) {
+            h += '<button type="button" class="sbc-opt-btn primary" id="sbc-opt-gal-ea-adopt">' + fresh.length + ' gesammelte Karten in die Merkliste übernehmen</button>' +
+                 '<div class="sbc-opt-dim">Ergänzt nur (nie löschen). Übernommene Karten zählen für den Set-Fortschritt und werden nicht noch einmal gekauft.</div>';
+        }
+        h += '<div class="sbc-opt-dim">Höchstens vier Anfragen, keine Marktsuche. Ergebnis steht im Report unter galleryEaCollect.</div>' +
+             '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-ea-back">Zurück zum Set</button>';
+        if (!sum.items && diag.noRaw) {
+            h = '<div class="sbc-opt-summary">' + escapeHtml(ch.set.name || ch.meta.name) + ': EA-Konzeptsuche (Messung)</div>' +
+                warnHtml('EA hat ' + diag.entities + ' Karten geliefert, aber ohne mitlesbare Netzanfrage (vermutlich aus EAs Zwischenspeicher). Keine Messung möglich - App neu laden und erneut versuchen, sonst Report schicken.') +
+                '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-ea-back">Zurück zum Set</button>';
+        }
+        setGalleryResult(h);
+        const adopt = ui.galleryResult.querySelector('#sbc-opt-gal-ea-adopt');
+        if (adopt) adopt.addEventListener('click', function () {
+            if (!galleryEaLast || galleryEaLast.sum !== sum) return;
+            const m = mergeCollectedRecords(collectedLoad(), galleryEaCollectRecords(sum));
+            if (m.added) collectedSave(m.list);
+            diag.adopted = m.added;
+            toast(m.added + ' Karten in die Merkliste übernommen.', 'ok');
+            onGalleryPick(ch.idx);
+        });
+        const back = ui.galleryResult.querySelector('#sbc-opt-gal-ea-back');
+        if (back) back.addEventListener('click', function () { onGalleryPick(ch.idx); });
     }
     async function onGalleryBuyClick() {
         const ch = galleryLast && galleryLast.chosen;
@@ -14503,7 +14794,7 @@ const HybridSbcEa = (() => {
             // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten mit
             // Kosten, Marktabfragen, Fehler, eingefuegte Loesung.
             hybridSbc: STATE.diag.hybridSbc || null,
-            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null,
+            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null,
             futbinBuy: STATE.diag.futbinBuy || null,
             futbinBuyPlan: STATE.diag.futbinBuyPlan || null,
             marketUrls: STATE.diag.marketUrls,

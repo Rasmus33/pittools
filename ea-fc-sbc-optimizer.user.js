@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.6.0
+// @version      6.7.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.6.0';
+    const VERSION = '6.7.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -208,6 +208,7 @@
             galleryEaCollect: null,  // v6.4.0: Sammelstand ueber EAs Konzept-Suche (Roh-Antwort, Urteil)
             gauntlet: null,          // v6.5.0: Gauntlet-Builder (Formation, Meta-Abfragen, Chemie-Quelle, Varianten)
             clubView: null,          // v6.6.0: Verein im Ueberblick (Zusammenfassung, Stufen)
+            batchSpare: null,        // v6.7.0: Vorschau-Tausch (geschonte Karten, neu geplant)
             galleryCheck: null,      // v5.65.0: Sammelstand je Spieler ueber Marktangebote
             gallerySell: null,       // v5.35.0: Verkauf gekaufter Galerie-Karten (Preise, Schritte)
             tradepileSell: null,     // v5.37.0: Transferliste zum Marktpreis listen
@@ -6446,6 +6447,9 @@
             border-radius:var(--pt-radius-md); padding:10px; display:none;
         }
         .sbc-opt-result.show { display:block; }
+        .sbc-opt-spare { margin-left:4px; padding:1px 8px; border-radius:var(--pt-radius-sm); border:1px solid var(--pt-border-default); background:transparent;
+            color:var(--pt-fg-muted); font-size:var(--pt-text-sm); cursor:pointer; min-height:24px; }
+        .sbc-opt-spare:active { background:var(--pt-state-hover); color:var(--pt-fg-default); }
         .sbc-opt-cv-row { display:grid; grid-template-columns: minmax(70px, 34%) 1fr; gap:2px 8px; align-items:center; margin:6px 0; }
         .sbc-opt-cv-row .sbc-opt-bar { margin:0; }
         .sbc-opt-cv-label { font-size:var(--pt-text-sm); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -15798,7 +15802,7 @@ const HybridSbcEa = (() => {
             // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten mit
             // Kosten, Marktabfragen, Fehler, eingefuegte Loesung.
             hybridSbc: STATE.diag.hybridSbc || null,
-            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null,
+            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, batchSpare: STATE.diag.batchSpare || null, galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null,
             futbinBuy: STATE.diag.futbinBuy || null,
             futbinBuyPlan: STATE.diag.futbinBuyPlan || null,
             marketUrls: STATE.diag.marketUrls,
@@ -17564,8 +17568,8 @@ const HybridSbcEa = (() => {
      * planen. Vorlagen rufen ihn direkt - mit einem Profil-cfg statt der
      * Panel-Werte. `tim` ist optional (Phasen-Messung des Panel-Wegs).
      */
-    async function planBatchRounds(want, cfg, tim) {
-        const st = SolverCore.beginBatch(STATE.pool, cfg, want);
+    async function planBatchRounds(want, cfg, tim, poolOverride) {
+        const st = SolverCore.beginBatch(poolOverride || STATE.pool, cfg, want);
         for (let i = 0; i < want; i++) {
             showProgress(i + 1, want, 'plane Team ' + (i + 1) + ' von ' + want + '...',
                 (st.rounds.length ? st.rounds.length + ' fertig' : ''));
@@ -17634,6 +17638,7 @@ const HybridSbcEa = (() => {
             toast('Hinweis: Der Vorgaben-Scan wurde abgeschnitten - der Plan könnte auf unvollständigen Vorgaben beruhen. Vorschau prüfen.', 'warn');
         }
         const want = Math.max(1, Math.min(10, parseInt(ui.batchCount.value, 10) || 1));
+        STATE.batchSpare = new Set(); // v6.7.0: neue Planung = keine geschonten Karten
         ui.batchPlan.disabled = true;
         setStatus('plane ' + want + ' Teams...');
         try {
@@ -19174,7 +19179,8 @@ const HybridSbcEa = (() => {
      * die Detailseite der Pause muss GENAU das zeigen, was auch die Vorschau
      * beim Planen zeigt - Rasmus entscheidet auf dieser Basis.
      */
-    function buildPlanDetailHtml(plan) {
+    function buildPlanDetailHtml(plan, opts) {
+        const spare = !!(opts && opts.spare);
         let detailHtml = '';
         plan.rounds.forEach(function (r, i) {
             const nStore = r.players.filter(p => p.isStorage).length;
@@ -19196,7 +19202,8 @@ const HybridSbcEa = (() => {
                     '<span class="r">' + p.rating + '</span> ' + escapeHtml(displayName(p)) +
                     ' <span class="src' + (p.isStorage ? ' storage' : '') + '">' + (p.isStorage ? 'Storage' : 'Verein') + '</span>' +
                     ' <span class="rar">' + escapeHtml(rarityLabel(p)) + '</span>' +
-                    (p.untradeable ? ' <span class="untr">unverkäuflich</span>' : '') + '</div>';
+                    (p.untradeable ? ' <span class="untr">unverkäuflich</span>' : '') +
+                    (spare ? ' <button type="button" class="sbc-opt-spare" data-spare="' + escapeHtml(String(p.id)) + '" title="Diese Karte nicht verbauen und neu planen">schonen</button>' : '') + '</div>';
             }
             detailHtml += '</div>';
             for (const w of (r.warnings || [])) {
@@ -19266,10 +19273,61 @@ const HybridSbcEa = (() => {
         ui.batchRun.disabled = false;
         ui.batchRun.textContent = 'Alle ' + plan.planned + ' eintragen + abgeben';
         if (ui.batchDetails) {
-            ui.batchDetailBody.innerHTML = buildPlanDetailHtml(plan);
+            const spared = plan.spared || [];
+            ui.batchDetailBody.innerHTML = (spared.length
+                ? '<div class="sbc-opt-batch-round sbc-opt-batch-warn">Geschont (nicht verbaut): ' + spared.map(x => escapeHtml(x.label)).join(', ') +
+                  ' <button type="button" class="sbc-opt-spare" data-spare-reset="1">alle wieder freigeben</button></div>' : '') +
+                buildPlanDetailHtml(plan, { spare: !(plan.usedChallengeIds && plan.usedChallengeIds.length) });
+            if (typeof ui.batchDetailBody.querySelectorAll === 'function') {
+                ui.batchDetailBody.querySelectorAll('button[data-spare]').forEach(b => b.addEventListener('click', () => onSpareClick(b.getAttribute('data-spare'))));
+                const rs = ui.batchDetailBody.querySelector('button[data-spare-reset]');
+                if (rs) rs.addEventListener('click', () => onSpareClick(null));
+            }
             ui.batchDetailSummary.textContent = 'Teams im Detail (' + plan.planned + ')';
             ui.batchDetails.style.display = plan.planned ? 'block' : 'none';
         }
+    }
+    /**
+     * v6.7.0 Vorschau-Tausch (Gap-Analyse Paket 3, FUTGenie "Swap player"):
+     * eine Karte des Plans schonen = sie fuer DIESE Planung aus dem Pool nehmen
+     * und alles neu planen (Batch: gleiche Anzahl, Reihe: dieselbe Auswahl).
+     * Kein Eingriff in den Loeser - derselbe Weg wie "planen", nur mit kleinerem
+     * Pool. Die Freigabe-Frage verfaellt (renderBatchPreview), Confidence und
+     * Plan-Check werden neu berechnet. id = null gibt alle wieder frei.
+     */
+    let spareBusy = false;
+    function poolWithoutSpared(pool, spared) {
+        if (!spared || !spared.size) return pool;
+        return (pool || []).filter(p => !spared.has(String(p.id)));
+    }
+    async function onSpareClick(id) {
+        const plan = STATE.batch;
+        if (!plan || spareBusy) return;
+        if (plan.usedChallengeIds && plan.usedChallengeIds.length) { toast('Dieser Plan wurde schon (teilweise) abgegeben - bitte neu planen.', 'warn'); return; }
+        if (plan.mode === 'reihe' && !(plan.chosen && plan.chosen.length)) { toast('Bitte die Reihe neu planen.', 'warn'); return; }
+        if (!STATE.batchSpare) STATE.batchSpare = new Set();
+        if (id == null) STATE.batchSpare.clear(); else STATE.batchSpare.add(String(id));
+        spareBusy = true;
+        try {
+            const cfg = readConfig();
+            const pool = poolWithoutSpared(STATE.pool, STATE.batchSpare);
+            const np = plan.mode === 'reihe'
+                ? await planQueueRounds(plan.chosen, cfg, null, pool)
+                : await planBatchRounds(plan.requested || plan.planned || 1, cfg, null, pool);
+            if (plan.mode === 'reihe') np.chosen = plan.chosen;
+            np.spared = Array.from(STATE.batchSpare).map(sid => {
+                const p = (STATE.pool || []).find(x => String(x.id) === sid);
+                return { id: sid, label: p ? displayName(p) + ' ' + p.rating : '#' + sid };
+            });
+            STATE.batch = np;
+            renderBatchPreview(np);
+            STATE.diag.batchSpare = { at: Date.now(), spared: Array.from(STATE.batchSpare), planned: np.planned, requested: np.requested || null };
+            finishProgress(np.planned + ' geplant' + (STATE.batchSpare.size ? ' - ' + STATE.batchSpare.size + ' Karte(n) geschont' : ''), true);
+            if (ui.batchDetails && STATE.batchSpare.size) ui.batchDetails.open = true;
+        } catch (e) {
+            toast('Neu planen fehlgeschlagen: ' + e.message, 'error');
+            reportError('Vorschau-Tausch', e);
+        } finally { spareBusy = false; }
     }
     // Reiner Reducer (keine DOM-/Netzwerkabhaengigkeit, isoliert testbar): pflegt
     // den bestehenden 6er-Ring diag.batchSteps unveraendert UND haelt zusaetzlich
@@ -20199,8 +20257,8 @@ const HybridSbcEa = (() => {
      * v5.10.0): die gewaehlten Challenges `chosen` mit der Basis-Konfiguration
      * `baseCfg` planen. Vorlagen rufen ihn direkt.
      */
-    async function planQueueRounds(chosen, baseCfg, tim) {
-        const st = beginQueue(STATE.pool, baseCfg);
+    async function planQueueRounds(chosen, baseCfg, tim, poolOverride) {
+        const st = beginQueue(poolOverride || STATE.pool, baseCfg);
         for (let i = 0; i < chosen.length; i++) {
             showProgress(i + 1, chosen.length,
                 'plane ' + chosen[i].name + '...',
@@ -20252,7 +20310,9 @@ const HybridSbcEa = (() => {
             const tim = { total: 0, rounds: [] };
             const tAll = Date.now();
             const baseCfg = readConfig();
+            STATE.batchSpare = new Set(); // v6.7.0: neue Planung = keine geschonten Karten
             const plan = await planQueueRounds(chosen, baseCfg, tim);
+            plan.chosen = chosen;
             STATE.batch = plan;
             renderBatchPreview(plan);
             tim.total = Date.now() - tAll;

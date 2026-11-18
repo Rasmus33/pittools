@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.11.0
+// @version      6.11.1
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.11.0';
+    const VERSION = '6.11.1';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -9736,7 +9736,13 @@ const HybridSbcEa = (() => {
         const byId = new Map();
         (lists || []).forEach(list => (list || []).forEach(x => {
             if (!x || x.id == null) return;
-            if (!byId.has(String(x.id))) byId.set(String(x.id), x);
+            const have = byId.get(String(x.id));
+            if (!have) { byId.set(String(x.id), x); return; }
+            // v6.11.1: erste Fassung gewinnt weiter - aber der Katalog kommt nur
+            // von der Kategorieseite. Auf der Startseite hervorgehobene Sets
+            // (live: alle Liga-Sets) standen sonst ohne Notenschwellen da.
+            if (!have.catalog && x.catalog) have.catalog = x.catalog;
+            if (!have.eaKind && x.eaKind && x.eaId) { have.eaKind = x.eaKind; have.eaId = x.eaId; }
         }));
         return Array.from(byId.values());
     }
@@ -14221,7 +14227,7 @@ const HybridSbcEa = (() => {
         const best = req > 0 && allTop.length >= req ? allTop.slice(0, req).reduce((a, b) => a + b, 0) : null;
         const maxGrade = best != null ? (grades.filter(g => best >= g.threshold).pop() || null) : null;
         return {
-            id: row.id, name: row.name, kind: row.eaKind || null, requiredCards: req || null,
+            id: row.id, name: row.name, kind: row.eaKind || null, requiredCards: req || null, noCatalog: !grades.length,
             scanned: !!entry, scannedAt: entry ? entry.at : null, partial: !!(entry && entry.partial),
             versions: defs.length, collected: coll.length, notCollected: open.length,
             missingCards: req > 0 && entry ? Math.max(0, req - coll.length) : null,
@@ -14238,7 +14244,7 @@ const HybridSbcEa = (() => {
      * ohne naechste Note (S erreicht) oder ohne Scan stehen hinten.
      */
     function galleryScanRank(states) {
-        const key = st => !st.scanned ? [3, 0, 0] : !st.nextGrade ? [2, 0, 0] :
+        const key = st => !st.scanned || st.noCatalog ? [3, 0, 0] : !st.nextGrade ? [2, 0, 0] :
             [st.missingCards > 0 ? 1 : 0, st.missingCards || 0, st.nextThreshold > 0 ? st.gapToNext / st.nextThreshold : 1];
         return (states || []).slice().sort((a, b) => { const x = key(a), y = key(b); return x[0] - y[0] || x[1] - y[1] || x[2] - y[2] || String(a.name).localeCompare(String(b.name)); });
     }
@@ -14257,18 +14263,20 @@ const HybridSbcEa = (() => {
             scanned: states.filter(st => st.scanned).length, notScannable: chosen.filter(x => !(x.eaKind === 'club' || x.eaKind === 'league')).map(x => x.name).slice(0, 30),
             note: GALLERY_SCAN_NOTE,
             closest: states.filter(st => st.scanned && st.nextGrade).slice(0, top),
-            maxedOut: states.filter(st => st.scanned && !st.nextGrade).map(st => st.name).slice(0, 50),
+            maxedOut: states.filter(st => st.scanned && !st.noCatalog && !st.nextGrade).map(st => st.name).slice(0, 50),
+            noCatalog: states.filter(st => st.noCatalog).map(st => st.name).slice(0, 50),
             run: o.run || null
         };
     }
     // [GALLERYSCAN-END]
     function galleryCatalogSave(sets) {
-        try { localStorage.setItem(GALLERY_CATALOG_KEY, JSON.stringify({ v: 1, at: Date.now(), sets: (sets || []).map(galleryCatalogRow) })); } catch (e) {}
+        try { localStorage.setItem(GALLERY_CATALOG_KEY, JSON.stringify({ v: 2, at: Date.now(), sets: (sets || []).map(galleryCatalogRow) })); } catch (e) {}
     }
     function galleryCatalogCached(anyAge) {
         try {
             const c = JSON.parse(localStorage.getItem(GALLERY_CATALOG_KEY) || 'null');
-            if (!c || c.v !== 1 || !Array.isArray(c.sets) || !c.sets.length) return null;
+            // v2 (6.11.1): v1 hatte Liga-Sets ohne Katalog - verwerfen statt 7 Tage falsch rechnen.
+            if (!c || c.v !== 2 || !Array.isArray(c.sets) || !c.sets.length) return null;
             if (!anyAge && !(Date.now() - c.at < GALLERY_CATALOG_TTL_MS)) return null;
             return c;
         } catch (e) { return null; }
@@ -14298,7 +14306,7 @@ const HybridSbcEa = (() => {
         galleryCatalogSave(sets);
         const c = galleryCatalogCached(true);
         if (c) c.errors = errors;
-        return c || { v: 1, at: Date.now(), sets: sets.map(galleryCatalogRow), errors: errors };
+        return c || { v: 2, at: Date.now(), sets: sets.map(galleryCatalogRow), errors: errors };
     }
     const GALLERY_SCAN_IDB_PREFIX = 'galleryScan:';
     async function galleryScanCacheLoad(persona) {

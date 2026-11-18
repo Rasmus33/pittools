@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.16.2
+// @version      6.16.3
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.16.2';
+    const VERSION = '6.16.3';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -14539,7 +14539,7 @@ const HybridSbcEa = (() => {
             id: row.id, name: row.name, kind: row.eaKind || null, requiredCards: req || null, noCatalog: !grades.length,
             scanned: !!entry, scannedAt: entry ? entry.at : null, partial: !!(entry && entry.partial),
             versions: defs.length, collected: topColl.length, collectedVersions: topColl.length, collectedPeople: new Set(coll.map(d => galleryPersonOf(d[0]))).size, notCollected: open.length,
-            teams: entry && Array.isArray(entry.teams) ? entry.teams : null,
+            teams: entry && Array.isArray(entry.teams) ? entry.teams : null, leagueCoverage: entry && entry.leagueCoverage || null,
             missingCards: req > 0 && entry ? Math.max(0, req - topColl.length) : null,
             baseScore: entry ? base : null, complete: complete,
             gradeNow: reached ? reached.name : null, tokensNow: reached ? reached.tokens : null,
@@ -14547,6 +14547,49 @@ const HybridSbcEa = (() => {
             gapToNext: entry && next ? Math.max(0, next.threshold - base) : null,
             maxGradeAllVersions: maxGrade ? maxGrade.name : null
         };
+    }
+    /** Pure: begrenzte Liga-Suche mit frischen, derselben Persona zugeordneten Vereinsscans ergaenzen.
+     * EAs Rohfeld leagueId (attrs[2]) entscheidet, nie Kategorie oder Vereinsname.
+     * Nur Definitions-IDs zusammenfuehren; ein bestaetigtes gesammelt=true bleibt erhalten.
+     */
+    function galleryMergeLeagueScans(catalog, cache, now) {
+        const at = now == null ? Date.now() : now;
+        const sets = cache && cache.sets || {};
+        const rows = catalog && catalog.sets || [];
+        const clubs = rows.filter(r => r.eaKind === 'club').map(r => sets[r.id]).filter(e =>
+            e && e.attrs && Array.isArray(e.defs) && Number.isFinite(e.at) && at >= e.at && at - e.at < GALLERY_SCAN_FRESH_MS);
+        const report = { sets: 0, addedVersions: 0, addedCollected: 0 };
+        rows.filter(r => r.eaKind === 'league' && r.eaId > 0).forEach(row => {
+            const e = sets[row.id];
+            if (!e || !Array.isArray(e.defs)) return;
+            const byDef = new Map(e.defs.map(d => [Number(d[0]), d]));
+            const attrs = Object.assign({}, e.attrs), names = Object.assign({}, e.names);
+            const direct = e.leagueCoverage ? e.leagueCoverage.directVersions : byDef.size;
+            let added = 0, collected = 0, sources = 0;
+            const clubDefs = new Set();
+            clubs.forEach(c => {
+                let used = false;
+                c.defs.forEach(d => {
+                    const id = Number(d[0]), a = c.attrs[id];
+                    if (!(id > 0) || !a || Number(a[2]) !== Number(row.eaId)) return;
+                    used = true; clubDefs.add(id);
+                    const old = byDef.get(id);
+                    if (!old || (d[1] === 1 && old[1] !== 1)) {
+                        if (!old) added++;
+                        if (d[1] === 1) collected++;
+                        byDef.set(id, d.slice());
+                        attrs[id] = a.slice();
+                        if (c.names && c.names[id]) names[id] = c.names[id];
+                    }
+                });
+                if (used) sources++;
+            });
+            e.defs = Array.from(byDef.values()).sort((a,b) => b[2]-a[2]); e.attrs = attrs; e.names = names;
+            e.leagueCoverage = { directVersions: direct, clubVersions: clubDefs.size, clubScans: sources, mergedAt: at,
+                note: 'Liga-Suche ergänzt durch Vereinsscans mit passender EA-Liga-ID; bekannte Kartenversionen, keine Garantie für einen vollständigen Katalog.' };
+            report.sets++; report.addedVersions += added; report.addedCollected += collected;
+        });
+        return report;
     }
     /**
      * Pure: Reihenfolge "am naechsten an der naechsten Note": erst wenige
@@ -14818,10 +14861,11 @@ const HybridSbcEa = (() => {
                 if (m.rateLimit) { stopped = 'Rate-Limit bei EA - Teilstand gespeichert, später fortsetzen.'; break; }
                 await futbinSleep(randomBetween(MARKET_STEP_GAP_MIN_MS, MARKET_STEP_GAP_MAX_MS));
             }
+            const leagueSupplement = galleryMergeLeagueScans(cat, cache);
             cache.at = Date.now();
             await galleryScanCacheSave(persona, cache);
             const run = { scanned: scanned, todo: todo.length, skippedFresh: rows.filter(x => (x.eaKind === 'club' || x.eaKind === 'league') && x.eaId > 0).length - todo.length,
-                          stopped: stopped, newlyCollected: newlyCollected, seconds: Math.round((Date.now() - t0) / 1000), catalogErrors: cat.errors || [] };
+                          stopped: stopped, newlyCollected: newlyCollected, seconds: Math.round((Date.now() - t0) / 1000), catalogErrors: cat.errors || [], leagueSupplement: leagueSupplement };
             STATE.diag.galleryScan = Object.assign({ at: Date.now(), catalogAt: cat.at, catalogSets: cat.sets.length }, run);
             return { cat: cat, cache: cache, run: run };
         } finally {
@@ -14930,6 +14974,7 @@ const HybridSbcEa = (() => {
         entry = cache.sets[row.id] = { at: Date.now(), kind: row.eaKind, id: row.eaId, teams: m.teams, teamMode: m.teamMode, linkedFound: m.linkedFound, searches: m.searches,
                                        defs: galleryScanDefs(m.sum.byDef), names: n, partial: !!m.partial,
                                        verdict: m.sum.verdict, attrs: galleryScanAttrs(m.raw, v => Gauntlet.posName(v)), hyperSample: galleryHyperSample(m.raw) };
+        galleryMergeLeagueScans(galleryCatalogCached(true), cache);
         await galleryScanCacheSave(persona, cache);
         return entry;
     }

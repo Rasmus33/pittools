@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.16.0
+// @version      6.16.1
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.16.0';
+    const VERSION = '6.16.1';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -15893,6 +15893,24 @@ const HybridSbcEa = (() => {
             if (typeof v === 'string') out[k] = v.slice(0, 1000);
             else if (typeof v === 'number' && isFinite(v)) out[k] = v;
             else if (typeof v === 'boolean') out[k] = v;
+            else if (k === 'entries' && Array.isArray(v)) {
+                // Konsolen-Import: strukturierte Werte erhalten, keine fremden Felder uebernehmen.
+                if (v.length > 500) throw new Error('Höchstens 500 Konsolenwerte pro Import.');
+                out[k] = v.map(en => {
+                    if (!en || typeof en !== 'object' || Array.isArray(en) || typeof en.set !== 'string' || !en.set.trim()) throw new Error('Ungültiger Konsolenwert: Set fehlt.');
+                    const rec = { set: en.set.slice(0, 200) };
+                    ['points', 'collected', 'required'].forEach(key => {
+                        if (en[key] == null) return;
+                        if (!Number.isSafeInteger(en[key]) || en[key] < 0) throw new Error('Ungültiger Konsolenwert: ' + key);
+                        rec[key] = en[key];
+                    });
+                    if (en.grade != null) {
+                        if (typeof en.grade !== 'string' || !/^[DCBAS]$/.test(en.grade)) throw new Error('Ungültige Konsolennote.');
+                        rec.grade = en.grade;
+                    }
+                    return rec;
+                });
+            }
             else if (Array.isArray(v)) out[k] = v.slice(0, 10).map(x => Array.isArray(x) ? x.slice(0, 11).map(y => String(y).slice(0, 80)) : String(x).slice(0, 80));
         });
         return out;

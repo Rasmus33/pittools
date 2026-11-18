@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.18.0
+// @version      6.18.1
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.18.0';
+    const VERSION = '6.18.1';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -212,6 +212,7 @@
             mcp: null,               // v6.8.0: KI-Verbindung (letzte Aufrufe: Werkzeug, ok, Fehler)
             galleryCheck: null,      // v5.65.0: Sammelstand je Spieler ueber Marktangebote
             gallerySell: null,       // v5.35.0: Verkauf gekaufter Galerie-Karten (Preise, Schritte)
+            points: null,            // v6.15.0/6.18.1: Punkte-SBC - Gruppen, Auswahl, Vereins-Vorschau
             tradepileSell: null,     // v5.37.0: Transferliste zum Marktpreis listen
             clientTradeSamples: null, // v5.49.0: Handels-Requests der EA-Oberflaeche (Header-Namen, Body, Status)
             futbinBuyPlan: null,     // v5.22.0: Kaufplan aus den Konzept-Spielern des Kaders (Anzahl, uebersprungen, Suchfehler)
@@ -15504,8 +15505,30 @@ const HybridSbcEa = (() => {
                                    goldCount: res.goldCount || 0, dupCount: res.dupCount || 0, goldDepth: res.goldDepth || null, reason: res.reason || null };
             if (!res || !res.ok) throw new Error('Keine Auswahl gefunden' + (res && res.reason ? ' (' + res.reason + ')' : '') + '.');
             if (!res.picks.length) { if (box) box.innerHTML = '<div class="sbc-opt-dim">Nichts mehr offen.</div>'; return; }
+            const slimPick = x => { const ent = x.ent || {}; return { name: entityName(ent) || resolvePlayerName(ent) || ('#' + x.id), rating: x.rating, score: x.score, src: x.src || (x.storage ? 'storage' : 'club'), meta: x.meta != null ? Math.round(x.meta) : null }; };
+            diag.picks = res.picks.map(slimPick);
             const applied = pointsApply(wa, res.picks);
             diag.applied = applied;
+            // v6.18.1: reicht der Storage nicht, NUR als Vorschau rechnen, was nach dem
+            // ganzen Storage aus dem Verein kaeme. Wird nie ausgewaehlt (Rasmus 18.11.:
+            // Vereins-Gold-Weg testen, ohne eine Karte abzugeben).
+            let whatIf = null;
+            if (!res.reached) {
+                try {
+                    const stSum = gr.storage.reduce((a, x) => a + Number(x.score || 0), 0);
+                    const rest = Math.max(0, info.need - stSum);
+                    if (rest > 0) {
+                        if (box) box.innerHTML = '<div class="sbc-opt-dim">Vorschau: was nach dem Storage aus dem Verein käme …</div>';
+                        const goldMeta = gr.gold.length ? await pointsGoldByMeta(gr.gold, diag) : [];
+                        const w = PointsCore.solveStaged({ storage: [], filler: gr.filler, dup: gr.dup, gold: goldMeta }, { need: rest, limit: info.limit });
+                        whatIf = { storageTotal: stSum, rest: rest, reached: !!(w && w.reached), sum: w ? w.sum : 0, cards: w && w.picks ? w.picks.length : 0,
+                                   goldCount: w ? w.goldCount || 0 : 0, dupCount: w ? w.dupCount || 0 : 0, goldDepth: w ? w.goldDepth || null : null,
+                                   submissions: w && w.picks && w.picks.length && w.sum > 0 ? Math.ceil(rest / (w.sum / w.picks.length) / info.limit) : null,
+                                   picks: w && w.picks ? w.picks.map(slimPick) : [] };
+                    }
+                } catch (e) { whatIf = { error: String(e && e.message || e) }; }
+                diag.whatIf = whatIf;
+            }
             const fmt = n => Number(n).toLocaleString('de-DE');
             const head = res.reached
                 ? 'Ausgewählt: ' + res.storageCount + ' aus dem Storage' + (res.clubCount ? ' + ' + res.clubCount + ' aus dem VEREIN' : '') +
@@ -15519,6 +15542,12 @@ const HybridSbcEa = (() => {
             if (clP.length) h += '<div class="sbc-opt-warn-box"><b>Aus dem VEREIN (' + clP.length + ') - bitte prüfen:</b>' + clP.slice().sort(byScore).map(pointsPickLabel).join('') + '</div>';
             h += '<div class="sbc-opt-group-title">Aus dem Storage (' + stP.length + ')</div><div class="sbc-opt-batch-cards">' + stP.slice().sort(byScore).map(pointsPickLabel).join('') + '</div>';
             h += '<div class="sbc-opt-dim">Jetzt im Spiel prüfen und selbst abgeben (Review → Submit).</div>';
+            if (whatIf && !whatIf.error) {
+                h += '<details class="sbc-opt-details-toggle"><summary>Vorschau: danach aus dem Verein (nichts ausgewählt)</summary><div class="sbc-opt-dim">Storage gesamt ' + fmt(whatIf.storageTotal) + ' · danach fehlen ' + fmt(whatIf.rest) +
+                     '. Erste Vereins-Abgabe: ' + whatIf.cards + ' Karten = ' + fmt(whatIf.sum) + (whatIf.reached ? ' (reicht)' : ' (reicht nicht)') + '.</div>' +
+                     '<div class="sbc-opt-batch-cards">' + whatIf.picks.slice().sort((a, b) => b.score - a.score).map(x => '<div class="sbc-opt-batch-card"><span class="r">' + x.rating + '</span> ' + escapeHtml(x.name) + ' · ' + fmt(x.score) +
+                     ' <span class="src club">' + (x.src === 'dup' ? 'Duplikat' : x.src === 'filler' ? (x.rating < 65 ? 'Bronze' : 'Silber') : 'Gold' + (x.meta != null ? ' · Meta ' + x.meta : '')) + '</span></div>').join('') + '</div></details>';
+            }
             if (box) box.innerHTML = h;
             toast(head, res.reached && !warnSel ? 'ok' : 'warn');
         } catch (e) {
@@ -18191,7 +18220,7 @@ const HybridSbcEa = (() => {
             // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten mit
             // Kosten, Marktabfragen, Fehler, eingefuegte Loesung.
             hybridSbc: STATE.diag.hybridSbc || null,
-            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, batchSpare: STATE.diag.batchSpare || null, mcp: STATE.diag.mcp || null, liveChecks: liveChecksLoad(), galleryTokens: (function () { try { const p = ownPersonaId(); return p ? galleryTokenBookLoad(p) : null; } catch (e) { return null; } })(), galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null,
+            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, batchSpare: STATE.diag.batchSpare || null, mcp: STATE.diag.mcp || null, liveChecks: liveChecksLoad(), points: STATE.diag.points || null, galleryTokens: (function () { try { const p = ownPersonaId(); return p ? galleryTokenBookLoad(p) : null; } catch (e) { return null; } })(), galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null,
             futbinBuy: STATE.diag.futbinBuy || null,
             futbinBuyPlan: STATE.diag.futbinBuyPlan || null,
             marketUrls: STATE.diag.marketUrls,

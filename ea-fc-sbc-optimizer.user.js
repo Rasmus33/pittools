@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.10.0
+// @version      6.11.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.10.0';
+    const VERSION = '6.11.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -9653,6 +9653,54 @@ const HybridSbcEa = (() => {
                 tokens: tk ? galleryNum(tk[1]) : null, tokensTotal: tk ? galleryNum(tk[2]) : null
             });
         }
+        galleryCompleteFromSsr(out, data);
+        return out;
+    }
+    /**
+     * v6.11.0: fut.ggs Kategorieseite zeigt im HTML nur die ersten 24 Sets
+     * ("Show more" laedt nach) - live 18.11.: LALIGA 24/26, MLS 24/30. In den
+     * Seitendaten (SSR) stehen ALLE Sets einer Kategorie samt Katalog:
+     * requiredCards, Notenschwellen, clubEaId, totalTokens; dazu je Set eine
+     * Zusammenfassung mit Tokens je Note (summaries[id].tiers). Ergaenzt die
+     * HTML-Liste um fehlende Sets und haengt jedem Set den Katalog an. Das
+     * HTML bleibt fuehrend (Preise "Coins needed in hand", Bild-IDs); fehlt
+     * die SSR-Struktur, bleibt alles wie vorher. Pure.
+     */
+    function galleryCompleteFromSsr(out, data) {
+        const cat = data && data.category;
+        if (!cat || !Array.isArray(cat.sets) || typeof cat.slug !== 'string' || !/^[a-z0-9-]+$/.test(cat.slug)) return out;
+        const sums = (data.summaries && typeof data.summaries === 'object') ? data.summaries : {};
+        const byId = new Map(out.map(x => [x.id, x]));
+        cat.sets.forEach(st => {
+            if (!st || !Number.isInteger(st.id) || typeof st.name !== 'string' || typeof st.slug !== 'string' || !/^[a-z0-9-]+$/.test(st.slug)) return;
+            const sum = sums[st.id] || sums[String(st.id)] || null;
+            const tiers = sum && sum.tiers && typeof sum.tiers === 'object' ? sum.tiers : {};
+            const grades = (Array.isArray(st.grades) ? st.grades : []).filter(g => g && /^[DCBAS]$/.test(g.name) && Number.isFinite(g.threshold))
+                .map(g => ({ name: g.name, threshold: g.threshold, tokens: tiers[g.name] && Number.isFinite(tiers[g.name].tokens) ? tiers[g.name].tokens : null }));
+            const catalog = { categoryId: Number.isInteger(st.categoryId) ? st.categoryId : null, category: typeof cat.name === 'string' ? cat.name : null,
+                              requiredCards: Number.isInteger(st.requiredCards) ? st.requiredCards : null, grades: grades,
+                              totalTokens: Number.isFinite(st.totalTokens) ? st.totalTokens : null,
+                              description: typeof st.description === 'string' ? st.description.slice(0, 200) : null };
+            const have = byId.get(st.id);
+            if (have) {
+                have.catalog = catalog;
+                if (have.items == null && catalog.requiredCards) have.items = catalog.requiredCards;
+                if (!have.eaKind && Number.isInteger(st.clubEaId) && st.clubEaId > 0) { have.eaKind = 'club'; have.eaId = st.clubEaId; }
+                return;
+            }
+            const best = sum && /^[DCBAS]$/.test(sum.grade) ? sum.grade : null;
+            const bestG = best ? grades.find(g => g.name === best) : null;
+            const x = {
+                id: st.id, name: st.name, path: '/fut-gallery/' + cat.slug + '/' + st.slug + '/', league: cat.slug, slug: st.slug,
+                eaKind: Number.isInteger(st.clubEaId) && st.clubEaId > 0 ? 'club' : null, eaId: Number.isInteger(st.clubEaId) && st.clubEaId > 0 ? st.clubEaId : null,
+                bestGrade: best, score: sum && Number.isFinite(sum.totalScore) ? sum.totalScore : null, threshold: bestG ? bestG.threshold : null,
+                coins: sum && Number.isFinite(sum.peak) && sum.peak > 0 ? sum.peak : null, items: catalog.requiredCards,
+                tokens: sum && Number.isFinite(sum.tokens) ? sum.tokens : null,
+                tokensTotal: sum && Number.isFinite(sum.maxTokens) ? sum.maxTokens : catalog.totalTokens,
+                catalog: catalog, fromSsr: true
+            };
+            out.push(x); byId.set(x.id, x);
+        });
         return out;
     }
     /** Set-Seite: Kopfdaten (Meta), Noten-Tabelle, guenstigste Aufstellung, Summen. */
@@ -13406,7 +13454,12 @@ const HybridSbcEa = (() => {
             if (!diag.bridge) { setGalleryResult(warnHtml(BRIDGE_HINT)); return; }
             setGalleryStep(1);
             setGalleryResult(progressHtml('Lade Gallery-Sets von fut.gg ...', 0, 1));
+            // v6.11.0: Zeitmessung je Schritt (live 18.11.: 581 s fuer "Sets laden", Ursache offen).
+            const tm = diag.timing = { index: null, categories: [], verify: [], total: null };
+            const t00 = Date.now();
+            let t0 = Date.now();
             const r = await bridgeFetch(futggGalleryIndexUrl(), 30000);
+            tm.index = { fetchMs: Date.now() - t0, bytes: (r.text || '').length };
             if (r.status !== 200) throw new Error('fut.gg antwortet mit HTTP ' + r.status + (r.status === 0 ? ' - Brücke zu alt? Browser: Bridge-Script 1.1.0, App: 1.14.0' : ''));
             const lists = [parseFutggGalleryIndex(r.text)];
             // v5.66.0: die Vereine stehen seit dem fut.gg-Umbau auf den
@@ -13417,9 +13470,13 @@ const HybridSbcEa = (() => {
                 const cat = cats[ci];
                 setGalleryResult(progressHtml('Lade ' + escapeHtml(cat.name) + ' ... (' + (ci + 1) + ' von ' + cats.length + ')', ci + 1, cats.length));
                 try {
+                    t0 = Date.now();
                     const rc = await bridgeFetch(futggGallerySetUrl(cat.path), 30000);
+                    const tf = Date.now() - t0;
                     if (rc.status !== 200) throw new Error('HTTP ' + rc.status);
+                    t0 = Date.now();
                     const got = parseFutggGalleryIndex(rc.text);
+                    tm.categories.push({ name: cat.name, fetchMs: tf, parseMs: Date.now() - t0, bytes: (rc.text || '').length });
                     lists.push(got);
                     diag.categories.push({ name: cat.name, path: cat.path, expected: cat.expected, got: got.length });
                 } catch (e) {
@@ -13430,6 +13487,7 @@ const HybridSbcEa = (() => {
             }
             const sets = mergeGallerySets(lists);
             diag.sets = sets.length;
+            galleryCatalogSave(sets); // v6.11.0: Katalog fuer Scan/Claude ohne erneutes Laden
             diag.setsFromIndex = lists[0].length;
             if (!sets.length) throw new Error('Keine Sets auf der fut.gg-Seite gefunden (Seite geändert?).');
             diag.tokenSets = sets.filter(x => x.tokens > 0).length;
@@ -13455,15 +13513,25 @@ const HybridSbcEa = (() => {
                 checked++;
                 setGalleryResult(progressHtml('Prüfe Set ' + checked + ' von höchstens ' + GALLERY_CHECK_MAX + ': ' + escapeHtml(x.name) + ' ...', checked, GALLERY_CHECK_MAX));
                 try {
+                    const tv0 = { name: x.name };
+                    let t1 = Date.now();
                     const r2 = await bridgeFetch(futggGallerySetUrl(x.path), 40000);
+                    tv0.fetchMs = Date.now() - t1; tv0.bytes = (r2.text || '').length;
                     if (r2.status !== 200) throw new Error('HTTP ' + r2.status);
+                    t1 = Date.now();
                     const set = parseFutggGallerySet(r2.text);
+                    tv0.parseMs = Date.now() - t1;
                     galleryLast.setCache[x.path] = set;
+                    t1 = Date.now();
                     x.personal = galleryPersonalAssessment(set.upgradeData, STATE.pool, collectedNow);
+                    tv0.assessMs = Date.now() - t1;
+                    tm.verify.push(tv0);
                     const tv = gallerySetTruePerToken(set, x.tokens);
                     if (tv) { x.total = tv.total; x.truePerToken = tv.perToken; x.playersN = set.players.length; if (best == null || tv.perToken < best) best = tv.perToken; }
+                    t1 = Date.now();
                     diag.verified.push({ id: x.id, name: x.name, total: tv ? tv.total : null, perToken: tv ? tv.perToken : null, players: set.players.length,
                         upgradeGrades: galleryUpgradeOptions(set.upgradeData, STATE.pool, collectedNow).map(o => o.grade), upgradeError: set.upgradeError || null });
+                    tv0.optionsMs = Date.now() - t1;
                 } catch (e) { diag.errors.push('prüfen ' + x.name + ': ' + (e && e.message || e)); }
                 await futbinSleep(FUTBIN_FETCH_GAP_MS);
             };
@@ -13491,6 +13559,7 @@ const HybridSbcEa = (() => {
             ranked = orderGalleryByMode(ranked); // v5.44.0: guenstig / fertig / tokens
             ranked = upgradeMode ? orderGalleryUpgradeSets(ranked,coins) : applyGalleryBudget(ranked, coins); // v5.40.0
             galleryLast.ranked = ranked;
+            tm.total = Date.now() - t00;
             diag.shown = ranked.slice(0, GALLERY_SHOW_OPEN).map(x => ({ id: x.id, name: x.name, coins: x.coins, total: x.total || null, tokens: x.tokens, grade: x.bestGrade }));
             renderGallerySets(ranked);
             setGalleryStep(2);
@@ -14053,6 +14122,7 @@ const HybridSbcEa = (() => {
      */
     async function galleryEaMeasure(kind, id, lineupDefIds, diag, onProgress) {
         const raw = [];
+        const names = new Map(); // v6.11.0: Spielernamen aus EAs Items (Rohdaten tragen keine)
         let asArray = false;
         for (let page = 0; page < GALLERY_EA_MAX_PAGES; page++) {
             if (onProgress) onProgress(page + 1);
@@ -14067,6 +14137,8 @@ const HybridSbcEa = (() => {
             diag.pages++; diag.captured += r.captured; diag.entities += r.entities.length;
             if (!r.raw && r.entities.length) diag.noRaw = (diag.noRaw || 0) + 1;
             // Traegt EAs fertiges Item das Feld doch (neues Bundle)? Nur zaehlen.
+            r.entities.forEach(it => { try { const d = Number(it && (it.definitionId || it.resourceId)); const sd = it && typeof it.getStaticData === 'function' ? it.getStaticData() : null;
+                if (d > 0 && sd && typeof sd.name === 'string') names.set(d, sd.name); } catch (e) {} });
             r.entities.forEach(it => { const v = it ? it.isCollected : undefined; const k = v === undefined ? 'fehlt' : String(v);
                 (diag.entityIsCollected || (diag.entityIsCollected = {}))[k] = ((diag.entityIsCollected || {})[k] || 0) + 1; });
             if (r.url && !diag.url) diag.url = String(r.url).replace(/^https?:\/\/[^/]+/, '').slice(0, 200);
@@ -14104,7 +14176,186 @@ const HybridSbcEa = (() => {
                          inClub: { n: sum.inClub.n, yes: sum.inClub.yes, no: sum.inClub.no.slice(0, 10) },
                          memory: { n: sum.memory.n, yes: sum.memory.yes, no: sum.memory.no.slice(0, 10) },
                          lineup: sum.lineup };
-        return { sum: sum };
+        return { sum: sum, names: names };
+    }
+    // ===================== v6.11.0 Galerie-Katalog + Sammelstand-Scan =====================
+    // docs/GALERIE-NEU.md Etappe 3. Katalog = alle Sets mit Regeln aus fut.ggs
+    // Kategorieseiten (SSR, 11 Abrufe, 7 Tage gemerkt). Sammelstand = je Set
+    // EINE Konzeptsuche bei EA (isCollected je Kartenversion, live 18.11.
+    // belegt fuer Vereine und Ligen), im Takt der Preisrunde, je Persona in
+    // IndexedDB. Seltenheits-Sets (TOTW, Icons ...) haben noch kein EA-Kriterium.
+    // [GALLERYSCAN-BEGIN]
+    const GALLERY_CATALOG_KEY = 'sbcOptGalleryCatalog';
+    const GALLERY_CATALOG_TTL_MS = 7 * 24 * 3600 * 1000;
+    const GALLERY_SCAN_FRESH_MS = 24 * 3600 * 1000;
+    const GALLERY_SCAN_NOTE = 'Punkte = nur Grundpunkte der gesammelten Karten (ohne Bonusregeln) - die echte Note kann höher liegen. Welche Note schon eingelöst ist, weiß EA in der Web App nicht.';
+    /** Pure: kompakte Katalogzeile eines Sets. */
+    function galleryCatalogRow(x) {
+        return { id: x.id, name: x.name, path: x.path, eaKind: x.eaKind || null, eaId: x.eaId || null, items: x.items != null ? x.items : null,
+                 coins: x.coins != null ? x.coins : null, tokens: x.tokens != null ? x.tokens : null, tokensTotal: x.tokensTotal != null ? x.tokensTotal : null,
+                 bestGrade: x.bestGrade || null, catalog: x.catalog || null };
+    }
+    /** Pure: EAs Rohkarten eines Sets kompakt: [defId, gesammelt 1/0/null, gradingScore, rating]. */
+    function galleryScanDefs(byDef) {
+        const out = [];
+        (byDef || new Map()).forEach((x, d) => out.push([Number(d), x.c === true ? 1 : x.c === false ? 0 : null, Number(x.s) || 0, Number(x.r) || 0]));
+        return out.sort((a, b) => b[2] - a[2]);
+    }
+    /**
+     * Pure: Stand eines Sets aus Katalog + Scan. Nur GRUNDPUNKTE (Summe der
+     * besten requiredCards gesammelten Karten) - Bonusregeln stehen erst auf
+     * der Set-Seite (Etappe 4). Ergebnis ist also eine Untergrenze.
+     */
+    function galleryScanSetState(row, entry) {
+        const cat = row && row.catalog || {};
+        const req = Number(cat.requiredCards || row.items) || 0;
+        const grades = (Array.isArray(cat.grades) ? cat.grades : []).filter(g => g && Number.isFinite(g.threshold)).slice().sort((a, b) => a.threshold - b.threshold);
+        const defs = entry && Array.isArray(entry.defs) ? entry.defs : [];
+        const coll = defs.filter(d => d[1] === 1), open = defs.filter(d => d[1] === 0);
+        const topColl = coll.map(d => d[2]).sort((a, b) => b - a);
+        const complete = req > 0 && topColl.length >= req;
+        const base = topColl.slice(0, req > 0 ? req : topColl.length).reduce((a, b) => a + b, 0);
+        const reached = complete ? (grades.filter(g => base >= g.threshold).pop() || null) : null;
+        const next = grades.find(g => !reached || g.threshold > reached.threshold) || null;
+        const allTop = defs.filter(d => d[1] !== null).map(d => d[2]).sort((a, b) => b - a);
+        const best = req > 0 && allTop.length >= req ? allTop.slice(0, req).reduce((a, b) => a + b, 0) : null;
+        const maxGrade = best != null ? (grades.filter(g => best >= g.threshold).pop() || null) : null;
+        return {
+            id: row.id, name: row.name, kind: row.eaKind || null, requiredCards: req || null,
+            scanned: !!entry, scannedAt: entry ? entry.at : null, partial: !!(entry && entry.partial),
+            versions: defs.length, collected: coll.length, notCollected: open.length,
+            missingCards: req > 0 && entry ? Math.max(0, req - coll.length) : null,
+            baseScore: entry ? base : null, complete: complete,
+            gradeNow: reached ? reached.name : null, tokensNow: reached ? reached.tokens : null,
+            nextGrade: next ? next.name : null, nextThreshold: next ? next.threshold : null, tokensNext: next ? next.tokens : null,
+            gapToNext: entry && next ? Math.max(0, next.threshold - base) : null,
+            maxGradeAllVersions: maxGrade ? maxGrade.name : null
+        };
+    }
+    /**
+     * Pure: Reihenfolge "am naechsten an der naechsten Note": erst wenige
+     * fehlende Karten, dann kleine Punkteluecke relativ zur Schwelle. Sets
+     * ohne naechste Note (S erreicht) oder ohne Scan stehen hinten.
+     */
+    function galleryScanRank(states) {
+        const key = st => !st.scanned ? [3, 0, 0] : !st.nextGrade ? [2, 0, 0] :
+            [st.missingCards > 0 ? 1 : 0, st.missingCards || 0, st.nextThreshold > 0 ? st.gapToNext / st.nextThreshold : 1];
+        return (states || []).slice().sort((a, b) => { const x = key(a), y = key(b); return x[0] - y[0] || x[1] - y[1] || x[2] - y[2] || String(a.name).localeCompare(String(b.name)); });
+    }
+    /** Pure: Bericht fuer Claude aus Katalog + Scan-Cache. */
+    function galleryScanReport(catalog, cache, opts) {
+        const o = opts || {};
+        const rows = (catalog && Array.isArray(catalog.sets) ? catalog.sets : []);
+        const filt = Array.isArray(o.sets) && o.sets.length ? o.sets.map(x => String(x).toLowerCase()) : null;
+        const chosen = filt ? rows.filter(x => filt.some(f => String(x.name).toLowerCase().indexOf(f) >= 0)) : rows;
+        const sets = (cache && cache.sets) || {};
+        const states = galleryScanRank(chosen.map(x => galleryScanSetState(x, sets[x.id] || sets[String(x.id)] || null)));
+        const top = Math.max(1, Math.min(200, Number(o.top) || 25));
+        const scannable = chosen.filter(x => (x.eaKind === 'club' || x.eaKind === 'league') && x.eaId > 0);
+        return {
+            catalogAt: catalog ? catalog.at : null, sets: chosen.length, scannable: scannable.length,
+            scanned: states.filter(st => st.scanned).length, notScannable: chosen.filter(x => !(x.eaKind === 'club' || x.eaKind === 'league')).map(x => x.name).slice(0, 30),
+            note: GALLERY_SCAN_NOTE,
+            closest: states.filter(st => st.scanned && st.nextGrade).slice(0, top),
+            maxedOut: states.filter(st => st.scanned && !st.nextGrade).map(st => st.name).slice(0, 50),
+            run: o.run || null
+        };
+    }
+    // [GALLERYSCAN-END]
+    function galleryCatalogSave(sets) {
+        try { localStorage.setItem(GALLERY_CATALOG_KEY, JSON.stringify({ v: 1, at: Date.now(), sets: (sets || []).map(galleryCatalogRow) })); } catch (e) {}
+    }
+    function galleryCatalogCached(anyAge) {
+        try {
+            const c = JSON.parse(localStorage.getItem(GALLERY_CATALOG_KEY) || 'null');
+            if (!c || c.v !== 1 || !Array.isArray(c.sets) || !c.sets.length) return null;
+            if (!anyAge && !(Date.now() - c.at < GALLERY_CATALOG_TTL_MS)) return null;
+            return c;
+        } catch (e) { return null; }
+    }
+    /** Katalog: gemerkt (7 Tage) oder frisch aus Index + Kategorieseiten - OHNE die teure Set-Pruefung von "Sets laden". */
+    async function galleryCatalogLoad(force, onProgress) {
+        if (!force) { const c = galleryCatalogCached(false); if (c) return c; }
+        if (!bridgeKind()) throw new Error(BRIDGE_HINT);
+        const say = t => { if (onProgress) onProgress(t); };
+        say('Katalog: Übersicht von fut.gg …');
+        const r = await bridgeFetch(futggGalleryIndexUrl(), 30000);
+        if (r.status !== 200) throw new Error('fut.gg antwortet mit HTTP ' + r.status);
+        const lists = [parseFutggGalleryIndex(r.text)];
+        const cats = parseFutggGalleryCategories(r.text);
+        const errors = [];
+        for (let ci = 0; ci < cats.length; ci++) {
+            say('Katalog: ' + cats[ci].name + ' (' + (ci + 1) + ' von ' + cats.length + ')');
+            try {
+                const rc = await bridgeFetch(futggGallerySetUrl(cats[ci].path), 30000);
+                if (rc.status !== 200) throw new Error('HTTP ' + rc.status);
+                lists.push(parseFutggGalleryIndex(rc.text));
+            } catch (e) { errors.push(cats[ci].name + ': ' + (e && e.message || e)); }
+            await futbinSleep(FUTBIN_FETCH_GAP_MS);
+        }
+        const sets = mergeGallerySets(lists);
+        if (!sets.length) throw new Error('Keine Sets auf der fut.gg-Seite gefunden (Seite geändert?).');
+        galleryCatalogSave(sets);
+        const c = galleryCatalogCached(true);
+        if (c) c.errors = errors;
+        return c || { v: 1, at: Date.now(), sets: sets.map(galleryCatalogRow), errors: errors };
+    }
+    const GALLERY_SCAN_IDB_PREFIX = 'galleryScan:';
+    async function galleryScanCacheLoad(persona) {
+        if (!persona) return null;
+        try { const c = await idbRun('readonly', st => st.get(GALLERY_SCAN_IDB_PREFIX + persona)); return c && c.sets ? c : null; } catch (e) { return null; }
+    }
+    async function galleryScanCacheSave(persona, cache) {
+        if (!persona) return;
+        try { await idbRun('readwrite', st => st.put(cache, GALLERY_SCAN_IDB_PREFIX + persona)); } catch (e) { reportError('Galerie-Scan speichern', e); }
+    }
+    const galleryScanState = { running: false, stop: false, progress: null };
+    /** Sammelstand je Set bei EA holen (nur lesen). Gefundene Sammlungen wandern auch in die Merkliste. */
+    async function galleryScanRun(opts) {
+        const o = opts || {};
+        if (galleryBusy || buyBusy || sellBusy) throw new Error('In der Galerie läuft gerade ein anderer Lauf - kurz warten.');
+        if (!sessionReady()) throw new Error('EA-Sitzung noch nicht erfasst - einmal im Spiel irgendwo klicken.');
+        const persona = ownPersonaId();
+        if (!persona) throw new Error('EA-Persona unbekannt - einmal im Spiel klicken.');
+        galleryBusy = true;
+        galleryScanState.running = true; galleryScanState.stop = false; galleryScanState.progress = 'Katalog …';
+        const t0 = Date.now();
+        try {
+            const cat = await galleryCatalogLoad(!!o.refreshCatalog, t => { galleryScanState.progress = t; });
+            const filt = Array.isArray(o.sets) && o.sets.length ? o.sets.map(x => String(x).toLowerCase()) : null;
+            const rows = filt ? cat.sets.filter(x => filt.some(f => String(x.name).toLowerCase().indexOf(f) >= 0)) : cat.sets;
+            const cache = (await galleryScanCacheLoad(persona)) || { v: 1, persona: persona, at: null, sets: {} };
+            const fresh = x => { const e = cache.sets[x.id]; return e && Date.now() - e.at < GALLERY_SCAN_FRESH_MS; };
+            const todo = rows.filter(x => (x.eaKind === 'club' || x.eaKind === 'league') && x.eaId > 0 && (o.refresh || !fresh(x)));
+            let scanned = 0, stopped = null, newlyCollected = 0;
+            for (const x of todo) {
+                if (galleryScanState.stop) { stopped = 'gestoppt'; break; }
+                galleryScanState.progress = 'Sammelstand ' + (scanned + 1) + ' von ' + todo.length + ': ' + x.name;
+                const diag = { at: Date.now(), set: x.name, kind: x.eaKind, id: x.eaId, pages: 0, form: 'number', url: null, captured: 0, entities: 0, raw: 0, sample: null, rawKeys: null, stopped: null, via: 'scan' };
+                let m;
+                try { m = await galleryEaMeasure(x.eaKind, x.eaId, [], diag, null); }
+                catch (e) { stopped = 'Fehler bei ' + x.name + ': ' + String(e && e.message || e); break; }
+                if (m.sessionLost) { stopped = 'EA-Sitzung abgelaufen - neu einloggen, dann erneut (Teilstand ist gespeichert).'; break; }
+                const n = {};
+                (m.names || new Map()).forEach((v, k) => { n[k] = v; });
+                cache.sets[x.id] = { at: Date.now(), kind: x.eaKind, id: x.eaId, defs: galleryScanDefs(m.sum.byDef), names: n, partial: !!diag.partial, verdict: m.sum.verdict };
+                const rec = galleryEaCollectRecords(m.sum);
+                if (rec.length) { const mm = mergeCollectedRecords(collectedLoad(), rec); if (mm.added) { collectedSave(mm.list); newlyCollected += mm.added; } }
+                scanned++;
+                if (scanned % 5 === 0) await galleryScanCacheSave(persona, cache);
+                if (diag.stopped === 'Rate-Limit') { stopped = 'Rate-Limit bei EA - Teilstand gespeichert, später fortsetzen.'; break; }
+                await futbinSleep(randomBetween(MARKET_STEP_GAP_MIN_MS, MARKET_STEP_GAP_MAX_MS));
+            }
+            cache.at = Date.now();
+            await galleryScanCacheSave(persona, cache);
+            const run = { scanned: scanned, todo: todo.length, skippedFresh: rows.filter(x => (x.eaKind === 'club' || x.eaKind === 'league') && x.eaId > 0).length - todo.length,
+                          stopped: stopped, newlyCollected: newlyCollected, seconds: Math.round((Date.now() - t0) / 1000), catalogErrors: cat.errors || [] };
+            STATE.diag.galleryScan = Object.assign({ at: Date.now(), catalogAt: cat.at, catalogSets: cat.sets.length }, run);
+            return { cat: cat, cache: cache, run: run };
+        } finally {
+            galleryBusy = false;
+            galleryScanState.running = false;
+        }
     }
     async function onGalleryEaCollectClick() {
         const ch = galleryLast && galleryLast.chosen;
@@ -14663,7 +14914,9 @@ const HybridSbcEa = (() => {
                        'pittools_gauntlet_build', 'pittools_gallery_overview', 'pittools_diagnostics', 'pittools_show_message',
                        'pittools_checks_list', 'pittools_check_run',
                        // v6.10.0: Claude loest Laden selbst aus; lange Laeufe als Job (nur lesen)
-                       'pittools_pool_load', 'pittools_gallery_load', 'pittools_job_status'];
+                       'pittools_pool_load', 'pittools_gallery_load', 'pittools_job_status',
+                       // v6.11.0: Galerie-Katalog + Sammelstand bei EA (nur lesen)
+                       'pittools_gallery_scan', 'pittools_gallery_state'];
     const mcpState = { on: false, status: 'aus', log: [] };
     function mcpEnabledSaved() { try { return localStorage.getItem(MCP_KEY) === '1'; } catch (e) { return false; } }
     function mcpSetEnabled(on) {
@@ -14952,40 +15205,76 @@ const HybridSbcEa = (() => {
                  fullyLoaded: !!STATE.poolFullLoadDone, incomplete: !!STATE.loadIncomplete, cancelled: !!STATE.cancelLoad, evos: STATE.evoRaws ? STATE.evoRaws.size : 0 };
     }
     /** Gauntlet ueber MCP (Rumpf unveraendert aus v6.8.0, ab v6.10.0 als Job). */
+    /**
+     * v6.11.0: Formation aus Claudes Angabe - EA-Name (f4231), Anzeige
+     * ("4-2-3-1", "4-2-3-1 (2)") oder nur Ziffern (4231). Pure.
+     */
+    function gauntletResolveFormation(forms, wanted) {
+        const w = String(wanted == null ? '' : wanted).trim().toLowerCase();
+        if (!w) return null;
+        const list = forms || [];
+        const digits = x => String(x || '').replace(/\(.*\)/, '').replace(/\D/g, '');
+        return list.find(f => String(f.name).toLowerCase() === w) ||
+               list.find(f => String(f.label).toLowerCase() === w) ||
+               list.find(f => String(f.label).replace(/\s+/g, '').toLowerCase() === w.replace(/\s+/g, '')) ||
+               (/^\d{3,5}$/.test(digits(w)) && !/\(/.test(w) ? list.find(f => digits(f.label) === digits(w) && !/\(/.test(f.label)) : null) || null;
+    }
+    /**
+     * Gauntlet ueber MCP. v6.11.0 (Rasmus 18.11.: "Anker immer pro Lauf - das
+     * wuerde ich jedes Mal einzeln entscheiden"): Anker, Formation, Teamzahl
+     * und Gewicht gelten NUR fuer diesen Lauf. Ohne Anker-Angabe = ohne Anker
+     * (nicht die gemerkten aus dem Panel). Danach stehen Panel-Einstellungen
+     * und Panel-Anker wieder wie vorher.
+     */
     async function mcpGauntletBuild(a) {
-        const patch = {};
-        if (a.formation) patch.formation = String(a.formation);
-        if (a.teams) patch.teams = Math.max(1, Math.min(4, Math.round(a.teams)));
-        if (a.chemWeight != null && a.chemWeight >= 0) patch.chemWeight = a.chemWeight;
-        if (Object.keys(patch).length) gauntletSettingsSave(patch);
-        const st = gauntletSettings();
-        if (a.formation && !gauntletFormations().some(f => f.name === a.formation)) throw new Error('Formation unbekannt: ' + a.formation + '. Verfügbar: ' + gauntletFormations().map(f => f.name).join(', '));
-        if (Array.isArray(a.anchors)) {
+        if (gauntletBusy) throw new Error('Es läuft schon ein Gauntlet-Lauf.');
+        if (!(STATE.pool || []).some(p => p && !p.isStorage)) throw new Error('Kein Verein geladen - erst pittools_pool_load.');
+        const forms = gauntletFormations();
+        let formation = null;
+        if (a.formation) {
+            formation = gauntletResolveFormation(forms, a.formation);
+            if (!formation) throw new Error('Formation unbekannt: ' + a.formation + '. Verfügbar: ' + forms.map(f => f.label + ' (' + f.name + ')').join(', '));
+        }
+        let savedRaw = null;
+        try { savedRaw = localStorage.getItem(GAUNTLET_SETTINGS_KEY); } catch (e) {}
+        const savedAnchors = gauntletState.anchors ? gauntletState.anchors.map(l => l.slice()) : null;
+        try {
+            const patch = {};
+            if (formation) patch.formation = formation.name;
+            if (a.teams) patch.teams = Math.max(1, Math.min(4, Math.round(a.teams)));
+            if (a.chemWeight != null && a.chemWeight >= 0) patch.chemWeight = a.chemWeight;
+            if (Object.keys(patch).length) gauntletSettingsSave(patch);
+            const st = gauntletSettings();
             const players = gauntletClubPlayers();
             const find = key => { const k = String(key).toLowerCase(); return players.find(p => String(p.id) === String(key)) ||
                 players.filter(p => String(p.name).toLowerCase() === k).sort((x, y) => y.rating - x.rating)[0] ||
                 players.filter(p => String(p.name).toLowerCase().indexOf(k) >= 0).sort((x, y) => y.rating - x.rating)[0]; };
             const missing = [];
-            gauntletState.anchors = Array.from({ length: st.teams }, (_, t) => (a.anchors[t] || []).map(key => { const p = find(key); if (!p) missing.push(key); return p ? String(p.id) : null; }).filter(Boolean));
+            const wanted = Array.isArray(a.anchors) ? a.anchors : [];
+            gauntletState.anchors = Array.from({ length: st.teams }, (_, t) => (wanted[t] || []).map(key => { const p = find(key); if (!p) missing.push(key); return p ? String(p.id) : null; }).filter(Boolean));
             if (missing.length) throw new Error('Nicht im Verein gefunden: ' + missing.join(', '));
-            gauntletAnchorsSave();
+            gauntletState.players = null;
+            if (tabCurrent !== 'mehr') setTab('mehr');
+            STATE.diag.gauntlet = null;
+            await onGauntletRunClick();
+            if (!STATE.diag.gauntlet) throw new Error('Gauntlet konnte nicht starten (EAs Formationen noch nicht geladen? Einmal "Kader" im Spiel öffnen).');
+            const d = STATE.diag.gauntlet;
+            if (d.error) throw new Error(d.error === 'slot' || d.error === 'anchor' ? (ui.gauntletResult ? ui.gauntletResult.innerText.split('\n')[0] : d.error) : d.error);
+            const L = gauntletState.last;
+            if (!L) throw new Error('Kein Ergebnis.');
+            const byId = new Map(players.map(p => [String(p.id), p]));
+            return { formation: L.formation.label, chem: L.chemKind === 'ea' ? 'EA-Rechner' : 'klassisch geschätzt', shownInPanel: true,
+                     anchors: gauntletState.anchors.map(l => l.map(id => { const p = byId.get(id); return p ? p.name + ' ' + p.rating : id; })),
+                     note: 'Anker, Formation und Teamzahl galten nur für diesen Lauf.',
+                     variants: L.res.variants.map(v => ({ total: Math.round(v.total * 10) / 10, teams: v.teams.map((team, t) => ({
+                         score: Math.round(v.scores[t].score * 10) / 10, chem: v.scores[t].chem, avgMeta: Math.round(v.scores[t].avgMeta * 10) / 10,
+                         players: team.map((p, i) => ({ pos: Gauntlet.posName(L.formation.slots[i]), name: p.name, rating: p.rating, meta: Gauntlet.metaAt(p, Gauntlet.generalPos(L.formation.slots[i])), evo: !!p.evo })),
+                         bench: ((v.bench && v.bench[t]) || []).map(p => p.name + ' ' + p.rating) })) })) };
+        } finally {
+            // Panel-Stand wiederherstellen (Einstellungen samt gemerkter Anker).
+            try { if (savedRaw == null) localStorage.removeItem(GAUNTLET_SETTINGS_KEY); else localStorage.setItem(GAUNTLET_SETTINGS_KEY, savedRaw); } catch (e) {}
+            gauntletState.anchors = savedAnchors;
         }
-        if (gauntletBusy) throw new Error('Es läuft schon ein Gauntlet-Lauf.');
-        if (!(STATE.pool || []).some(p => p && !p.isStorage)) throw new Error('Kein Verein geladen - Rasmus muss in PitTools "Spieler laden" tippen.');
-        gauntletState.players = null;
-        if (tabCurrent !== 'mehr') setTab('mehr');
-        STATE.diag.gauntlet = null;
-        await onGauntletRunClick();
-        if (!STATE.diag.gauntlet) throw new Error('Gauntlet konnte nicht starten (EAs Formationen noch nicht geladen? Einmal "Kader" im Spiel öffnen).');
-        const d = STATE.diag.gauntlet;
-        if (d.error) throw new Error(d.error === 'slot' || d.error === 'anchor' ? (ui.gauntletResult ? ui.gauntletResult.innerText.split('\n')[0] : d.error) : d.error);
-        const L = gauntletState.last;
-        if (!L) throw new Error('Kein Ergebnis.');
-        return { formation: L.formation.label, chem: L.chemKind === 'ea' ? 'EA-Rechner' : 'klassisch geschätzt', shownInPanel: true,
-                 variants: L.res.variants.map(v => ({ total: Math.round(v.total * 10) / 10, teams: v.teams.map((team, t) => ({
-                     score: Math.round(v.scores[t].score * 10) / 10, chem: v.scores[t].chem, avgMeta: Math.round(v.scores[t].avgMeta * 10) / 10,
-                     players: team.map((p, i) => ({ pos: Gauntlet.posName(L.formation.slots[i]), name: p.name, rating: p.rating, meta: Gauntlet.metaAt(p, Gauntlet.generalPos(L.formation.slots[i])), evo: !!p.evo })),
-                     bench: ((v.bench && v.bench[t]) || []).map(p => p.name + ' ' + p.rating) })) })) };
     }
     async function mcpRun(tool, args) {
         const a = mcpSanitizeArgs(args);
@@ -15064,6 +15353,32 @@ const HybridSbcEa = (() => {
             }, () => mcpFirstLine(ui.galleryResult));
             const v = await mcpAwaitJob(job, a.wait);
             return v.state === 'done' ? v.result : v;
+        }
+        if (tool === 'pittools_gallery_scan') {
+            if (a.stop === true) { galleryScanState.stop = true; return { stopping: !!galleryScanState.running, hint: 'Der Scan hält nach dem aktuellen Set an; der Teilstand bleibt gespeichert.' }; }
+            const running = mcpRunningJob(tool);
+            if (running) return await mcpAwaitJob(running, a.wait);
+            const sets = Array.isArray(a.sets) ? a.sets.map(String).filter(Boolean) : null;
+            const job = mcpStartJob(tool, async () => {
+                const r = await galleryScanRun({ sets: sets, refresh: a.refresh === true, refreshCatalog: a.refreshCatalog === true });
+                return galleryScanReport(r.cat, r.cache, { sets: sets, top: a.top, run: r.run });
+            }, () => galleryScanState.progress);
+            const v = await mcpAwaitJob(job, a.wait);
+            return v.state === 'done' ? v.result : v;
+        }
+        if (tool === 'pittools_gallery_state') {
+            const cat = galleryCatalogCached(true);
+            if (!cat) throw new Error('Noch kein Galerie-Katalog - erst pittools_gallery_scan (oder pittools_gallery_load).');
+            const cache = (await galleryScanCacheLoad(ownPersonaId())) || { sets: {} };
+            if (!a.set) return galleryScanReport(cat, cache, { top: a.top });
+            const q = String(a.set).toLowerCase();
+            const row = cat.sets.find(x => String(x.name).toLowerCase() === q) || cat.sets.find(x => String(x.name).toLowerCase().indexOf(q) >= 0);
+            if (!row) throw new Error('Kein Set „' + a.set + '“ im Katalog.');
+            const e = cache.sets[row.id] || null;
+            const names = (e && e.names) || {};
+            return { state: galleryScanSetState(row, e), catalog: row.catalog, path: row.path, note: GALLERY_SCAN_NOTE,
+                     cards: e ? e.defs.slice(0, 120).map(d => ({ defId: d[0], name: names[d[0]] || null, collected: d[1] === 1 ? true : d[1] === 0 ? false : null, score: d[2], rating: d[3] })) : null,
+                     hint: e ? null : 'Für dieses Set gibt es noch keinen Scan - pittools_gallery_scan mit sets: ["' + row.name + '"].' };
         }
         if (tool === 'pittools_job_status') {
             if (!a.jobId) return { jobs: Array.from(mcpJobs.values()).slice(-10).map(j => { const v = mcpJobView(j); delete v.result; return v; }) };

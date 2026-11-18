@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.13.0
+// @version      6.13.1
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,13 +65,13 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.13.0';
+    const VERSION = '6.13.1';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
     // dann `node ea-bundle-check.js` laufen lassen, BEVOR man einem Abbruch
     // am Handy hinterherraet.
-    const KNOWN_WEBAPP_BUILD = '11321';
+    const KNOWN_WEBAPP_BUILD = '11414';
     const LOG_PREFIX = '[SBC-Optimizer]';
     // rareflag-Semantik (FUT-Standard):
     //   0 = common, 1 = rare  -> NORMALE Karten ("Gold" im Prioritäts-Sinn)
@@ -15339,7 +15339,8 @@ const HybridSbcEa = (() => {
         { id: 'meta_abdeckung', title: 'Meta-Rating-Abdeckung (fut.gg)', purpose: 'Für wie viele Vereinsspieler/Positionen liefert fut.gg einen Wert, wo greift der Notwert (Evos, neue Specials).', requests: '1-2 fut.gg', params: 'sample (Default 40)' },
         { id: 'formationen', title: 'EAs Formationen', purpose: 'Welche Formationen und Slot-Positionen EA liefert (Gauntlet, Kader speichern).', requests: 0 },
         { id: 'streamlined_spuren', title: 'Streamlined-SBC-Spuren', purpose: 'EA-Klassen, SBC-Dienstmethoden, Schema und Netzverkehr rund um Streamlined/One-Click-SBCs (für den Punkte-Löser).', requests: 0 },
-        { id: 'sbc_vorschau', title: 'Offene SBC planen (Zeit und Ergebnis)', purpose: 'Löst die geöffnete SBC mit den aktuellen Einstellungen, misst die Zeit, nennt Warnungen. Trägt nichts ein.', requests: 0 }
+        { id: 'sbc_vorschau', title: 'Offene SBC planen (Zeit und Ergebnis)', purpose: 'Löst die geöffnete SBC mit den aktuellen Einstellungen, misst die Zeit, nennt Warnungen. Trägt nichts ein.', requests: 0 },
+        { id: 'tokens_holo', title: 'Event-Tokens und Holo-Format', purpose: 'Welche Event-Token-Währungen EA führt (Galerie-Tokens darunter? dann verrät der Kontostand eine Bewertung) und wie hyperCosmetics an Holo-Karten aussieht. Nur Speicher, keine Anfrage.', requests: 0 }
     ];
     function liveChecksLoad() { try { const a = JSON.parse(localStorage.getItem(LIVE_CHECKS_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
     function liveChecksStore(rec) {
@@ -15480,6 +15481,50 @@ const HybridSbcEa = (() => {
                           sbcSchema: fc.sbcSchema || STATE.diag.sbcSchema || null, sbsTraffic: (STATE.diag.sbsTraffic || []).slice(-15), featureFlips: STATE.diag.featureFlips || null };
             return { status: ent ? 'ok' : 'needs', needs: ent ? undefined : 'Für die vollständige Messung eine Streamlined-SBC (falls vorhanden) im Spiel öffnen und die Prüfung wiederholen.',
                      summary: keys.length + ' passende EA-Klassen, ' + res.sbcMethods.length + ' SBC-Methoden' + (ent ? ', offene Challenge gemessen' : ''), data: res };
+        }
+        if (id === 'tokens_holo') {
+            // v6.13.1: Bundle 11414 - UTEventTokenService haelt Definitionen + Kontostaende
+            // (repository._definitions / _balances, nach currencyName). Galerie-Tokens waeren
+            // eine dieser Waehrungen; ihr Zuwachs nach einer Bewertung ergaebe die Note.
+            const et = window.services && window.services.EventToken;
+            const repo = et && et.repository;
+            const defs = [];
+            try {
+                ((repo && repo._definitions) || []).forEach(d => {
+                    const o = {};
+                    Object.keys(d || {}).forEach(k => { const v = d[k]; if (v == null || typeof v !== 'object') o[k] = v; });
+                    try { o.balance = et.getBalance(d.currencyName); } catch (e) {}
+                    try { o.active = typeof d.isActive === 'function' ? d.isActive() : undefined; } catch (e) {}
+                    defs.push(o);
+                });
+            } catch (e) {}
+            const balances = {};
+            try { if (repo && repo._balances && repo._balances.forEach) repo._balances.forEach((v, k) => { balances[k] = v; }); } catch (e) {}
+            let enabled = null, loaded = null, primary = null;
+            try { enabled = et ? !!et.isFeatureEnabled() : null; } catch (e) {}
+            try { loaded = et ? !!et.areDefinitionsLoaded() : null; } catch (e) {}
+            try { const pt = et && et.getPrimaryToken(); primary = pt ? pt.currencyName || null : null; } catch (e) {}
+            let currencies = null;
+            try {
+                const u = window.services.User.getUser();
+                currencies = u ? Object.keys(u).filter(k => /coin|point|currenc|token|draft/i.test(k)).reduce((o, k) => { const v = u[k];
+                    o[k] = (v && typeof v === 'object') ? JSON.stringify(v).slice(0, 400) : v; return o; }, {}) : null;
+            } catch (e) {}
+            const galleryLike = defs.filter(d => /galler|collect|grade|album/i.test(JSON.stringify(d)));
+            // Holo: Rohwerte aus dem Galerie-Scan (Konzeptsuche) - Format { <CosmeticType>: <subtype> }
+            const persona = ownPersonaId();
+            const cache = persona ? await galleryScanCacheLoad(persona) : null;
+            const holo = [];
+            if (cache) Object.keys(cache.sets).forEach(id => { const e = cache.sets[id]; if (e && e.hyperSample && holo.length < 12) holo.push({ set: id, sample: e.hyperSample }); });
+            let cosmeticType = null;
+            try { const ct = window.CosmeticType; if (ct) cosmeticType = Object.keys(ct).filter(k => isNaN(k)).reduce((o, k) => { o[k] = ct[k]; return o; }, {}); } catch (e) {}
+            const data = { enabled: enabled, definitionsLoaded: loaded, primary: primary, definitions: defs, balances: balances, galleryLike: galleryLike.map(d => d.currencyName || d.displayName),
+                           userCurrencyFields: currencies, cosmeticType: cosmeticType, holoSamples: holo, scanSets: cache ? Object.keys(cache.sets).length : 0 };
+            const parts = [defs.length + ' Token-Währungen' + (galleryLike.length ? ' (Galerie-verdächtig: ' + data.galleryLike.join(', ') + ')' : ''),
+                           cosmeticType ? 'CosmeticType gelesen' : 'CosmeticType nicht erreichbar', holo.length + ' Holo-Stichproben'];
+            if (!et) return liveNeeds('EAs EventToken-Dienst fehlt - einmal im Spiel ins Hauptmenü, dann erneut.', data);
+            return { status: (loaded || defs.length) ? 'ok' : 'needs', needs: (loaded || defs.length) ? undefined : 'Token-Definitionen noch nicht geladen - einmal den Store oder die Startseite öffnen, dann erneut.',
+                     summary: parts.join(', '), data: data };
         }
         if (id === 'sbc_vorschau') {
             const sb = STATE.sbc;

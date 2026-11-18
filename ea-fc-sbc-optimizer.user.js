@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.9.0
+// @version      6.10.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.9.0';
+    const VERSION = '6.10.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -2699,7 +2699,48 @@
         return method + ' ' + path + ' -> HTTP ' + status +
             (status === 401 ? ' (Session abgelaufen? Kurz in der App navigieren, z.B. Verein öffnen, dann erneut versuchen.)' : '');
     }
-    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    // v6.10.0: Warten, das im Hintergrund-Tab nicht einschlaeft. Chrome drosselt
+    // setTimeout in verdeckten Tabs (1 s, nach 5 min "intensive throttling" bis
+    // 1 Aufruf/Minute). Mit Claude als Bediener liegt die Web App fast immer
+    // hinter dem Chat - live 18.11.: Gauntlet stand >10 min bei "Meta-Ratings
+    // 1555 von 1555", meta_abdeckung lief ueber 80 s, nach F5 (Tab frisch
+    // sichtbar) beides in Sekunden. Ein Worker-Timer wird nicht gedrosselt.
+    // Sichtbarer Tab: GENAU wie vorher (setTimeout). Verdeckt: Worker UND
+    // setTimeout, wer zuerst kommt - stirbt der Worker, bleibt der alte Weg.
+    // [BGTIMER-BEGIN]
+    const BgTimer = (function () {
+        let worker = null, failed = false, seq = 0;
+        const pending = new Map();
+        function getWorker() {
+            if (worker || failed) return worker;
+            try {
+                const src = 'onmessage=function(e){var d=e.data;setTimeout(function(){postMessage(d.id)},d.ms)}';
+                worker = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+                worker.onmessage = function (e) { const cb = pending.get(e.data); if (cb) { pending.delete(e.data); cb(); } };
+                worker.onerror = function () { failed = true; worker = null; pending.forEach(cb => setTimeout(cb, 0)); pending.clear(); };
+            } catch (e) { failed = true; worker = null; }
+            return worker;
+        }
+        function wait(ms) {
+            const d = Math.max(0, Number(ms) || 0);
+            return new Promise(function (resolve) {
+                let done = false;
+                const fin = function () { if (!done) { done = true; resolve(); } };
+                setTimeout(fin, d);
+                let hidden = false;
+                try { hidden = !!document.hidden; } catch (e) {}
+                if (!hidden) return;
+                const w = getWorker();
+                if (!w) return;
+                const id = ++seq;
+                pending.set(id, fin);
+                try { w.postMessage({ id: id, ms: d }); } catch (e) { pending.delete(id); }
+            });
+        }
+        return { wait: wait, info: function () { return { worker: !!worker, failed: failed, pending: pending.size }; } };
+    })();
+    // [BGTIMER-END]
+    const sleep = (ms) => BgTimer.wait(ms);
     // Session-Refresh erzwingen: einen App-eigenen Request anstossen. Der darf
     // selbst mit 401 scheitern - die App re-authet daraufhin und unsere
     // Interception schnappt die FRISCHE SID auf. Entscheidend: wir warten,
@@ -11510,7 +11551,7 @@ const HybridSbcEa = (() => {
         } catch (e) {}
         return null;
     }
-    const futbinSleep = ms => new Promise(r => setTimeout(r, ms));
+    const futbinSleep = ms => BgTimer.wait(ms); // v6.10.0: im Hintergrund-Tab ungedrosselt (BgTimer)
     let futbinBusy = false;
     let futbinLast = null;
     function readFutbinSettings() {
@@ -14620,7 +14661,9 @@ const HybridSbcEa = (() => {
     const MCP_KEY = 'sbcOptMcp';
     const MCP_TOOLS = ['pittools_status', 'pittools_club_overview', 'pittools_club_players', 'pittools_sbc_current', 'pittools_sbc_preview',
                        'pittools_gauntlet_build', 'pittools_gallery_overview', 'pittools_diagnostics', 'pittools_show_message',
-                       'pittools_checks_list', 'pittools_check_run'];
+                       'pittools_checks_list', 'pittools_check_run',
+                       // v6.10.0: Claude loest Laden selbst aus; lange Laeufe als Job (nur lesen)
+                       'pittools_pool_load', 'pittools_gallery_load', 'pittools_job_status'];
     const mcpState = { on: false, status: 'aus', log: [] };
     function mcpEnabledSaved() { try { return localStorage.getItem(MCP_KEY) === '1'; } catch (e) { return false; } }
     function mcpSetEnabled(on) {
@@ -14847,6 +14890,103 @@ const HybridSbcEa = (() => {
         }
         return { status: 'fail', summary: 'Unbekannte Prüfung: ' + id, data: { available: LIVE_CHECKS.map(c => c.id) } };
     }
+    // ===================== v6.10.0 Jobs fuer lange Laeufe =====================
+    // Ein Werkzeugaufruf wartet hoechstens ~80 s (Desktop-App) bzw. 90 s
+    // (Server). Laden des Vereins, der Galerie und Gauntlet koennen laenger
+    // dauern. Darum: Lauf als Job starten, bis "wait" Sekunden auf das Ende
+    // warten, sonst jobId + Fortschritt zurueck; pittools_job_status holt den
+    // Rest. Ein laufender Job wird nie doppelt gestartet - ein zweiter Aufruf
+    // haengt sich an ihn an (vorher: "Es laeuft schon ein Gauntlet-Lauf").
+    // [MCPJOBS-BEGIN]
+    const MCP_JOB_WAIT_MAX_S = 55, MCP_JOB_WAIT_DEFAULT_S = 45, MCP_JOBS_KEEP = 20;
+    const mcpJobs = new Map();
+    let mcpJobSeq = 0;
+    /** Pure: Wartezeit in Sekunden auf 0..MCP_JOB_WAIT_MAX_S begrenzen. */
+    function mcpJobWaitSeconds(v) {
+        const n = Number(v);
+        if (v == null || !isFinite(n)) return MCP_JOB_WAIT_DEFAULT_S;
+        return Math.max(0, Math.min(MCP_JOB_WAIT_MAX_S, Math.round(n)));
+    }
+    function mcpRunningJob(tool) {
+        for (const j of mcpJobs.values()) if (j.tool === tool && j.state === 'running') return j;
+        return null;
+    }
+    function mcpStartJob(tool, fn, progressFn) {
+        const id = 'j' + (++mcpJobSeq) + '-' + Date.now().toString(36);
+        const job = { id: id, tool: tool, startedAt: Date.now(), endedAt: null, state: 'running', result: null, error: null, progressFn: progressFn || null };
+        job.promise = Promise.resolve().then(fn).then(
+            r => { job.state = 'done'; job.result = r; job.endedAt = Date.now(); },
+            e => { job.state = 'failed'; job.error = String(e && e.message || e); job.endedAt = Date.now(); });
+        mcpJobs.set(id, job);
+        while (mcpJobs.size > MCP_JOBS_KEEP) {
+            const old = Array.from(mcpJobs.values()).find(j => j.state !== 'running');
+            if (!old) break;
+            mcpJobs.delete(old.id);
+        }
+        STATE.diag.mcpJobs = Array.from(mcpJobs.values()).map(j => ({ id: j.id, tool: j.tool, state: j.state, s: Math.round(((j.endedAt || Date.now()) - j.startedAt) / 1000), error: j.error }));
+        return job;
+    }
+    function mcpJobView(job) {
+        let progress = null;
+        if (job.state === 'running' && job.progressFn) { try { progress = job.progressFn(); } catch (e) { progress = null; } }
+        const v = { jobId: job.id, tool: job.tool, state: job.state, seconds: Math.round(((job.endedAt || Date.now()) - job.startedAt) / 1000) };
+        if (progress) v.progress = String(progress).slice(0, 200);
+        if (job.state === 'done') v.result = job.result;
+        if (job.state === 'failed') v.error = job.error;
+        if (job.state === 'running') v.hint = 'Läuft noch - mit pittools_job_status (jobId) weiter abfragen.';
+        return v;
+    }
+    async function mcpAwaitJob(job, waitArg) {
+        const s = mcpJobWaitSeconds(waitArg);
+        if (job.state === 'running' && s > 0) await Promise.race([job.promise, BgTimer.wait(s * 1000)]);
+        const v = mcpJobView(job);
+        STATE.diag.mcpJobs = Array.from(mcpJobs.values()).map(j => ({ id: j.id, tool: j.tool, state: j.state, s: Math.round(((j.endedAt || Date.now()) - j.startedAt) / 1000), error: j.error }));
+        // Fertige Jobs liefern ihr Ergebnis direkt - wie ein normaler Aufruf.
+        return v;
+    }
+    // [MCPJOBS-END]
+    function mcpFirstLine(el) { try { return el ? String(el.innerText || el.textContent || '').trim().split('\n')[0] : null; } catch (e) { return null; } }
+    function mcpPoolSummary() {
+        const pool = STATE.pool || [];
+        return { total: pool.length, club: pool.filter(p => !p.isStorage).length, storage: pool.filter(p => p.isStorage).length,
+                 fullyLoaded: !!STATE.poolFullLoadDone, incomplete: !!STATE.loadIncomplete, cancelled: !!STATE.cancelLoad, evos: STATE.evoRaws ? STATE.evoRaws.size : 0 };
+    }
+    /** Gauntlet ueber MCP (Rumpf unveraendert aus v6.8.0, ab v6.10.0 als Job). */
+    async function mcpGauntletBuild(a) {
+        const patch = {};
+        if (a.formation) patch.formation = String(a.formation);
+        if (a.teams) patch.teams = Math.max(1, Math.min(4, Math.round(a.teams)));
+        if (a.chemWeight != null && a.chemWeight >= 0) patch.chemWeight = a.chemWeight;
+        if (Object.keys(patch).length) gauntletSettingsSave(patch);
+        const st = gauntletSettings();
+        if (a.formation && !gauntletFormations().some(f => f.name === a.formation)) throw new Error('Formation unbekannt: ' + a.formation + '. Verfügbar: ' + gauntletFormations().map(f => f.name).join(', '));
+        if (Array.isArray(a.anchors)) {
+            const players = gauntletClubPlayers();
+            const find = key => { const k = String(key).toLowerCase(); return players.find(p => String(p.id) === String(key)) ||
+                players.filter(p => String(p.name).toLowerCase() === k).sort((x, y) => y.rating - x.rating)[0] ||
+                players.filter(p => String(p.name).toLowerCase().indexOf(k) >= 0).sort((x, y) => y.rating - x.rating)[0]; };
+            const missing = [];
+            gauntletState.anchors = Array.from({ length: st.teams }, (_, t) => (a.anchors[t] || []).map(key => { const p = find(key); if (!p) missing.push(key); return p ? String(p.id) : null; }).filter(Boolean));
+            if (missing.length) throw new Error('Nicht im Verein gefunden: ' + missing.join(', '));
+            gauntletAnchorsSave();
+        }
+        if (gauntletBusy) throw new Error('Es läuft schon ein Gauntlet-Lauf.');
+        if (!(STATE.pool || []).some(p => p && !p.isStorage)) throw new Error('Kein Verein geladen - Rasmus muss in PitTools "Spieler laden" tippen.');
+        gauntletState.players = null;
+        if (tabCurrent !== 'mehr') setTab('mehr');
+        STATE.diag.gauntlet = null;
+        await onGauntletRunClick();
+        if (!STATE.diag.gauntlet) throw new Error('Gauntlet konnte nicht starten (EAs Formationen noch nicht geladen? Einmal "Kader" im Spiel öffnen).');
+        const d = STATE.diag.gauntlet;
+        if (d.error) throw new Error(d.error === 'slot' || d.error === 'anchor' ? (ui.gauntletResult ? ui.gauntletResult.innerText.split('\n')[0] : d.error) : d.error);
+        const L = gauntletState.last;
+        if (!L) throw new Error('Kein Ergebnis.');
+        return { formation: L.formation.label, chem: L.chemKind === 'ea' ? 'EA-Rechner' : 'klassisch geschätzt', shownInPanel: true,
+                 variants: L.res.variants.map(v => ({ total: Math.round(v.total * 10) / 10, teams: v.teams.map((team, t) => ({
+                     score: Math.round(v.scores[t].score * 10) / 10, chem: v.scores[t].chem, avgMeta: Math.round(v.scores[t].avgMeta * 10) / 10,
+                     players: team.map((p, i) => ({ pos: Gauntlet.posName(L.formation.slots[i]), name: p.name, rating: p.rating, meta: Gauntlet.metaAt(p, Gauntlet.generalPos(L.formation.slots[i])), evo: !!p.evo })),
+                     bench: ((v.bench && v.bench[t]) || []).map(p => p.name + ' ' + p.rating) })) })) };
+    }
     async function mcpRun(tool, args) {
         const a = mcpSanitizeArgs(args);
         let locked = new Set();
@@ -14857,7 +14997,7 @@ const HybridSbcEa = (() => {
                      pool: { total: pool.length, club: pool.filter(p => !p.isStorage).length, storage: pool.filter(p => p.isStorage).length,
                              fullyLoaded: !!STATE.poolFullLoadDone, incomplete: !!STATE.loadIncomplete, evos: STATE.evoRaws ? STATE.evoRaws.size : 0 },
                      bridge: bridgeKind() || null, galleryLoaded: galleryLast && galleryLast.ranked ? galleryLast.ranked.length : 0,
-                     hint: pool.length ? null : 'Kein Verein geladen - Rasmus muss in PitTools "Spieler laden" tippen.' };
+                     hint: pool.length ? null : 'Kein Verein geladen - mit pittools_pool_load laden.' };
         }
         if (tool === 'pittools_club_overview') {
             const ov = clubOverview(STATE.pool || [], { source: a.source || 'all', locked: locks() });
@@ -14891,42 +15031,48 @@ const HybridSbcEa = (() => {
                      players: res.players.map(p => ({ name: displayName(p), rating: p.rating, storage: !!p.isStorage, untradeable: !!p.untradeable, rarity: rarityLabel(p) })) };
         }
         if (tool === 'pittools_gauntlet_build') {
-            const patch = {};
-            if (a.formation) patch.formation = String(a.formation);
-            if (a.teams) patch.teams = Math.max(1, Math.min(4, Math.round(a.teams)));
-            if (a.chemWeight != null && a.chemWeight >= 0) patch.chemWeight = a.chemWeight;
-            if (Object.keys(patch).length) gauntletSettingsSave(patch);
-            const st = gauntletSettings();
-            if (a.formation && !gauntletFormations().some(f => f.name === a.formation)) throw new Error('Formation unbekannt: ' + a.formation + '. Verfügbar: ' + gauntletFormations().map(f => f.name).join(', '));
-            if (Array.isArray(a.anchors)) {
-                const players = gauntletClubPlayers();
-                const find = key => { const k = String(key).toLowerCase(); return players.find(p => String(p.id) === String(key)) ||
-                    players.filter(p => String(p.name).toLowerCase() === k).sort((x, y) => y.rating - x.rating)[0] ||
-                    players.filter(p => String(p.name).toLowerCase().indexOf(k) >= 0).sort((x, y) => y.rating - x.rating)[0]; };
-                const missing = [];
-                gauntletState.anchors = Array.from({ length: st.teams }, (_, t) => (a.anchors[t] || []).map(key => { const p = find(key); if (!p) missing.push(key); return p ? String(p.id) : null; }).filter(Boolean));
-                if (missing.length) throw new Error('Nicht im Verein gefunden: ' + missing.join(', '));
-                gauntletAnchorsSave();
-            }
-            if (gauntletBusy) throw new Error('Es läuft schon ein Gauntlet-Lauf.');
-            if (!(STATE.pool || []).some(p => p && !p.isStorage)) throw new Error('Kein Verein geladen - Rasmus muss in PitTools "Spieler laden" tippen.');
-            gauntletState.players = null;
-            if (tabCurrent !== 'mehr') setTab('mehr');
-            STATE.diag.gauntlet = null;
-            await onGauntletRunClick();
-            if (!STATE.diag.gauntlet) throw new Error('Gauntlet konnte nicht starten (EAs Formationen noch nicht geladen? Einmal "Kader" im Spiel öffnen).');
-            const d = STATE.diag.gauntlet;
-            if (d.error) throw new Error(d.error === 'slot' || d.error === 'anchor' ? (ui.gauntletResult ? ui.gauntletResult.innerText.split('\n')[0] : d.error) : d.error);
-            const L = gauntletState.last;
-            if (!L) throw new Error('Kein Ergebnis.');
-            return { formation: L.formation.label, chem: L.chemKind === 'ea' ? 'EA-Rechner' : 'klassisch geschätzt', shownInPanel: true,
-                     variants: L.res.variants.map(v => ({ total: Math.round(v.total * 10) / 10, teams: v.teams.map((team, t) => ({
-                         score: Math.round(v.scores[t].score * 10) / 10, chem: v.scores[t].chem, avgMeta: Math.round(v.scores[t].avgMeta * 10) / 10,
-                         players: team.map((p, i) => ({ pos: Gauntlet.posName(L.formation.slots[i]), name: p.name, rating: p.rating, meta: Gauntlet.metaAt(p, Gauntlet.generalPos(L.formation.slots[i])), evo: !!p.evo })),
-                         bench: ((v.bench && v.bench[t]) || []).map(p => p.name + ' ' + p.rating) })) })) };
+            const running = mcpRunningJob(tool);
+            if (running) return Object.assign({ note: 'Es lief schon ein Gauntlet-Lauf - angehängt statt neu gestartet.' }, await mcpAwaitJob(running, a.wait));
+            if (gauntletBusy) throw new Error('Es läuft schon ein Gauntlet-Lauf (aus dem Panel gestartet) - kurz warten.');
+            const job = mcpStartJob(tool, () => mcpGauntletBuild(a), () => mcpFirstLine(ui.gauntletResult));
+            const v = await mcpAwaitJob(job, a.wait);
+            return v.state === 'done' ? v.result : v;
+        }
+        if (tool === 'pittools_pool_load') {
+            const running = mcpRunningJob(tool);
+            if (running) return await mcpAwaitJob(running, a.wait);
+            // onLoadClick ist zugleich der Abbrechen-Knopf: laeuft schon ein Laden
+            // (vom Panel aus), NIE aufrufen - sonst bricht Claude es ab.
+            if (STATE.loading) return { state: 'running', note: 'Der Verein wird gerade schon geladen (aus dem Panel).', progress: ui.status ? ui.status.textContent : null };
+            const job = mcpStartJob(tool, async () => {
+                await onLoadClick();
+                return Object.assign({ status: ui.status ? ui.status.textContent : null }, mcpPoolSummary());
+            }, () => ui.status ? ui.status.textContent : null);
+            return await mcpAwaitJob(job, a.wait);
+        }
+        if (tool === 'pittools_gallery_load') {
+            const running = mcpRunningJob(tool);
+            if (running) return await mcpAwaitJob(running, a.wait);
+            if (galleryBusy || buyBusy || sellBusy) throw new Error('In der Galerie läuft gerade ein anderer Lauf - kurz warten.');
+            const job = mcpStartJob(tool, async () => {
+                if (tabCurrent !== 'galerie' && typeof setTab === 'function') { try { setTab('galerie'); } catch (e) {} }
+                await onGalleryLoadClick(a.upgrades === true);
+                const d = STATE.diag.gallery || {};
+                if (!galleryLast || !galleryLast.ranked) throw new Error('Galerie nicht geladen: ' + (mcpFirstLine(ui.galleryResult) || (d.errors || []).join('; ') || 'unbekannt'));
+                return { loaded: true, count: galleryLast.ranked.length, categories: d.categories || null, errors: (d.errors || []).slice(0, 10),
+                         hint: 'Liste mit pittools_gallery_overview abrufen.' };
+            }, () => mcpFirstLine(ui.galleryResult));
+            const v = await mcpAwaitJob(job, a.wait);
+            return v.state === 'done' ? v.result : v;
+        }
+        if (tool === 'pittools_job_status') {
+            if (!a.jobId) return { jobs: Array.from(mcpJobs.values()).slice(-10).map(j => { const v = mcpJobView(j); delete v.result; return v; }) };
+            const job = mcpJobs.get(String(a.jobId));
+            if (!job) throw new Error('Job unbekannt: ' + a.jobId + ' (nach Neuladen der Seite sind Jobs weg).');
+            return await mcpAwaitJob(job, a.wait);
         }
         if (tool === 'pittools_gallery_overview') {
-            if (!galleryLast || !galleryLast.ranked) return { loaded: false, hint: 'Galerie noch nicht geladen - Rasmus muss im Reiter "Galerie" die Sets laden.' };
+            if (!galleryLast || !galleryLast.ranked) return { loaded: false, hint: 'Galerie noch nicht geladen - mit pittools_gallery_load laden.' };
             const top = Math.max(1, Math.min(100, a.top || 20));
             return { loaded: true, at: galleryLast.at || null, count: galleryLast.ranked.length,
                      sets: galleryLast.ranked.slice(0, top).map(x => ({ name: x.name, tokens: x.tokens, coinsAtLeast: x.coins, total: x.total != null ? x.total : null,
@@ -15306,7 +15452,7 @@ const HybridSbcEa = (() => {
             const res = await Gauntlet.solve({
                 slots: formation.slots, players: players, teams: st.teams, variants: 5, chemWeight: st.chemWeight,
                 anchors: gauntletState.anchors, chemFn: chemFn, timeBudgetMs: budgetMs, benchSize: 7,
-                seed: 1, yieldFn: () => new Promise(r => setTimeout(r, 0))
+                seed: 1, yieldFn: () => BgTimer.wait(0)
             });
             diag.ms = Date.now() - t0;
             if (res.error) { diag.error = res.error; setGauntletResult(warnHtml(gauntletErrorText(res, formation)) + gauntletBackBtn()); wireGauntletBack(); return; }

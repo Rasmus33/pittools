@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.15.0
+// @version      6.15.1
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.15.0';
+    const VERSION = '6.15.1';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -4978,7 +4978,56 @@
             }
             return out(picks);
         }
-        return { solve: solve };
+        /**
+         * v6.15.1 Stufen (Rasmus 18.11.: Storage immer zuerst; Vereinskarten, die als
+         * Evo noch einmal im Verein liegen, sind "quasi Duplikate"; sonst Vereins-Gold
+         * mit dem NIEDRIGSTEN Meta-Rating):
+         *  1. Storage + Bronze/Silber aus dem Verein (solve wie gehabt).
+         *  2. Reicht das nicht und passt der GANZE Storage in eine Abgabe: alle
+         *     Storage-Karten, Rest aus dem Verein - erst Duplikate + Bronze/Silber,
+         *     dann zusaetzlich Vereins-Gold in Meta-Reihenfolge (die K niedrigsten,
+         *     K waechst schrittweise, so wenig "gute" Karten wie moeglich).
+         *  3. Sonst Teilabgabe nur aus dem Storage (Storage leeren hat Vorrang).
+         * groups: { storage:[], filler:[], dup:[], gold:[] (aufsteigend nach Meta) }.
+         * Jede Karte im Ergebnis traegt src: storage | filler | dup | gold.
+         */
+        function solveStaged(groups, opts) {
+            const tag = (list, src) => (list || []).map(c => Object.assign({}, c, { src: src }));
+            const st = tag(groups.storage, 'storage').map(c => Object.assign(c, { storage: true }));
+            const fi = tag(groups.filler, 'filler').map(c => Object.assign(c, { storage: false, filler: true }));
+            const du = tag(groups.dup, 'dup');
+            const go = tag(groups.gold, 'gold');
+            const limit = Math.max(1, Math.min(30, Math.floor(Number(opts.limit) || 30)));
+            const need = Math.max(0, Math.floor(Number(opts.need) || 0));
+            const first = solve(st.concat(fi), { need: need, limit: limit });
+            if (first.ok && first.reached) return Object.assign(first, { stage: 1 });
+            const stOk = st.filter(c => Number(c.score) > 0);
+            if (stOk.length >= limit) return Object.assign(first, { stage: 3 });
+            const base = stOk.slice();
+            const baseSum = base.reduce((a, c) => a + Number(c.score), 0);
+            const rest = need - baseSum, slots = limit - base.length;
+            const club = (list) => list.map(c => Object.assign({}, c, { storage: true, filler: false }));
+            const finish = (r, stage) => {
+                const picks = base.concat(r.picks.map(c => Object.assign({}, c, { storage: false })));
+                const sum = picks.reduce((a, c) => a + Number(c.score), 0);
+                return { ok: true, need: need, limit: limit, picks: picks, sum: sum, overshoot: Math.max(0, sum - need), reached: sum >= need,
+                         storageCount: base.length, clubCount: picks.length - base.length, stage: stage,
+                         goldCount: picks.filter(c => c.src === 'gold').length, dupCount: picks.filter(c => c.src === 'dup').length };
+            };
+            if (slots <= 0 || rest <= 0) return Object.assign(first, { stage: 3 });
+            const cheap = club(fi.concat(du));
+            const r2 = solve(cheap, { need: rest, limit: slots });
+            if (r2.ok && r2.reached) return finish(r2, 2);
+            const steps = [1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256];
+            for (const k of steps.concat([go.length])) {
+                if (k > go.length && k !== go.length) continue;
+                const r3 = solve(cheap.concat(club(go.slice(0, k))), { need: rest, limit: slots });
+                if (r3.ok && r3.reached) return Object.assign(finish(r3, 2), { goldDepth: k });
+                if (k >= go.length) break;
+            }
+            return Object.assign(first, { stage: 3, clubShort: true });
+        }
+        return { solve: solve, solveStaged: solveStaged };
     })();
     // [POINTS-END]
     // ========================================================================
@@ -6645,6 +6694,13 @@
             color:var(--pt-info-fg); background:var(--pt-info-soft);
             border-radius:var(--pt-radius-full); padding:1px 7px; font-size:10px; font-weight:var(--pt-weight-semibold);
         }
+        /* v6.15.1: Vereinskarte in Punkte-SBCs - unuebersehbar anders als Storage. */
+        .sbc-opt-batch-card .src.club {
+            color:var(--pt-warning-fg); background:var(--pt-warning-soft);
+            border-radius:var(--pt-radius-full); padding:1px 7px; font-size:10px; font-weight:var(--pt-weight-semibold);
+        }
+        .sbc-opt-warn-box { margin:8px 0; padding:8px 10px; border-radius:var(--pt-radius-md); background:var(--pt-warning-soft); border:1px solid var(--pt-warning-fg); }
+        .sbc-opt-warn-box .sbc-opt-batch-card { white-space:normal; }
         .sbc-opt-batch-card .rar { color:var(--pt-fg-muted); }
         .sbc-opt-batch-card .untr { color:var(--pt-fg-subtle); font-style:italic; }
         .sbc-opt-batch-card.prot .rar { color:var(--pt-warning-fg); font-weight:700; }
@@ -14980,11 +15036,29 @@ const HybridSbcEa = (() => {
     function pointsIsLocked(ent, locks) {
         return [ent.id, ent.definitionId, ent.assetId, ent.resourceId].some(x => x != null && locks.has(String(x)));
     }
+    /** Spieler-Kennung (Basis-ID) einer Rohkarte oder Item-Entity - fuer "dieselbe Person als Evo". */
+    function pointsPersonOf(x) {
+        if (!x) return null;
+        let v = null;
+        try { if (x.databaseId != null) v = Number(x.databaseId); } catch (e) {}
+        const def = Number(x.definitionId || x.resourceId || 0);
+        if (!(v > 0) && def > 0) v = def & 0xFFFFFF;
+        return v > 0 ? v : null;
+    }
+    /** Basis-IDs aller Evos im Verein (aus dem Laden des Vereins). */
+    function pointsEvoPersons() {
+        const out = new Set();
+        (STATE.evoRaws ? Array.from(STATE.evoRaws.values()) : []).forEach(r => {
+            const a = Number(r.assetId); if (a > 0) out.add(a);
+            const d = Number(r.definitionId || r.resourceId || 0); if (d > 0) out.add(d & 0xFFFFFF);
+        });
+        return out;
+    }
     /** Pure-nah: EA-Items -> Kandidaten fuer PointsCore (Storage alles mit Score, Verein nur Bronze/Silber normal). */
-    function pointsCandidates(storageItems, clubItems, locks) {
+    function pointsCandidates(storageItems, clubItems, locks, evoPersons) {
         const sc = it => Number(it && (it.sbsScore != null ? it.sbsScore : it.gradingScore)) || 0;
         const evo = it => { try { return (Array.isArray(it.academyAttributes) && it.academyAttributes.length > 0) || (typeof it.isAcademyItem === 'function' && it.isAcademyItem()); } catch (e) { return false; } };
-        const out = [], skipped = { locked: 0, clubGold: 0, clubSpecial: 0, noScore: 0, evo: 0 };
+        const out = [], skipped = { locked: 0, clubSpecial: 0, noScore: 0, evo: 0 };
         (storageItems || []).forEach(it => {
             if (!(sc(it) > 0)) { skipped.noScore++; return; }
             if (pointsIsLocked(it, locks)) { skipped.locked++; return; }
@@ -14996,10 +15070,39 @@ const HybridSbcEa = (() => {
             if (evo(it)) { skipped.evo++; return; }
             const rf = parseInt(it.rareflag, 10);
             if (!isNormalCard(rf)) { skipped.clubSpecial++; return; }
-            if (!((Number(it.rating) || 0) < 75)) { skipped.clubGold++; return; }
-            out.push({ id: it.id, score: sc(it), storage: false, filler: true, rating: Number(it.rating) || 0, ent: it });
+            const rating = Number(it.rating) || 0;
+            if (rating < 75) { out.push({ id: it.id, score: sc(it), storage: false, filler: true, kind: 'filler', rating: rating, ent: it }); return; }
+            const person = pointsPersonOf(it);
+            if (evoPersons && person != null && evoPersons.has(person)) { out.push({ id: it.id, score: sc(it), storage: false, filler: false, kind: 'dup', rating: rating, ent: it }); return; }
+            out.push({ id: it.id, score: sc(it), storage: false, filler: false, kind: 'gold', rating: rating, ent: it });
         });
         return { cands: out, skipped: skipped };
+    }
+    /** Vereins-Gold nach Meta-Rating aufsteigend (fut.gg, Cache des Gauntlet; ohne Wert: Rating). Holt hoechstens fuer 80 Karten nach. */
+    async function pointsGoldByMeta(gold, diag) {
+        const objs = gold.slice().sort((a, b) => (a.score - b.score) || (a.rating - b.rating)).map(c => {
+            const ent = c.ent || {};
+            let pos = [];
+            try {
+                if (Array.isArray(ent.possiblePositions) && ent.possiblePositions.length) pos = ent.possiblePositions.map(x => typeof x === 'number' ? Gauntlet.generalPos(x) : Gauntlet.posIdFromName(x)).filter(x => x != null);
+                if (!pos.length && ent.preferredPosition != null) { const x = typeof ent.preferredPosition === 'number' ? ent.preferredPosition : Gauntlet.posIdFromName(ent.preferredPosition); if (x != null) pos = [Gauntlet.generalPos(x)]; }
+            } catch (e) {}
+            return { cand: c, def: Number(ent.definitionId || ent.resourceId || 0), positions: Array.from(new Set(pos)), rating: c.rating, meta: {} };
+        });
+        const ask = objs.slice(0, 80);
+        try { if (bridgeKind()) await gauntletLoadMeta(ask, () => {}, diag); else diag.metaSkipped = 'keine Brücke'; }
+        catch (e) { diag.metaError = String(e && e.message || e); }
+        const metaOf = o => { const v = Object.keys(o.meta || {}).map(k => o.meta[k]).filter(x => typeof x === 'number' && isFinite(x)); return v.length ? Math.max.apply(null, v) : o.rating; };
+        ask.forEach(o => { o.cand.meta = metaOf(o); });
+        objs.slice(80).forEach(o => { o.cand.meta = o.rating; });
+        return objs.map(o => o.cand).sort((a, b) => (a.meta - b.meta) || (a.score - b.score) || String(a.id).localeCompare(String(b.id)));
+    }
+    function pointsPickLabel(c) {
+        const ent = c.ent || {};
+        const name = escapeHtml(entityName(ent) || resolvePlayerName(ent) || ('#' + c.id));
+        const tag = c.src === 'storage' ? '<span class="src storage">Storage</span>'
+            : '<span class="src club">Verein · ' + (c.src === 'dup' ? 'Duplikat (Evo vorhanden)' : c.src === 'filler' ? (c.rating < 65 ? 'Bronze' : 'Silber') : 'Gold' + (c.meta != null && c.meta !== c.rating ? ' · Meta ' + Math.round(c.meta) : '')) + '</span>';
+        return '<div class="sbc-opt-batch-card"><span class="r">' + c.rating + '</span> ' + name + ' · ' + Number(c.score).toLocaleString('de-DE') + ' ' + tag + '</div>';
     }
     /** Auswahl in EAs Ansicht setzen - genau so, als haette Rasmus die Karten angetippt. Abgeben tut er selbst. */
     function pointsApply(wa, picks) {
@@ -15034,23 +15137,39 @@ const HybridSbcEa = (() => {
             if (box) box.innerHTML = '<div class="sbc-opt-dim">Storage wird gelesen …</div>';
             const storage = await pointsFetchPile(info.id, P.STORAGE, n => { if (box) box.innerHTML = '<div class="sbc-opt-dim">Storage: ' + n + ' Karten …</div>'; });
             const club = await pointsFetchPile(info.id, P.CLUB, n => { if (box) box.innerHTML = '<div class="sbc-opt-dim">Verein: ' + n + ' Karten …</div>'; });
-            const c = pointsCandidates(storage, club, pointsLockedSet());
+            const c = pointsCandidates(storage, club, pointsLockedSet(), pointsEvoPersons());
             diag.storage = storage.length; diag.club = club.length; diag.skipped = c.skipped;
-            const t0 = Date.now();
-            const res = PointsCore.solve(c.cands, { need: info.need, limit: info.limit });
+            const gr = { storage: c.cands.filter(x => x.storage), filler: c.cands.filter(x => x.kind === 'filler'), dup: c.cands.filter(x => x.kind === 'dup'), gold: c.cands.filter(x => x.kind === 'gold') };
+            diag.groups = { storage: gr.storage.length, filler: gr.filler.length, dup: gr.dup.length, gold: gr.gold.length, evoKnown: STATE.evoRaws ? STATE.evoRaws.size : 0 };
+            let t0 = Date.now();
+            let res = PointsCore.solveStaged(Object.assign({}, gr, { gold: [] }), { need: info.need, limit: info.limit });
+            if (!(res && res.ok && res.reached) && res && res.clubShort && gr.gold.length) {
+                if (box) box.innerHTML = '<div class="sbc-opt-dim">Storage reicht nicht - suche Vereins-Gold mit niedrigem Meta-Rating …</div>';
+                gr.gold = await pointsGoldByMeta(gr.gold, diag);
+                t0 = Date.now();
+                res = PointsCore.solveStaged(gr, { need: info.need, limit: info.limit });
+            }
             diag.ms = Date.now() - t0;
-            diag.result = res && { ok: res.ok, reached: res.reached, partial: !!res.partial, sum: res.sum, overshoot: res.overshoot, storageCount: res.storageCount, clubCount: res.clubCount, reason: res.reason || null };
+            diag.result = res && { ok: res.ok, reached: res.reached, partial: !!res.partial, stage: res.stage, sum: res.sum, overshoot: res.overshoot, storageCount: res.storageCount, clubCount: res.clubCount,
+                                   goldCount: res.goldCount || 0, dupCount: res.dupCount || 0, goldDepth: res.goldDepth || null, reason: res.reason || null };
             if (!res || !res.ok) throw new Error('Keine Auswahl gefunden' + (res && res.reason ? ' (' + res.reason + ')' : '') + '.');
             if (!res.picks.length) { if (box) box.innerHTML = '<div class="sbc-opt-dim">Nichts mehr offen.</div>'; return; }
             const applied = pointsApply(wa, res.picks);
             diag.applied = applied;
             const fmt = n => Number(n).toLocaleString('de-DE');
             const head = res.reached
-                ? 'Ausgewählt: ' + res.storageCount + ' aus dem Storage' + (res.clubCount ? ' + ' + res.clubCount + ' Bronze/Silber aus dem Verein' : '') +
+                ? 'Ausgewählt: ' + res.storageCount + ' aus dem Storage' + (res.clubCount ? ' + ' + res.clubCount + ' aus dem VEREIN' : '') +
                   ' = ' + fmt(res.sum) + ' Punkte (' + (res.overshoot ? fmt(res.overshoot) + ' über dem Ziel' : 'exakt') + ').'
-                : 'Storage reicht in einer Abgabe nicht: ' + res.storageCount + ' stärkste Storage-Karten = ' + fmt(res.sum) + ' von ' + fmt(info.need) + ' (Teilabgabe zählt mit).';
+                : (res.clubShort ? 'Storage und Verein reichen nicht: ' : 'Storage reicht in einer Abgabe nicht: ') + res.storageCount + ' stärkste Storage-Karten = ' + fmt(res.sum) + ' von ' + fmt(info.need) + ' (Teilabgabe zählt mit).';
             const warnSel = applied.selected !== res.picks.length ? ' Achtung: EA hat nur ' + applied.selected + ' von ' + res.picks.length + ' angenommen.' : '';
-            if (box) box.innerHTML = '<div class="sbc-opt-dim">' + escapeHtml(head + warnSel) + '</div><div class="sbc-opt-dim">Jetzt im Spiel prüfen und selbst abgeben (Review → Submit).</div>';
+            const stP = res.picks.filter(x => x.src === 'storage' || (x.storage && !x.src));
+            const clP = res.picks.filter(x => !(x.src === 'storage' || (x.storage && !x.src)));
+            const byScore = (a, b) => Number(b.score) - Number(a.score);
+            let h = '<div class="sbc-opt-dim">' + escapeHtml(head + warnSel) + '</div>';
+            if (clP.length) h += '<div class="sbc-opt-warn-box"><b>Aus dem VEREIN (' + clP.length + ') - bitte prüfen:</b>' + clP.slice().sort(byScore).map(pointsPickLabel).join('') + '</div>';
+            h += '<div class="sbc-opt-group-title">Aus dem Storage (' + stP.length + ')</div><div class="sbc-opt-batch-cards">' + stP.slice().sort(byScore).map(pointsPickLabel).join('') + '</div>';
+            h += '<div class="sbc-opt-dim">Jetzt im Spiel prüfen und selbst abgeben (Review → Submit).</div>';
+            if (box) box.innerHTML = h;
             toast(head, res.reached && !warnSel ? 'ok' : 'warn');
         } catch (e) {
             diag.error = String(e && e.message || e);

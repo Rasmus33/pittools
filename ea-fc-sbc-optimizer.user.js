@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.19.0
+// @version      6.20.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.19.0';
+    const VERSION = '6.20.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -6915,7 +6915,7 @@
     /** Kurzfassung der Info-Box in EINER Zeile (Statuszeile ueber den Kacheln). */
     function infoSummaryParts(tab, st) {
         const parts = [];
-        const ratingTab = tab !== 'kaufen' && tab !== 'mehr' && tab !== 'galerie';
+        const ratingTab = tab !== 'kaufen' && tab !== 'mehr' && tab !== 'galerie' && tab !== 'ki';
         if (ratingTab && st.target) parts.push({ k: 'Ziel', v: String(st.target), num: true });
         if (ratingTab && st.rarity && st.rarity !== 'keine') parts.push({ k: '', v: st.rarity });
         parts.push({ k: 'Verein', v: String(st.pool), num: true });
@@ -7236,6 +7236,7 @@
                     <button type="button" class="sbc-opt-tab-btn" data-tab="kaufen" role="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>Kaufen</button>
                     <button type="button" class="sbc-opt-tab-btn" data-tab="galerie" role="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Galerie</button>
                     <button type="button" class="sbc-opt-tab-btn" data-tab="rating" role="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/></svg>Rating</button>
+                    <button type="button" class="sbc-opt-tab-btn" data-tab="ki" role="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 9h8"/><path d="M8 13h5"/></svg>KI</button>
                     <button type="button" class="sbc-opt-tab-btn" data-tab="mehr" role="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/><circle cx="5" cy="12" r="1.5"/></svg>Mehr</button>
                 </div>
                 <!-- REITER KAUFEN: FUTBIN-LOESUNG (v5.16.0) fuer SBCs, die man
@@ -7595,6 +7596,45 @@
                 </div>
                 </div>
                 <!-- REITER MEHR: Werkzeuge, die zu keiner SBC-Art gehoeren. -->
+                <!-- v6.20.0 (Rasmus 18.11.: "ein eigener Reiter fuer AI waere sinnvoll, damit das nicht
+                     ueberladen wirkt"): REITER KI. Die bisherigen Elemente der KI-Verbindung (gleiche IDs,
+                     gleiche Verdrahtung) plus Uebersicht: Auftraege, Galerie auf einen Blick. -->
+                <div class="sbc-opt-tab" id="sbc-opt-tab-ki" role="tabpanel">
+                    <div class="sbc-opt-card">
+                        <div class="sbc-opt-group-title" style="margin-top:0;">KI-Assistent</div>
+                        <!-- v6.8.0: Claude Desktop / Claude Code am PC ruft ueber den lokalen PitTools-MCP-Server Werkzeuge auf. -->
+                        <label class="sbc-opt-switch">
+                            <input type="checkbox" id="sbc-opt-mcp-on">
+                            <span class="track" aria-hidden="true"></span>
+                            <span class="txt">KI verbinden<small>Claude oder ChatGPT/Codex – lesen, planen, Galerie-Käufe vorschlagen</small></span>
+                        </label>
+                        <div class="sbc-opt-fb-meta">Status: <b id="sbc-opt-mcp-status">Aus</b></div>
+                        <!-- v6.19.0: Galerie-Kauf im Chat freigeben (z.B. Claude-App am Handy), Default AUS. -->
+                        <label class="sbc-opt-switch">
+                            <input type="checkbox" id="sbc-opt-mcp-chatok">
+                            <span class="track" aria-hidden="true"></span>
+                            <span class="txt">Galerie-Kauf im Chat freigeben<small>Dein Ja im Chat ersetzt den Tipp hier – z.B. aus der Chat-App am Handy</small></span>
+                        </label>
+                        <div class="sbc-opt-debug">Am PC über den PitTools-MCP-Server und die PitTools Bridge (Anleitung: pittools-mcp/README.md). Gekauft wird nur für die Galerie und nur mit deiner Freigabe, gelistet erst nach deinem Tipp auf „Karten listen“. Eintragen und Abgeben nie.</div>
+                    </div>
+                    <div class="sbc-opt-card">
+                        <div class="sbc-opt-group-title" style="margin-top:0;">Nachricht der KI</div>
+                        <div class="sbc-opt-summary" id="sbc-opt-mcp-message" hidden></div>
+                        <div class="sbc-opt-dim" id="sbc-opt-ki-nomsg">Noch keine Nachricht.</div>
+                    </div>
+                    <div class="sbc-opt-card">
+                        <div class="sbc-opt-group-title" style="margin-top:0;">Aufträge</div>
+                        <div id="sbc-opt-ki-jobs" class="sbc-opt-dim">Keine laufenden Aufträge.</div>
+                    </div>
+                    <div class="sbc-opt-card">
+                        <div class="sbc-opt-group-title" style="margin-top:0;">Galerie auf einen Blick</div>
+                        <div id="sbc-opt-ki-gallery" class="sbc-opt-dim">–</div>
+                    </div>
+                    <div class="sbc-opt-card">
+                        <div class="sbc-opt-group-title" style="margin-top:0;">Verlauf</div>
+                        <div class="sbc-opt-dim" id="sbc-opt-mcp-log"></div>
+                    </div>
+                </div>
                 <div class="sbc-opt-tab" id="sbc-opt-tab-mehr" role="tabpanel">
                     <div class="sbc-opt-stats sbc-opt-card" style="margin-bottom:12px;">
                         <div class="sbc-opt-stat"><span class="k">Version</span><b>v` + VERSION + `</b></div>
@@ -7619,15 +7659,6 @@
                     <button type="button" class="sbc-opt-btn primary" id="sbc-opt-gauntlet-open" style="margin-top:0;"><span>Gauntlet-Teams bauen</span></button>
                     <div class="sbc-opt-debug">Baut aus deinem Verein mehrere Teams ohne gemeinsame Spieler: Chemie plus Ø Meta-Rating je Position (fut.gg). Zeigt die besten 5 Varianten, Anker je Team möglich.</div>
                     <div class="sbc-opt-result" id="sbc-opt-gauntlet-result"></div>
-                    <div class="sbc-opt-group-title">KI-Verbindung (Claude)</div>
-                    <!-- v6.8.0: Claude Desktop / Claude Code am PC ruft ueber den lokalen PitTools-MCP-Server Werkzeuge auf (nur lesen/planen/anzeigen). -->
-                    <label class="sbc-opt-toggle"><input type="checkbox" id="sbc-opt-mcp-on"> Claude darf PitTools lesen und planen</label>
-                    <div class="sbc-opt-fb-meta">Status: <b id="sbc-opt-mcp-status">Aus</b></div>
-                    <!-- v6.19.0: Galerie-Kauf im Chat freigeben (z.B. Claude-App am Handy), Default AUS. -->
-                    <label class="sbc-opt-toggle"><input type="checkbox" id="sbc-opt-mcp-chatok"> Galerie-Käufe darf ich im Chat freigeben</label>
-                    <div class="sbc-opt-debug">Nur am PC mit Claude Desktop oder Claude Code und der PitTools Bridge ab 1.2.0. Claude kann den Verein lesen, SBCs und Gauntlet-Teams planen, die Galerie-Liste und die Diagnose sehen und dir Nachrichten zeigen. Kaufen, Verkaufen, Eintragen und Abgeben kann Claude nicht.</div>
-                    <div class="sbc-opt-summary" id="sbc-opt-mcp-message" hidden></div>
-                    <div class="sbc-opt-dim" id="sbc-opt-mcp-log"></div>
                     <div class="sbc-opt-group-title">Werkzeuge</div>
                     <button class="sbc-opt-btn ghost" id="sbc-opt-diag" style="margin-top:0;">Diagnose in Konsole schreiben</button>
                     <div class="sbc-opt-debug">Die Diagnose ist ein JSON-Report für die Fehlersuche (Konsole bzw. App-Log).</div>
@@ -8555,7 +8586,7 @@
     }
     function setStatus(txt) { if (ui.status) ui.status.textContent = txt; }
     // ---- Reiter (v5.28.0) ----------------------------------------------------
-    const TAB_NAMES = ['kaufen', 'galerie', 'rating', 'mehr'];
+    const TAB_NAMES = ['kaufen', 'galerie', 'rating', 'ki', 'mehr'];
     let tabCurrent = null;
     let tabAutoKey = null;          // Challenge + Art, fuer die zuletzt automatisch gewaehlt wurde
     let tabPinnedChallenge = undefined; // Challenge, fuer die Rasmus selbst gewaehlt hat
@@ -8567,6 +8598,7 @@
         (ui.tabBtns || []).forEach(b => b.classList.toggle('on', b.getAttribute('data-tab') === name));
         (ui.tabPanes || []).forEach(p => p.classList.toggle('on', p.id === 'sbc-opt-tab-' + name));
         if (manual) { try { localStorage.setItem('sbcOptTab', name); } catch (e) {} }
+        if (name === 'ki') { try { renderKiTab(); } catch (e) {} }
         if (name === 'mehr') {
             const b = document.getElementById('sbc-opt-bridge-status');
             if (b) {
@@ -15150,6 +15182,7 @@ const HybridSbcEa = (() => {
         return out;
     }
     const galleryChancesState = { running: false, progress: null };
+    let galleryLastChances = null;
     /** Chancenliste: Sets waehlen, fehlende Merkmale nachscannen, Regeln holen, je Set rechnen. Nur lesen. */
     async function galleryChancesRun(opts) {
         const o = opts || {};
@@ -15195,7 +15228,11 @@ const HybridSbcEa = (() => {
             }
             STATE.diag.galleryChances = { at: Date.now(), sets: results.map(r => ({ name: r.name, gradeNow: r.gradeNow, redeemed: r.redeemed, options: (r.options || []).length, error: r.error || null })),
                                           hyperSamples: rows.map(r => cache.sets[r.id] && cache.sets[r.id].hyperSample).filter(Boolean).slice(0, 5) };
-            return { results: results, ranked: galleryChancesRank(results, o) };
+            const ranked = galleryChancesRank(results, o);
+            // v6.20.0: fuer den Reiter KI merken (nur Anzeige, ueberlebt kein Neuladen)
+            galleryLastChances = { at: Date.now(), top: ranked.slice(0, 4).map(c => ({ set: c.set, grade: c.grade, coins: c.coins, gain: c.tokensGain, perToken: c.perToken })),
+                                   free: results.filter(x => !x.error && x.gradeable).map(x => ({ set: x.name, grade: x.gradeable })) };
+            return { results: results, ranked: ranked };
         } finally {
             galleryBusy = false; galleryChancesState.running = false;
         }
@@ -15300,7 +15337,7 @@ const HybridSbcEa = (() => {
             try { if (tabCurrent !== 'galerie') setTab('galerie'); } catch (e) {}
             try { if (ui.panel && !ui.panel.classList.contains('open')) togglePanel(); } catch (e) {}
             const id = 'sbc-opt-claude-buy-' + Date.now();
-            setGalleryResult('<div class="sbc-opt-card" id="' + id + '"><b>Claude möchte kaufen: ' + escapeHtml(title) + '</b>' +
+            setGalleryResult('<div class="sbc-opt-card" id="' + id + '"><b>KI möchte kaufen: ' + escapeHtml(title) + '</b>' +
                 lines.map(l => '<div class="sbc-opt-fb-meta">' + escapeHtml(l) + '</div>').join('') +
                 '<div class="sbc-opt-dim">Je Karte höchstens der gerade gemessene Marktpreis, nichts wird erhöht. Kauf langsam, einer nach dem anderen.</div>' +
                 '<button type="button" class="sbc-opt-btn primary" data-act="yes"><span>Ja, kaufen</span></button>' +
@@ -15312,7 +15349,7 @@ const HybridSbcEa = (() => {
             if (!box) { fin(false); return; }
             box.querySelector('[data-act="yes"]').addEventListener('click', () => fin(true));
             box.querySelector('[data-act="no"]').addEventListener('click', () => fin(false));
-            toast('Claude wartet auf deine Kauf-Freigabe im Reiter „Galerie“.', 'warn');
+            toast('Die KI wartet auf deine Kauf-Freigabe im Reiter „Galerie“.', 'warn');
         });
     }
     /**
@@ -15614,6 +15651,7 @@ const HybridSbcEa = (() => {
             diag.storage = storage.length; diag.club = club.length; diag.skipped = c.skipped;
             const gr = { storage: c.cands.filter(x => x.storage), filler: c.cands.filter(x => x.kind === 'filler'), dup: c.cands.filter(x => x.kind === 'dup'), gold: c.cands.filter(x => x.kind === 'gold') };
             diag.groups = { storage: gr.storage.length, filler: gr.filler.length, dup: gr.dup.length, gold: gr.gold.length, evoKnown: STATE.evoRaws ? STATE.evoRaws.size : 0 };
+            diag.storageScore = gr.storage.reduce((a, x) => a + Number(x.score || 0), 0);
             let t0 = Date.now();
             let res = PointsCore.solveStaged(Object.assign({}, gr, { gold: [] }), { need: info.need, limit: info.limit });
             if (!(res && res.ok && res.reached) && res && res.clubShort && gr.gold.length) {
@@ -15682,6 +15720,14 @@ const HybridSbcEa = (() => {
             pointsBusy = false; setBtnBusy(btn, false);
         }
     }
+    /** v6.20.0: Punkte im Storage. Zulässige Summe aus dem letzten Lauf derselben Challenge, sonst alle Storage-Karten mit Item Score. Pure. */
+    function pointsStorageSummary(pool, lastDiag, challengeId) {
+        if (lastDiag && lastDiag.challenge && lastDiag.challenge.id === challengeId && Number.isFinite(lastDiag.storageScore))
+            return { score: lastDiag.storageScore, count: lastDiag.groups ? lastDiag.groups.storage : 0, eligible: true };
+        const st = (pool || []).filter(p => p && p.isStorage && Number(p.itemScore) > 0); // Pool ohne Evos (normalizePlayer)
+        if (!st.length) return null;
+        return { score: st.reduce((a, p) => a + Number(p.itemScore), 0), count: st.length, eligible: false };
+    }
     let pointsSeen = null;
     function syncPointsCard() {
         const card = document.getElementById('sbc-opt-points');
@@ -15692,7 +15738,12 @@ const HybridSbcEa = (() => {
         if ((card.style.display !== 'none') !== show) card.style.display = show ? '' : 'none';
         if (!info) { pointsSeen = null; return; }
         const fmt = n => Number(n).toLocaleString('de-DE');
-        const t = fmt(info.required) + ' gefordert · ' + fmt(info.submitted) + ' abgegeben · noch ' + fmt(info.need) + ' · bis ' + info.limit + ' Karten je Abgabe';
+        // v6.20.0 (Rasmus 18.11.: "verfügbar im Storage: 250k wäre super"): Punkte im Storage aus dem
+        // geladenen Pool (ohne Anfrage); nach "Karten auswählen" die für DIESE SBC zulässige Summe.
+        const st = pointsStorageSummary(STATE.pool, STATE.diag.points, info.id);
+        const t = fmt(info.required) + ' gefordert · ' + fmt(info.submitted) + ' abgegeben · noch ' + fmt(info.need) + ' · bis ' + info.limit + ' Karten je Abgabe' +
+                  (st ? ' · im Storage: ' + fmt(st.score) + (st.eligible ? ' (zulässig, ' + st.count + ' Karten)' : ' (' + st.count + ' Karten)') +
+                        (st.score >= info.need ? ' – reicht' : ' – fehlen ' + fmt(info.need - st.score)) : '');
         const el = document.getElementById('sbc-opt-points-info');
         if (el && el.textContent !== t) el.textContent = t;
         if (pointsSeen !== info.id) {
@@ -15849,6 +15900,52 @@ const HybridSbcEa = (() => {
         if (card.innerHTML !== h) card.innerHTML = h;
         if (card.hidden) card.hidden = false;
     }
+    /**
+     * v6.20.0: Reiter KI - Auftraege (laufende MCP-Jobs) und Galerie auf einen Blick
+     * (Token-Stand, offene Zuwaechse, erwartete Bewertungen, Karten zum Verkaufen).
+     * Nur Anzeige aus dem Speicher, keine Anfrage. Schreibt nur bei echter Aenderung.
+     */
+    function kiJobsHtml(jobs) {
+        const run = (jobs || []).filter(j => j.state === 'running');
+        const done = (jobs || []).filter(j => j.state !== 'running').slice(-3).reverse();
+        if (!run.length && !done.length) return 'Keine laufenden Aufträge.';
+        const name = t => String(t || '').replace(/^pittools_/, '').replace(/_/g, ' ');
+        return run.map(j => '<div><b>' + escapeHtml(name(j.tool)) + '</b> · läuft ' + j.seconds + ' s' + (j.progress ? ' · ' + escapeHtml(j.progress) : '') + '</div>').join('') +
+               done.map(j => '<div class="sbc-opt-muted">' + escapeHtml(name(j.tool)) + ' · ' + (j.state === 'done' ? 'fertig' : 'Fehler') + (j.error ? ': ' + escapeHtml(String(j.error).slice(0, 120)) : '') + '</div>').join('');
+    }
+    function kiGalleryHtml(book, expect, catalog, bought, chances) {
+        const parts = [];
+        if (book && Number.isFinite(book.balance)) {
+            const open = (book.events || []).filter(e => e.status === 'open').length;
+            parts.push('<div>Galerie-Tokens: <b>' + book.balance.toLocaleString('de-DE') + '</b>' + (open ? ' · <b>' + open + '</b> Zuwachs offen (Galerie-Reiter)' : '') + '</div>');
+        } else parts.push('<div>Galerie-Tokens: noch nicht gelesen</div>');
+        const names = {};
+        ((catalog && catalog.sets) || []).forEach(x => { names[x.id] = x.name; });
+        const ex = Object.keys(expect || {}).map(id => (names[id] || ('Set ' + id)) + ' → ' + expect[id].grade);
+        if (ex.length) parts.push('<div>Im Spiel bewerten: ' + escapeHtml(ex.slice(0, 6).join(', ')) + (ex.length > 6 ? ' …' : '') + '</div>');
+        if (bought > 0) parts.push('<div>' + bought + ' gekaufte Galerie-Karte(n) noch zu verkaufen</div>');
+        if (chances && Array.isArray(chances.top) && chances.top.length) {
+            const fc = n => Number(n).toLocaleString('de-DE');
+            parts.push('<div class="sbc-opt-group-title">Lohnt sich (letzte Chancenliste)</div>' + chances.top.map(c => '<div>' + escapeHtml(c.set) + ' → ' + escapeHtml(c.grade) + ': ~' + fc(c.coins) +
+                (c.gain > 0 ? ' für +' + c.gain + ' Tokens' + (c.perToken ? ' (' + fc(c.perToken) + ' je Token)' : '') : '') + '</div>').join(''));
+        }
+        if (chances && Array.isArray(chances.free) && chances.free.length) parts.push('<div>Ohne Kauf höher bewertbar: ' + escapeHtml(chances.free.map(x => x.set + ' → ' + x.grade).join(', ')) + '</div>');
+        return parts.join('');
+    }
+    function renderKiTab() {
+        const jobsEl = document.getElementById('sbc-opt-ki-jobs');
+        if (jobsEl) {
+            const jobs = Array.from(mcpJobs.values()).map(j => { const v = mcpJobView(j); delete v.result; return v; });
+            const h = kiJobsHtml(jobs);
+            if (jobsEl.innerHTML !== h) jobsEl.innerHTML = h;
+        }
+        const gEl = document.getElementById('sbc-opt-ki-gallery');
+        if (gEl) {
+            const p = ownPersonaId();
+            const h = kiGalleryHtml(p ? galleryTokenBookLoad(p) : null, galleryExpectLoad(), galleryCatalogCached(true), galleryBoughtLoad().length, galleryLastChances);
+            if (gEl.innerHTML !== h) gEl.innerHTML = h;
+        }
+    }
     function initGalleryTokens() {
         const card = document.getElementById('sbc-opt-gtokens');
         if (card) card.addEventListener('click', ev => {
@@ -15871,6 +15968,7 @@ const HybridSbcEa = (() => {
             } catch (e) {}
         };
         setTimeout(() => { hook(); galleryTokenTick(); renderGalleryTokens(); }, 5000);
+        setInterval(() => { if (tabCurrent === 'ki') { try { renderKiTab(); } catch (e) {} } }, 2000);
         setInterval(() => { hook(); galleryTokenTick(); }, 30000);
     }
     async function onGalleryEaCollectClick() {
@@ -16455,7 +16553,7 @@ const HybridSbcEa = (() => {
     function renderMcpStatus() {
         if (ui.mcpStatus) {
             const st = mcpState.on ? mcpState.status : 'aus';
-            const txt = !mcpState.on ? 'Aus' : st === 'verbunden' ? 'Verbunden mit Claude' : st === 'kein Server' ? 'Warte auf den PitTools-MCP-Server (Claude Desktop / Claude Code starten)' :
+            const txt = !mcpState.on ? 'Aus' : st === 'verbunden' ? 'Verbunden mit der KI' : st === 'kein Server' ? 'Warte auf den PitTools-MCP-Server (KI-App am PC starten: Claude Desktop, ChatGPT/Codex …)' :
                         st === 'aus' ? (document.documentElement.getAttribute('data-pittools-bridge-mcp') ? 'Startet …' : 'PitTools Bridge ab 1.2.0 fehlt') : st;
             if (ui.mcpStatus.textContent !== txt) ui.mcpStatus.textContent = txt;
         }
@@ -17131,8 +17229,9 @@ const HybridSbcEa = (() => {
         }
         if (tool === 'pittools_show_message') {
             const text = String(a.text || '').slice(0, 1000);
-            if (ui.mcpMessage) { ui.mcpMessage.textContent = 'Claude: ' + text; ui.mcpMessage.hidden = false; }
-            toast('Claude: ' + text.slice(0, 160), '');
+            if (ui.mcpMessage) { ui.mcpMessage.textContent = 'KI: ' + text; ui.mcpMessage.hidden = false; }
+            try { const nm = document.getElementById('sbc-opt-ki-nomsg'); if (nm) nm.hidden = true; } catch (e) {}
+            toast('KI: ' + text.slice(0, 160), '');
             return { shown: true };
         }
         if (tool === 'pittools_checks_list') {

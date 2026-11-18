@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.14.0
+// @version      6.15.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.14.0';
+    const VERSION = '6.15.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -4849,6 +4849,138 @@
         };
     })();
     // [SOLVER-END]
+    // ===================== v6.15.0 Punkte-SBCs (Streamlined / One-Click) =====================
+    // Rasmus 18.11.: "IMMER erst Storage leer machen", "optimale Zusammenfuegung aus
+    // verschiedenen Storage-Karten, damit es exakt den richtigen Wert bekommt",
+    // "fehlen am Ende 20 oder 35, kann ein Bronze- oder Silberspieler aus dem Verein
+    // dazu", "lieber mehrere 83er und 84er als einen 86er". Reiner Kern, testbar.
+    // [POINTS-BEGIN]
+    const PointsCore = (function () {
+        /**
+         * cands: [{ id, score, storage, filler }] - storage = Storage-Karte (frei waehlbar),
+         * filler = Bronze/Silber aus dem Verein (nur zum Auffuellen). Vereins-Gold kommt
+         * gar nicht erst als Kandidat herein.
+         * opts: { need: fehlende Punkte, limit: Karten je Abgabe (EAs Auswahlgrenze) }
+         * Ziel (in dieser Reihenfolge): need erreichen; geringster Ueberschuss; wenigste
+         * Vereinskarten; meiste Storage-Karten. Unerreichbar -> Teilabgabe mit den
+         * staerksten Storage-Karten (Teilabgaben zaehlen bei EA zusammen).
+         */
+        function solve(cands, opts) {
+            const need = Math.max(0, Math.floor(Number(opts.need) || 0));
+            const limit = Math.max(1, Math.min(30, Math.floor(Number(opts.limit) || 30)));
+            const ok = c => c && Number(c.score) > 0 && isFinite(Number(c.score));
+            const st = cands.filter(c => ok(c) && c.storage);
+            const fl = cands.filter(c => ok(c) && !c.storage && c.filler);
+            const out = (picks, extra) => {
+                const sum = picks.reduce((a, c) => a + Number(c.score), 0);
+                return Object.assign({ ok: true, need: need, limit: limit, picks: picks, sum: sum, overshoot: Math.max(0, sum - need),
+                    reached: sum >= need, storageCount: picks.filter(c => c.storage).length, clubCount: picks.filter(c => !c.storage).length }, extra || {});
+            };
+            if (need <= 0) return out([], { note: 'nichts offen' });
+            // Erreichbar? Die staerksten `limit` Karten aus Storage + Fuellern.
+            const top = st.concat(fl).map(c => Number(c.score)).sort((a, b) => b - a).slice(0, limit).reduce((a, b) => a + b, 0);
+            if (top < need) {
+                const picks = st.slice().sort((a, b) => (Number(b.score) - Number(a.score)) || String(a.id).localeCompare(String(b.id))).slice(0, limit);
+                return out(picks, { reached: false, partial: true });
+            }
+            const groupsOf = list => {
+                const m = new Map();
+                list.slice().sort((a, b) => String(a.id).localeCompare(String(b.id))).forEach(c => {
+                    const v = Number(c.score); if (!m.has(v)) m.set(v, []); m.get(v).push(c);
+                });
+                return Array.from(m.entries()).sort((a, b) => b[0] - a[0]).map(([v, items]) => ({ v: v, items: items }));
+            };
+            const sg = groupsOf(st), fg = groupsOf(fl);
+            const maxS = sg.length ? sg[0].v : 0, maxF = fg.length ? fg[0].v : 0;
+            const cap = need + Math.max(maxS, maxF);
+            const MASK = limit >= 30 ? 0x7FFFFFFF : ((1 << (limit + 1)) - 1);
+            // Storage: layer[s] = Bitmaske der erreichbaren Kartenzahlen (Bit k = k Karten).
+            const layers = [];
+            let prev = new Int32Array(cap + 1); prev[0] = 1;
+            layers.push(prev);
+            for (const g of sg) {
+                const cur = new Int32Array(cap + 1);
+                const m = Math.min(g.items.length, limit);
+                for (let s = 0; s <= cap; s++) {
+                    let bits = 0;
+                    for (let t = 0; t <= m && s - t * g.v >= 0; t++) {
+                        const b = prev[s - t * g.v];
+                        if (b) bits |= (b << t) & MASK;
+                    }
+                    cur[s] = bits;
+                }
+                layers.push(cur); prev = cur;
+            }
+            const finalS = prev;
+            // Fueller: fmin[e] = wenigste Vereinskarten fuer genau e Punkte.
+            const ecap = Math.min(cap, limit * maxF);
+            const INF = 1e9;
+            const flayers = [];
+            let fprev = new Int32Array(ecap + 1).fill(INF); fprev[0] = 0;
+            flayers.push(fprev);
+            for (const g of fg) {
+                const cur = new Int32Array(ecap + 1).fill(INF);
+                const m = Math.min(g.items.length, limit);
+                for (let e = 0; e <= ecap; e++) {
+                    let best = INF;
+                    for (let t = 0; t <= m && e - t * g.v >= 0; t++) {
+                        const b = fprev[e - t * g.v];
+                        if (b + t < best) best = b + t;
+                    }
+                    cur[e] = best;
+                }
+                flayers.push(cur); fprev = cur;
+            }
+            const fmin = fprev;
+            const highBit = (x) => 31 - Math.clz32(x);
+            let best = null;
+            for (let o = 0; need + o <= cap + ecap && !best; o++) {
+                const total = need + o;
+                for (let e = Math.max(0, total - cap); e <= Math.min(ecap, total); e++) {
+                    const fc = fmin[e];
+                    if (fc >= INF || fc > limit) continue;
+                    const s = total - e;
+                    const room = limit - fc;
+                    const bits = finalS[s] & (room >= 30 ? 0x7FFFFFFF : ((1 << (room + 1)) - 1));
+                    if (!bits) continue;
+                    const k = highBit(bits);
+                    if (k + fc === 0) continue;
+                    if (!best || fc < best.fc || (fc === best.fc && k > best.k)) best = { s: s, e: e, k: k, fc: fc, o: o };
+                }
+            }
+            if (!best) return { ok: false, need: need, limit: limit, reason: 'keine Kombination gefunden' };
+            // Rekonstruktion Storage
+            const picks = [];
+            let s = best.s, k = best.k;
+            for (let gi = sg.length - 1; gi >= 0; gi--) {
+                const g = sg[gi], pl = layers[gi];
+                const m = Math.min(g.items.length, limit);
+                let took = -1;
+                for (let t = 0; t <= m && t <= k && s - t * g.v >= 0; t++) {
+                    if (pl[s - t * g.v] & (1 << (k - t))) { took = t; break; }
+                }
+                if (took < 0) return { ok: false, need: need, limit: limit, reason: 'Rekonstruktion Storage' };
+                for (let i = 0; i < took; i++) picks.push(g.items[i]);
+                s -= took * g.v; k -= took;
+            }
+            // Rekonstruktion Fueller
+            let e = best.e, c = best.fc;
+            for (let gi = fg.length - 1; gi >= 0; gi--) {
+                const g = fg[gi], pl = flayers[gi];
+                const m = Math.min(g.items.length, limit);
+                let took = -1;
+                for (let t = 0; t <= m && e - t * g.v >= 0; t++) {
+                    if (pl[e - t * g.v] + t === c) { took = t; break; }
+                }
+                if (took < 0) return { ok: false, need: need, limit: limit, reason: 'Rekonstruktion Verein' };
+                for (let i = 0; i < took; i++) picks.push(g.items[i]);
+                e -= took * g.v; c -= took;
+            }
+            return out(picks);
+        }
+        return { solve: solve };
+    })();
+    // [POINTS-END]
     // ========================================================================
     //  6. IN SBC EINTRAGEN
     // ========================================================================
@@ -7125,6 +7257,14 @@
                 </div>
                 <!-- REITER RATING: der bisherige Optimizer (Rating-SBCs). -->
                 <div class="sbc-opt-tab" id="sbc-opt-tab-rating" role="tabpanel">
+                <!-- v6.15.0: Punkte-SBC (Streamlined / One-Click) - nur sichtbar, wenn EAs
+                     Auswahl-Ansicht offen ist (syncPointsCard). -->
+                <div class="sbc-opt-card" id="sbc-opt-points" style="display:none;">
+                    <div class="sbc-opt-group-title" style="margin-top:0;">Punkte-SBC</div>
+                    <div class="sbc-opt-dim" id="sbc-opt-points-info"></div>
+                    <button type="button" class="sbc-opt-btn primary" id="sbc-opt-points-run"><span>Karten auswählen (Storage zuerst)</span></button>
+                    <div id="sbc-opt-points-result"></div>
+                </div>
                 <!-- v6.1.0: der Vorlagen-Knopf steht im Bereich "Mehrere
                      erledigen" (unten) - Rasmus, 25.09.: die drei Mehrfach-Wege
                      gehoeren zusammen. "Spieler laden" ist nach dem ersten
@@ -7592,6 +7732,7 @@
         initFutbinUi();
         initGalleryUi();
         initHybridClubUi();
+        initPointsUi();
         ui.diagBtn.addEventListener('click', onDiagClick);
         // Schnellwahl aufbauen und mit den Feldern verbinden. Tippt Rasmus von
         // Hand einen Wert, aktualisiert sich nur die Hervorhebung - der Wert
@@ -14782,6 +14923,168 @@ const HybridSbcEa = (() => {
             return out || { set: row.name, grade: grade, confirmed: true, bought: 0, note: 'Kauf-Lauf ohne Ergebnis - Galerie-Reiter prüfen.' };
         } finally { galleryBusy = false; }
     }
+    // ---- v6.15.0 Punkte-SBC: Anbindung an EAs One-Click-Auswahl ------------------
+    /** Offene One-Click-Auswahl (UTOneClickSBCWorkAreaViewController) samt ViewModel, sonst null. */
+    function findOneClickWorkArea() {
+        const isVm = vm => vm && typeof vm.autoSelectCurrentPage === 'function' && typeof vm.getChallenge === 'function' && typeof vm.selectItem === 'function';
+        const tryCtrl = x => { try { if (x && typeof x.getViewModel === 'function') { const vm = x.getViewModel(); if (isVm(vm)) return { ctrl: x, vm: vm, challenge: vm.getChallenge() }; } } catch (e) {} return null; };
+        const chain = getControllerChain().slice().reverse();
+        for (const c of chain) {
+            const hit = tryCtrl(c) || tryCtrl(c && c.workAreaController);
+            if (hit) return hit;
+            try {
+                for (const k of Object.keys(c)) {
+                    const v = c[k];
+                    if (v && typeof v === 'object' && v.constructor && /OneClickSBCWorkArea/.test(v.constructor.name)) {
+                        const h = tryCtrl(v) || tryCtrl(v.workAreaController);
+                        if (h) return h;
+                    }
+                }
+            } catch (e) {}
+        }
+        return null;
+    }
+    function pointsOpen(wa) {
+        const ch = wa && wa.challenge;
+        if (!ch) return null;
+        const req = Number(ch.scoreRequirement) || 0, sub = Number(ch.submittedScore) || 0;
+        return { id: ch.id, name: ch.name || null, required: req, submitted: sub, need: Math.max(0, req - sub),
+                 limit: (() => { try { return Number(wa.vm.getSelectionLimit()) || 30; } catch (e) { return 30; } })() };
+    }
+    /** Alle Karten eines Stapels, die EA fuer DIESE Challenge zulaesst (mit sbsScore) - EAs eigene Suche der Auswahl-Ansicht. */
+    async function pointsFetchPile(challengeId, pile, onPage) {
+        if (typeof window.UTSearchCriteriaDTO !== 'function' || !window.services || !window.services.Club) throw new Error('EAs Club-Suche fehlt.');
+        const out = [];
+        for (let page = 0; page < 25; page++) {
+            const crit = new window.UTSearchCriteriaDTO();
+            try { if (window.SearchSortOrder) crit.sort = window.SearchSortOrder.ASCENDING; } catch (e) {}
+            try { if (window.SearchUntradeables) crit.untradeables = window.SearchUntradeables.DEFAULT; } catch (e) {}
+            crit.sbcChallengeId = challengeId;
+            crit.pileSearchType = pile;
+            crit.count = 91;
+            crit.offset = out.length;
+            const res = await obsPromise(window.services.Club.search(crit));
+            if (!responseOk(res)) throw new Error('EAs Suche für die Punkte-SBC schlug fehl (HTTP ' + (res && res.status) + ').');
+            const items = responseItems(res);
+            out.push.apply(out, items);
+            if (onPage) onPage(out.length);
+            const r = (res && (res.response || res.data)) || {};
+            if (r.retrievedAll || !items.length) break;
+            await sleep(400);
+        }
+        return out;
+    }
+    function pointsLockedSet() {
+        try { return (ui.useLocks && ui.useLocks.checked) ? readPaletoolsLocks() : new Set(); } catch (e) { return new Set(); }
+    }
+    function pointsIsLocked(ent, locks) {
+        return [ent.id, ent.definitionId, ent.assetId, ent.resourceId].some(x => x != null && locks.has(String(x)));
+    }
+    /** Pure-nah: EA-Items -> Kandidaten fuer PointsCore (Storage alles mit Score, Verein nur Bronze/Silber normal). */
+    function pointsCandidates(storageItems, clubItems, locks) {
+        const sc = it => Number(it && (it.sbsScore != null ? it.sbsScore : it.gradingScore)) || 0;
+        const evo = it => { try { return (Array.isArray(it.academyAttributes) && it.academyAttributes.length > 0) || (typeof it.isAcademyItem === 'function' && it.isAcademyItem()); } catch (e) { return false; } };
+        const out = [], skipped = { locked: 0, clubGold: 0, clubSpecial: 0, noScore: 0, evo: 0 };
+        (storageItems || []).forEach(it => {
+            if (!(sc(it) > 0)) { skipped.noScore++; return; }
+            if (pointsIsLocked(it, locks)) { skipped.locked++; return; }
+            out.push({ id: it.id, score: sc(it), storage: true, filler: false, rating: Number(it.rating) || 0, ent: it });
+        });
+        (clubItems || []).forEach(it => {
+            if (!(sc(it) > 0)) { skipped.noScore++; return; }
+            if (pointsIsLocked(it, locks)) { skipped.locked++; return; }
+            if (evo(it)) { skipped.evo++; return; }
+            const rf = parseInt(it.rareflag, 10);
+            if (!isNormalCard(rf)) { skipped.clubSpecial++; return; }
+            if (!((Number(it.rating) || 0) < 75)) { skipped.clubGold++; return; }
+            out.push({ id: it.id, score: sc(it), storage: false, filler: true, rating: Number(it.rating) || 0, ent: it });
+        });
+        return { cands: out, skipped: skipped };
+    }
+    /** Auswahl in EAs Ansicht setzen - genau so, als haette Rasmus die Karten angetippt. Abgeben tut er selbst. */
+    function pointsApply(wa, picks) {
+        const vm = wa.vm;
+        const T = window.OneClickSBCWorkAreaTab || {};
+        vm.clearSelection();
+        let n = 0;
+        for (const p of picks) {
+            const tab = p.storage ? T.STORAGE : T.CLUB;
+            try { if (vm._itemTabMap && tab != null) vm._itemTabMap.set(p.ent.id, tab); } catch (e) {}
+            try { if (vm._itemScoreMap) vm._itemScoreMap.set(p.ent.id, p.score); } catch (e) {}
+            try { if (vm._itemEntityMap) vm._itemEntityMap.set(p.ent.id, p.ent); } catch (e) {}
+            if (vm.selectItem(p.ent)) n++;
+        }
+        ['_refreshCurrentPage', '_updateProgressBar', '_refreshSelectionControls'].forEach(fn => { try { if (typeof wa.ctrl[fn] === 'function') wa.ctrl[fn](); } catch (e) {} });
+        let score = null; try { score = vm.getSelectedScore(); } catch (e) {}
+        return { selected: n, score: score };
+    }
+    let pointsBusy = false;
+    async function onPointsRunClick() {
+        if (pointsBusy) return;
+        const btn = document.getElementById('sbc-opt-points-run');
+        const box = document.getElementById('sbc-opt-points-result');
+        const wa = findOneClickWorkArea();
+        const info = pointsOpen(wa);
+        if (!wa || !info) { toast('Keine Punkte-SBC offen - im Spiel die Auswahl-Ansicht der Challenge öffnen.', 'warn'); return; }
+        if (!sessionReady()) { toast('EA-Sitzung noch nicht erfasst - einmal im Spiel klicken.', 'warn'); return; }
+        pointsBusy = true; setBtnBusy(btn, true, 'Lade Karten …');
+        const diag = STATE.diag.points = { at: Date.now(), challenge: info };
+        try {
+            const P = window.PileSearchType || {};
+            if (box) box.innerHTML = '<div class="sbc-opt-dim">Storage wird gelesen …</div>';
+            const storage = await pointsFetchPile(info.id, P.STORAGE, n => { if (box) box.innerHTML = '<div class="sbc-opt-dim">Storage: ' + n + ' Karten …</div>'; });
+            const club = await pointsFetchPile(info.id, P.CLUB, n => { if (box) box.innerHTML = '<div class="sbc-opt-dim">Verein: ' + n + ' Karten …</div>'; });
+            const c = pointsCandidates(storage, club, pointsLockedSet());
+            diag.storage = storage.length; diag.club = club.length; diag.skipped = c.skipped;
+            const t0 = Date.now();
+            const res = PointsCore.solve(c.cands, { need: info.need, limit: info.limit });
+            diag.ms = Date.now() - t0;
+            diag.result = res && { ok: res.ok, reached: res.reached, partial: !!res.partial, sum: res.sum, overshoot: res.overshoot, storageCount: res.storageCount, clubCount: res.clubCount, reason: res.reason || null };
+            if (!res || !res.ok) throw new Error('Keine Auswahl gefunden' + (res && res.reason ? ' (' + res.reason + ')' : '') + '.');
+            if (!res.picks.length) { if (box) box.innerHTML = '<div class="sbc-opt-dim">Nichts mehr offen.</div>'; return; }
+            const applied = pointsApply(wa, res.picks);
+            diag.applied = applied;
+            const fmt = n => Number(n).toLocaleString('de-DE');
+            const head = res.reached
+                ? 'Ausgewählt: ' + res.storageCount + ' aus dem Storage' + (res.clubCount ? ' + ' + res.clubCount + ' Bronze/Silber aus dem Verein' : '') +
+                  ' = ' + fmt(res.sum) + ' Punkte (' + (res.overshoot ? fmt(res.overshoot) + ' über dem Ziel' : 'exakt') + ').'
+                : 'Storage reicht in einer Abgabe nicht: ' + res.storageCount + ' stärkste Storage-Karten = ' + fmt(res.sum) + ' von ' + fmt(info.need) + ' (Teilabgabe zählt mit).';
+            const warnSel = applied.selected !== res.picks.length ? ' Achtung: EA hat nur ' + applied.selected + ' von ' + res.picks.length + ' angenommen.' : '';
+            if (box) box.innerHTML = '<div class="sbc-opt-dim">' + escapeHtml(head + warnSel) + '</div><div class="sbc-opt-dim">Jetzt im Spiel prüfen und selbst abgeben (Review → Submit).</div>';
+            toast(head, res.reached && !warnSel ? 'ok' : 'warn');
+        } catch (e) {
+            diag.error = String(e && e.message || e);
+            reportError('Punkte-SBC', e);
+            if (box) box.innerHTML = '<div class="sbc-opt-dim">' + escapeHtml(diag.error) + '</div>';
+        } finally {
+            pointsBusy = false; setBtnBusy(btn, false);
+        }
+    }
+    let pointsSeen = null;
+    function syncPointsCard() {
+        const card = document.getElementById('sbc-opt-points');
+        if (!card) return;
+        let info = null;
+        try { info = pointsOpen(findOneClickWorkArea()); } catch (e) {}
+        const show = !!info;
+        if ((card.style.display !== 'none') !== show) card.style.display = show ? '' : 'none';
+        if (!info) { pointsSeen = null; return; }
+        const fmt = n => Number(n).toLocaleString('de-DE');
+        const t = fmt(info.required) + ' gefordert · ' + fmt(info.submitted) + ' abgegeben · noch ' + fmt(info.need) + ' · bis ' + info.limit + ' Karten je Abgabe';
+        const el = document.getElementById('sbc-opt-points-info');
+        if (el && el.textContent !== t) el.textContent = t;
+        if (pointsSeen !== info.id) {
+            pointsSeen = info.id;
+            const r = document.getElementById('sbc-opt-points-result');
+            if (r) r.innerHTML = '';
+            try { if (tabCurrent === 'kaufen') setTab('rating'); } catch (e) {}
+        }
+    }
+    function initPointsUi() {
+        const btn = document.getElementById('sbc-opt-points-run');
+        if (btn) btn.addEventListener('click', onPointsRunClick);
+        setInterval(syncPointsCard, 1500);
+    }
     async function onGalleryEaCollectClick() {
         const ch = galleryLast && galleryLast.chosen;
         if (!ch || !ch.set || !ch.meta) return;
@@ -15554,10 +15857,15 @@ const HybridSbcEa = (() => {
             const fc = rep.fc27 || {};
             const ent = STATE.sbc.entity;
             const entInfo = ent ? (() => { const o = {}; try { Object.keys(ent).filter(k => /type|score|streamlin|oneclick|requirement/i.test(k)).slice(0, 20).forEach(k => { const v = ent[k]; o[k] = (v && typeof v === 'object') ? Object.keys(v).slice(0, 10) : v; }); } catch (e) {} return o; })() : null;
-            const res = { classes: keys, sbcMethods: sbcSvc ? protoMethodNames(sbcSvc, /oneclick|score|stream|submit|open|requirement/i) : [], openChallenge: entInfo,
+            const wa = findOneClickWorkArea();
+            const workArea = wa ? { ctrl: (wa.ctrl.constructor && wa.ctrl.constructor.name) || null, open: pointsOpen(wa),
+                vmMethods: protoMethodNames(wa.vm, /select|score|limit|tab|challenge/i), maps: ['_itemTabMap', '_itemScoreMap', '_itemEntityMap', '_selectedItemIds'].filter(k => wa.vm[k] && typeof wa.vm[k].set === 'function' || (wa.vm[k] && typeof wa.vm[k].add === 'function')),
+                enums: { tab: !!window.OneClickSBCWorkAreaTab, pile: !!window.PileSearchType, sort: !!window.SearchSortOrder, untradeables: !!window.SearchUntradeables } } : null;
+            const res = { workArea: workArea, classes: keys, sbcMethods: sbcSvc ? protoMethodNames(sbcSvc, /oneclick|score|stream|submit|open|requirement/i) : [], openChallenge: entInfo,
                           sbcSchema: fc.sbcSchema || STATE.diag.sbcSchema || null, sbsTraffic: (STATE.diag.sbsTraffic || []).slice(-15), featureFlips: STATE.diag.featureFlips || null };
-            return { status: ent ? 'ok' : 'needs', needs: ent ? undefined : 'Für die vollständige Messung eine Streamlined-SBC (falls vorhanden) im Spiel öffnen und die Prüfung wiederholen.',
-                     summary: keys.length + ' passende EA-Klassen, ' + res.sbcMethods.length + ' SBC-Methoden' + (ent ? ', offene Challenge gemessen' : ''), data: res };
+            const okNow = !!(ent || workArea);
+            return { status: okNow ? 'ok' : 'needs', needs: okNow ? undefined : 'Für die vollständige Messung eine Streamlined-SBC (falls vorhanden) im Spiel öffnen und die Prüfung wiederholen.',
+                     summary: keys.length + ' passende EA-Klassen, ' + res.sbcMethods.length + ' SBC-Methoden' + (workArea ? ', Punkte-SBC offen (' + (workArea.open ? workArea.open.need + ' offen' : '?') + ')' : '') + (ent ? ', offene Challenge gemessen' : ''), data: res };
         }
         if (id === 'tokens_holo') {
             // v6.13.1: Bundle 11414 - UTEventTokenService haelt Definitionen + Kontostaende

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.21.0
+// @version      6.22.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.21.0';
+    const VERSION = '6.22.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -210,6 +210,7 @@
             clubView: null,          // v6.6.0: Verein im Ueberblick (Zusammenfassung, Stufen)
             batchSpare: null,        // v6.7.0: Vorschau-Tausch (geschonte Karten, neu geplant)
             mcp: null,               // v6.8.0: KI-Verbindung (letzte Aufrufe: Werkzeug, ok, Fehler)
+            pointsBuy: null,         // v6.22.0: Punkte kaufen (Bedarf, Punkte je Rating, Coins je Punkt, Plan, Kauf)
             relay: null,             // v6.21.0: KI ueber das Internet (Status, Aufrufe, Fehler - nie der Schluessel)
             galleryCheck: null,      // v5.65.0: Sammelstand je Spieler ueber Marktangebote
             gallerySell: null,       // v5.35.0: Verkauf gekaufter Galerie-Karten (Preise, Schritte)
@@ -5057,6 +5058,137 @@
         return { solve: solve, solveStaged: solveStaged, swapGoldByMeta: swapGoldByMeta };
     })();
     // [POINTS-END]
+    // [POINTSBUY-BEGIN]
+    /**
+     * v6.22.0 (Rasmus 18.11.: "wenn ich mir fuer eine streamline sbc spieler kaufen
+     * will ist das kosteneffizienteste teilweise 84er ... es waere cool wenn pittools
+     * selbst entscheidet wie das verhaeltnis muenze zu streamline punkte gerade ist
+     * und dann dementsprechend die karten fuer eine sbc kauft, am besten recht
+     * langsam"). Rein: Kandidaten aus fut.ggs "Cheapest by Rating", Punkte je
+     * Rating aus EAs eigenen Werten dieser Challenge, und ein Plan, der die
+     * fehlenden Punkte mit den wenigsten Coins erreicht.
+     */
+    const PointsBuyCore = (function () {
+        /** fut.gg /market/<jahr>/cheapest-by-rating/v2/overview/ -> normale Gold-Karten (Rarity 0/1, Level 3). */
+        function parseCheapest(json, opts) {
+            opts = opts || {};
+            const data = json && json.data && typeof json.data === 'object' ? json.data : {};
+            const out = [], seen = new Set();
+            Object.keys(data).forEach(k => {
+                const list = Array.isArray(data[k]) ? data[k] : [];
+                list.forEach(x => {
+                    if (!x || typeof x !== 'object') return;
+                    const id = Number(x.eaId), rating = Number(x.overall), price = Number(x.price);
+                    if (!(id > 0) || !(rating > 0) || !(price > 0) || seen.has(id)) return;
+                    if (opts.minRating && rating < opts.minRating) return;
+                    if (opts.maxRating && rating > opts.maxRating) return;
+                    const m = /rarities-level-(\d+)-[a-z]+\/(\d+)\./.exec(String(x.rarityImagePath || ''));
+                    // Nur nachweislich normale Gold-Karten: ihr Punktwert haengt allein am Rating.
+                    if (!m || m[1] !== '3' || (m[2] !== '0' && m[2] !== '1')) return;
+                    seen.add(id);
+                    out.push({ id: id, name: String(x.name || ('#' + id)), rating: rating, price: price });
+                });
+            });
+            return out.sort((a, b) => a.rating - b.rating || a.price - b.price || a.id - b.id);
+        }
+        /** Punkte je Rating aus EAs Werten dieser Challenge (nur normale Karten, nur eindeutige Werte). */
+        function scoreTable(items) {
+            const by = {};
+            (items || []).forEach(it => {
+                const r = Number(it.rating), sc = Number(it.score);
+                if (!(r >= 75) || !(sc > 0)) return;
+                (by[r] = by[r] || new Set()).add(sc);
+            });
+            const out = {};
+            Object.keys(by).forEach(r => { if (by[r].size === 1) out[r] = Array.from(by[r])[0]; });
+            return out;
+        }
+        /** Je Rating: guenstigster Preis, Punkte, Coins je Punkt (fuer die Anzeige). */
+        function ratios(cands, table) {
+            const by = {};
+            (cands || []).forEach(c => { if (table[c.rating] > 0) (by[c.rating] = by[c.rating] || []).push(c.price); });
+            return Object.keys(by).map(Number).sort((a, b) => a - b).map(r => {
+                const ps = by[r].slice().sort((a, b) => a - b);
+                return { rating: r, score: table[r], count: ps.length, cheapest: ps[0], perPoint: ps[0] / table[r] };
+            });
+        }
+        function gcd(a, b) { while (b) { const t = a % b; a = b; b = t; } return a; }
+        /**
+         * Mehrfachauswahl-Rucksack: je Rating die k guenstigsten Kandidaten (jede Karte
+         * hoechstens einmal), Summe >= need, hoechstens maxCards Karten. Ziel: wenigste
+         * Coins, dann wenigste Karten, dann wenigster Ueberschuss.
+         */
+        function plan(cands, table, need, maxCards) {
+            need = Math.max(0, Math.floor(Number(need) || 0));
+            maxCards = Math.max(1, Math.floor(Number(maxCards) || 30));
+            if (!need) return { ok: true, reached: true, picks: [], coins: 0, points: 0, overshoot: 0, cards: 0 };
+            const groups = {};
+            (cands || []).forEach(c => { const sc = Number(table[c.rating]); if (sc > 0 && c.price > 0) (groups[c.rating] = groups[c.rating] || []).push(Object.assign({}, c, { score: sc })); });
+            const keys = Object.keys(groups).map(Number).sort((a, b) => a - b);
+            if (!keys.length) return { ok: false, reached: false, reason: 'keine Kandidaten mit bekanntem Punktwert' };
+            let g = 0;
+            keys.forEach(r => { g = gcd(g, groups[r][0].score); });
+            const S = Math.ceil(need / g);
+            if (S > 60000) return { ok: false, reached: false, reason: 'Bedarf zu groß für einen Lauf' };
+            const C = maxCards, W = S + 1;
+            let cost = new Float64Array((C + 1) * W).fill(Infinity);
+            cost[0] = 0;
+            const choice = [];
+            const G = keys.map(r => {
+                const list = groups[r].slice().sort((a, b) => a.price - b.price || a.id - b.id);
+                const cum = [0]; list.forEach(x => cum.push(cum[cum.length - 1] + x.price));
+                return { rating: r, w: groups[r][0].score / g, list: list, cum: cum };
+            });
+            G.forEach(gr => {
+                const next = cost.slice();
+                const ch = new Uint8Array((C + 1) * W);
+                const kmax = Math.min(gr.list.length, C);
+                for (let c = 0; c < C; c++) {
+                    for (let s0 = 0; s0 < W; s0++) {
+                        const base = cost[c * W + s0];
+                        if (base === Infinity) continue;
+                        for (let k = 1; k <= kmax && c + k <= C; k++) {
+                            const s2 = Math.min(S, s0 + k * gr.w);
+                            const v = base + gr.cum[k];
+                            const idx = (c + k) * W + s2;
+                            if (v < next[idx]) { next[idx] = v; ch[idx] = k; }
+                        }
+                    }
+                }
+                // Herkunft je Zustand: k (0 = Gruppe nicht genutzt) und der Vorzustand ergibt sich rueckwaerts.
+                choice.push({ ch: ch, prev: cost });
+                cost = next;
+            });
+            let bestC = -1;
+            for (let c = 1; c <= C; c++) { const v = cost[c * W + S]; if (v < Infinity && (bestC < 0 || v < cost[bestC * W + S])) bestC = c; }
+            if (bestC < 0) return { ok: false, reached: false, reason: 'mit höchstens ' + C + ' Karten nicht erreichbar' };
+            // Rueckweg: je Gruppe (rueckwaerts) das gewaehlte k; k = 0 heisst "Zustand unveraendert aus der Vorstufe".
+            const picks = [];
+            let c = bestC, sIdx = S;
+            for (let gi = G.length - 1; gi >= 0; gi--) {
+                const gr = G[gi], st = choice[gi];
+                const k = st.ch[c * W + sIdx];
+                if (!k) continue;
+                const target = gi + 1 < choice.length ? choice[gi + 1].prev[c * W + sIdx] : cost[c * W + sIdx];
+                let found = -1;
+                const lo = sIdx === S ? Math.max(0, S - k * gr.w) : sIdx - k * gr.w;
+                const hi = sIdx === S ? S : sIdx - k * gr.w;
+                for (let s0 = lo; s0 <= hi && found < 0; s0++) {
+                    if (s0 < 0 || Math.min(S, s0 + k * gr.w) !== sIdx) continue;
+                    const pv = st.prev[(c - k) * W + s0];
+                    if (pv !== Infinity && Math.abs(pv + gr.cum[k] - target) < 1e-6) found = s0;
+                }
+                if (found < 0) return { ok: false, reached: false, reason: 'Rückweg fehlgeschlagen' };
+                for (let i = 0; i < k; i++) picks.push(gr.list[i]);
+                c -= k; sIdx = found;
+            }
+            const coins = picks.reduce((a, x) => a + x.price, 0), points = picks.reduce((a, x) => a + x.score, 0);
+            return { ok: true, reached: points >= need, picks: picks.sort((a, b) => b.rating - a.rating || a.price - b.price), coins: coins, points: points,
+                     overshoot: Math.max(0, points - need), cards: picks.length, perPoint: points ? coins / points : null };
+        }
+        return { parseCheapest: parseCheapest, scoreTable: scoreTable, ratios: ratios, plan: plan };
+    })();
+    // [POINTSBUY-END]
     // ========================================================================
     //  6. IN SBC EINTRAGEN
     // ========================================================================
@@ -7358,6 +7490,9 @@
                     <div class="sbc-opt-dim" id="sbc-opt-points-info"></div>
                     <button type="button" class="sbc-opt-btn primary" id="sbc-opt-points-run"><span>Karten auswählen (Storage zuerst)</span></button>
                     <div id="sbc-opt-points-result"></div>
+                    <!-- v6.22.0: fehlende Punkte nach Coins je Punkt kaufen (fut.gg "Cheapest by Rating" + EAs Punktwerte). -->
+                    <button type="button" class="sbc-opt-btn" id="sbc-opt-points-buy"><span>Fehlende Punkte kaufen …</span></button>
+                    <div id="sbc-opt-points-buyres"></div>
                 </div>
                 <!-- v6.1.0: der Vorlagen-Knopf steht im Bereich "Mehrere
                      erledigen" (unten) - Rasmus, 25.09.: die drei Mehrfach-Wege
@@ -15597,7 +15732,7 @@ const HybridSbcEa = (() => {
         return out;
     }
     /** Pure-nah: EA-Items -> Kandidaten fuer PointsCore (Storage alles mit Score, Verein nur Bronze/Silber normal). */
-    function pointsCandidates(storageItems, clubItems, locks, evoPersons) {
+    function pointsCandidates(storageItems, clubItems, locks, evoPersons, boughtIds) {
         const sc = it => Number(it && (it.sbsScore != null ? it.sbsScore : it.gradingScore)) || 0;
         const evo = it => { try { return (Array.isArray(it.academyAttributes) && it.academyAttributes.length > 0) || (typeof it.isAcademyItem === 'function' && it.isAcademyItem()); } catch (e) { return false; } };
         const out = [], skipped = { locked: 0, clubSpecial: 0, noScore: 0, evo: 0 };
@@ -15609,6 +15744,8 @@ const HybridSbcEa = (() => {
         (clubItems || []).forEach(it => {
             if (!(sc(it) > 0)) { skipped.noScore++; return; }
             if (pointsIsLocked(it, locks)) { skipped.locked++; return; }
+            // v6.22.0: fuer diese Punkte gekaufte Karten zaehlen wie Storage (zuerst verbauen), liegen aber im Verein.
+            if (boughtIds && boughtIds.has(String(it.id))) { out.push({ id: it.id, score: sc(it), storage: true, bought: true, filler: false, kind: 'bought', rating: Number(it.rating) || 0, ent: it }); return; }
             if (evo(it)) { skipped.evo++; return; }
             const rf = parseInt(it.rareflag, 10);
             if (!isNormalCard(rf)) { skipped.clubSpecial++; return; }
@@ -15655,7 +15792,7 @@ const HybridSbcEa = (() => {
     function pointsPickLabel(c) {
         const ent = c.ent || {};
         const name = escapeHtml(entityName(ent) || resolvePlayerName(ent) || ('#' + c.id));
-        const tag = c.src === 'storage' ? '<span class="src storage">Storage</span>'
+        const tag = c.bought ? '<span class="src storage">Gekauft</span>' : c.src === 'storage' ? '<span class="src storage">Storage</span>'
             : '<span class="src club">Verein · ' + (c.src === 'dup' ? 'Duplikat (Evo vorhanden)' : c.src === 'filler' ? (c.rating < 65 ? 'Bronze' : 'Silber') : 'Gold' + (c.meta != null && c.meta !== c.rating ? ' · Meta ' + Math.round(c.meta) : '')) + '</span>';
         return '<div class="sbc-opt-batch-card"><span class="r">' + c.rating + '</span> ' + name + ' · ' + Number(c.score).toLocaleString('de-DE') + ' ' + tag + '</div>';
     }
@@ -15666,7 +15803,7 @@ const HybridSbcEa = (() => {
         vm.clearSelection();
         let n = 0;
         for (const p of picks) {
-            const tab = p.storage ? T.STORAGE : T.CLUB;
+            const tab = (p.storage && !p.bought) ? T.STORAGE : T.CLUB; // v6.22.0: Gekaufte liegen im Verein
             try { if (vm._itemTabMap && tab != null) vm._itemTabMap.set(p.ent.id, tab); } catch (e) {}
             try { if (vm._itemScoreMap) vm._itemScoreMap.set(p.ent.id, p.score); } catch (e) {}
             try { if (vm._itemEntityMap) vm._itemEntityMap.set(p.ent.id, p.ent); } catch (e) {}
@@ -15692,11 +15829,12 @@ const HybridSbcEa = (() => {
             if (box) box.innerHTML = '<div class="sbc-opt-dim">Storage wird gelesen …</div>';
             const storage = await pointsFetchPile(info.id, P.STORAGE, n => { if (box) box.innerHTML = '<div class="sbc-opt-dim">Storage: ' + n + ' Karten …</div>'; });
             const club = await pointsFetchPile(info.id, P.CLUB, n => { if (box) box.innerHTML = '<div class="sbc-opt-dim">Verein: ' + n + ' Karten …</div>'; });
-            const c = pointsCandidates(storage, club, pointsLockedSet(), pointsEvoPersons());
+            const c = pointsCandidates(storage, club, pointsLockedSet(), pointsEvoPersons(), pointsBoughtIds());
             diag.storage = storage.length; diag.club = club.length; diag.skipped = c.skipped;
             const gr = { storage: c.cands.filter(x => x.storage), filler: c.cands.filter(x => x.kind === 'filler'), dup: c.cands.filter(x => x.kind === 'dup'), gold: c.cands.filter(x => x.kind === 'gold') };
             diag.groups = { storage: gr.storage.length, filler: gr.filler.length, dup: gr.dup.length, gold: gr.gold.length, evoKnown: STATE.evoRaws ? STATE.evoRaws.size : 0 };
-            diag.storageScore = gr.storage.reduce((a, x) => a + Number(x.score || 0), 0);
+            diag.storageScore = gr.storage.filter(x => !x.bought).reduce((a, x) => a + Number(x.score || 0), 0);
+            diag.bought = gr.storage.filter(x => x.bought).length;
             let t0 = Date.now();
             let res = PointsCore.solveStaged(Object.assign({}, gr, { gold: [] }), { need: info.need, limit: info.limit });
             if (!(res && res.ok && res.reached) && res && res.clubShort && gr.gold.length) {
@@ -15747,7 +15885,7 @@ const HybridSbcEa = (() => {
             const byScore = (a, b) => Number(b.score) - Number(a.score);
             let h = '<div class="sbc-opt-dim">' + escapeHtml(head + warnSel) + '</div>';
             if (clP.length) h += '<div class="sbc-opt-warn-box"><b>Aus dem VEREIN (' + clP.length + ') - bitte prüfen:</b>' + clP.slice().sort(byScore).map(pointsPickLabel).join('') + '</div>';
-            h += '<div class="sbc-opt-group-title">Aus dem Storage (' + stP.length + ')</div><div class="sbc-opt-batch-cards">' + stP.slice().sort(byScore).map(pointsPickLabel).join('') + '</div>';
+            h += '<div class="sbc-opt-group-title">Aus dem Storage' + (stP.some(x => x.bought) ? ' und gekauft' : '') + ' (' + stP.length + ')</div><div class="sbc-opt-batch-cards">' + stP.slice().sort(byScore).map(pointsPickLabel).join('') + '</div>';
             h += '<div class="sbc-opt-dim">Jetzt im Spiel prüfen und selbst abgeben (Review → Submit).</div>';
             if (whatIf && !whatIf.error) {
                 h += '<details class="sbc-opt-details-toggle"><summary>Vorschau: danach aus dem Verein (nichts ausgewählt)</summary><div class="sbc-opt-dim">Storage gesamt ' + fmt(whatIf.storageTotal) + ' · danach fehlen ' + fmt(whatIf.rest) +
@@ -15801,7 +15939,179 @@ const HybridSbcEa = (() => {
     function initPointsUi() {
         const btn = document.getElementById('sbc-opt-points-run');
         if (btn) btn.addEventListener('click', onPointsRunClick);
+        const bb = document.getElementById('sbc-opt-points-buy');
+        if (bb) bb.addEventListener('click', onPointsBuyClick);
         setInterval(syncPointsCard, 1500);
+    }
+    // ===================== v6.22.0 Punkte-SBC: fehlende Punkte kaufen =====================
+    // Kandidaten: fut.gg "Cheapest by Rating" (je Rating die 11 guenstigsten Karten, Plattform
+    // aus den Futbin-Einstellungen), Punktwert je Rating aus EAs eigenen Werten DIESER Challenge,
+    // Plan: PointsBuyCore.plan (wenigste Coins). Gekauft wird erst nach Tipp, langsam (5-10 s),
+    // je Karte hoechstens +10 % ueber fut.gg, sonst uebersprungen (fixedCaps). Gekaufte Karten
+    // landen im Verein und gelten beim naechsten "Karten auswaehlen" wie Storage.
+    const POINTS_BOUGHT_KEY = 'sbcOptPointsBought';
+    const POINTS_BOUGHT_TTL_MS = 3 * 86400000;
+    const POINTS_BUY_MAX_CARDS = 30;              // eine Abgabe; Transferziele fassen 50
+    const POINTS_BUY_GAP_MIN_MS = 5000, POINTS_BUY_GAP_MAX_MS = 10000;
+    const POINTS_BUY_PLAN_TTL_MS = 10 * 60000;
+    function pointsBoughtLoad() {
+        let m = {};
+        try { m = JSON.parse(localStorage.getItem(POINTS_BOUGHT_KEY) || '{}') || {}; } catch (e) { m = {}; }
+        return m && typeof m === 'object' && !Array.isArray(m) ? m : {};
+    }
+    /** Item-IDs der fuer Punkte-SBCs gekauften Karten (je Persona, 3 Tage). */
+    function pointsBoughtIds() {
+        const persona = ownPersonaId();
+        const list = persona && Array.isArray(pointsBoughtLoad()[persona]) ? pointsBoughtLoad()[persona] : [];
+        return new Set(list.filter(x => x && Date.now() - Number(x.at) < POINTS_BOUGHT_TTL_MS).map(x => String(x.id)));
+    }
+    function pointsBoughtAdd(ids) {
+        const persona = ownPersonaId(); if (!persona || !ids.length) return;
+        const m = pointsBoughtLoad();
+        const keep = (Array.isArray(m[persona]) ? m[persona] : []).filter(x => x && Date.now() - Number(x.at) < POINTS_BOUGHT_TTL_MS);
+        ids.forEach(id => keep.push({ id: String(id), at: Date.now() }));
+        m[persona] = keep.slice(-200);
+        try { localStorage.setItem(POINTS_BOUGHT_KEY, JSON.stringify(m)); } catch (e) {}
+    }
+    /** Pure: Plan als Zeilen je Rating. */
+    function pointsBuyPlanHtml(plan, ratios, fmt) {
+        const by = {};
+        plan.picks.forEach(x => { const g = by[x.rating] || (by[x.rating] = { n: 0, coins: 0, score: x.score, min: x.price, max: x.price }); g.n++; g.coins += x.price; g.min = Math.min(g.min, x.price); g.max = Math.max(g.max, x.price); });
+        const rows = Object.keys(by).map(Number).sort((a, b) => b - a).map(r => {
+            const g = by[r];
+            return '<div class="sbc-opt-batch-card" title="' + g.n + ' Karten zu ' + (g.min === g.max ? fmt(g.min) : fmt(g.min) + '–' + fmt(g.max)) + ' Coins"><span class="r">' + r + '</span> ' + g.n + '× · ' + fmt(g.coins) + ' C · ' + fmt(g.n * g.score) + ' P' +
+                   ' <span class="src storage">' + (g.coins / (g.n * g.score)).toFixed(2).replace('.', ',') + '</span></div>';
+        }).join('');
+        const tab = (ratios || []).map(x => '<div class="sbc-opt-batch-card"><span class="r">' + x.rating + '</span> ab ' + fmt(x.cheapest) + ' C · ' + fmt(x.score) + ' P · <b>' +
+                    x.perPoint.toFixed(2).replace('.', ',') + '</b> C/P</div>').join('');
+        return { rows: rows, table: tab };
+    }
+    let pointsBuyBusy = false, pointsBuyCancel = false, pointsBuyPending = null;
+    function pointsBuyBox() { return document.getElementById('sbc-opt-points-buyres'); }
+    async function onPointsBuyClick() {
+        if (pointsBuyBusy || buyBusy) { toast('Es läuft schon ein Kauf.', 'warn'); return; }
+        const btn = document.getElementById('sbc-opt-points-buy');
+        const box = pointsBuyBox();
+        const wa = findOneClickWorkArea();
+        const info = pointsOpen(wa);
+        if (!wa || !info) { toast('Keine Punkte-SBC offen - im Spiel die Auswahl-Ansicht der Challenge öffnen.', 'warn'); return; }
+        if (!sessionReady()) { toast('EA-Sitzung noch nicht erfasst - einmal im Spiel klicken.', 'warn'); return; }
+        if (!bridgeKind()) { if (box) box.innerHTML = '<div class="sbc-opt-dim">' + escapeHtml(BRIDGE_HINT) + '</div>'; return; }
+        pointsBuyBusy = true; pointsBuyPending = null; setBtnBusy(btn, true, 'Rechne …');
+        const fmt = n => Number(n).toLocaleString('de-DE');
+        const platform = readFutbinSettings().platform;
+        const diag = STATE.diag.pointsBuy = { at: Date.now(), challenge: info, platform: platform };
+        try {
+            const P = window.PileSearchType || {};
+            if (box) box.innerHTML = '<div class="sbc-opt-dim">Lese Storage und Verein für diese Challenge …</div>';
+            const storage = await pointsFetchPile(info.id, P.STORAGE);
+            const club = await pointsFetchPile(info.id, P.CLUB);
+            const locks = pointsLockedSet(), boughtIds = pointsBoughtIds();
+            const sc = it => Number(it && (it.sbsScore != null ? it.sbsScore : it.gradingScore)) || 0;
+            const evo = it => { try { return (Array.isArray(it.academyAttributes) && it.academyAttributes.length > 0) || (typeof it.isAcademyItem === 'function' && it.isAcademyItem()); } catch (e) { return false; } };
+            // Punktwert je Rating: EAs Werte dieser Challenge an normalen Karten (kein Evo, keine Specials).
+            const normal = storage.concat(club).filter(it => isNormalCard(parseInt(it.rareflag, 10)) && !evo(it)).map(it => ({ rating: Number(it.rating) || 0, score: sc(it) }));
+            const table = PointsBuyCore.scoreTable(normal);
+            const have = storage.filter(it => sc(it) > 0 && !pointsIsLocked(it, locks)).reduce((a, it) => a + sc(it), 0);
+            const haveBought = club.filter(it => boughtIds.has(String(it.id))).reduce((a, it) => a + sc(it), 0);
+            const missing = Math.max(0, info.need - have - haveBought);
+            Object.assign(diag, { storageScore: have, boughtScore: haveBought, missing: missing, table: table });
+            // Wer schon im Verein/Storage liegt (auch als Evo), wird nicht gekauft: EA nimmt keine zweite Karte desselben Spielers in den Verein.
+            const owned = new Set();
+            const addPerson = x => { const v = pointsPersonOf(x); if (v) owned.add(v); const a = Number(x && x.assetId); if (a > 0) owned.add(a); };
+            storage.concat(club).forEach(addPerson);
+            (STATE.pool || []).forEach(p => addPerson(p.raw || p));
+            (STATE.evoRaws ? Array.from(STATE.evoRaws.values()) : []).forEach(addPerson);
+            if (box) box.innerHTML = '<div class="sbc-opt-dim">Hole die günstigsten Karten je Rating von fut.gg …</div>';
+            const year = futbinYear(STATE.diag.gameName, window.fut_year);
+            const r = await bridgeFetch('https://www.fut.gg/api/fut/market/' + year + '/cheapest-by-rating/v2/overview/?platform=' + (platform === 'pc' ? 'pc' : 'ps'), 30000);
+            if (!r || r.status !== 200) throw new Error('fut.gg antwortet nicht (HTTP ' + (r && r.status) + ').');
+            let json = null;
+            try { json = JSON.parse(r.text); } catch (e) { throw new Error('fut.gg lieferte kein JSON.'); }
+            const all = PointsBuyCore.parseCheapest(json, { minRating: 75 });
+            const cands = all.filter(c => table[c.rating] > 0 && !owned.has(c.id) && !owned.has(c.id & 0xFFFFFF));
+            const ratios = PointsBuyCore.ratios(cands, table);
+            Object.assign(diag, { candidates: all.length, usable: cands.length, ratios: ratios });
+            const head = fmt(info.need) + ' offen · Storage ' + fmt(have) + (haveBought ? ' · schon gekauft ' + fmt(haveBought) : '') + ' → ';
+            if (!missing) {
+                const v = pointsBuyPlanHtml({ picks: [] }, ratios, fmt);
+                if (box) box.innerHTML = '<div class="sbc-opt-summary">' + escapeHtml(head) + 'nichts zu kaufen.</div><div class="sbc-opt-dim">Erst „Karten auswählen“ und abgeben.</div>' +
+                    (v.table ? '<details class="sbc-opt-details-toggle"><summary>Coins je Punkt nach Rating</summary><div class="sbc-opt-batch-cards">' + v.table + '</div></details>' : '');
+                return;
+            }
+            const plan = PointsBuyCore.plan(cands, table, missing, POINTS_BUY_MAX_CARDS);
+            diag.plan = plan && { ok: plan.ok, reason: plan.reason || null, cards: plan.cards, coins: plan.coins, points: plan.points, overshoot: plan.overshoot,
+                                  picks: (plan.picks || []).map(x => ({ id: x.id, name: x.name, rating: x.rating, price: x.price, score: x.score })) };
+            const v = pointsBuyPlanHtml(plan.ok ? plan : { picks: [] }, ratios, fmt);
+            const tableHtml = v.table ? '<details class="sbc-opt-details-toggle"' + (plan.ok ? '' : ' open') + '><summary>Coins je Punkt nach Rating (fut.gg, ' + (platform === 'pc' ? 'PC' : 'Konsole') + ')</summary><div class="sbc-opt-batch-cards">' + v.table + '</div></details>' : '';
+            if (!plan.ok) {
+                if (box) box.innerHTML = '<div class="sbc-opt-summary">' + escapeHtml(head + 'fehlen ' + fmt(missing)) + '</div><div class="sbc-opt-dim">Kein Kaufplan: ' + escapeHtml(plan.reason || '?') + '.</div>' + tableHtml;
+                return;
+            }
+            const tiers = eaPriceTiers();
+            const buyPlan = plan.picks.map((x, i) => ({ index: i, resourceId: x.id, name: x.name, rating: x.rating, planned: x.price, futggPrice: x.price,
+                                                        maxPrice: planMaxPrice(x.price, BUY_TOLERANCE, tiers), score: x.score }));
+            const cap = buyPlan.reduce((a, x) => a + x.maxPrice, 0);
+            const coins = userCoins();
+            pointsBuyPending = { challengeId: info.id, persona: ownPersonaId(), at: Date.now(), plan: buyPlan, cap: cap, missing: missing };
+            const short = coins != null && coins < cap;
+            if (box) box.innerHTML =
+                '<div class="sbc-opt-summary">' + escapeHtml(head + 'fehlen ' + fmt(missing) + ' Punkte') + '</div>' +
+                '<div class="sbc-opt-dim">Plan: <b>' + plan.cards + ' Karten = ' + fmt(plan.points) + ' Punkte für ~' + fmt(plan.coins) + ' Coins</b> (' + plan.perPoint.toFixed(2).replace('.', ',') + ' Coins je Punkt' +
+                    (plan.overshoot ? ', ' + fmt(plan.overshoot) + ' über Bedarf' : '') + '). Höchstens ' + fmt(cap) + ' Coins (+10 % je Karte).</div>' +
+                '<div class="sbc-opt-batch-cards">' + v.rows + '</div>' + tableHtml +
+                (short ? '<div class="sbc-opt-warn-box">Du hast ' + fmt(coins) + ' Coins – das reicht nicht für die Obergrenze.</div>' : '') +
+                '<div class="sbc-opt-dim">C = Coins, P = Punkte, C/P = Coins je Punkt (fut.gg-Preise). Langsam: eine Karte alle 5–10 s, nur normale Gold-Versionen, keine Spieler, die du schon hast. Teurer als +10 % über fut.gg wird übersprungen. Die Karten landen im Verein und werden bei „Karten auswählen“ wie Storage zuerst genommen.</div>' +
+                '<button type="button" class="sbc-opt-btn primary" id="sbc-opt-points-buygo"' + (short ? ' disabled' : '') + '><span>Jetzt kaufen (' + plan.cards + ' Karten, höchstens ' + fmt(cap) + ')</span></button>' +
+                '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-points-buyno"><span>Abbrechen</span></button>';
+            const go = document.getElementById('sbc-opt-points-buygo'), no = document.getElementById('sbc-opt-points-buyno');
+            if (go) go.addEventListener('click', onPointsBuyGo);
+            if (no) no.addEventListener('click', () => { pointsBuyPending = null; const b = pointsBuyBox(); if (b) b.innerHTML = '<div class="sbc-opt-dim">Nichts gekauft.</div>'; });
+        } catch (e) {
+            diag.error = String(e && e.message || e);
+            reportError('Punkte kaufen', e);
+            if (box) box.innerHTML = '<div class="sbc-opt-dim">' + escapeHtml(diag.error) + '</div>';
+        } finally {
+            pointsBuyBusy = false; setBtnBusy(btn, false);
+        }
+    }
+    async function onPointsBuyGo() {
+        const pend = pointsBuyPending;
+        const box = pointsBuyBox();
+        const info = pointsOpen(findOneClickWorkArea());
+        if (!pend || Date.now() - pend.at > POINTS_BUY_PLAN_TTL_MS || !info || info.id !== pend.challengeId || ownPersonaId() !== pend.persona) {
+            pointsBuyPending = null;
+            if (box) box.innerHTML = '<div class="sbc-opt-dim">Der Plan ist veraltet (andere Challenge, anderer Account oder älter als 10 Minuten) - bitte neu rechnen.</div>';
+            return;
+        }
+        if (pointsBuyBusy || buyBusy) return;
+        pointsBuyPending = null; pointsBuyBusy = true; pointsBuyCancel = false;
+        const fmt = n => Number(n).toLocaleString('de-DE');
+        const diag = STATE.diag.pointsBuy || (STATE.diag.pointsBuy = {});
+        const persona = pend.persona;
+        let buyLog = '';
+        const render = () => { if (box) box.innerHTML = buyLog + '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-points-buystop"><span>Stopp nach dieser Karte</span></button>'; const st = document.getElementById('sbc-opt-points-buystop'); if (st) st.addEventListener('click', () => { pointsBuyCancel = true; st.disabled = true; }); };
+        try {
+            await buyPlannedPlayers(null, pend.plan, { noSquad: true, mode: 'points', hardBudget: pend.cap, fixedCaps: true,
+                maxPerRun: pend.plan.length, gapMin: POINTS_BUY_GAP_MIN_MS, gapMax: POINTS_BUY_GAP_MAX_MS,
+                setResult: h => { buyLog = h; render(); },
+                cancelled: () => pointsBuyCancel || ownPersonaId() !== persona,
+                canAdopt: () => ownPersonaId() === persona,
+                onFinish: (d, bought) => {
+                    const ids = bought.map(b => b.itemId).filter(x => x != null);
+                    if (ownPersonaId() === persona) pointsBoughtAdd(ids);
+                    const pts = bought.reduce((a, b) => a + (Number(b.plan.score) || 0), 0);
+                    diag.buy = { bought: d.bought, spent: d.spent, points: pts, stopped: d.stopped, adopted: d.adopted };
+                    try { mergeIntoPool(bought.map(b => b.raw ? normalizePlayer(Object.assign({}, b.raw), false) : null).filter(Boolean)); } catch (e) {}
+                }
+            });
+        } finally {
+            pointsBuyBusy = false;
+            const b = diag.buy;
+            if (box && b) box.innerHTML = buyLog + '<div class="sbc-opt-summary">Gekauft: ' + b.bought + ' Karten = ' + fmt(b.points) + ' Punkte für ' + fmt(b.spent) + ' Coins' +
+                (b.points ? ' (' + (b.spent / b.points).toFixed(2).replace('.', ',') + ' je Punkt)' : '') + '.</div>' +
+                '<div class="sbc-opt-dim">Jetzt „Karten auswählen“ – die gekauften Karten zählen dort wie Storage.' + (b.bought < pend.plan.length ? ' Fehlt noch etwas, „Fehlende Punkte kaufen“ rechnet mit frischen Preisen neu.' : '') + '</div>';
+        }
     }
     /*
      * v6.17.0: Galerie-Tokens mitschreiben (live). Liest EAs Kontostand der
@@ -18765,7 +19075,7 @@ const HybridSbcEa = (() => {
             // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten mit
             // Kosten, Marktabfragen, Fehler, eingefuegte Loesung.
             hybridSbc: STATE.diag.hybridSbc || null,
-            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, batchSpare: STATE.diag.batchSpare || null, mcp: STATE.diag.mcp || null, relay: STATE.diag.relay || null, liveChecks: liveChecksLoad(), points: STATE.diag.points || null, galleryTokens: (function () { try { const p = ownPersonaId(); return p ? galleryTokenBookLoad(p) : null; } catch (e) { return null; } })(), galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null,
+            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, batchSpare: STATE.diag.batchSpare || null, mcp: STATE.diag.mcp || null, relay: STATE.diag.relay || null, liveChecks: liveChecksLoad(), points: STATE.diag.points || null, pointsBuy: STATE.diag.pointsBuy || null, galleryTokens: (function () { try { const p = ownPersonaId(); return p ? galleryTokenBookLoad(p) : null; } catch (e) { return null; } })(), galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null,
             futbinBuy: STATE.diag.futbinBuy || null,
             futbinBuyPlan: STATE.diag.futbinBuyPlan || null,
             marketUrls: STATE.diag.marketUrls,

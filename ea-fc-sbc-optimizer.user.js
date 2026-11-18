@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.16.5
+// @version      6.17.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.16.5';
+    const VERSION = '6.17.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7295,6 +7295,8 @@
                         <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gallery-upgrade-load">Fast fertige Vereine / Aufwertungen prüfen</button>
                         <button class="sbc-opt-btn primary sbc-opt-btn-icon" id="sbc-opt-gallery-load"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span>Nächstes Set kaufen</span></button>
                     </div>
+                    <!-- v6.17.0: Galerie-Tokens mitschreiben; neue Note aus dem Zuwachs -->
+                    <div class="sbc-opt-card" id="sbc-opt-gtokens" hidden></div>
                     <div class="sbc-opt-result" id="sbc-opt-gallery-result"></div>
                     <!-- v5.57.0: Stand zwischen PC und Handy uebertragen (localStorage ist pro Geraet). -->
                     <details class="sbc-opt-details-toggle" id="sbc-opt-gallery-sync">
@@ -7789,6 +7791,7 @@
         initGalleryUi();
         initHybridClubUi();
         initPointsUi();
+        initGalleryTokens();
         ui.diagBtn.addEventListener('click', onDiagClick);
         // Schnellwahl aufbauen und mit den Feldern verbinden. Tippt Rasmus von
         // Hand einen Wert, aktualisiert sich nur die Hervorhebung - der Wert
@@ -10427,6 +10430,85 @@ const HybridSbcEa = (() => {
         return {cards,purchases,found,assessment,total:purchases.reduce((s,p) => s+p.maxPrice,0)};
     }
     // [GALLERYTARGET-END]
+
+    // [GALLERYTOKENS-BEGIN]
+    /*
+     * v6.17.0: Galerie-Tokens mitschreiben (Ersatz fuer Fotos). EA fuehrt die
+     * Galerie-Tokens als Event-Token-Waehrung (live 18.11.: EVENT_TOKEN_1,
+     * "Gallery Token"). Bewertet wird nur im Spiel; die Web App kennt danach
+     * nur den hoeheren Kontostand. Aus dem Zuwachs folgt die neue Note: fut.ggs
+     * Tokens je Note sind KUMULATIV (MLS: B 5, A 13, S 28), der Gewinn eines
+     * Aufstiegs ist also tokens[neu] - tokens[bekannt]. Alles hier ist pure.
+     */
+    const GALLERY_TOKEN_GRADES = ['N', 'D', 'C', 'B', 'A', 'S'];
+    const GALLERY_TOKEN_EVENTS_MAX = 40;
+    /** Neuen Kontostand gegen das gemerkte Buch legen. Liefert das neue Buch und ggf. ein Ereignis. */
+    function galleryTokenStep(book, balance, at) {
+        const b = book && typeof book === 'object' ? book : {};
+        const events = Array.isArray(b.events) ? b.events.slice() : [];
+        if (!Number.isFinite(balance) || balance < 0) return { book: b, event: null };
+        if (!Number.isFinite(b.balance)) return { book: { balance: balance, at: at, since: at, events: events }, event: null };
+        if (balance === b.balance) return { book: Object.assign({}, b, { at: at, events: events }), event: null };
+        const gain = balance > b.balance;
+        const ev = { id: at + ':' + b.balance + '>' + balance, at: at, from: b.balance, to: balance, delta: balance - b.balance,
+                     status: gain ? 'open' : 'spent' };
+        events.push(ev);
+        return { book: { balance: balance, at: at, since: b.since || at, events: events.slice(-GALLERY_TOKEN_EVENTS_MAX) }, event: ev };
+    }
+    /**
+     * Welche Aufstiege erklaeren genau delta Tokens? rows = Katalog-Zeilen
+     * (catalog.grades mit kumulativen tokens), knownOf(id) = eingeloeste Note
+     * ('N' keine) oder null, stateOf(row) = 'yes' (laut Scan vollstaendig),
+     * 'no' (laut Scan unvollstaendig) oder null (nicht gescannt).
+     * Unbekannte Ausgangsnote: jede tiefere Note ist moeglich (known:false).
+     * Ohne Einzeltreffer werden Paare zweier Sets gesucht (nie automatisch).
+     */
+    function galleryTokenCandidates(delta, rows, knownOf, stateOf) {
+        const rank = g => GALLERY_TOKEN_GRADES.indexOf(g || 'N');
+        const single = [], steps = [];
+        if (!(delta > 0)) return { single: single, pairs: [] };
+        (rows || []).forEach(row => {
+            const grades = (row && row.catalog && Array.isArray(row.catalog.grades)) ? row.catalog.grades : [];
+            const tok = { N: 0 };
+            grades.forEach(g => { if (g && /^[DCBAS]$/.test(g.name) && Number.isFinite(g.tokens)) tok[g.name] = g.tokens; });
+            const known = knownOf ? knownOf(row.id) : null;
+            if (known === 'S') return;
+            const froms = known ? [known] : GALLERY_TOKEN_GRADES.filter(g => g !== 'S');
+            const state = stateOf ? stateOf(row) : null;
+            froms.forEach(from => {
+                if (!(from in tok)) return;
+                GALLERY_TOKEN_GRADES.forEach(to => {
+                    if (rank(to) <= rank(from) || !(to in tok)) return;
+                    const gain = tok[to] - tok[from];
+                    if (!(gain > 0)) return;
+                    const c = { id: row.id, name: row.name, from: from, to: to, gain: gain, known: !!known, state: state };
+                    if (gain === delta) single.push(c);
+                    else if (gain < delta && known && state !== 'no') steps.push(c);
+                });
+            });
+        });
+        const pairs = [];
+        if (!single.length) {
+            for (let i = 0; i < steps.length && pairs.length < 20; i++)
+                for (let j = i + 1; j < steps.length && pairs.length < 20; j++)
+                    if (steps[i].id !== steps[j].id && steps[i].gain + steps[j].gain === delta) pairs.push([steps[i], steps[j]]);
+        }
+        return { single: single, pairs: pairs };
+    }
+    /**
+     * Automatisch gemerkt wird NUR ein eindeutiger Fall: genau ein Einzeltreffer
+     * mit bekannter Ausgangsnote, laut Scan vollstaendig, und kein weiterer
+     * Treffer, der nicht durch den Scan ausgeschlossen ist. Sonst Auswahl.
+     */
+    function galleryTokenDecide(cands) {
+        const single = (cands && cands.single) || [];
+        const open = single.filter(c => c.state !== 'no');
+        const sure = open.filter(c => c.known && c.state === 'yes');
+        if (sure.length === 1 && open.length === 1) return { auto: sure[0], reason: 'eindeutig' };
+        if (!single.length && !((cands && cands.pairs) || []).length) return { auto: null, reason: 'kein Set passt' };
+        return { auto: null, reason: open.length > 1 ? open.length + ' Sets passen' : 'nicht sicher genug' };
+    }
+    // [GALLERYTOKENS-END]
 
     function galleryUpgradeOptions(data, pool, collected) {
         if (!data || !data.set || !data.solution || data.solution.setId !== data.set.id || !Array.isArray(data.solution.costTiers)) return [];
@@ -15371,6 +15453,154 @@ const HybridSbcEa = (() => {
         if (btn) btn.addEventListener('click', onPointsRunClick);
         setInterval(syncPointsCard, 1500);
     }
+    /*
+     * v6.17.0: Galerie-Tokens mitschreiben (live). Liest EAs Kontostand der
+     * Galerie-Waehrung (nur Speicher, keine Anfrage), legt ihn gegen das Buch
+     * je Persona (localStorage, ueberlebt Neuladen) und erklaert einen Zuwachs
+     * mit galleryTokenCandidates. Ausloeser: EAs eigene Meldung
+     * EVENT_TOKEN_BALANCE_UPDATE, ein Takt alle 30 s und jedes Oeffnen.
+     */
+    const GALLERY_TOKEN_KEY = 'sbcOptGalleryTokens:';
+    function galleryTokenCurrency() {
+        try {
+            const et = window.services && window.services.EventToken;
+            const defs = (et && et.repository && et.repository._definitions) || [];
+            const loc = k => { try { return String(window.services.Localization.localize(k)); } catch (e) { return String(k); } };
+            const hit = defs.find(d => d && d.currencyName && /galler/i.test(String(d.displayName || '') + ' ' + loc(d.displayName || '')));
+            return hit ? { name: String(hit.currencyName), label: loc(hit.displayName || hit.currencyName) } : null;
+        } catch (e) { return null; }
+    }
+    function galleryTokenBookLoad(persona) {
+        try { const b = JSON.parse(localStorage.getItem(GALLERY_TOKEN_KEY + persona) || 'null'); return b && typeof b === 'object' ? b : null; } catch (e) { return null; }
+    }
+    function galleryTokenBookSave(persona, book) {
+        try { localStorage.setItem(GALLERY_TOKEN_KEY + persona, JSON.stringify(book)); } catch (e) {}
+    }
+    async function galleryTokenExplain(ev) {
+        const cat = galleryCatalogCached(true);
+        if (!cat) { ev.reason = 'kein Galerie-Katalog (erst „Sets laden“ oder den Scan)'; return; }
+        const cache = (await galleryScanCacheLoad(ownPersonaId())) || { sets: {} };
+        const stateOf = row => {
+            const e = cache.sets[row.id] || cache.sets[String(row.id)];
+            if (!e || e.partial) return null;
+            return galleryScanSetState(row, e).complete ? 'yes' : 'no';
+        };
+        const cands = galleryTokenCandidates(ev.delta, cat.sets, galleryKnownGrade, stateOf);
+        const d = galleryTokenDecide(cands);
+        const slim = c => ({ id: c.id, name: c.name, from: c.from, to: c.to, known: c.known, state: c.state });
+        ev.candidates = cands.single.slice(0, 12).map(slim);
+        ev.pairs = cands.pairs.slice(0, 6).map(p => p.map(slim));
+        ev.reason = d.reason;
+        if (d.auto) {
+            galleryRememberGrade(d.auto.id, d.auto.to);
+            ev.status = 'auto';
+            ev.assigned = [slim(d.auto)];
+            toast('Galerie: +' + ev.delta + ' Tokens → ' + d.auto.name + ' jetzt Note ' + d.auto.to + ' (aus dem Token-Zuwachs).', 'ok');
+        }
+    }
+    let galleryTokenBusy = false;
+    async function galleryTokenTick() {
+        if (galleryTokenBusy) return null;
+        const persona = ownPersonaId();
+        const cur = galleryTokenCurrency();
+        if (!persona || !cur) return null;
+        let bal = NaN;
+        try { bal = Number(window.services.EventToken.getBalance(cur.name)); } catch (e) {}
+        if (!Number.isFinite(bal)) return null;
+        galleryTokenBusy = true;
+        try {
+            let book = galleryTokenBookLoad(persona);
+            // Andere Waehrung (neue Saison/Umstellung): neues Buch statt falscher Differenz.
+            if (book && book.currency && book.currency !== cur.name) book = null;
+            const r = galleryTokenStep(book, bal, Date.now());
+            r.book.currency = cur.name; r.book.label = cur.label;
+            galleryTokenBookSave(persona, r.book);
+            if (r.event && r.event.status === 'open') {
+                try { await galleryTokenExplain(r.event); } catch (e) { r.event.reason = 'Fehler: ' + (e && e.message || e); }
+                const fresh = galleryTokenBookLoad(persona) || r.book;
+                fresh.events = (fresh.events || []).map(x => x.id === r.event.id ? r.event : x);
+                galleryTokenBookSave(persona, fresh);
+            }
+            renderGalleryTokens();
+            return galleryTokenBookLoad(persona);
+        } finally { galleryTokenBusy = false; }
+    }
+    /** Hand-Zuordnung (Panel-Chip oder Claude). picks = [{id, grade}]; rueckt eine Auto-Zuordnung vorher zurueck. */
+    function galleryTokenAssign(evId, picks) {
+        const persona = ownPersonaId();
+        const book = persona ? galleryTokenBookLoad(persona) : null;
+        const ev = book && (book.events || []).find(x => x.id === evId);
+        if (!ev) throw new Error('Token-Ereignis unbekannt: ' + evId);
+        if (!(ev.delta > 0)) throw new Error('Das Ereignis ist kein Zuwachs (' + ev.delta + ').');
+        if (ev.status === 'auto' || ev.status === 'assigned') (ev.assigned || []).forEach(a => galleryRememberGrade(a.id, a.from || 'N'));
+        const cat = galleryCatalogCached(true);
+        const done = [];
+        (picks || []).forEach(p => {
+            const row = cat && cat.sets.find(x => String(x.id) === String(p.id));
+            const g = String(p.grade || '').toUpperCase();
+            if (!row || !/^[DCBAS]$/.test(g)) throw new Error('Set/Note ungültig: ' + p.id + ' ' + p.grade);
+            done.push({ id: row.id, name: row.name, from: galleryKnownGrade(row.id) || null, to: g });
+            galleryRememberGrade(row.id, g);
+        });
+        ev.status = done.length ? 'assigned' : 'dismissed';
+        ev.assigned = done;
+        galleryTokenBookSave(persona, book);
+        renderGalleryTokens();
+        return ev;
+    }
+    function renderGalleryTokens() {
+        const card = document.getElementById('sbc-opt-gtokens');
+        if (!card) return;
+        const persona = ownPersonaId();
+        const book = persona ? galleryTokenBookLoad(persona) : null;
+        if (!book || !Number.isFinite(book.balance)) { if (!card.hidden) card.hidden = true; return; }
+        const fmt = ms => new Date(ms).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+        const evs = (book.events || []).slice(-6).reverse();
+        let h = '<label class="sbc-opt-chiplabel">' + escapeHtml(book.label || 'Galerie-Tokens') + ': <b>' + book.balance.toLocaleString('de-DE') + '</b>' +
+                ' <span class="sbc-opt-muted">· mitgeschrieben seit ' + fmt(book.since || book.at) + '</span></label>';
+        if (!evs.length) h += '<div class="sbc-opt-muted">Nach einer Bewertung im Spiel erkennt PitTools die neue Note am Zuwachs (Web App einmal neu laden).</div>';
+        evs.forEach(ev => {
+            const head = (ev.delta > 0 ? '+' : '') + ev.delta + ' Tokens · ' + fmt(ev.at);
+            const who = a => escapeHtml(a.name) + ' ' + (a.from || '?') + ' → ' + a.to;
+            if (ev.status === 'spent') { h += '<div class="sbc-opt-muted">' + head + ' (ausgegeben)</div>'; return; }
+            if (ev.status === 'auto' || ev.status === 'assigned') { h += '<div>' + head + ': ' + (ev.assigned || []).map(who).join(' + ') + (ev.status === 'auto' ? ' <span class="sbc-opt-muted">(erkannt)</span>' : '') + '</div>'; return; }
+            if (ev.status === 'dismissed') { h += '<div class="sbc-opt-muted">' + head + ': keine Galerie-Bewertung</div>'; return; }
+            h += '<div>' + head + ': <b>welches Set?</b> <span class="sbc-opt-muted">' + escapeHtml(ev.reason || '') + '</span></div><div class="sbc-opt-chips sbc-opt-chips-sm">';
+            (ev.candidates || []).slice(0, 8).forEach(c => {
+                h += '<button type="button" class="sbc-opt-chip" data-gt-ev="' + escapeHtml(ev.id) + '" data-gt-picks="' + escapeHtml(c.id + ':' + c.to) + '">' + who(c) + '</button>';
+            });
+            (ev.pairs || []).slice(0, 3).forEach(p => {
+                h += '<button type="button" class="sbc-opt-chip" data-gt-ev="' + escapeHtml(ev.id) + '" data-gt-picks="' + escapeHtml(p.map(c => c.id + ':' + c.to).join(',')) + '">' + p.map(who).join(' + ') + '</button>';
+            });
+            h += '<button type="button" class="sbc-opt-chip" data-gt-ev="' + escapeHtml(ev.id) + '" data-gt-picks="">keine Galerie</button></div>';
+        });
+        if (card.innerHTML !== h) card.innerHTML = h;
+        if (card.hidden) card.hidden = false;
+    }
+    function initGalleryTokens() {
+        const card = document.getElementById('sbc-opt-gtokens');
+        if (card) card.addEventListener('click', ev => {
+            const b = ev.target.closest('[data-gt-ev]');
+            if (!b) return;
+            const picks = String(b.getAttribute('data-gt-picks') || '').split(',').filter(Boolean).map(x => { const i = x.lastIndexOf(':'); return { id: x.slice(0, i), grade: x.slice(i + 1) }; });
+            try { galleryTokenAssign(b.getAttribute('data-gt-ev'), picks); toast(picks.length ? 'Note gemerkt.' : 'Als „keine Galerie“ gemerkt.', 'ok'); }
+            catch (e) { toast(String(e && e.message || e), 'warn'); }
+        });
+        let hooked = false;
+        const hook = () => {
+            if (hooked) return;
+            try {
+                const disp = typeof window.getDefaultDispatcher === 'function' ? window.getDefaultDispatcher() : null;
+                const name = window.AppNotification && window.AppNotification.EVENT_TOKEN_BALANCE_UPDATE;
+                if (disp && name && typeof disp.addObserver === 'function') {
+                    disp.addObserver(name, { pittools: 'galleryTokens' }, function () { setTimeout(galleryTokenTick, 500); });
+                    hooked = true;
+                }
+            } catch (e) {}
+        };
+        setTimeout(() => { hook(); galleryTokenTick(); renderGalleryTokens(); }, 5000);
+        setInterval(() => { hook(); galleryTokenTick(); }, 30000);
+    }
     async function onGalleryEaCollectClick() {
         const ch = galleryLast && galleryLast.chosen;
         if (!ch || !ch.set || !ch.meta) return;
@@ -15936,7 +16166,9 @@ const HybridSbcEa = (() => {
                        // v6.13.0: Live-Preise; Kauf NUR ueber galleryClaudeBuy mit Freigabe-Tipp im Panel
                        'pittools_gallery_quote', 'pittools_gallery_buy',
                        // v6.16.0: Konsolenstand als Eichung (Fotos), Abgleich gegen die eigene Messung
-                       'pittools_gallery_console'];
+                       'pittools_gallery_console',
+                       // v6.17.0: Galerie-Tokens mitschreiben, Note aus dem Zuwachs (nur lokal)
+                       'pittools_gallery_tokens'];
     const mcpState = { on: false, status: 'aus', log: [] };
     function mcpEnabledSaved() { try { return localStorage.getItem(MCP_KEY) === '1'; } catch (e) { return false; } }
     function mcpSetEnabled(on) {
@@ -16539,6 +16771,29 @@ const HybridSbcEa = (() => {
             const cmp = galleryConsoleCompare(cat, cache, snap);
             const top = Math.max(1, Math.min(200, Number(a.top) || 60));
             return Object.assign({}, cmp, { sets: cmp.sets.slice(0, top), shown: Math.min(top, cmp.sets.length), total: cmp.sets.length });
+        }
+        if (tool === 'pittools_gallery_tokens') {
+            // v6.17.0: Tokens-Buch. Nur Speicher und localStorage, keine Anfrage bei EA.
+            const persona = ownPersonaId();
+            if (!persona) throw new Error('EA-Persona unbekannt - einmal im Spiel klicken.');
+            if (a.assign && a.assign.event) {
+                const cat = galleryCatalogCached(true);
+                if (!cat) throw new Error('Noch kein Galerie-Katalog - erst pittools_gallery_scan.');
+                const picks = (Array.isArray(a.assign.picks) ? a.assign.picks : []).map(pk => {
+                    const q = String(pk && pk.set || '').toLowerCase();
+                    const row = cat.sets.find(x => String(x.name).toLowerCase() === q) || cat.sets.find(x => q && String(x.name).toLowerCase().indexOf(q) >= 0);
+                    if (!row) throw new Error('Kein Set „' + (pk && pk.set) + '“ im Katalog.');
+                    return { id: row.id, grade: String(pk.grade || '').toUpperCase() };
+                });
+                const ev = galleryTokenAssign(String(a.assign.event), picks);
+                return { event: ev, note: picks.length ? 'Note(n) gemerkt (nur dieses Gerät).' : 'Als „keine Galerie-Bewertung“ gemerkt.' };
+            }
+            const cur = galleryTokenCurrency();
+            const book = (await galleryTokenTick()) || galleryTokenBookLoad(persona);
+            return { currency: cur, balance: book ? book.balance : null, since: book ? book.since : null, lastRead: book ? book.at : null,
+                     events: book ? (book.events || []).slice(-15).reverse() : [],
+                     note: cur ? 'Zuwachs = Bewertung im Spiel. Tokens je Note sind kumulativ; eindeutige Fälle werden automatisch gemerkt, sonst steht die Auswahl unter events[].candidates. Nach einer Bewertung die Web App einmal neu laden, dann erneut fragen.'
+                               : 'Galerie-Währung bei EA nicht gefunden (Token-Definitionen noch nicht geladen?) - einmal ins Hauptmenü, dann erneut.' };
         }
         if (tool === 'pittools_gallery_grade') {
             const cat = galleryCatalogCached(true);
@@ -17836,7 +18091,7 @@ const HybridSbcEa = (() => {
             // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten mit
             // Kosten, Marktabfragen, Fehler, eingefuegte Loesung.
             hybridSbc: STATE.diag.hybridSbc || null,
-            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, batchSpare: STATE.diag.batchSpare || null, mcp: STATE.diag.mcp || null, liveChecks: liveChecksLoad(), galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null,
+            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, batchSpare: STATE.diag.batchSpare || null, mcp: STATE.diag.mcp || null, liveChecks: liveChecksLoad(), galleryTokens: (function () { try { const p = ownPersonaId(); return p ? galleryTokenBookLoad(p) : null; } catch (e) { return null; } })(), galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null,
             futbinBuy: STATE.diag.futbinBuy || null,
             futbinBuyPlan: STATE.diag.futbinBuyPlan || null,
             marketUrls: STATE.diag.marketUrls,

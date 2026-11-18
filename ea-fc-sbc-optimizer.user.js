@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.18.3
+// @version      6.18.4
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.18.3';
+    const VERSION = '6.18.4';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -15293,7 +15293,8 @@ const HybridSbcEa = (() => {
      * Version, isCollected, Preis), Freigabe-Tipp im Panel, erst dann
      * buyPlannedPlayers mit festen Obergrenzen = Marktminimum je Karte.
      */
-    async function galleryClaudeBuy(setName, grade) {
+    async function galleryClaudeBuy(setName, grade, opts) {
+        const exclude = new Set(((opts && opts.exclude) || []).map(Number)); // v6.18.4: beim Ersatzkauf ausgefallene Karten
         if (galleryBusy || buyBusy || sellBusy || futbinBusy || STATE.loading || (vorlagenRun && !vorlagenRun.fertig)) throw new Error('Es läuft gerade ein anderer Lauf - kurz warten.');
         if (!sessionReady()) throw new Error('EA-Sitzung noch nicht erfasst - einmal im Spiel klicken.');
         if (!STATE.poolFullLoadDone || STATE.loadIncomplete) throw new Error('Verein nicht vollständig geladen - erst pittools_pool_load.');
@@ -15310,7 +15311,9 @@ const HybridSbcEa = (() => {
             const cache = (await galleryScanCacheLoad(persona)) || { v: 1, persona: persona, at: null, sets: {} };
             const entry = await galleryEnsureScanEntry(row, cache, persona);
             const rules = await galleryRulesLoad(row);
-            const res = galleryChanceForSet(row, entry, Object.assign({}, rules, { prices: galleryLivePrices(rules) }), galleryFirstOwnedDefs(), galleryKnownGrade(row.id));
+            const livePrices = galleryLivePrices(rules);
+            exclude.forEach(d => { delete livePrices[d]; });
+            const res = galleryChanceForSet(row, entry, Object.assign({}, rules, { prices: livePrices }), galleryFirstOwnedDefs(), galleryKnownGrade(row.id));
             const option = (res.options || []).find(o => o.grade === grade);
             if (!option) throw new Error('Für ' + row.name + ' gibt es keinen Kaufplan auf Note ' + grade + ' (erst pittools_gallery_quote, oder die Note ist schon erreicht).');
             const data = { set: { requiredCards: rules.requiredCards, grades: rules.grades }, tags: rules.tags };
@@ -15357,8 +15360,11 @@ const HybridSbcEa = (() => {
                     const ready = prepared.cards.every(c => c.owned);
                     diag.phase = ready ? 'Auswahl gesammelt' : 'teilweise';
                     if (ready) galleryExpectNote(row.id, grade, 'Kauf');
-                    out = { set: row.name, grade: grade, confirmed: true, bought: d.bought, spent: d.spent, stopped: d.stopped || null, ready: ready,
-                            note: ready ? 'Auswahl vollständig gesammelt - im Spiel bewerten. Gekaufte Karten stehen in der Verkaufsliste.' : 'Noch nicht alles gesammelt - Transferziele/Rest prüfen.' };
+                    // v6.18.4: was fehlt, mit Namen (live 18.11.: Bay FC 14/15 - Silkowitz hatte nur ein Angebot, das beim Kauf weg war).
+                    const missing = prepared.cards.filter(c => !c.owned).map(c => ({ defId: c.id, name: c.name, rating: c.rating }));
+                    out = { set: row.name, grade: grade, confirmed: true, bought: d.bought, spent: d.spent, stopped: d.stopped || null, ready: ready, missing: missing,
+                            note: ready ? 'Auswahl vollständig gesammelt - im Spiel bewerten. Gekaufte Karten stehen in der Verkaufsliste.'
+                                        : 'SET NOCH UNVOLLSTÄNDIG - nicht bekommen: ' + missing.map(m => m.name + ' (' + m.rating + ')').join(', ') + '. Nicht bewerten, erst Ersatz kaufen.' };
                 } });
             await galleryScanCacheSave(persona, cache);
             return out || { set: row.name, grade: grade, confirmed: true, bought: 0, note: 'Kauf-Lauf ohne Ergebnis - Galerie-Reiter prüfen.' };
@@ -16967,6 +16973,14 @@ const HybridSbcEa = (() => {
             if (!a.set || !a.grade) throw new Error('set und grade angeben.');
             const job = mcpStartJob(tool, async () => {
                 const r = await galleryClaudeBuy(String(a.set), String(a.grade).toUpperCase());
+                // v6.18.4: ist das Set nach dem Kauf unvollstaendig, EINMAL ohne die ausgefallenen Karten neu planen.
+                // Der Ersatz braucht eine eigene Freigabe im Panel (galleryClaudeConfirm in galleryClaudeBuy).
+                if (r && r.confirmed && r.ready === false && Array.isArray(r.missing) && r.missing.length) {
+                    try { r.retry = await galleryClaudeBuy(String(a.set), String(a.grade).toUpperCase(), { exclude: r.missing.map(m => m.defId) }); }
+                    catch (e) { r.retry = { error: String(e && e.message || e) }; }
+                    if (r.retry && r.retry.ready) r.ready = true;
+                    if (r.retry && r.retry.bought) r.bought += r.retry.bought;
+                }
                 // v6.18.3: gekaufte Karten gleich wieder zum Verkauf vorbereiten (Listen nur per Panel-Tipp).
                 if (r && r.bought > 0) { try { r.sellPreview = await galleryClaudeSellPreview(); } catch (e) { r.sellPreview = { error: String(e && e.message || e) }; } }
                 return r;

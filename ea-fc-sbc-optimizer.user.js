@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.20.0
+// @version      6.21.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.20.0';
+    const VERSION = '6.21.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -210,6 +210,7 @@
             clubView: null,          // v6.6.0: Verein im Ueberblick (Zusammenfassung, Stufen)
             batchSpare: null,        // v6.7.0: Vorschau-Tausch (geschonte Karten, neu geplant)
             mcp: null,               // v6.8.0: KI-Verbindung (letzte Aufrufe: Werkzeug, ok, Fehler)
+            relay: null,             // v6.21.0: KI ueber das Internet (Status, Aufrufe, Fehler - nie der Schluessel)
             galleryCheck: null,      // v5.65.0: Sammelstand je Spieler ueber Marktangebote
             gallerySell: null,       // v5.35.0: Verkauf gekaufter Galerie-Karten (Preise, Schritte)
             points: null,            // v6.15.0/6.18.1: Punkte-SBC - Gruppen, Auswahl, Vereins-Vorschau
@@ -6557,6 +6558,14 @@
         .sbc-opt-fb-price { font-size:18px; font-weight:var(--pt-weight-semibold); color:var(--pt-accent); }
         .sbc-opt-fb-meta { color:var(--pt-fg-muted); font-size:11px; margin-top:2px; line-height:1.45; }
         .sbc-opt-fb-meta b { color:var(--pt-fg-default); font-weight:600; }
+        /* v6.21.0: Verbindung ueber das Internet - Adresse zum Kopieren */
+        #sbc-opt-relay-box { margin:6px 0 10px; }
+        .sbc-opt-relay-label { color:var(--pt-fg-muted); font-size:11px; margin-bottom:4px; }
+        .sbc-opt-relay-row { display:flex; gap:6px; align-items:stretch; }
+        .sbc-opt-relay-row input { flex:1; min-width:0; font-family:var(--pt-font-mono); font-size:11px; padding:6px 8px; border-radius:var(--pt-field-radius);
+            border:1px solid var(--pt-border-default); background:var(--pt-bg-sunken); color:var(--pt-fg-default); }
+        .sbc-opt-relay-row .sbc-opt-btn { margin-top:0; flex:0 0 auto; width:auto; padding:0 12px; }
+        #sbc-opt-relay-new { margin-top:6px; }
         .sbc-opt-tag {
             font-size:var(--pt-text-2xs); font-weight:var(--pt-weight-semibold); text-transform:uppercase; letter-spacing:.06em;
             padding:3px 8px; border-radius:var(--pt-radius-full); background:transparent; color:var(--pt-fg-muted); white-space:nowrap;
@@ -7602,11 +7611,30 @@
                 <div class="sbc-opt-tab" id="sbc-opt-tab-ki" role="tabpanel">
                     <div class="sbc-opt-card">
                         <div class="sbc-opt-group-title" style="margin-top:0;">KI-Assistent</div>
+                        <!-- v6.21.0 (Rasmus 18.11.: Mike hat nur ein Handy): ueber den PitTools-Vermittler im
+                             Internet (relay/, Cloudflare). PitTools baut die Verbindung selbst auf, die KI
+                             (ChatGPT, Claude.ai - auch deren Handy-Apps) ruft die Adresse unten auf. -->
+                        <label class="sbc-opt-switch">
+                            <input type="checkbox" id="sbc-opt-relay-on">
+                            <span class="track" aria-hidden="true"></span>
+                            <span class="txt">Über das Internet verbinden<small>ChatGPT oder Claude – auch am Handy, ohne PC</small></span>
+                        </label>
+                        <div class="sbc-opt-fb-meta">Status: <b id="sbc-opt-relay-status">Aus</b></div>
+                        <div id="sbc-opt-relay-box" hidden>
+                            <div class="sbc-opt-relay-label">Adresse für deine KI</div>
+                            <div class="sbc-opt-relay-row">
+                                <input type="text" id="sbc-opt-relay-url" readonly spellcheck="false" aria-label="MCP-Adresse für die KI">
+                                <button type="button" class="sbc-opt-btn" id="sbc-opt-relay-copy"><span>Kopieren</span></button>
+                            </div>
+                            <div class="sbc-opt-debug"><b>ChatGPT:</b> Einstellungen → Apps &amp; Konnektoren → Erweitert → Entwicklermodus an → Erstellen → diese Adresse, Authentifizierung „Keine“. <b>Claude:</b> Einstellungen → Konnektoren → Benutzerdefinierten Konnektor hinzufügen → diese Adresse. Einmal am PC oder im Browser einrichten, danach geht es auch in der Handy-App. Die Adresse ist dein Schlüssel – nicht weitergeben.</div>
+                            <div class="sbc-opt-dim" id="sbc-opt-relay-hint" hidden></div>
+                            <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-relay-new"><span>Neuen Schlüssel erzeugen</span></button>
+                        </div>
                         <!-- v6.8.0: Claude Desktop / Claude Code am PC ruft ueber den lokalen PitTools-MCP-Server Werkzeuge auf. -->
                         <label class="sbc-opt-switch">
                             <input type="checkbox" id="sbc-opt-mcp-on">
                             <span class="track" aria-hidden="true"></span>
-                            <span class="txt">KI verbinden<small>Claude oder ChatGPT/Codex – lesen, planen, Galerie-Käufe vorschlagen</small></span>
+                            <span class="txt">Am PC verbinden<small>Claude Desktop oder ChatGPT/Codex über den PitTools-MCP-Server</small></span>
                         </label>
                         <div class="sbc-opt-fb-meta">Status: <b id="sbc-opt-mcp-status">Aus</b></div>
                         <!-- v6.19.0: Galerie-Kauf im Chat freigeben (z.B. Claude-App am Handy), Default AUS. -->
@@ -7615,7 +7643,7 @@
                             <span class="track" aria-hidden="true"></span>
                             <span class="txt">Galerie-Kauf im Chat freigeben<small>Dein Ja im Chat ersetzt den Tipp hier – z.B. aus der Chat-App am Handy</small></span>
                         </label>
-                        <div class="sbc-opt-debug">Am PC über den PitTools-MCP-Server und die PitTools Bridge (Anleitung: pittools-mcp/README.md). Gekauft wird nur für die Galerie und nur mit deiner Freigabe, gelistet erst nach deinem Tipp auf „Karten listen“. Eintragen und Abgeben nie.</div>
+                        <div class="sbc-opt-debug">Die KI kann lesen, planen und Galerie-Käufe vorschlagen. Gekauft wird nur für die Galerie und nur mit deiner Freigabe, gelistet erst nach deinem Tipp auf „Karten listen“. Eintragen und Abgeben nie. Anleitung: pittools-mcp/README.md.</div>
                     </div>
                     <div class="sbc-opt-card">
                         <div class="sbc-opt-group-title" style="margin-top:0;">Nachricht der KI</div>
@@ -7773,6 +7801,13 @@
             mcpOn: panel.querySelector('#sbc-opt-mcp-on'),
             mcpChatOk: panel.querySelector('#sbc-opt-mcp-chatok'),
             mcpStatus: panel.querySelector('#sbc-opt-mcp-status'),
+            relayOn: panel.querySelector('#sbc-opt-relay-on'),
+            relayStatus: panel.querySelector('#sbc-opt-relay-status'),
+            relayBox: panel.querySelector('#sbc-opt-relay-box'),
+            relayUrl: panel.querySelector('#sbc-opt-relay-url'),
+            relayCopy: panel.querySelector('#sbc-opt-relay-copy'),
+            relayNew: panel.querySelector('#sbc-opt-relay-new'),
+            relayHint: panel.querySelector('#sbc-opt-relay-hint'),
             mcpLog: panel.querySelector('#sbc-opt-mcp-log'),
             mcpMessage: panel.querySelector('#sbc-opt-mcp-message'),
             clubViewResult: panel.querySelector('#sbc-opt-clubview-result'),
@@ -13878,6 +13913,16 @@ const HybridSbcEa = (() => {
             ui.mcpChatOk.checked = galleryChatOkEnabled();
             ui.mcpChatOk.addEventListener('change', () => { try { localStorage.setItem(GALLERY_CHAT_OK_KEY, ui.mcpChatOk.checked ? '1' : '0'); } catch (e) {} });
         }
+        if (ui.relayOn && !ui.relayOn.dataset.wired) {
+            // v6.21.0: Verbindung ueber den Vermittler (relay/).
+            ui.relayOn.dataset.wired = '1';
+            ui.relayOn.checked = relayEnabledSaved();
+            ui.relayOn.addEventListener('change', () => relaySetEnabled(ui.relayOn.checked));
+            if (ui.relayCopy) ui.relayCopy.addEventListener('click', relayCopyUrl);
+            if (ui.relayNew) ui.relayNew.addEventListener('click', relayNewSecret);
+            if (ui.relayOn.checked) setTimeout(() => relaySetEnabled(true), 700);
+            else renderRelayStatus();
+        }
         if (ui.mcpOn && !ui.mcpOn.dataset.wired) {
             ui.mcpOn.dataset.wired = '1';
             ui.mcpOn.checked = mcpEnabledSaved();
@@ -16988,6 +17033,9 @@ const HybridSbcEa = (() => {
                      pool: { total: pool.length, club: pool.filter(p => !p.isStorage).length, storage: pool.filter(p => p.isStorage).length,
                              fullyLoaded: !!STATE.poolFullLoadDone, incomplete: !!STATE.loadIncomplete, evos: STATE.evoRaws ? STATE.evoRaws.size : 0 },
                      bridge: bridgeKind() || null, galleryLoaded: galleryLast && galleryLast.ranked ? galleryLast.ranked.length : 0,
+                     // v6.21.0: ueber welchen Weg die KI gerade spricht (App/Browser, Internet/PC)
+                     connection: { internet: relayState.on ? relayState.status : 'aus', pc: mcpState.on ? mcpState.status : 'aus', device: relayInApp() ? 'App' : 'Browser',
+                                   backgroundSafe: relayInApp() ? (function () { try { return !!window.PitBridgeNative.keepAlive; } catch (e) { return false; } })() : null },
                      hint: pool.length ? null : 'Kein Verein geladen - mit pittools_pool_load laden.' };
         }
         if (tool === 'pittools_club_overview') {
@@ -17253,26 +17301,249 @@ const HybridSbcEa = (() => {
         }
         throw new Error('Werkzeug nicht erlaubt: ' + tool);
     }
+    /**
+     * v6.21.0: EIN Weg fuer jeden Werkzeugaufruf, egal woher er kommt - lokale
+     * Bridge ('pc') oder Vermittler im Internet ('relay'). Dieselbe Liste
+     * (MCP_TOOLS), dasselbe mcpRun, derselbe Verlauf. Nur der Schalter, der
+     * fuer die Herkunft gilt, muss an sein.
+     */
+    function mcpExecute(job, via, reply) {
+        const done = (ok, result, error) => {
+            mcpState.log.push({ at: Date.now(), tool: String(job.tool || '?'), ok: ok, error: error || null, via: via });
+            if (mcpState.log.length > 30) mcpState.log.shift();
+            STATE.diag.mcp = { calls: mcpState.log.slice(-15) };
+            renderMcpStatus();
+            try { reply(ok, result, error); } catch (e) {}
+        };
+        const on = via === 'relay' ? relayState.on : mcpState.on;
+        if (!on) { done(false, null, 'KI-Verbindung ist in PitTools ausgeschaltet.'); return; }
+        if (MCP_TOOLS.indexOf(job.tool) < 0) { done(false, null, 'Werkzeug nicht erlaubt: ' + job.tool); return; }
+        Promise.resolve().then(() => mcpRun(job.tool, job.args)).then(r => done(true, r, null), e => done(false, null, String(e && e.message || e)));
+    }
     document.addEventListener('pittools-mcp-call', function (ev) {
         let job = null;
         try { job = JSON.parse(ev.detail); } catch (e) { return; }
         if (!job || !job.id) return;
-        const done = (ok, result, error) => {
-            mcpState.log.push({ at: Date.now(), tool: String(job.tool || '?'), ok: ok, error: error || null });
-            if (mcpState.log.length > 30) mcpState.log.shift();
-            STATE.diag.mcp = { calls: mcpState.log.slice(-15) };
-            renderMcpStatus();
-            try { document.dispatchEvent(new CustomEvent('pittools-mcp-result', { detail: JSON.stringify({ id: job.id, ok: ok, result: result, error: error }) })); } catch (e) {}
-        };
-        if (!mcpState.on) { done(false, null, 'KI-Verbindung ist in PitTools ausgeschaltet.'); return; }
-        if (MCP_TOOLS.indexOf(job.tool) < 0) { done(false, null, 'Werkzeug nicht erlaubt: ' + job.tool); return; }
-        Promise.resolve().then(() => mcpRun(job.tool, job.args)).then(r => done(true, r, null), e => done(false, null, String(e && e.message || e)));
+        mcpExecute(job, 'pc', (ok, result, error) => {
+            document.dispatchEvent(new CustomEvent('pittools-mcp-result', { detail: JSON.stringify({ id: job.id, ok: ok, result: result, error: error }) }));
+        });
     });
     document.addEventListener('pittools-mcp-status', function (ev) {
         let d = {};
         try { d = JSON.parse(ev.detail || '{}') || {}; } catch (e) {}
         if (d.state && mcpState.on) { mcpState.status = d.state; renderMcpStatus(); }
     });
+    // ===================== v6.21.0 KI ueber das Internet (Vermittler) =====================
+    // [RELAY-BEGIN] (relay/relay-test.js spielt diesen Block gegen den echten Vermittler)
+    // Rasmus 18.11.: "mike hat keinen pc, er hat nur ein handy". ChatGPT und
+    // Claude.ai rufen MCP-Server von ihren eigenen Servern aus auf - ein Server
+    // auf dem Handy ist dort nie erreichbar. Deshalb baut PitTools selbst eine
+    // WebSocket-Verbindung zum PitTools-Vermittler (relay/, Cloudflare Worker)
+    // auf; die KI ruft dessen Adresse /mcp/<Schluessel> auf, der Vermittler
+    // reicht jeden Aufruf hierher durch. EAs Seite setzt keine connect-src-CSP
+    // (LEARNINGS v6.10.0), die Verbindung geht also direkt aus der Seite - in
+    // Tampermonkey wie in der App, ohne Bridge. Schluessel = Zugang: zufaellig,
+    // nur in localStorage, nie im Report.
+    const RELAY_KEY = 'sbcOptRelay';
+    const RELAY_SECRET_KEY = 'sbcOptRelaySecret';
+    const RELAY_BASE_DEFAULT = 'https://pittools-relay.rr33.workers.dev';
+    const RELAY_PING_MS = 25000;       // Gegenstueck: FRESH_MS 70 s im Vermittler
+    const RELAY_DEAD_MS = 65000;       // so lange ohne "pong" = Leitung tot, neu verbinden
+    const RELAY_PART_CHARS = 200000;   // Gegenstueck: PART_CHARS im Vermittler
+    const relayState = { on: false, status: 'aus', ws: null, gen: 0, backoff: 0, lastPong: 0, connectedAt: 0, calls: 0, lastError: null, replaced: false };
+    function relayBase() {
+        try { const b = localStorage.getItem('sbcOptRelayBase'); if (b && /^https?:\/\/[^\s/]+$/.test(b)) return b; } catch (e) {}
+        return RELAY_BASE_DEFAULT;
+    }
+    /** Pure: 32 Zufallsbytes als base64url (43 Zeichen) - passt zu SECRET_RE im Vermittler. */
+    function relayMakeSecret(bytes) {
+        let bin = '';
+        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+    function relaySecret(renew) {
+        let sec = null;
+        try { sec = localStorage.getItem(RELAY_SECRET_KEY); } catch (e) {}
+        if (renew || !sec || !/^[A-Za-z0-9_-]{32,64}$/.test(sec)) {
+            const b = new Uint8Array(32);
+            crypto.getRandomValues(b);
+            sec = relayMakeSecret(b);
+            try { localStorage.setItem(RELAY_SECRET_KEY, sec); } catch (e) {}
+        }
+        return sec;
+    }
+    function relayMcpUrl() { return relayBase() + '/mcp/' + relaySecret(false); }
+    /**
+     * Pure: Antwort an den Vermittler als WebSocket-Nachrichten. Bis
+     * partChars Zeichen am Stueck, darueber in Teilen (Cloudflare begrenzt eine
+     * Nachricht auf 1 MiB; 200.000 Zeichen bleiben auch mit Umlauten darunter).
+     */
+    function relayResultMessages(id, ok, result, error, partChars) {
+        const max = partChars || RELAY_PART_CHARS;
+        let full;
+        try { full = JSON.stringify({ ok: !!ok, result: result === undefined ? null : result, error: error || null }); }
+        catch (e) { full = JSON.stringify({ ok: false, result: null, error: 'Antwort nicht übertragbar: ' + String(e && e.message || e) }); }
+        if (full.length <= max) {
+            const o = JSON.parse(full);
+            return [JSON.stringify({ type: 'result', id: id, ok: o.ok, result: o.result, error: o.error })];
+        }
+        const n = Math.ceil(full.length / max);
+        const out = [];
+        for (let i = 0; i < n; i++) out.push(JSON.stringify({ type: 'result', id: id, part: i, parts: n, data: full.slice(i * max, (i + 1) * max) }));
+        return out;
+    }
+    function relayEnabledSaved() { try { return localStorage.getItem(RELAY_KEY) === '1'; } catch (e) { return false; } }
+    function relayAgent() {
+        let k = 'Browser';
+        try { if (window.PitBridgeNative && typeof window.PitBridgeNative.fetch === 'function') k = 'App'; } catch (e) {}
+        return 'PitTools ' + VERSION + ' ' + k;
+    }
+    /** App ab 1.18.0: Vordergrund-Dienst, damit Android PitTools im Hintergrund nicht einfriert. */
+    function relayKeepAlive(on) {
+        try { if (window.PitBridgeNative && typeof window.PitBridgeNative.keepAlive === 'function') { window.PitBridgeNative.keepAlive(!!on); return true; } } catch (e) {}
+        return false;
+    }
+    function relayInApp() { try { return !!(window.PitBridgeNative && typeof window.PitBridgeNative.fetch === 'function'); } catch (e) { return false; } }
+    function relayDiag() {
+        return { on: relayState.on, status: relayState.status, base: relayBase(), connectedAt: relayState.connectedAt || null, calls: relayState.calls,
+                 lastError: relayState.lastError, replaced: relayState.replaced, keepAlive: (function () { try { return !!(window.PitBridgeNative && window.PitBridgeNative.keepAlive); } catch (e) { return false; } })() };
+    }
+    function renderRelayStatus() {
+        const st = relayState.on ? relayState.status : (relayState.replaced ? 'ersetzt' : 'aus');
+        const txt = st === 'aus' ? 'Aus' : st === 'verbunden' ? 'Verbunden – deine KI kann PitTools jetzt nutzen' : st === 'verbinde' ? 'Verbinde …' :
+                    st === 'ersetzt' ? 'Auf einem anderen Gerät verbunden – hier wieder einschalten, um zu übernehmen' :
+                    st === 'getrennt' ? 'Getrennt – verbinde neu …' : st;
+        if (ui.relayStatus && ui.relayStatus.textContent !== txt) ui.relayStatus.textContent = txt;
+        if (ui.relayBox) {
+            const show = relayState.on;
+            if (ui.relayBox.hidden === show) ui.relayBox.hidden = !show;
+            if (show && ui.relayUrl) { const u = relayMcpUrl(); if (ui.relayUrl.value !== u) ui.relayUrl.value = u; }
+        }
+        if (ui.relayHint) {
+            const keep = (function () { try { return !!(window.PitBridgeNative && window.PitBridgeNative.keepAlive); } catch (e) { return false; } })();
+            const h = relayState.on && relayInApp() && !keep ? 'Diese App-Version trennt die Verbindung, sobald PitTools im Hintergrund ist. Bis zum App-Update PitTools offen lassen (z. B. geteilter Bildschirm mit der Chat-App).' : '';
+            if (ui.relayHint.textContent !== h) ui.relayHint.textContent = h;
+            if (ui.relayHint.hidden !== !h) ui.relayHint.hidden = !h;
+        }
+        STATE.diag.relay = relayDiag();
+    }
+    function relaySetEnabled(on) {
+        relayState.on = !!on;
+        relayState.replaced = false;
+        try { localStorage.setItem(RELAY_KEY, on ? '1' : '0'); } catch (e) {}
+        if (ui.relayOn && ui.relayOn.checked !== !!on) ui.relayOn.checked = !!on;
+        relayKeepAlive(on);
+        if (on) relayConnect(); else relayDisconnect('aus');
+        renderRelayStatus();
+    }
+    function relayDisconnect(status) {
+        relayState.gen++;
+        const ws = relayState.ws;
+        relayState.ws = null;
+        relayState.status = status || 'aus';
+        if (ws) { try { ws.close(1000, 'aus'); } catch (e) {} }
+    }
+    function relayWait(ms) { return (typeof BgTimer !== 'undefined' && BgTimer && BgTimer.wait) ? BgTimer.wait(ms) : new Promise(r => setTimeout(r, ms)); }
+    function relayConnect() {
+        if (!relayState.on) return;
+        relayDisconnect('verbinde');
+        const gen = relayState.gen;
+        let ws;
+        try { ws = new WebSocket(relayBase().replace(/^http/, 'ws') + '/app/' + relaySecret(false) + '?agent=' + encodeURIComponent(relayAgent())); }
+        catch (e) { relayState.lastError = String(e && e.message || e); relayRetry(gen); return; }
+        relayState.ws = ws;
+        relayState.lastPong = Date.now();
+        renderRelayStatus();
+        ws.onmessage = ev => {
+            if (gen !== relayState.gen) return;
+            const data = String(ev.data);
+            if (data === 'pong') { relayState.lastPong = Date.now(); return; }
+            let m = null;
+            try { m = JSON.parse(data); } catch (e) { return; }
+            if (!m) return;
+            relayState.lastPong = Date.now();
+            if (m.type === 'hello') {
+                relayState.status = 'verbunden'; relayState.backoff = 0; relayState.connectedAt = Date.now(); relayState.lastError = null;
+                renderRelayStatus();
+                relayPingLoop(gen, ws);
+            } else if (m.type === 'replaced') {
+                relayState.replaced = true;
+            } else if (m.type === 'call' && m.id) {
+                relayState.calls++;
+                mcpExecute({ id: m.id, tool: String(m.tool || ''), args: m.args || {} }, 'relay', (ok, result, error) => {
+                    if (ws.readyState !== 1) return; // Leitung weg: der Vermittler meldet den Abriss selbst
+                    relayResultMessages(m.id, ok, result, error).forEach(msg => ws.send(msg));
+                });
+            }
+        };
+        ws.onclose = ev => {
+            if (gen !== relayState.gen) return;
+            relayState.ws = null;
+            if (ev.code === 4001 || relayState.replaced) {
+                // Ein anderes Geraet hat mit demselben Schluessel uebernommen: hier ausschalten, sonst
+                // wuerden sich beide Geraete gegenseitig hinauswerfen.
+                relayState.on = false; relayState.replaced = true; relayState.status = 'ersetzt';
+                try { localStorage.setItem(RELAY_KEY, '0'); } catch (e) {}
+                if (ui.relayOn) ui.relayOn.checked = false;
+                relayKeepAlive(false);
+                renderRelayStatus();
+                return;
+            }
+            relayState.lastError = 'getrennt (' + ev.code + ')';
+            relayRetry(gen);
+        };
+        ws.onerror = () => { relayState.lastError = 'Vermittler nicht erreichbar'; };
+    }
+    function relayRetry(gen) {
+        if (!relayState.on || gen !== relayState.gen) return;
+        relayState.status = 'getrennt';
+        renderRelayStatus();
+        relayState.backoff = Math.min(30000, relayState.backoff ? relayState.backoff * 2 : 2000);
+        relayWait(relayState.backoff).then(() => { if (relayState.on && gen === relayState.gen) relayConnect(); });
+    }
+    async function relayPingLoop(gen, ws) {
+        while (relayState.on && gen === relayState.gen && ws.readyState === 1) {
+            await relayWait(RELAY_PING_MS);
+            if (!relayState.on || gen !== relayState.gen || ws.readyState !== 1) return;
+            if (Date.now() - relayState.lastPong > RELAY_DEAD_MS) { relayState.lastError = 'kein Lebenszeichen'; try { ws.close(4000, 'tot'); } catch (e) {} relayRetry(gen); return; }
+            try { ws.send('ping'); } catch (e) {}
+        }
+    }
+    function relayCopyUrl() {
+        const u = relayMcpUrl();
+        const ok = () => toast('Adresse kopiert – jetzt in ChatGPT oder Claude als Konnektor eintragen.', 'ok');
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(u).then(ok, () => { relaySelectUrl(); }); return; }
+        } catch (e) {}
+        relaySelectUrl();
+    }
+    function relaySelectUrl() {
+        if (!ui.relayUrl) return;
+        ui.relayUrl.focus(); ui.relayUrl.select();
+        try { if (document.execCommand('copy')) { toast('Adresse kopiert.', 'ok'); return; } } catch (e) {}
+        toast('Adresse markiert – bitte selbst kopieren.', 'info');
+    }
+    function relayNewSecret() {
+        if (ui.relayNew && ui.relayNew.dataset.armed !== '1') {
+            // Zweiter Tipp bestaetigt (kein window.confirm - in der WebView unzuverlaessig).
+            ui.relayNew.dataset.armed = '1';
+            ui.relayNew.querySelector('span').textContent = 'Wirklich? Die alte Adresse geht dann nicht mehr';
+            setTimeout(() => { if (ui.relayNew) { ui.relayNew.dataset.armed = ''; ui.relayNew.querySelector('span').textContent = 'Neuen Schlüssel erzeugen'; } }, 6000);
+            return;
+        }
+        ui.relayNew.dataset.armed = '';
+        ui.relayNew.querySelector('span').textContent = 'Neuen Schlüssel erzeugen';
+        relaySecret(true);
+        if (relayState.on) relayConnect();
+        renderRelayStatus();
+        toast('Neuer Schlüssel – die Adresse in deiner KI bitte ersetzen.', 'info');
+    }
+    // [RELAY-END]
+    // App kehrt aus dem Hintergrund zurueck / Netz wieder da: sofort neu verbinden statt den Backoff abzuwarten.
+    try {
+        document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && relayState.on && relayState.status !== 'verbunden') { relayState.backoff = 0; relayConnect(); } });
+        window.addEventListener('online', () => { if (relayState.on && relayState.status !== 'verbunden') { relayState.backoff = 0; relayConnect(); } });
+    } catch (e) {}
     // ===================== v6.6.0 Verein im Ueberblick (Anzeige) =====================
     const clubViewState = { tab: 'rating', source: 'all', all: false };
     function eaName(kind, id) {
@@ -18494,7 +18765,7 @@ const HybridSbcEa = (() => {
             // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten mit
             // Kosten, Marktabfragen, Fehler, eingefuegte Loesung.
             hybridSbc: STATE.diag.hybridSbc || null,
-            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, batchSpare: STATE.diag.batchSpare || null, mcp: STATE.diag.mcp || null, liveChecks: liveChecksLoad(), points: STATE.diag.points || null, galleryTokens: (function () { try { const p = ownPersonaId(); return p ? galleryTokenBookLoad(p) : null; } catch (e) { return null; } })(), galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null,
+            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, batchSpare: STATE.diag.batchSpare || null, mcp: STATE.diag.mcp || null, relay: STATE.diag.relay || null, liveChecks: liveChecksLoad(), points: STATE.diag.points || null, galleryTokens: (function () { try { const p = ownPersonaId(); return p ? galleryTokenBookLoad(p) : null; } catch (e) { return null; } })(), galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null,
             futbinBuy: STATE.diag.futbinBuy || null,
             futbinBuyPlan: STATE.diag.futbinBuyPlan || null,
             marketUrls: STATE.diag.marketUrls,

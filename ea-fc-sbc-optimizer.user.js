@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.18.2
+// @version      6.18.3
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.18.2';
+    const VERSION = '6.18.3';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -10526,11 +10526,18 @@ const HybridSbcEa = (() => {
      * mit bekannter Ausgangsnote, laut Scan vollstaendig, und kein weiterer
      * Treffer, der nicht durch den Scan ausgeschlossen ist. Sonst Auswahl.
      */
-    function galleryTokenDecide(cands) {
+    function galleryTokenDecide(cands, expectOf) {
         const single = (cands && cands.single) || [];
         const open = single.filter(c => c.state !== 'no');
         const sure = open.filter(c => c.known && c.state === 'yes');
         if (sure.length === 1 && open.length === 1) return { auto: sure[0], reason: 'eindeutig' };
+        // v6.18.3: erwartete Bewertung (Claude-Kauf auf Zielnote oder "ohne Kauf bewertbar").
+        // Viele Sets haben dasselbe Token-Schema (live: +8 passte auf 9 Sets mit B -> A);
+        // genau EINE passende Erwartung mit bekannter Ausgangsnote entscheidet.
+        if (expectOf) {
+            const exp = single.filter(c => c.known && expectOf(c.id) === c.to);
+            if (exp.length === 1) return { auto: exp[0], reason: 'erwartet' };
+        }
         if (!single.length && !((cands && cands.pairs) || []).length) return { auto: null, reason: 'kein Set passt' };
         return { auto: null, reason: open.length > 1 ? open.length + ' Sets passen' : 'nicht sicher genug' };
     }
@@ -15174,6 +15181,7 @@ const HybridSbcEa = (() => {
                 try { rules = await galleryRulesLoad(row, o.refreshRules === true); }
                 catch (e) { results.push({ name: row.name, error: String(e && e.message || e) }); continue; }
                 const res = galleryChanceForSet(row, entry, rules, firstOwned, galleryKnownGrade(row.id));
+                if (res && res.gradeable && galleryKnownGrade(row.id)) galleryExpectNote(row.id, res.gradeable, 'ohne Kauf');
                 results.push(res);
                 await BgTimer.wait(0); // Seite atmen lassen (Bewertung ist rechenintensiv)
             }
@@ -15348,12 +15356,31 @@ const HybridSbcEa = (() => {
                     }
                     const ready = prepared.cards.every(c => c.owned);
                     diag.phase = ready ? 'Auswahl gesammelt' : 'teilweise';
+                    if (ready) galleryExpectNote(row.id, grade, 'Kauf');
                     out = { set: row.name, grade: grade, confirmed: true, bought: d.bought, spent: d.spent, stopped: d.stopped || null, ready: ready,
                             note: ready ? 'Auswahl vollständig gesammelt - im Spiel bewerten. Gekaufte Karten stehen in der Verkaufsliste.' : 'Noch nicht alles gesammelt - Transferziele/Rest prüfen.' };
                 } });
             await galleryScanCacheSave(persona, cache);
             return out || { set: row.name, grade: grade, confirmed: true, bought: 0, note: 'Kauf-Lauf ohne Ergebnis - Galerie-Reiter prüfen.' };
         } finally { galleryBusy = false; }
+    }
+    /**
+     * v6.18.3 (Rasmus 18.11.: "die Spieler, die wir fuer die Galerie kaufen, danach
+     * immer direkt wieder auf den Transfermarkt stellen"): oeffnet DIESELBE
+     * Verkaufsvorschau wie der Panel-Knopf (Abgleich, aktuelle Angebote, futbin,
+     * Gewinn/Verlust). Gelistet wird NUR ueber "Karten listen" + Rueckfrage im Panel.
+     */
+    async function galleryClaudeSellPreview() {
+        if (!galleryBoughtLoad().length) return { opened: false, note: 'Keine gekauften Galerie-Karten gemerkt.' };
+        for (let i = 0; i < 20 && (sellBusy || buyBusy || galleryBusy); i++) await futbinSleep(500);
+        try { if (tabCurrent !== 'galerie') setTab('galerie'); } catch (e) {}
+        try { if (ui.panel && !ui.panel.classList.contains('open')) togglePanel(); } catch (e) {}
+        await onGallerySellClick();
+        const d = STATE.diag.gallerySell || {};
+        if (d.priced > 0) toast('Verkaufsvorschau steht im Reiter „Galerie“ - mit „Karten listen“ auf den Markt stellen.', 'warn');
+        return { opened: d.priced > 0, records: d.records || 0, priced: d.priced || 0, noOffer: d.noOffer || 0, stopped: d.stopped || null,
+                 totals: d.totals || null, markup: d.markup || null,
+                 note: d.priced > 0 ? 'Vorschau im Panel - Rasmus listet mit „Karten listen“ (Rückfrage).' : 'Nichts zu listen (siehe Galerie-Reiter).' };
     }
     // ---- v6.15.0 Punkte-SBC: Anbindung an EAs One-Click-Auswahl ------------------
     /** Offene One-Click-Auswahl (UTOneClickSBCWorkAreaViewController) samt ViewModel, sonst null. */
@@ -15631,6 +15658,22 @@ const HybridSbcEa = (() => {
      * EVENT_TOKEN_BALANCE_UPDATE, ein Takt alle 30 s und jedes Oeffnen.
      */
     const GALLERY_TOKEN_KEY = 'sbcOptGalleryTokens:';
+    // v6.18.3: erwartete Bewertungen je Persona { setId: { grade, at, why } } (14 Tage).
+    const GALLERY_EXPECT_KEY = 'sbcOptGalleryExpect:';
+    function galleryExpectLoad() {
+        const p = ownPersonaId(); if (!p) return {};
+        try { const m = JSON.parse(localStorage.getItem(GALLERY_EXPECT_KEY + p) || '{}'); return m && typeof m === 'object' ? m : {}; } catch (e) { return {}; }
+    }
+    function galleryExpectSave(m) { const p = ownPersonaId(); if (!p) return; try { localStorage.setItem(GALLERY_EXPECT_KEY + p, JSON.stringify(m)); } catch (e) {} }
+    function galleryExpectNote(id, grade, why) {
+        if (!/^[DCBAS]$/.test(grade)) return;
+        const m = galleryExpectLoad(); m[id] = { grade: grade, at: Date.now(), why: why || null }; galleryExpectSave(m);
+    }
+    function galleryExpectClear(id) { const m = galleryExpectLoad(); if (m[id]) { delete m[id]; galleryExpectSave(m); } }
+    function galleryExpectOf(id) {
+        const e = galleryExpectLoad()[id];
+        return e && Date.now() - e.at < 14 * 86400000 ? e.grade : null;
+    }
     function galleryTokenCurrency() {
         try {
             const et = window.services && window.services.EventToken;
@@ -15656,13 +15699,14 @@ const HybridSbcEa = (() => {
             return galleryScanSetState(row, e).complete ? 'yes' : 'no';
         };
         const cands = galleryTokenCandidates(ev.delta, cat.sets.map(galleryRowWithTokens), galleryKnownGrade, stateOf);
-        const d = galleryTokenDecide(cands);
+        const d = galleryTokenDecide(cands, galleryExpectOf);
         const slim = c => ({ id: c.id, name: c.name, from: c.from, to: c.to, known: c.known, state: c.state });
-        ev.candidates = cands.single.slice(0, 12).map(slim);
+        ev.candidates = cands.single.slice().sort((x, y) => (galleryExpectOf(y.id) === y.to) - (galleryExpectOf(x.id) === x.to) || (y.state === 'yes') - (x.state === 'yes')).slice(0, 12).map(slim);
         ev.pairs = cands.pairs.slice(0, 6).map(p => p.map(slim));
         ev.reason = d.reason;
         if (d.auto) {
             galleryRememberGrade(d.auto.id, d.auto.to);
+            galleryExpectClear(d.auto.id);
             ev.status = 'auto';
             ev.assigned = [slim(d.auto)];
             toast('Galerie: +' + ev.delta + ' Tokens → ' + d.auto.name + ' jetzt Note ' + d.auto.to + ' (aus dem Token-Zuwachs).', 'ok');
@@ -15711,6 +15755,7 @@ const HybridSbcEa = (() => {
             if (!row || !/^[DCBAS]$/.test(g)) throw new Error('Set/Note ungültig: ' + p.id + ' ' + p.grade);
             done.push({ id: row.id, name: row.name, from: galleryKnownGrade(row.id) || null, to: g });
             galleryRememberGrade(row.id, g);
+            galleryExpectClear(row.id);
         });
         ev.status = done.length ? 'assigned' : 'dismissed';
         ev.assigned = done;
@@ -16338,7 +16383,9 @@ const HybridSbcEa = (() => {
                        // v6.16.0: Konsolenstand als Eichung (Fotos), Abgleich gegen die eigene Messung
                        'pittools_gallery_console',
                        // v6.17.0: Galerie-Tokens mitschreiben, Note aus dem Zuwachs (nur lokal)
-                       'pittools_gallery_tokens'];
+                       'pittools_gallery_tokens',
+                       // v6.18.3: Verkaufsvorschau der gekauften Galerie-Karten (listen nur per Panel-Tipp)
+                       'pittools_gallery_sell'];
     const mcpState = { on: false, status: 'aus', log: [] };
     function mcpEnabledSaved() { try { return localStorage.getItem(MCP_KEY) === '1'; } catch (e) { return false; } }
     function mcpSetEnabled(on) {
@@ -16387,6 +16434,16 @@ const HybridSbcEa = (() => {
                     }
                     return rec;
                 });
+            }
+            else if (k === 'assign' && v && typeof v === 'object' && !Array.isArray(v)) {
+                // v6.18.3: Token-Zuordnung (pittools_gallery_tokens) - nur event + picks{set, grade}.
+                if (typeof v.event !== 'string' || !v.event) throw new Error('assign.event fehlt.');
+                const picks = Array.isArray(v.picks) ? v.picks : [];
+                if (picks.length > 4) throw new Error('Höchstens 4 Sets je Zuordnung.');
+                out[k] = { event: v.event.slice(0, 80), picks: picks.map(pk => {
+                    if (!pk || typeof pk.set !== 'string' || !pk.set.trim() || typeof pk.grade !== 'string' || !/^[DCBAS]$/.test(pk.grade)) throw new Error('Ungültige Zuordnung (set/grade).');
+                    return { set: pk.set.slice(0, 200), grade: pk.grade };
+                }) };
             }
             else if (Array.isArray(v)) out[k] = v.slice(0, 10).map(x => Array.isArray(x) ? x.slice(0, 11).map(y => String(y).slice(0, 80)) : String(x).slice(0, 80));
         });
@@ -16908,7 +16965,19 @@ const HybridSbcEa = (() => {
             const running = mcpRunningJob(tool);
             if (running) return await mcpAwaitJob(running, a.wait);
             if (!a.set || !a.grade) throw new Error('set und grade angeben.');
-            const job = mcpStartJob(tool, () => galleryClaudeBuy(String(a.set), String(a.grade).toUpperCase()), () => galleryClaudeState.progress);
+            const job = mcpStartJob(tool, async () => {
+                const r = await galleryClaudeBuy(String(a.set), String(a.grade).toUpperCase());
+                // v6.18.3: gekaufte Karten gleich wieder zum Verkauf vorbereiten (Listen nur per Panel-Tipp).
+                if (r && r.bought > 0) { try { r.sellPreview = await galleryClaudeSellPreview(); } catch (e) { r.sellPreview = { error: String(e && e.message || e) }; } }
+                return r;
+            }, () => galleryClaudeState.progress);
+            const v = await mcpAwaitJob(job, a.wait);
+            return v.state === 'done' ? v.result : v;
+        }
+        if (tool === 'pittools_gallery_sell') {
+            const running = mcpRunningJob(tool);
+            if (running) return await mcpAwaitJob(running, a.wait);
+            const job = mcpStartJob(tool, () => galleryClaudeSellPreview(), () => 'Verkaufsvorschau: Abgleich und Preise');
             const v = await mcpAwaitJob(job, a.wait);
             return v.state === 'done' ? v.result : v;
         }

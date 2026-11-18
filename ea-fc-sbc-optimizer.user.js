@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.13.1
+// @version      6.14.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.13.1';
+    const VERSION = '6.14.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -2332,6 +2332,8 @@
             // Rarity-GRUPPEN der Karte (live verifiziert, fc26): darüber lassen
             // sich Vorgaben wie "TOTW/TOTS/FOF/FUTTIES" (Gruppe 83) EXAKT matchen.
             groups: Array.isArray(raw.groups) ? raw.groups.map(Number) : null,
+            // v6.14.0: EAs Item Score (Kosten im Item-Score-Modus); fehlt er, null.
+            itemScore: (Number(raw.gradingScore) > 0) ? Number(raw.gradingScore) : null,
             raw: raw // Original behalten - wird fürs Eintragen über App-Services gebraucht
         };
     }
@@ -3202,6 +3204,10 @@
         }
         // TOTW-Karte (Team of the Week / Inform): rareflag 3.
         function isTotw(p) { return Number(p.rareflag) === 3; }
+        // v6.14.0: Einheit der Item-Score-Kosten und Vereins-Aufschlag (hoeher
+        // als jeder Storage-Score: 1000 Einheiten = 100.000 Item Score).
+        const ITEM_SCORE_UNIT = 100;
+        const ITEM_CLUB_PENALTY = 1000;
         // Kartenkosten (Band + persönliche Scarcity, Storage-Bonus, Rarity-
         // Schutz-Aufschlag, Untradeable-Rabatt) als modul-weite Factory statt
         // einer Closure innerhalb von solveCore: solver-test.js baut damit
@@ -3271,7 +3277,33 @@
             // Special-Storage" her, ohne Specials zu blockieren.
             const specialSoft = Math.max(0, cfg.specialCost != null
                 ? Number(cfg.specialCost) : 1);
+            // v6.14.0 ITEM-SCORE-KOSTEN (Rasmus 18.11.: "diese alten Gewichtungen
+            // brauchen wir nicht mehr", "IMMER erst Storage leer machen", Verein
+            // bleibt erlaubt, wenn der Storage nicht reicht). Kosten einer Karte =
+            // EAs Item Score (gradingScore, je Karte - Specials tragen ihren
+            // Faktor selbst), in Einheiten zu 100. Vereinskarten bekommen einen
+            // Aufschlag ueber jedem Storage-Score: bei gleichem Rating-Ergebnis
+            // gewinnt immer der Plan mit weniger Vereinskarten, danach der mit
+            // weniger verbrauchtem Item Score. Scarcity, Storage-Rabatt,
+            // TOTW-/Special-Aufschlag entfallen in diesem Modus; harte Regeln
+            // (Sperren, Evos, Vereins-Specials, Vereins-TOTW-Schutz) bleiben.
+            // Ohne Item Score an der Karte gilt die Tabelle als Notwert.
+            // cfg.costMode fehlt -> Tabelle (Alt-Tests, alte Aufrufer).
+            const itemMode = cfg.costMode === 'itemScore';
+            function itemScoreOf(p) {
+                const s = Number(p.itemScore != null ? p.itemScore : (p.raw ? p.raw.gradingScore : NaN));
+                return (isFinite(s) && s > 0) ? s : null;
+            }
             function costOf(p) {
+                if (itemMode) {
+                    const sc = itemScoreOf(p);
+                    const base = sc != null ? sc / ITEM_SCORE_UNIT : bandFn(p.rating);
+                    return base + (p.isStorage ? 0 : ITEM_CLUB_PENALTY) +
+                           (isProtectedRarity(p) ? guardCost * ITEM_SCORE_UNIT : 0) -
+                           // Unverkaeufliche Vereinskarte vor verkaeuflicher - nur
+                           // noch als Gleichstandsregel (30 Item Score).
+                           (p.untradeable && !p.isStorage ? untrBonus / 10 : 0);
+                }
                 const n = countByRating.get(p.rating) || 1;
                 // TOTW (rareflag 3) sind wertgleich - die Rating-Kosten-
                 // Baender gelten fuer sie NICHT (Produktregel von Rasmus,
@@ -4810,6 +4842,8 @@
             parseRatingCosts: parseRatingCosts,
             DEFAULT_RATING_COST_SPEC: DEFAULT_RATING_COST_SPEC,
             makeCostOf: makeCostOf,
+            ITEM_SCORE_UNIT: ITEM_SCORE_UNIT,
+            ITEM_CLUB_PENALTY: ITEM_CLUB_PENALTY,
             reservationCandidates: reservationCandidates,
             computeRarityAvailability: computeRarityAvailability
         };
@@ -7224,6 +7258,14 @@
                 </div>
                 <div class="sbc-opt-group-title">Rating-Kosten</div>
                 <div class="sbc-opt-row">
+                    <label class="sbc-opt-chiplabel">Kosten je Karte</label>
+                    <div class="sbc-opt-chips" id="sbc-opt-costmode">
+                        <button type="button" class="sbc-opt-chip" data-costmode="itemScore" title="EAs Item Score der Karte; Storage immer zuerst">Item Score</button>
+                        <button type="button" class="sbc-opt-chip" data-costmode="table" title="Die alte Tabelle mit Zusatzregeln">Tabelle</button>
+                    </div>
+                    <div class="sbc-opt-dim" id="sbc-opt-costmode-hint"></div>
+                </div>
+                <div class="sbc-opt-row" id="sbc-opt-bandbox">
                     <label>Rating-Kosten (höher = Karten dieser Stufe mehr schonen)</label>
                     <div class="sbc-opt-bandhead"><span></span><span>von</span><span>bis</span><span>Kosten</span><span></span></div>
                     <div id="sbc-opt-bands"></div>
@@ -7488,6 +7530,9 @@
             totwsoft: panel.querySelector('#sbc-opt-totwsoft'),
             specialsoft: panel.querySelector('#sbc-opt-specialsoft'),
             bands: panel.querySelector('#sbc-opt-bands'),
+            costMode: panel.querySelector('#sbc-opt-costmode'),
+            costModeHint: panel.querySelector('#sbc-opt-costmode-hint'),
+            bandBox: panel.querySelector('#sbc-opt-bandbox'),
             bandAdd: panel.querySelector('#sbc-opt-band-add'),
             bandReset: panel.querySelector('#sbc-opt-band-reset'),
             bandPresets: panel.querySelector('#sbc-opt-band-presets'),
@@ -7701,6 +7746,7 @@
             toast('Rating-Kosten auf Standard zurückgesetzt.', '');
         });
         initBandPresets();
+        initCostMode();
     }
     // ---- Kosten-Presets (v5.14.0) -------------------------------------------
     // Eigene Presets liegen in localStorage (sbcOptBandPresets, {name: spec}),
@@ -7788,6 +7834,37 @@
         });
         // Band-Aenderungen von Hand: Chip-Hervorhebung folgt dem Inhalt.
         if (ui.bands) ui.bands.addEventListener('change', function () { renderBandPresets(); });
+    }
+    // ---- v6.14.0 Kosten-Modus: Item Score (Standard) oder Tabelle ----------
+    const COST_MODE_KEY = 'sbcOptCostMode';
+    function costModeLoad() {
+        try { const v = localStorage.getItem(COST_MODE_KEY); return v === 'table' ? 'table' : 'itemScore'; } catch (e) { return 'itemScore'; }
+    }
+    let costMode = 'itemScore';
+    function renderCostMode() {
+        if (ui.costMode) ui.costMode.querySelectorAll('[data-costmode]').forEach(b => {
+            const on = b.getAttribute('data-costmode') === costMode;
+            if (b.classList.contains('on') !== on) b.classList.toggle('on', on);
+        });
+        if (ui.bandBox) ui.bandBox.style.display = costMode === 'table' ? '' : 'none';
+        if (ui.costModeHint) {
+            const t = costMode === 'table'
+                ? 'Alte Tabelle mit Zusatzregeln (Scarcity, Storage-Rabatt, Aufschläge unter „Erweitert“).'
+                : 'Kosten = EAs Item Score jeder Karte (z. B. 84er 830, 85er 2.100, 88er 8.300; Specials höher). Storage immer zuerst, Vereinskarten nur, wenn der Storage nicht reicht. Ohne Item Score gilt die Tabelle.';
+            if (ui.costModeHint.textContent !== t) ui.costModeHint.textContent = t;
+        }
+    }
+    function initCostMode() {
+        costMode = costModeLoad();
+        renderCostMode();
+        if (ui.costMode) ui.costMode.addEventListener('click', function (ev) {
+            const b = ev.target && ev.target.closest ? ev.target.closest('[data-costmode]') : null;
+            if (!b) return;
+            costMode = b.getAttribute('data-costmode') === 'table' ? 'table' : 'itemScore';
+            try { localStorage.setItem(COST_MODE_KEY, costMode); } catch (e) {}
+            renderCostMode();
+            toast(costMode === 'table' ? 'Kosten: alte Tabelle.' : 'Kosten: Item Score, Storage zuerst.', 'ok');
+        });
     }
     let bandDragIndex = null;
     function renderBandRows() {
@@ -16758,6 +16835,7 @@ const HybridSbcEa = (() => {
             // benutzt hat, statt dass es geraten werden muss (LEARNINGS §10).
             bands: {
                 spec: bandsToSpec(ratingBands),
+                costMode: (typeof costMode === 'string' ? costMode : null),
                 count: ratingBands.length,
                 isDefault: JSON.stringify(ratingBands) === JSON.stringify(defaultBands())
             },
@@ -17247,7 +17325,7 @@ const HybridSbcEa = (() => {
         'specialOnlyFromStorage', 'maxRatingEnabled', 'maxRating',
         'scarcityWeight', 'storageBonus', 'untradeableBonus', 'maxRareRating',
         'maxCommonRating', 'rarityGuardCost', 'rarityMode', 'totwSoftCost',
-        'specialCost', 'ratingCostSpec'];
+        'specialCost', 'ratingCostSpec', 'costMode'];
     function readConfig(profil) {
         const cfg = {
             targetOVR: STATE.sbc.targetOVR,
@@ -17271,6 +17349,7 @@ const HybridSbcEa = (() => {
             totwSoftCost: ui.totwsoft ? (parseFloat(ui.totwsoft.value) || 0) : 8,
             specialCost: ui.specialsoft ? (parseFloat(ui.specialsoft.value) || 0) : 1,
             ratingCostSpec: bandsToSpec(ratingBands),
+            costMode: (typeof costMode === 'string' ? costMode : 'itemScore'),
             anchorId: null,
             rarityPickId: ui.rarityPick.value || null,
             rarityConstraints: STATE.sbc.rarityConstraints || [],

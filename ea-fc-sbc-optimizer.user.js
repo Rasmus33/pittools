@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.18.1
+// @version      6.18.2
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.18.1';
+    const VERSION = '6.18.2';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -5028,7 +5028,32 @@
             }
             return Object.assign(first, { stage: 3, clubShort: true });
         }
-        return { solve: solve, solveStaged: solveStaged };
+        /**
+         * v6.18.2: "Vereins-Gold mit niedrigstem Meta" ohne Punkteverlust. Der Loeser
+         * waehlt rein nach Punkten; danach wird je PUNKTESTUFE (gleicher Score) jede
+         * gewaehlte Gold-Karte gegen die Gold-Karte dieser Stufe mit dem niedrigsten
+         * Meta getauscht. Summe, Anzahl und Stufen bleiben exakt gleich. Karten ohne
+         * Meta zaehlen mit ihrem Rating. gold = alle Gold-Kandidaten (mit c.meta).
+         */
+        function swapGoldByMeta(picks, gold) {
+            const m = c => (typeof c.meta === 'number' && isFinite(c.meta)) ? c.meta : Number(c.rating) || 0;
+            const tiers = new Map();
+            (gold || []).forEach(c => { const k = Number(c.score); if (!tiers.has(k)) tiers.set(k, []); tiers.get(k).push(c); });
+            tiers.forEach(list => list.sort((a, b) => m(a) - m(b) || String(a.id).localeCompare(String(b.id))));
+            const want = new Map();
+            (picks || []).forEach(c => { if (c.src === 'gold') want.set(Number(c.score), (want.get(Number(c.score)) || 0) + 1); });
+            const repl = new Map();
+            want.forEach((n, k) => { repl.set(k, (tiers.get(k) || []).slice(0, n)); });
+            const used = new Map();
+            return (picks || []).map(c => {
+                if (c.src !== 'gold') return c;
+                const k = Number(c.score), i = used.get(k) || 0;
+                used.set(k, i + 1);
+                const r = (repl.get(k) || [])[i];
+                return r ? Object.assign({}, c, r, { src: 'gold', storage: false, filler: false }) : c;
+            });
+        }
+        return { solve: solve, solveStaged: solveStaged, swapGoldByMeta: swapGoldByMeta };
     })();
     // [POINTS-END]
     // ========================================================================
@@ -15430,8 +15455,16 @@ const HybridSbcEa = (() => {
         return { cands: out, skipped: skipped };
     }
     /** Vereins-Gold nach Meta-Rating aufsteigend (fut.gg, Cache des Gauntlet; ohne Wert: Rating). Holt hoechstens fuer 80 Karten nach. */
-    async function pointsGoldByMeta(gold, diag) {
-        const objs = gold.slice().sort((a, b) => (a.score - b.score) || (a.rating - b.rating)).map(c => {
+    /**
+     * v6.18.2: Meta nur fuer die Gold-Karten der Punktestufen holen, aus denen der
+     * Loeser waehlt (vorher: die 80 schwaechsten - bei grossen Luecken wie Florenzi
+     * lagen alle gewaehlten Karten ausserhalb, Meta = Rating). Hoechstens 160 Karten,
+     * guenstige Stufen zuerst. Setzt c.meta an den Karten. tiersOf = Scores der Wahl.
+     */
+    async function pointsLoadMetaForTiers(gold, tiers, diag) {
+        const want = new Set((tiers || []).map(Number));
+        const list = gold.filter(c => want.has(Number(c.score))).sort((a, b) => (a.score - b.score) || (a.rating - b.rating)).slice(0, 160);
+        const objs = list.map(c => {
             const ent = c.ent || {};
             let pos = [];
             try {
@@ -15440,13 +15473,18 @@ const HybridSbcEa = (() => {
             } catch (e) {}
             return { cand: c, def: Number(ent.definitionId || ent.resourceId || 0), positions: Array.from(new Set(pos)), rating: c.rating, meta: {} };
         });
-        const ask = objs.slice(0, 80);
-        try { if (bridgeKind()) await gauntletLoadMeta(ask, () => {}, diag); else diag.metaSkipped = 'keine Brücke'; }
+        diag.metaTiers = Array.from(want).sort((x, y) => x - y); diag.metaCards = objs.length;
+        try { if (bridgeKind()) await gauntletLoadMeta(objs, () => {}, diag); else diag.metaSkipped = 'keine Brücke'; }
         catch (e) { diag.metaError = String(e && e.message || e); }
-        const metaOf = o => { const v = Object.keys(o.meta || {}).map(k => o.meta[k]).filter(x => typeof x === 'number' && isFinite(x)); return v.length ? Math.max.apply(null, v) : o.rating; };
-        ask.forEach(o => { o.cand.meta = metaOf(o); });
-        objs.slice(80).forEach(o => { o.cand.meta = o.rating; });
-        return objs.map(o => o.cand).sort((a, b) => (a.meta - b.meta) || (a.score - b.score) || String(a.id).localeCompare(String(b.id)));
+        objs.forEach(o => { const v = Object.keys(o.meta || {}).map(k => o.meta[k]).filter(x => typeof x === 'number' && isFinite(x)); o.cand.meta = v.length ? Math.max.apply(null, v) : null; });
+        diag.metaKnown = objs.filter(o => o.cand.meta != null).length;
+    }
+    /** Loesung mit Gold-Karten: Meta der betroffenen Stufen laden, dann je Stufe die niedrigsten Meta-Karten einsetzen. */
+    async function pointsMetaSwap(res, gold, diag) {
+        if (!res || !Array.isArray(res.picks) || !res.picks.some(c => c.src === 'gold')) return res;
+        const tiers = Array.from(new Set(res.picks.filter(c => c.src === 'gold').map(c => Number(c.score))));
+        await pointsLoadMetaForTiers(gold, tiers, diag);
+        return Object.assign({}, res, { picks: PointsCore.swapGoldByMeta(res.picks, gold) });
     }
     function pointsPickLabel(c) {
         const ent = c.ent || {};
@@ -15496,9 +15534,10 @@ const HybridSbcEa = (() => {
             let res = PointsCore.solveStaged(Object.assign({}, gr, { gold: [] }), { need: info.need, limit: info.limit });
             if (!(res && res.ok && res.reached) && res && res.clubShort && gr.gold.length) {
                 if (box) box.innerHTML = '<div class="sbc-opt-dim">Storage reicht nicht - suche Vereins-Gold mit niedrigem Meta-Rating …</div>';
-                gr.gold = await pointsGoldByMeta(gr.gold, diag);
+                gr.gold = gr.gold.slice().sort((a, b) => (a.score - b.score) || (a.rating - b.rating) || String(a.id).localeCompare(String(b.id)));
                 t0 = Date.now();
                 res = PointsCore.solveStaged(gr, { need: info.need, limit: info.limit });
+                res = await pointsMetaSwap(res, gr.gold, diag);
             }
             diag.ms = Date.now() - t0;
             diag.result = res && { ok: res.ok, reached: res.reached, partial: !!res.partial, stage: res.stage, sum: res.sum, overshoot: res.overshoot, storageCount: res.storageCount, clubCount: res.clubCount,
@@ -15519,8 +15558,9 @@ const HybridSbcEa = (() => {
                     const rest = Math.max(0, info.need - stSum);
                     if (rest > 0) {
                         if (box) box.innerHTML = '<div class="sbc-opt-dim">Vorschau: was nach dem Storage aus dem Verein käme …</div>';
-                        const goldMeta = gr.gold.length ? await pointsGoldByMeta(gr.gold, diag) : [];
-                        const w = PointsCore.solveStaged({ storage: [], filler: gr.filler, dup: gr.dup, gold: goldMeta }, { need: rest, limit: info.limit });
+                        const goldSorted = gr.gold.slice().sort((a, b) => (a.score - b.score) || (a.rating - b.rating) || String(a.id).localeCompare(String(b.id)));
+                        const w0 = PointsCore.solveStaged({ storage: [], filler: gr.filler, dup: gr.dup, gold: goldSorted }, { need: rest, limit: info.limit });
+                        const w = await pointsMetaSwap(w0, goldSorted, diag);
                         whatIf = { storageTotal: stSum, rest: rest, reached: !!(w && w.reached), sum: w ? w.sum : 0, cards: w && w.picks ? w.picks.length : 0,
                                    goldCount: w ? w.goldCount || 0 : 0, dupCount: w ? w.dupCount || 0 : 0, goldDepth: w ? w.goldDepth || null : null,
                                    submissions: w && w.picks && w.picks.length && w.sum > 0 ? Math.ceil(rest / (w.sum / w.picks.length) / info.limit) : null,

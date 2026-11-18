@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.16.1
+// @version      6.16.2
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.16.1';
+    const VERSION = '6.16.2';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -10207,8 +10207,7 @@ const HybridSbcEa = (() => {
     function galleryPersonalScore(cards, required, tags, grades) {
         if (!Array.isArray(cards) || new Set(cards.map(c => c.id)).size !== cards.length ||
             cards.some(c => !Number.isFinite(c.score) || c.score <= 0)) return null;
-        // v6.16.0: ein Spieler zaehlt nur einmal (EA: "15 Profis"), wenn die Karten ihn kennen.
-        if (cards.some(c => c.person != null) && new Set(cards.map(c => c.person != null ? 'p' + c.person : 'i' + c.id)).size !== cards.length) return null;
+        // Verschiedene Versionen derselben Person sind in Galerie-Sets erlaubt.
         let bonus = 0; const unknown = new Set(), breakdown = [];
         for (const tag of tags) {
             if (!tag || tag.bonusType !== 'ITEM_SCORE_PERCENTAGE' || tag.thresholdType !== 'ITEM_COUNT' ||
@@ -10253,8 +10252,8 @@ const HybridSbcEa = (() => {
         if (!Array.isArray(cards) || cards.length > 160 || !Number.isInteger(required) || required < 1 || required > 40 ||
             new Set(cards.map(c => c.id)).size !== cards.length) return null;
         const eligible = cards.filter(c => c.owned || (Number.isFinite(c.price) && c.price > 0));
-        // v6.16.0: je Spieler nur die erste (= bevorzugte) Version in eine Startauswahl
-        const uniq = list => { const seen = new Set(); return list.filter(c => { const k = c.person != null ? 'p' + c.person : 'i' + c.id; if (seen.has(k)) return false; seen.add(k); return true; }); };
+        // Nur dieselbe Kartenversion ist doppelt verboten, nicht dieselbe Person.
+        const uniq = list => { const seen = new Set(); return list.filter(c => { const k = c.id; if (seen.has(k)) return false; seen.add(k); return true; }); };
         const own = uniq(eligible.filter(c => c.owned).sort((a,b) => b.score-a.score || a.id-b.id));
         const currentCards = own.slice(0, required), current = galleryPersonalScore(currentCards, required, tags, grades);
         if (!current) return null;
@@ -14394,7 +14393,7 @@ const HybridSbcEa = (() => {
             STATE.conceptCapture = null;
         }
         if (!responseOk(resp)) { const e = new Error('Konzept-Suche abgelehnt (Status ' + (resp && resp.status) + ')'); e.status = resp && resp.status; throw e; }
-        return { raw: best ? best.raw : null, url: best ? best.url : null, entities: entities, captured: cap.hits.length };
+        return { raw: best ? best.raw : null, url: best ? best.url : null, entities: entities, captured: cap.hits.length, endOfList: resp && resp.response && typeof resp.response.endOfList === 'boolean' ? resp.response.endOfList : null };
     }
     const GALLERY_EA_PAGE_SIZE = 91;    // EAs Seitengroesse (wie FUTGenie)
     const GALLERY_EA_MAX_PAGES = 3;     // Verein passt fast immer auf eine Seite; Ligen bleiben Teilstand
@@ -14419,6 +14418,7 @@ const HybridSbcEa = (() => {
                 throw e;
             }
             diag.pages++; diag.captured += r.captured; diag.entities += r.entities.length;
+            (diag.pageResults || (diag.pageResults = [])).push({ page: page + 1, entities: r.entities.length, raw: r.raw ? r.raw.length : null, endOfList: r.endOfList });
             if (!r.raw && r.entities.length) diag.noRaw = (diag.noRaw || 0) + 1;
             // Traegt EAs fertiges Item das Feld doch (neues Bundle)? Nur zaehlen.
             r.entities.forEach(it => { try { const d = Number(it && (it.definitionId || it.resourceId)); const sd = it && typeof it.getStaticData === 'function' ? it.getStaticData() : null;
@@ -14506,38 +14506,39 @@ const HybridSbcEa = (() => {
         const desc = String(description || '');
         const both = /\bmens?\b[^.]*\bor\b[^.]*\bwomen/i.test(desc) || /\bwomen'?s?\b[^.]*\bor\b[^.]*\bmen/i.test(desc);
         const women = !both && /\bwomen'?s?\b/i.test(desc);
-        const linked = new Set();
-        (links || []).forEach(pair => {
-            const a = Number(pair[0]), b = Number(pair[1]);
-            if (b === base && a !== base) linked.add(a);
-            else if (a === base && b !== base) linked.add(b);
-        });
-        const lk = Array.from(linked).sort((x, y) => x - y);
-        if (women) return { ids: lk.length ? lk : [base], mode: 'women', linkedFound: lk.length > 0 };
-        if (both) return { ids: [base].concat(lk), mode: 'both', linkedFound: lk.length > 0 };
-        return { ids: [base], mode: 'men', linkedFound: lk.length > 0 };
+        // EA speichert linked -> primary. Eine bereits verknuepfte Frauen-ID
+        // darf nicht zur primaeren Maenner-ID zurueckgetauscht werden.
+        const pairs = (links || []).map(pair => [Number(pair[0]), Number(pair[1])])
+            .filter(pair => pair.every(x => Number.isInteger(x) && x > 0) && pair[0] !== pair[1]);
+        const ownLink = pairs.find(pair => pair[0] === base);
+        const primary = ownLink ? ownLink[1] : base;
+        const linked = Array.from(new Set(pairs.filter(pair => pair[1] === primary).map(pair => pair[0]))).sort((x, y) => x - y);
+        if (women) return { ids: ownLink ? [base] : linked.length ? linked : [base], mode: 'women', linkedFound: linked.length > 0 };
+        if (both) return { ids: [primary].concat(linked), mode: 'both', linkedFound: linked.length > 0 };
+        return { ids: [primary], mode: 'men', linkedFound: linked.length > 0 };
     }
+
     function galleryScanSetState(row, entry) {
         const cat = row && row.catalog || {};
         const req = Number(cat.requiredCards || row.items) || 0;
         const grades = (Array.isArray(cat.grades) ? cat.grades : []).filter(g => g && Number.isFinite(g.threshold)).slice().sort((a, b) => a.threshold - b.threshold);
         const defs = entry && Array.isArray(entry.defs) ? entry.defs : [];
         const coll = defs.filter(d => d[1] === 1), open = defs.filter(d => d[1] === 0);
-        // v6.16.0: EA zaehlt SPIELER, nicht Kartenversionen (live: Washington Spirit
-        // 15 gesammelte Versionen = 11/15 Spieler). Je Spieler zaehlt die beste Version.
-        const bestPerPerson = list => { const m = new Map(); list.forEach(d => { const k = galleryPersonOf(d[0]); if (!m.has(k) || d[2] > m.get(k)) m.set(k, d[2]); }); return Array.from(m.values()); };
-        const topColl = bestPerPerson(coll).sort((a, b) => b - a);
+        // Galerie-Slots zaehlen Kartenversionen (definitionId), nicht Personen.
+        // Live: Madrid CFF ist mit 15 Versionen von 12 Personen vollstaendig.
+        const scoresPerVersion = list => { const m = new Map(); list.forEach(d => { const k = Number(d[0]); if (!m.has(k) || d[2] > m.get(k)) m.set(k, d[2]); }); return Array.from(m.values()); };
+        const topColl = scoresPerVersion(coll).sort((a, b) => b - a);
         const complete = req > 0 && topColl.length >= req;
         const base = topColl.slice(0, req > 0 ? req : topColl.length).reduce((a, b) => a + b, 0);
         const reached = complete ? (grades.filter(g => base >= g.threshold).pop() || null) : null;
         const next = grades.find(g => !reached || g.threshold > reached.threshold) || null;
-        const allTop = bestPerPerson(defs.filter(d => d[1] !== null)).sort((a, b) => b - a);
+        const allTop = scoresPerVersion(defs.filter(d => d[1] !== null)).sort((a, b) => b - a);
         const best = req > 0 && allTop.length >= req ? allTop.slice(0, req).reduce((a, b) => a + b, 0) : null;
         const maxGrade = best != null ? (grades.filter(g => best >= g.threshold).pop() || null) : null;
         return {
             id: row.id, name: row.name, kind: row.eaKind || null, requiredCards: req || null, noCatalog: !grades.length,
             scanned: !!entry, scannedAt: entry ? entry.at : null, partial: !!(entry && entry.partial),
-            versions: defs.length, collected: topColl.length, collectedVersions: coll.length, notCollected: open.length,
+            versions: defs.length, collected: topColl.length, collectedVersions: topColl.length, collectedPeople: new Set(coll.map(d => galleryPersonOf(d[0]))).size, notCollected: open.length,
             teams: entry && Array.isArray(entry.teams) ? entry.teams : null,
             missingCards: req > 0 && entry ? Math.max(0, req - topColl.length) : null,
             baseScore: entry ? base : null, complete: complete,
@@ -14578,13 +14579,13 @@ const HybridSbcEa = (() => {
                           ours: st.scanned ? { collected: st.collected, versions: st.collectedVersions, complete: st.complete, baseScore: st.baseScore, gradeBase: st.gradeNow } : null };
             if (!st.scanned) { rec.status = 'nicht gescannt'; notScanned++; out.push(rec); return; }
             const countOk = consoleComplete ? st.complete : (st.collected === consoleCount);
-            rec.status = countOk ? 'passt' : (st.collected < (consoleCount || 0) || (consoleComplete && !st.complete) ? 'PitTools sieht zu wenige' : 'PitTools sieht zu viele');
+            rec.status = countOk ? 'passt' : (st.collected < (consoleCount || 0) || (consoleComplete && !st.complete) ? 'PitTools sieht zu wenige' : 'mehr verfügbar als im Konsolenstand');
             if (consoleComplete && st.complete && c.points > 0 && st.baseScore > 0) rec.bonusFactor = Math.round(100 * c.points / st.baseScore) / 100;
             if (countOk) agree++; else differ++;
             out.push(rec);
         });
         out.sort((a, b) => (a.status === 'passt') - (b.status === 'passt') || String(a.name).localeCompare(String(b.name)));
-        return { at: snap ? snap.at : null, source: snap ? snap.source : null, agree: agree, differ: differ, notScanned: notScanned, sets: out };
+        return { at: snap ? snap.at : null, source: snap ? snap.source : null, agree: agree, differ: differ, notScanned: notScanned, note: 'EA meldet verfügbare Kartenversionen. Der Konsolenstand zeigt die damals gespeicherte Auswahl; neue oder noch nicht gespeicherte Karten können Abweichungen erklären. Punkte und Noten werden hier nicht auf Gleichheit geprüft.', sets: out };
     }
     /** Pure: Bericht fuer Claude aus Katalog + Scan-Cache. */
     function galleryScanReport(catalog, cache, opts) {
@@ -14763,11 +14764,12 @@ const HybridSbcEa = (() => {
     async function galleryMeasureSet(row, via) {
         const t = galleryTeamIdsOf(row);
         const ids = t.ids.length ? t.ids : [row.eaId];
-        const byDef = new Map(), names = new Map(), raw = [];
+        const byDef = new Map(), names = new Map(), raw = [], searches = [];
         let partial = false, verdict = null, rateLimit = false;
         for (let i = 0; i < ids.length; i++) {
             const diag = { at: Date.now(), set: row.name, kind: row.eaKind, id: ids[i], pages: 0, form: 'number', url: null, captured: 0, entities: 0, raw: 0, sample: null, rawKeys: null, stopped: null, via: via };
             const m = await galleryEaMeasure(row.eaKind, ids[i], [], diag, null);
+            searches.push({ id: ids[i], url: diag.url, pages: diag.pageResults || [], partial: !!diag.partial, stopped: diag.stopped });
             if (m.sessionLost) return { sessionLost: true };
             (m.sum.byDef || new Map()).forEach((v, k) => { const old = byDef.get(k); if (!old || (v && v.c === true && !(old && old.c === true))) byDef.set(k, v); });
             (m.names || new Map()).forEach((v, k) => names.set(k, v));
@@ -14777,7 +14779,7 @@ const HybridSbcEa = (() => {
             if (diag.stopped === 'Rate-Limit') { rateLimit = true; break; }
             if (i < ids.length - 1) await futbinSleep(randomBetween(MARKET_STEP_GAP_MIN_MS, MARKET_STEP_GAP_MAX_MS));
         }
-        return { sum: { byDef: byDef, verdict: verdict }, names: names, raw: raw, partial: partial, rateLimit: rateLimit, teams: ids, teamMode: t.mode, linkedFound: t.linkedFound };
+        return { sum: { byDef: byDef, verdict: verdict }, names: names, raw: raw, partial: partial, rateLimit: rateLimit, teams: ids, teamMode: t.mode, linkedFound: t.linkedFound, searches: searches };
     }
     async function galleryScanRun(opts) {
         const o = opts || {};
@@ -14806,7 +14808,7 @@ const HybridSbcEa = (() => {
                 if (m.sessionLost) { stopped = 'EA-Sitzung abgelaufen - neu einloggen, dann erneut (Teilstand ist gespeichert).'; break; }
                 const n = {};
                 (m.names || new Map()).forEach((v, k) => { n[k] = v; });
-                cache.sets[x.id] = { at: Date.now(), kind: x.eaKind, id: x.eaId, teams: m.teams, teamMode: m.teamMode, linkedFound: m.linkedFound,
+                cache.sets[x.id] = { at: Date.now(), kind: x.eaKind, id: x.eaId, teams: m.teams, teamMode: m.teamMode, linkedFound: m.linkedFound, searches: m.searches,
                                      defs: galleryScanDefs(m.sum.byDef), names: n, partial: !!m.partial, verdict: m.sum.verdict,
                                      attrs: galleryScanAttrs(m.raw, v => Gauntlet.posName(v)), hyperSample: galleryHyperSample(m.raw) };
                 const rec = galleryEaCollectRecords(m.sum);
@@ -14925,7 +14927,7 @@ const HybridSbcEa = (() => {
         const m = await galleryMeasureSet(row, 'quote');
         if (m.sessionLost) throw new Error('EA-Sitzung abgelaufen - neu einloggen, dann erneut.');
         const n = {}; (m.names || new Map()).forEach((v, k) => { n[k] = v; });
-        entry = cache.sets[row.id] = { at: Date.now(), kind: row.eaKind, id: row.eaId, teams: m.teams, teamMode: m.teamMode, linkedFound: m.linkedFound,
+        entry = cache.sets[row.id] = { at: Date.now(), kind: row.eaKind, id: row.eaId, teams: m.teams, teamMode: m.teamMode, linkedFound: m.linkedFound, searches: m.searches,
                                        defs: galleryScanDefs(m.sum.byDef), names: n, partial: !!m.partial,
                                        verdict: m.sum.verdict, attrs: galleryScanAttrs(m.raw, v => Gauntlet.posName(v)), hyperSample: galleryHyperSample(m.raw) };
         await galleryScanCacheSave(persona, cache);
@@ -16389,7 +16391,7 @@ const HybridSbcEa = (() => {
             if (!row) throw new Error('Kein Set „' + a.set + '“ im Katalog.');
             const e = cache.sets[row.id] || null;
             const names = (e && e.names) || {};
-            return { state: galleryScanSetState(row, e), catalog: row.catalog, path: row.path, note: GALLERY_SCAN_NOTE,
+            return { state: galleryScanSetState(row, e), catalog: row.catalog, path: row.path, searches: e && e.searches || null, teamResolution: Object.assign({ baseId: row.eaId }, galleryTeamIdsOf(row)), note: GALLERY_SCAN_NOTE,
                      cards: e ? e.defs.slice(0, 120).map(d => ({ defId: d[0], name: names[d[0]] || null, collected: d[1] === 1 ? true : d[1] === 0 ? false : null, score: d[2], rating: d[3] })) : null,
                      hint: e ? null : 'Für dieses Set gibt es noch keinen Scan - pittools_gallery_scan mit sets: ["' + row.name + '"].' };
         }

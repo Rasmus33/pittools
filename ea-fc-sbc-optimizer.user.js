@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.18.4
+// @version      6.19.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.18.4';
+    const VERSION = '6.19.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7623,6 +7623,8 @@
                     <!-- v6.8.0: Claude Desktop / Claude Code am PC ruft ueber den lokalen PitTools-MCP-Server Werkzeuge auf (nur lesen/planen/anzeigen). -->
                     <label class="sbc-opt-toggle"><input type="checkbox" id="sbc-opt-mcp-on"> Claude darf PitTools lesen und planen</label>
                     <div class="sbc-opt-fb-meta">Status: <b id="sbc-opt-mcp-status">Aus</b></div>
+                    <!-- v6.19.0: Galerie-Kauf im Chat freigeben (z.B. Claude-App am Handy), Default AUS. -->
+                    <label class="sbc-opt-toggle"><input type="checkbox" id="sbc-opt-mcp-chatok"> Galerie-Käufe darf ich im Chat freigeben</label>
                     <div class="sbc-opt-debug">Nur am PC mit Claude Desktop oder Claude Code und der PitTools Bridge ab 1.2.0. Claude kann den Verein lesen, SBCs und Gauntlet-Teams planen, die Galerie-Liste und die Diagnose sehen und dir Nachrichten zeigen. Kaufen, Verkaufen, Eintragen und Abgeben kann Claude nicht.</div>
                     <div class="sbc-opt-summary" id="sbc-opt-mcp-message" hidden></div>
                     <div class="sbc-opt-dim" id="sbc-opt-mcp-log"></div>
@@ -7738,6 +7740,7 @@
             gauntletOpen: panel.querySelector('#sbc-opt-gauntlet-open'),
             clubView: panel.querySelector('#sbc-opt-clubview'),
             mcpOn: panel.querySelector('#sbc-opt-mcp-on'),
+            mcpChatOk: panel.querySelector('#sbc-opt-mcp-chatok'),
             mcpStatus: panel.querySelector('#sbc-opt-mcp-status'),
             mcpLog: panel.querySelector('#sbc-opt-mcp-log'),
             mcpMessage: panel.querySelector('#sbc-opt-mcp-message'),
@@ -13838,6 +13841,11 @@ const HybridSbcEa = (() => {
         if (ui.toolsSell && !ui.toolsSell.dataset.wired) { ui.toolsSell.dataset.wired = '1'; ui.toolsSell.addEventListener('click', onTradepileSellClick); }
         if (ui.gauntletOpen && !ui.gauntletOpen.dataset.wired) { ui.gauntletOpen.dataset.wired = '1'; ui.gauntletOpen.addEventListener('click', onGauntletOpenClick); }
         if (ui.clubView && !ui.clubView.dataset.wired) { ui.clubView.dataset.wired = '1'; ui.clubView.addEventListener('click', onClubViewClick); }
+        if (ui.mcpChatOk && !ui.mcpChatOk.dataset.wired) {
+            ui.mcpChatOk.dataset.wired = '1';
+            ui.mcpChatOk.checked = galleryChatOkEnabled();
+            ui.mcpChatOk.addEventListener('change', () => { try { localStorage.setItem(GALLERY_CHAT_OK_KEY, ui.mcpChatOk.checked ? '1' : '0'); } catch (e) {} });
+        }
         if (ui.mcpOn && !ui.mcpOn.dataset.wired) {
             ui.mcpOn.dataset.wired = '1';
             ui.mcpOn.checked = mcpEnabledSaved();
@@ -15267,6 +15275,26 @@ const HybridSbcEa = (() => {
         } finally { galleryBusy = false; }
     }
     /** Freigabe-Karte im Galerie-Reiter: nur ein Tipp von Rasmus gibt den Kauf frei (10 min, sonst nein). */
+    // v6.19.0 (Rasmus 18.11.: "wenn Nachrichten wie 'kaufen?' kommen, das dann dort bestaetigen"):
+    // Freigabe im Chat statt Panel-Tipp - NUR wenn Rasmus den Schalter im Reiter "Mehr" an hat.
+    // Ablauf: erst Vorschlag (preview -> planId, nichts gekauft), Rasmus sagt im Chat ja,
+    // dann Kauf mit planId: frisch geprueft, nur dieselben Karten, Obergrenzen NIE hoeher.
+    const GALLERY_CHAT_OK_KEY = 'sbcOptMcpChatOk';
+    const GALLERY_CHAT_PLAN_TTL_MS = 10 * 60 * 1000;
+    const galleryChatPlans = new Map();
+    function galleryChatOkEnabled() { try { return localStorage.getItem(GALLERY_CHAT_OK_KEY) === '1'; } catch (e) { return false; } }
+    /** Pure: passt der frische Plan zum im Chat freigegebenen? Gleiche Karten (Teilmenge), je Karte und gesamt nicht teurer. */
+    function galleryChatPlanMatches(saved, purchases, total) {
+        if (!saved || !Array.isArray(saved.items) || !Array.isArray(purchases) || !purchases.length) return { ok: false, why: 'kein gemerkter Plan' };
+        const cap = new Map(saved.items.map(x => [String(x.id), x.max]));
+        for (const p of purchases) {
+            const m = cap.get(String(p.resourceId));
+            if (m == null) return { ok: false, why: p.name + ' war nicht im freigegebenen Plan' };
+            if (!(p.maxPrice <= m)) return { ok: false, why: p.name + ' ist jetzt teurer (' + p.maxPrice + ' statt ' + m + ')' };
+        }
+        if (!(total <= saved.total)) return { ok: false, why: 'Summe jetzt höher' };
+        return { ok: true };
+    }
     function galleryClaudeConfirm(title, lines) {
         return new Promise(resolve => {
             try { if (tabCurrent !== 'galerie') setTab('galerie'); } catch (e) {}
@@ -15330,9 +15358,32 @@ const HybridSbcEa = (() => {
             if (!prepared.purchases.length) { diag.phase = 'nichts zu kaufen'; return { set: row.name, grade: grade, bought: 0, note: 'Alle Karten der Auswahl sind schon gesammelt - im Spiel bewerten.', score: prepared.assessment.score }; }
             const coins = userCoins();
             if (coins != null && coins < prepared.total) throw new Error('Kontostand reicht nicht: ' + fmtCoins(prepared.total) + ' nötig.');
+            const o2 = opts || {};
+            if (o2.preview) {
+                const id = 'p' + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36);
+                galleryChatPlans.set(id, { at: Date.now(), persona: persona, setId: row.id, grade: grade, total: prepared.total,
+                                           items: prepared.purchases.map(p => ({ id: p.resourceId, max: p.maxPrice })) });
+                diag.phase = 'Vorschlag (Chat)';
+                return { preview: true, planId: id, set: row.name, grade: grade, total: prepared.total, score: prepared.assessment.score, threshold: option.threshold,
+                         chatApproval: galleryChatOkEnabled(),
+                         purchases: prepared.purchases.map(p => ({ name: p.name, rating: p.rating, version: p.versionLabel || null, maxPrice: p.maxPrice })),
+                         note: galleryChatOkEnabled() ? 'Nichts gekauft. Rasmus im Chat fragen; bei Ja pittools_gallery_buy mit planId (10 min gültig).'
+                                                       : 'Nichts gekauft. Chat-Freigabe ist im Panel AUS - ein Kauf mit planId braucht weiterhin den Tipp im Panel.' };
+            }
+            let chatOk = false;
+            if (o2.planId) {
+                const saved = galleryChatPlans.get(String(o2.planId));
+                if (!saved || Date.now() - saved.at > GALLERY_CHAT_PLAN_TTL_MS || saved.persona !== persona || saved.setId !== row.id || saved.grade !== grade)
+                    throw new Error('Freigegebener Plan unbekannt oder abgelaufen - bitte neu vorschlagen (preview).');
+                const m = galleryChatPlanMatches(saved, prepared.purchases, prepared.total);
+                if (!m.ok) throw new Error('Plan hat sich geändert (' + m.why + ') - nichts gekauft, bitte neu vorschlagen.');
+                galleryChatPlans.delete(String(o2.planId));
+                chatOk = galleryChatOkEnabled();
+            }
             diag.phase = 'warte auf Freigabe';
-            galleryClaudeState.progress = 'Warte auf Rasmus\' Freigabe im Panel (Reiter Galerie)';
-            const ok = await galleryClaudeConfirm(row.name + ' → Note ' + grade, prepared.purchases.map(p => p.name + ' (' + p.rating + (p.versionLabel ? ', ' + p.versionLabel : '') + '): höchstens ' + fmtCoins(p.maxPrice))
+            galleryClaudeState.progress = chatOk ? 'Im Chat freigegeben - kaufe' : 'Warte auf Rasmus\' Freigabe im Panel (Reiter Galerie)';
+            diag.approval = chatOk ? 'chat' : 'panel';
+            const ok = chatOk ? true : await galleryClaudeConfirm(row.name + ' → Note ' + grade, prepared.purchases.map(p => p.name + ' (' + p.rating + (p.versionLabel ? ', ' + p.versionLabel : '') + '): höchstens ' + fmtCoins(p.maxPrice))
                 .concat(['Zusammen höchstens ' + fmtCoins(prepared.total) + ' · danach ' + prepared.assessment.score + ' Punkte (Ziel ' + option.threshold + ')']));
             if (!ok) { diag.phase = 'nicht freigegeben'; setGalleryResult('<div class="sbc-opt-dim">Kauf für ' + escapeHtml(row.name) + ' nicht freigegeben - nichts gekauft.</div>'); return { set: row.name, grade: grade, confirmed: false, bought: 0 }; }
             running(); diag.phase = 'kaufen';
@@ -16972,10 +17023,11 @@ const HybridSbcEa = (() => {
             if (running) return await mcpAwaitJob(running, a.wait);
             if (!a.set || !a.grade) throw new Error('set und grade angeben.');
             const job = mcpStartJob(tool, async () => {
-                const r = await galleryClaudeBuy(String(a.set), String(a.grade).toUpperCase());
+                const r = await galleryClaudeBuy(String(a.set), String(a.grade).toUpperCase(), { preview: a.preview === true, planId: typeof a.planId === 'string' ? a.planId : null });
+                if (r && r.preview) return r;
                 // v6.18.4: ist das Set nach dem Kauf unvollstaendig, EINMAL ohne die ausgefallenen Karten neu planen.
                 // Der Ersatz braucht eine eigene Freigabe im Panel (galleryClaudeConfirm in galleryClaudeBuy).
-                if (r && r.confirmed && r.ready === false && Array.isArray(r.missing) && r.missing.length) {
+                if (r && r.confirmed && r.ready === false && Array.isArray(r.missing) && r.missing.length && !a.planId) {
                     try { r.retry = await galleryClaudeBuy(String(a.set), String(a.grade).toUpperCase(), { exclude: r.missing.map(m => m.defId) }); }
                     catch (e) { r.retry = { error: String(e && e.message || e) }; }
                     if (r.retry && r.retry.ready) r.ready = true;

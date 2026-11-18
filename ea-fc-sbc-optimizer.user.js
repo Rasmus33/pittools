@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.16.4
+// @version      6.16.5
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.16.4';
+    const VERSION = '6.16.5';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -10189,7 +10189,7 @@ const HybridSbcEa = (() => {
                 attrs: { NATION: p.nationEaId, CLUB: p.clubEaId, LEAGUEID: m.leagueEaId,
                     RARE: p.rarityEaId, BASE_DEF_ID: p.playerEaId,
                     LEVEL: p.overall < 65 ? 'bronze' : p.overall < 75 ? 'silver' : 'gold',
-                    FIRST_OWNED: known.has(String(p.eaId)) && r.owners === 1 ? 1 : 0,
+                    FIRST_OWNED: known.has(String(p.eaId)) && (r.owners === 1 || (m.alwaysFirstOwner === true && !(r.owners > 1))) ? 1 : 0,
                     HYPER_COSMETIC_TYPE: galleryFoilSubtype(r) != null ? galleryFoilSubtype(r) :
                         m.holographic === true ? 0 : m.holographic === false ? -1 :
                         m.holographicType === 'holographic' ? 0 : m.holographicType === 'pristine' ? 1 : null,
@@ -10213,7 +10213,8 @@ const HybridSbcEa = (() => {
                 const attrs = Object.assign({}, existing && existing.attrs, p.attrs);
                 // Neue Kaufkarte bekommt niemals Erstbesitz, auch wenn eine
                 // Konzept-Entitaet einen Default-owners-Wert traegt.
-                attrs.FIRST_OWNED = ownRaw && ownRaw.owners === 1 ? 1 : p.owned ? p.attrs.FIRST_OWNED : 0;
+                attrs.FIRST_OWNED = (ownRaw && ownRaw.owners === 1) || (p.owned && p.attrs.FIRST_OWNED === 1) ||
+                    (existing && existing.owned && existing.attrs.FIRST_OWNED === 1) ? 1 : 0;
                 byId.set(p.id, Object.assign({}, existing, p, { attrs, owned: !!(p.owned || existing && existing.owned), price: existing && existing.price }));
             });
             cards = Array.from(byId.values());
@@ -10223,8 +10224,8 @@ const HybridSbcEa = (() => {
             result.confirmedGrade = galleryKnownGrade(data.set.id); }
         return result;
     }
-    function galleryPersonalScore(cards, required, tags, grades) {
-        if (!Array.isArray(cards) || new Set(cards.map(c => c.id)).size !== cards.length ||
+    function galleryPersonalScore(cards, required, tags, grades, groupMode) {
+        if ((groupMode != null && groupMode !== 'allLargest') || !Array.isArray(cards) || new Set(cards.map(c => c.id)).size !== cards.length ||
             cards.some(c => !Number.isFinite(c.score) || c.score <= 0)) return null;
         // Verschiedene Versionen derselben Person sind in Galerie-Sets erlaubt.
         let bonus = 0; const unknown = new Set(), breakdown = [];
@@ -10248,7 +10249,8 @@ const HybridSbcEa = (() => {
                         const key = String(v); if (!groups.has(key)) groups.set(key, []); groups.get(key).push(c); });
                     tierCount = rule.type === 'MAX_COUNT_ALL_SAME' ? Math.max(0, ...Array.from(groups.values()).map(g => g.length)) : null;
                     matched = rule.type === 'COUNT_DIFF' ? Array.from(groups.values()).map(a => a.slice().sort((a,b) => b.score-a.score)[0]) :
-                        Array.from(groups.values()).filter(g => g.length === tierCount).flat();
+                        groupMode === 'allLargest' ? Array.from(groups.values()).filter(g => g.length === tierCount).flat() :
+                        Array.from(groups.values()).sort((a,b) => b.length-a.length || b.reduce((s,c)=>s+c.score,0)-a.reduce((s,c)=>s+c.score,0))[0] || [];
                 } else {
                     matched = valid.filter(c => { const v = c.attrs[rule.attribute];
                         return rule.type === 'MIN_COUNT' ? Number(v) >= Number(rule.values[0]) :
@@ -10261,11 +10263,15 @@ const HybridSbcEa = (() => {
             const points = incompleteTag ? 0 : Math.floor(matched.reduce((s,c) => s+c.score, 0) * (tier ? tier.bonus : 0) / 100);
             bonus += points; if (points) breakdown.push({ name: tag.name, points, matchedCount: tierCount == null ? matched.length : tierCount, matchedScore: matched.reduce((s,c) => s+c.score, 0), percent: tier ? tier.bonus : 0 });
         }
+        // EA zaehlt nur die zehn groessten Tag-Betraege (Madrid-CFF-Konsolenbeleg).
+        const rankedBonuses = breakdown.slice().sort((a,b) => b.points-a.points);
+        const activeBonuses = rankedBonuses.slice(0,10), excludedBonuses = rankedBonuses.slice(10);
+        bonus = activeBonuses.reduce((s,b) => s+b.points,0);
         const base = cards.reduce((s,c) => s+c.score, 0), score = base + bonus;
         const grade = cards.length === required ? grades.filter(g => g && Number.isFinite(g.threshold) && score >= g.threshold)
             .sort((a,b) => a.threshold-b.threshold).pop() : null;
         return { base, bonus, score, grade: grade && grade.name || null, complete: cards.length === required,
-            unknown: Array.from(unknown), breakdown };
+            unknown: Array.from(unknown), breakdown: activeBonuses, excludedBonuses };
     }
     function galleryPersonalSearch(cards, required, tags, grades) {
         if (!Array.isArray(cards) || cards.length > 160 || !Number.isInteger(required) || required < 1 || required > 40 ||
@@ -14695,7 +14701,8 @@ const HybridSbcEa = (() => {
         if (data.solution) { take(data.solution.items); (data.solution.costTiers || []).forEach(t => take(t && t.items)); }
         return { id: data.set.id, name: data.set.name, requiredCards: data.set.requiredCards,
                  grades: data.set.grades.filter(g => g && /^[DCBAS]$/.test(g.name) && Number.isFinite(g.threshold)).map(g => ({ name: g.name, threshold: g.threshold })),
-                 tags: data.tags, prices: prices };
+                 tags: data.tags, prices: prices,
+                 firstOwnedDefs: (data.lineupCards || []).concat(data.lineupItems || []).filter(c => c && c.alwaysFirstOwner === true && Number.isInteger(c.eaId) && c.eaId > 0).map(c => c.eaId) };
     }
     const GALLERY_GRADE_ORDER = 'NDCBAS';
     /**
@@ -14717,7 +14724,8 @@ const HybridSbcEa = (() => {
                      price: x[1] === 1 ? undefined : rules.prices[x[0]],
                      attrs: { NATION: a[0], CLUB: a[1], LEAGUEID: a[2], RARE: a[3], BASE_DEF_ID: a[4],
                               LEVEL: x[3] < 65 ? 'bronze' : x[3] < 75 ? 'silver' : 'gold',
-                              FIRST_OWNED: x[1] === 1 && firstOwned && firstOwned.has(String(x[0])) ? 1 : 0,
+                              FIRST_OWNED: x[1] === 1 && ((firstOwned && firstOwned.has(String(x[0]))) ||
+                                  (rules.firstOwnedDefs || []).includes(Number(x[0]))) ? 1 : 0,
                               HYPER_COSMETIC_TYPE: a.length > 8 ? a[8] : null, WEAK_FOOT: a[6], SKILL_MOVES: a[5], POSSIBLE_POSITIONS: a[7] } };
         });
         if (cards.length > 160) {
@@ -14902,13 +14910,13 @@ const HybridSbcEa = (() => {
     /** Regeln + fut.gg-Preise eines Sets: 12 h in IndexedDB, sonst die Set-Seite ueber die Bruecke (langsam, ~17 s live). */
     async function galleryRulesLoad(row, force) {
         const key = 'galleryRules:' + row.id;
-        if (!force) { try { const c = await idbRun('readonly', st => st.get(key)); if (c && c.rules && Date.now() - c.at < GALLERY_RULES_TTL_MS) return c.rules; } catch (e) {} }
+        if (!force) { try { const c = await idbRun('readonly', st => st.get(key)); if (c && c.v === 2 && c.rules && Date.now() - c.at < GALLERY_RULES_TTL_MS) return c.rules; } catch (e) {} }
         if (!bridgeKind()) throw new Error(BRIDGE_HINT);
         const r = await bridgeFetch(futggGallerySetUrl(row.path), 40000);
         if (r.status !== 200) throw new Error('fut.gg ' + row.name + ': HTTP ' + r.status);
         const rules = galleryRulesFromSsr(parseGallerySsr(r.text));
         if (!rules) throw new Error('fut.gg ' + row.name + ': Regeln nicht lesbar');
-        try { await idbRun('readwrite', st => st.put({ at: Date.now(), rules: rules }, key)); } catch (e) {}
+        try { await idbRun('readwrite', st => st.put({ v: 2, at: Date.now(), rules: rules }, key)); } catch (e) {}
         return rules;
     }
     function galleryFirstOwnedDefs() {
@@ -16451,7 +16459,7 @@ const HybridSbcEa = (() => {
             if (!cat) throw new Error('Noch kein Galerie-Katalog - erst pittools_gallery_scan (oder pittools_gallery_load).');
             const cache = (await galleryScanCacheLoad(ownPersonaId())) || { sets: {} };
             if (!a.set) {
-                if (a.details === true) return { at: Date.now(), catalog: cat, sets: cache.sets, firstOwnedDefs: Array.from(galleryFirstOwnedDefs()), note: 'Diagnose-Rohdaten derselben Persona; Kartenbestand und gespeicherte Konsolenauswahl können voneinander abweichen.' };
+                if (a.details === true) return { at: Date.now(), version: VERSION, catalog: cat, sets: cache.sets, firstOwnedDefs: Array.from(galleryFirstOwnedDefs()), note: 'Diagnose-Rohdaten derselben Persona; Kartenbestand und gespeicherte Konsolenauswahl können voneinander abweichen.' };
                 return galleryScanReport(cat, cache, { top: a.top });
             }
             const q = String(a.set).toLowerCase();

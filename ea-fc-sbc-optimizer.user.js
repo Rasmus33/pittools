@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.12.0
+// @version      6.13.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.12.0';
+    const VERSION = '6.13.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -14335,7 +14335,7 @@ const HybridSbcEa = (() => {
             return { grade: p.grade, threshold: p.threshold, score: p.assessment.score, coins: p.coins, buys: p.missing.length,
                      tokensAtGrade: tAt == null ? null : tAt, tokensGain: gain, perToken: gain > 0 ? Math.round(p.coins / gain) : null,
                      cards: p.missing.map(c => ({ defId: c.id, name: c.name, rating: c.rating, score: c.score, priceFutgg: c.price })),
-                     bonus: p.assessment.breakdown };
+                     bonus: p.assessment.breakdown, selection: p.cards };
         });
         return {
             id: row.id, name: row.name, requiredCards: req, collected: (entry.defs || []).filter(x => x[1] === 1).length,
@@ -14535,6 +14535,175 @@ const HybridSbcEa = (() => {
         } finally {
             galleryBusy = false; galleryChancesState.running = false;
         }
+    }
+    // ===================== v6.13.0 Live-Preise + Kauf nach Freigabe (Claude) =====================
+    // Rasmus 18.11.: "Kaufen ja, immer erst gegen Nachfrage" (Chat UND Panel) und
+    // "pro Spieler nicht mehr bezahlen als noetig" - keine Gesamtobergrenze, aber
+    // jede Karte hoechstens zum frisch gemessenen Marktminimum (robustMinBin,
+    // dieselbe Messung wie Aufwertung/Verkauf), Preise werden NIE erhoeht.
+    const GALLERY_LIVE_QUOTE_TTL_MS = 30 * 60 * 1000;
+    const galleryLiveQuotes = new Map(); // defId -> { price, at }
+    function galleryLivePrices(rules) {
+        const out = Object.assign({}, rules.prices);
+        galleryLiveQuotes.forEach((q, d) => { if (Date.now() - q.at < GALLERY_LIVE_QUOTE_TTL_MS && q.price > 0) out[d] = q.price; });
+        return out;
+    }
+    function galleryFindRow(cat, name) {
+        const q = String(name || '').toLowerCase();
+        return cat.sets.find(x => String(x.name).toLowerCase() === q) || cat.sets.find(x => q && String(x.name).toLowerCase().indexOf(q) >= 0) || null;
+    }
+    async function galleryEnsureScanEntry(row, cache, persona) {
+        let entry = cache.sets[row.id];
+        if (entry && entry.attrs) return entry;
+        if (!(row.eaKind === 'club' || row.eaKind === 'league') || !(row.eaId > 0)) throw new Error(row.name + ': kein EA-Kriterium (Seltenheits-Set).');
+        const diag = { at: Date.now(), set: row.name, kind: row.eaKind, id: row.eaId, pages: 0, form: 'number', url: null, captured: 0, entities: 0, raw: 0, sample: null, rawKeys: null, stopped: null, via: 'quote' };
+        const m = await galleryEaMeasure(row.eaKind, row.eaId, [], diag, null);
+        if (m.sessionLost) throw new Error('EA-Sitzung abgelaufen - neu einloggen, dann erneut.');
+        const n = {}; (m.names || new Map()).forEach((v, k) => { n[k] = v; });
+        entry = cache.sets[row.id] = { at: Date.now(), kind: row.eaKind, id: row.eaId, defs: galleryScanDefs(m.sum.byDef), names: n, partial: !!diag.partial,
+                                       verdict: m.sum.verdict, attrs: galleryScanAttrs(m.raw, v => Gauntlet.posName(v)), hyperSample: galleryHyperSample(m.raw) };
+        await galleryScanCacheSave(persona, cache);
+        return entry;
+    }
+    const galleryClaudeState = { progress: null };
+    /** Live-Preise fuer die staerksten noch nicht gesammelten Versionen eines Sets, dann Chancen neu rechnen. Kauft nichts. */
+    async function galleryQuoteRun(setName, maxCards) {
+        if (galleryBusy || buyBusy || sellBusy) throw new Error('In der Galerie läuft gerade ein anderer Lauf - kurz warten.');
+        if (!sessionReady()) throw new Error('EA-Sitzung noch nicht erfasst - einmal im Spiel klicken.');
+        const persona = ownPersonaId();
+        if (!persona) throw new Error('EA-Persona unbekannt - einmal im Spiel klicken.');
+        galleryBusy = true;
+        try {
+            const cat = await galleryCatalogLoad(false, t => { galleryClaudeState.progress = t; });
+            const row = galleryFindRow(cat, setName);
+            if (!row) throw new Error('Kein Set „' + setName + '“ im Katalog.');
+            const cache = (await galleryScanCacheLoad(persona)) || { v: 1, persona: persona, at: null, sets: {} };
+            const entry = await galleryEnsureScanEntry(row, cache, persona);
+            galleryClaudeState.progress = 'Regeln: ' + row.name;
+            const rules = await galleryRulesLoad(row);
+            const k = Math.max(1, Math.min(20, Number(maxCards) || 10));
+            const cands = entry.defs.filter(d => d[1] === 0).sort((a, b) => b[2] - a[2]).slice(0, k);
+            const quoted = [];
+            let stopped = null, changed = false;
+            for (let i = 0; i < cands.length; i++) {
+                const d = cands[i];
+                galleryClaudeState.progress = 'Live-Preis ' + (i + 1) + ' von ' + cands.length + ': ' + ((entry.names || {})[d[0]] || d[0]);
+                let low;
+                try { low = await marketOffersLowest(d[0], { fresh: true }); }
+                catch (e) { const st = e && e.status; stopped = isSessionExpired(st) ? 'EA-Sitzung abgelaufen' : isRateLimit(st) ? 'Rate-Limit bei EA - Teilstand' : String(e && e.message || e); break; }
+                const variant = { defId: d[0], rating: d[3], score: d[2] };
+                const offers = (low && Array.isArray(low.offers) ? low.offers : []).filter(x => galleryOfferMatches(variant, x, window));
+                const coll = collectedFromOffers(collectedSummary(offers));
+                if (coll === true) { d[1] = 1; changed = true; quoted.push({ defId: d[0], name: (entry.names || {})[d[0]] || null, collected: true }); }
+                else {
+                    const price = offers.length ? robustMinBin(offers.map(x => x.bin)).robust : null;
+                    if (price > 0) galleryLiveQuotes.set(d[0], { price: price, at: Date.now() });
+                    quoted.push({ defId: d[0], name: (entry.names || {})[d[0]] || null, rating: d[3], score: d[2], live: price || null, futgg: rules.prices[d[0]] || null, offers: offers.length });
+                }
+                if (i < cands.length - 1) await futbinSleep(FUTBIN_MARKET_GAP_MS);
+            }
+            if (changed) await galleryScanCacheSave(persona, cache);
+            const res = galleryChanceForSet(row, entry, Object.assign({}, rules, { prices: galleryLivePrices(rules) }), galleryFirstOwnedDefs(), galleryKnownGrade(row.id));
+            STATE.diag.galleryQuote = { at: Date.now(), set: row.name, quoted: quoted.length, stopped: stopped };
+            return { result: res, quoted: quoted, stopped: stopped };
+        } finally { galleryBusy = false; }
+    }
+    /** Freigabe-Karte im Galerie-Reiter: nur ein Tipp von Rasmus gibt den Kauf frei (10 min, sonst nein). */
+    function galleryClaudeConfirm(title, lines) {
+        return new Promise(resolve => {
+            try { if (tabCurrent !== 'galerie') setTab('galerie'); } catch (e) {}
+            try { if (ui.panel && !ui.panel.classList.contains('open')) togglePanel(); } catch (e) {}
+            const id = 'sbc-opt-claude-buy-' + Date.now();
+            setGalleryResult('<div class="sbc-opt-card" id="' + id + '"><b>Claude möchte kaufen: ' + escapeHtml(title) + '</b>' +
+                lines.map(l => '<div class="sbc-opt-fb-meta">' + escapeHtml(l) + '</div>').join('') +
+                '<div class="sbc-opt-dim">Je Karte höchstens der gerade gemessene Marktpreis, nichts wird erhöht. Kauf langsam, einer nach dem anderen.</div>' +
+                '<button type="button" class="sbc-opt-btn primary" data-act="yes"><span>Ja, kaufen</span></button>' +
+                '<button type="button" class="sbc-opt-btn ghost" data-act="no">Abbrechen</button></div>');
+            const box = document.getElementById(id);
+            let done = false;
+            const fin = v => { if (done) return; done = true; clearTimeout(t); resolve(v); };
+            const t = setTimeout(() => fin(false), 10 * 60 * 1000);
+            if (!box) { fin(false); return; }
+            box.querySelector('[data-act="yes"]').addEventListener('click', () => fin(true));
+            box.querySelector('[data-act="no"]').addEventListener('click', () => fin(false));
+            toast('Claude wartet auf deine Kauf-Freigabe im Reiter „Galerie“.', 'warn');
+        });
+    }
+    /**
+     * Kauf einer Chance - EINZIGER Kaufweg fuer Claude. Reihenfolge: Plan aus
+     * Regeln + Live-Preisen, frische Pruefung je Karte (galleryPrepareTarget:
+     * Version, isCollected, Preis), Freigabe-Tipp im Panel, erst dann
+     * buyPlannedPlayers mit festen Obergrenzen = Marktminimum je Karte.
+     */
+    async function galleryClaudeBuy(setName, grade) {
+        if (galleryBusy || buyBusy || sellBusy || futbinBusy || STATE.loading || (vorlagenRun && !vorlagenRun.fertig)) throw new Error('Es läuft gerade ein anderer Lauf - kurz warten.');
+        if (!sessionReady()) throw new Error('EA-Sitzung noch nicht erfasst - einmal im Spiel klicken.');
+        if (!STATE.poolFullLoadDone || STATE.loadIncomplete) throw new Error('Verein nicht vollständig geladen - erst pittools_pool_load.');
+        const persona = ownPersonaId();
+        if (!persona) throw new Error('EA-Persona unbekannt - einmal im Spiel klicken.');
+        if (!/^[DCBAS]$/.test(String(grade))) throw new Error('Zielnote bitte als D, C, B, A oder S.');
+        const running = () => { if (ownPersonaId() !== persona || STATE.loading || futbinBusy || sellBusy) throw new Error('Kauf gestoppt: anderer Lauf oder Account gewechselt.'); };
+        galleryBusy = true;
+        const diag = STATE.diag.galleryClaudeBuy = { at: Date.now(), set: setName, grade: grade, phase: 'prüfen' };
+        try {
+            const cat = await galleryCatalogLoad(false, null);
+            const row = galleryFindRow(cat, setName);
+            if (!row) throw new Error('Kein Set „' + setName + '“ im Katalog.');
+            const cache = (await galleryScanCacheLoad(persona)) || { v: 1, persona: persona, at: null, sets: {} };
+            const entry = await galleryEnsureScanEntry(row, cache, persona);
+            const rules = await galleryRulesLoad(row);
+            const res = galleryChanceForSet(row, entry, Object.assign({}, rules, { prices: galleryLivePrices(rules) }), galleryFirstOwnedDefs(), galleryKnownGrade(row.id));
+            const option = (res.options || []).find(o => o.grade === grade);
+            if (!option) throw new Error('Für ' + row.name + ' gibt es keinen Kaufplan auf Note ' + grade + ' (erst pittools_gallery_quote, oder die Note ist schon erreicht).');
+            const data = { set: { requiredCards: rules.requiredCards, grades: rules.grades }, tags: rules.tags };
+            const target = { grade: grade, threshold: option.threshold, cards: option.selection };
+            const known = collectedIdSet(collectedRecordsFromPool(STATE.pool).concat(collectedLoad()));
+            const prepared = await galleryPrepareTarget(data, target, { known: known, running: running,
+                pending: new Set(galleryBoughtLoad().map(p => String(p.defId))),
+                quote: rid => marketOffersLowest(rid, { fresh: true }), matches: (v, o) => galleryOfferMatches(v, o, window),
+                estimate: bins => robustMinBin(bins).robust, cap: price => price, // Rasmus: nie mehr als noetig
+                wait: () => futbinSleep(FUTBIN_MARKET_GAP_MS),
+                progress: (i, n, c) => { galleryClaudeState.progress = 'Prüfe ' + row.name + ' → ' + grade + ': ' + i + '/' + n + ' (' + c.name + ')'; } });
+            diag.plan = prepared.purchases; diag.score = prepared.assessment.score; diag.total = prepared.total;
+            if (prepared.found.length) { const m = mergeCollectedRecords(collectedLoad(), galleryTargetRecords(prepared.found)); collectedSave(m.list); }
+            if (!prepared.purchases.length) { diag.phase = 'nichts zu kaufen'; return { set: row.name, grade: grade, bought: 0, note: 'Alle Karten der Auswahl sind schon gesammelt - im Spiel bewerten.', score: prepared.assessment.score }; }
+            const coins = userCoins();
+            if (coins != null && coins < prepared.total) throw new Error('Kontostand reicht nicht: ' + fmtCoins(prepared.total) + ' nötig.');
+            diag.phase = 'warte auf Freigabe';
+            galleryClaudeState.progress = 'Warte auf Rasmus\' Freigabe im Panel (Reiter Galerie)';
+            const ok = await galleryClaudeConfirm(row.name + ' → Note ' + grade, prepared.purchases.map(p => p.name + ' (' + p.rating + (p.versionLabel ? ', ' + p.versionLabel : '') + '): höchstens ' + fmtCoins(p.maxPrice))
+                .concat(['Zusammen höchstens ' + fmtCoins(prepared.total) + ' · danach ' + prepared.assessment.score + ' Punkte (Ziel ' + option.threshold + ')']));
+            if (!ok) { diag.phase = 'nicht freigegeben'; setGalleryResult('<div class="sbc-opt-dim">Kauf für ' + escapeHtml(row.name) + ' nicht freigegeben - nichts gekauft.</div>'); return { set: row.name, grade: grade, confirmed: false, bought: 0 }; }
+            running(); diag.phase = 'kaufen';
+            let out = null;
+            await buyPlannedPlayers(null, prepared.purchases, { noSquad: true, mode: 'gallery-claude', hardBudget: prepared.total, fixedCaps: true,
+                maxPerRun: GALLERY_BUY_MAX_PER_RUN, gapMin: GALLERY_BUY_GAP_MIN_MS, gapMax: GALLERY_BUY_GAP_MAX_MS,
+                setResult: h => { setGalleryResult(h); },
+                cancelled: () => { try { running(); return false; } catch (_) { return true; } },
+                canAdopt: () => ownPersonaId() === persona,
+                offerMatches: (p, o) => galleryTargetOfferMatches(p.variant, o, window),
+                beforeBid: async () => { running(); return true; },
+                onFinish: (d, bought) => {
+                    diag.buy = { bought: d.bought, spent: d.spent, stopped: d.stopped, adopted: d.adopted };
+                    if (ownPersonaId() !== persona) return;
+                    rememberGalleryBought({ id: row.id, name: row.name }, bought);
+                    const moved = d.adopted && d.adopted.moved + d.adopted.httpMoved >= bought.length;
+                    const defs = new Set(bought.map(b => Number(b.plan.resourceId)));
+                    if (moved) {
+                        mergeIntoPool(bought.map(b => b.raw ? normalizePlayer(Object.assign({}, b.raw, { owners: 2 }), false) : null).filter(Boolean));
+                        const col = prepared.cards.filter(c => defs.has(c.id));
+                        const m = mergeCollectedRecords(collectedLoad(), galleryTargetRecords(col)); collectedSave(m.list);
+                        col.forEach(c => { c.owned = true; });
+                        entry.defs.forEach(x => { if (defs.has(x[0])) x[1] = 1; });
+                    }
+                    const ready = prepared.cards.every(c => c.owned);
+                    diag.phase = ready ? 'Auswahl gesammelt' : 'teilweise';
+                    out = { set: row.name, grade: grade, confirmed: true, bought: d.bought, spent: d.spent, stopped: d.stopped || null, ready: ready,
+                            note: ready ? 'Auswahl vollständig gesammelt - im Spiel bewerten. Gekaufte Karten stehen in der Verkaufsliste.' : 'Noch nicht alles gesammelt - Transferziele/Rest prüfen.' };
+                } });
+            await galleryScanCacheSave(persona, cache);
+            return out || { set: row.name, grade: grade, confirmed: true, bought: 0, note: 'Kauf-Lauf ohne Ergebnis - Galerie-Reiter prüfen.' };
+        } finally { galleryBusy = false; }
     }
     async function onGalleryEaCollectClick() {
         const ch = galleryLast && galleryLast.chosen;
@@ -15097,7 +15266,9 @@ const HybridSbcEa = (() => {
                        // v6.11.0: Galerie-Katalog + Sammelstand bei EA (nur lesen)
                        'pittools_gallery_scan', 'pittools_gallery_state',
                        // v6.12.0: Chancenliste mit Bonusregeln; eingeloeste Note merken (nur lokal)
-                       'pittools_gallery_chances', 'pittools_gallery_grade'];
+                       'pittools_gallery_chances', 'pittools_gallery_grade',
+                       // v6.13.0: Live-Preise; Kauf NUR ueber galleryClaudeBuy mit Freigabe-Tipp im Panel
+                       'pittools_gallery_quote', 'pittools_gallery_buy'];
     const mcpState = { on: false, status: 'aus', log: [] };
     function mcpEnabledSaved() { try { return localStorage.getItem(MCP_KEY) === '1'; } catch (e) { return false; } }
     function mcpSetEnabled(on) {
@@ -15570,9 +15741,32 @@ const HybridSbcEa = (() => {
                 const r = await galleryChancesRun({ sets: sets, maxSets: a.maxSets, maxCoins: a.maxCoins, grade: grade, sort: a.sort === 'grade' ? 'grade' : 'perToken', refreshRules: a.refreshRules === true });
                 const top = Math.max(1, Math.min(50, Number(a.top) || 15));
                 return { note: 'Punkte MIT Bonusregeln (Holo und Erstbesitz verkaufter Karten zählen nicht). Preise = fut.gg-Schätzung, vor einem Kauf wird live bei EA geprüft. Tokens-Gewinn nur, wenn die eingelöste Note bekannt ist (pittools_gallery_grade).',
-                         chances: r.ranked.slice(0, top),
+                         chances: r.ranked.slice(0, top).map(c => { const o = Object.assign({}, c); delete o.selection; return o; }),
                          sets: r.results.map(x => x.error ? { name: x.name, error: x.error } : { name: x.name, gradeNow: x.gradeNow, scoreNow: x.scoreNow, bonusNow: x.bonusNow, redeemed: x.redeemed, freeUpgrade: x.freeUpgrade, options: x.options.length, unknownBonus: x.unknownBonus }) };
             }, () => galleryChancesState.progress);
+            const v = await mcpAwaitJob(job, a.wait);
+            return v.state === 'done' ? v.result : v;
+        }
+        if (tool === 'pittools_gallery_quote') {
+            const running = mcpRunningJob(tool);
+            if (running) return await mcpAwaitJob(running, a.wait);
+            if (!a.set) throw new Error('Welches Set? Parameter set.');
+            const job = mcpStartJob(tool, async () => {
+                const r = await galleryQuoteRun(String(a.set), a.maxCards);
+                const res = r.result;
+                return { set: res.name, gradeNow: res.gradeNow, scoreNow: res.scoreNow, redeemed: res.redeemed, freeUpgrade: res.freeUpgrade, error: res.error || null,
+                         options: (res.options || []).map(o => { const x = Object.assign({}, o); delete x.selection; return x; }),
+                         quoted: r.quoted, stopped: r.stopped,
+                         note: 'Live = gerade gemessenes Marktminimum bei EA (30 min gemerkt), sonst fut.gg. Kaufen nur mit pittools_gallery_buy nach Rasmus\' Ja im Chat - dann bestätigt er noch einmal im Panel.' };
+            }, () => galleryClaudeState.progress);
+            const v = await mcpAwaitJob(job, a.wait);
+            return v.state === 'done' ? v.result : v;
+        }
+        if (tool === 'pittools_gallery_buy') {
+            const running = mcpRunningJob(tool);
+            if (running) return await mcpAwaitJob(running, a.wait);
+            if (!a.set || !a.grade) throw new Error('set und grade angeben.');
+            const job = mcpStartJob(tool, () => galleryClaudeBuy(String(a.set), String(a.grade).toUpperCase()), () => galleryClaudeState.progress);
             const v = await mcpAwaitJob(job, a.wait);
             return v.state === 'done' ? v.result : v;
         }

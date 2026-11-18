@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.11.1
+// @version      6.12.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.11.1';
+    const VERSION = '6.12.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -14174,7 +14174,8 @@ const HybridSbcEa = (() => {
         (STATE.pool || []).forEach(p => { const r = (p && p.raw) || {}; const d = Number(r.definitionId || r.resourceId || 0); if (d > 0) poolDefs.add(String(d)); });
         const hasField = raw.some(x => conceptHasSetField(x, kind));
         diag.filtered = hasField;
-        const sum = galleryEaCollectSummary(hasField ? raw.filter(x => conceptMatchesSet(x, kind, id)) : raw, {
+        const matchRaw = hasField ? raw.filter(x => conceptMatchesSet(x, kind, id)) : raw; // v6.12.0: auch zurueckgeben (Bonus-Merkmale)
+        const sum = galleryEaCollectSummary(matchRaw, {
             kind: kind, id: id, poolDefIds: poolDefs, memoryDefIds: collectedIdSet(collectedLoad()),
             lineupDefIds: lineupDefIds || []
         });
@@ -14182,7 +14183,7 @@ const HybridSbcEa = (() => {
                          inClub: { n: sum.inClub.n, yes: sum.inClub.yes, no: sum.inClub.no.slice(0, 10) },
                          memory: { n: sum.memory.n, yes: sum.memory.yes, no: sum.memory.no.slice(0, 10) },
                          lineup: sum.lineup };
-        return { sum: sum, names: names };
+        return { sum: sum, names: names, raw: matchRaw };
     }
     // ===================== v6.11.0 Galerie-Katalog + Sammelstand-Scan =====================
     // docs/GALERIE-NEU.md Etappe 3. Katalog = alle Sets mit Regeln aus fut.ggs
@@ -14268,6 +14269,96 @@ const HybridSbcEa = (() => {
             run: o.run || null
         };
     }
+    /**
+     * v6.12.0: Bonus-Merkmale je Kartenversion aus EAs Rohdaten, kompakt:
+     * d -> [nation, verein, liga, rareflag, basis-ID, skill, weak foot, [positionen]].
+     * posName bildet EAs Positions-IDs auf "ST", "CB" ... ab. Pure.
+     */
+    function galleryScanAttrs(rawItems, posName) {
+        const out = {};
+        (rawItems || []).forEach(r => {
+            const d = Number(r && (r.definitionId != null ? r.definitionId : r.resourceId));
+            if (!(d > 0) || out[d]) return;
+            const num = v => (v == null || !isFinite(Number(v))) ? null : Number(v);
+            const pos = Array.isArray(r.possiblePositions) ? r.possiblePositions.map(x => typeof x === 'string' ? x.toUpperCase() : (posName ? posName(x) : null)).filter(x => typeof x === 'string') : [];
+            out[d] = [num(r.nation), num(r.teamid != null ? r.teamid : r.teamId), num(r.leagueId), num(r.rareflag), num(r.assetId),
+                      num(r.skillmoves), num(r.weakfootabilitytypecode), pos];
+        });
+        return out;
+    }
+    /** Pure: Regeln einer Set-Seite (fut.gg-SSR): Kartenzahl, Schwellen, Bonusregeln, fut.gg-Preise je Version. */
+    function galleryRulesFromSsr(data) {
+        if (!data || !data.set || !Number.isInteger(data.set.requiredCards) || !Array.isArray(data.set.grades) || !Array.isArray(data.tags)) return null;
+        const prices = {};
+        const take = items => (Array.isArray(items) ? items : []).forEach(p => { if (p && Number.isInteger(p.eaId) && p.eaId > 0 && Number.isFinite(p.price) && p.price > 0 && !(prices[p.eaId] <= p.price)) prices[p.eaId] = p.price; });
+        if (data.solution) { take(data.solution.items); (data.solution.costTiers || []).forEach(t => take(t && t.items)); }
+        return { id: data.set.id, name: data.set.name, requiredCards: data.set.requiredCards,
+                 grades: data.set.grades.filter(g => g && /^[DCBAS]$/.test(g.name) && Number.isFinite(g.threshold)).map(g => ({ name: g.name, threshold: g.threshold })),
+                 tags: data.tags, prices: prices };
+    }
+    const GALLERY_GRADE_ORDER = 'NDCBAS';
+    /**
+     * Pure: Chancen eines Sets. Karten = EAs Versionen (gesammelt = eigen,
+     * sonst Kauf zum fut.gg-Preis; ohne Preis kein Kandidat), Bewertung MIT
+     * Bonusregeln ueber galleryPersonalSearch. firstOwned = Definitions-IDs
+     * im eigenen Verein mit owners 1 (nur dort belegbar). known = eingeloeste
+     * Note ('N' keine) oder null (unbekannt).
+     */
+    function galleryChanceForSet(row, entry, rules, firstOwned, known, search) {
+        const req = rules && rules.requiredCards;
+        if (!row || !entry || !entry.attrs || !rules || !(req > 0)) return { name: row && row.name, error: !entry ? 'nicht gescannt' : !entry.attrs ? 'Scan ohne Merkmale' : 'keine Regeln' };
+        const tokenOf = {};
+        ((row.catalog && row.catalog.grades) || []).forEach(g => { tokenOf[g.name] = g.tokens; });
+        const names = entry.names || {};
+        let cards = (entry.defs || []).filter(x => x[1] === 1 || (x[1] === 0 && rules.prices[x[0]] > 0)).map(x => {
+            const a = entry.attrs[x[0]] || [];
+            return { id: x[0], name: names[x[0]] || ('#' + x[0]), rating: x[3], score: x[2], owned: x[1] === 1,
+                     price: x[1] === 1 ? undefined : rules.prices[x[0]],
+                     attrs: { NATION: a[0], CLUB: a[1], LEAGUEID: a[2], RARE: a[3], BASE_DEF_ID: a[4],
+                              LEVEL: x[3] < 65 ? 'bronze' : x[3] < 75 ? 'silver' : 'gold',
+                              FIRST_OWNED: x[1] === 1 && firstOwned && firstOwned.has(String(x[0])) ? 1 : 0,
+                              HYPER_COSMETIC_TYPE: null, WEAK_FOOT: a[6], SKILL_MOVES: a[5], POSSIBLE_POSITIONS: a[7] } };
+        });
+        if (cards.length > 160) {
+            const own = cards.filter(c => c.owned).sort((p, q) => q.score - p.score), buy = cards.filter(c => !c.owned).sort((p, q) => q.score / q.price - p.score / p.price);
+            cards = own.slice(0, 120).concat(buy).slice(0, 160);
+        }
+        const r = (search || galleryPersonalSearch)(cards, req, rules.tags, rules.grades);
+        if (!r) return { name: row.name, error: 'Bewertung nicht möglich (Regelformat)' };
+        const rank = g => GALLERY_GRADE_ORDER.indexOf(g || 'N');
+        const cur = r.current && r.current.complete ? r.current.grade : null;
+        const floor = Math.max(rank(cur), known ? rank(known) : 0);
+        const tokensBase = known ? (tokenOf[known] || 0) : null;
+        const options = (r.plans || []).filter(p => p.missing.length > 0 && rank(p.grade) > floor).map(p => {
+            const tAt = tokenOf[p.grade];
+            const gain = tAt == null ? null : tokensBase == null ? null : tAt - tokensBase;
+            return { grade: p.grade, threshold: p.threshold, score: p.assessment.score, coins: p.coins, buys: p.missing.length,
+                     tokensAtGrade: tAt == null ? null : tAt, tokensGain: gain, perToken: gain > 0 ? Math.round(p.coins / gain) : null,
+                     cards: p.missing.map(c => ({ defId: c.id, name: c.name, rating: c.rating, score: c.score, priceFutgg: c.price })),
+                     bonus: p.assessment.breakdown };
+        });
+        return {
+            id: row.id, name: row.name, requiredCards: req, collected: (entry.defs || []).filter(x => x[1] === 1).length,
+            gradeNow: cur, scoreNow: r.current ? r.current.score : null, bonusNow: r.current ? r.current.bonus : null,
+            redeemed: known || null,
+            freeUpgrade: cur && known && rank(cur) > rank(known) ? cur : null,
+            options: options, unknownBonus: r.current ? r.current.unknown : [], limited: !!r.limited
+        };
+    }
+    /** Pure: alle Chancen ueber Sets sortiert - Kurs je Token (bekannte eingeloeste Note) oder Zielnote. */
+    function galleryChancesRank(results, opts) {
+        const o = opts || {};
+        const all = [];
+        (results || []).forEach(res => (res.options || []).forEach(op => {
+            if (o.maxCoins > 0 && op.coins > o.maxCoins) return;
+            if (o.grade && op.grade !== o.grade) return;
+            all.push(Object.assign({ set: res.name, setId: res.id, gradeNow: res.gradeNow, redeemed: res.redeemed }, op));
+        }));
+        const per = x => x.perToken != null ? x.perToken : (x.tokensAtGrade > 0 ? x.coins / x.tokensAtGrade : Infinity);
+        return all.sort((a, b) => o.sort === 'grade'
+            ? (GALLERY_GRADE_ORDER.indexOf(b.grade) - GALLERY_GRADE_ORDER.indexOf(a.grade)) || a.coins - b.coins
+            : per(a) - per(b) || a.coins - b.coins);
+    }
     // [GALLERYSCAN-END]
     function galleryCatalogSave(sets) {
         try { localStorage.setItem(GALLERY_CATALOG_KEY, JSON.stringify({ v: 2, at: Date.now(), sets: (sets || []).map(galleryCatalogRow) })); } catch (e) {}
@@ -14346,7 +14437,8 @@ const HybridSbcEa = (() => {
                 if (m.sessionLost) { stopped = 'EA-Sitzung abgelaufen - neu einloggen, dann erneut (Teilstand ist gespeichert).'; break; }
                 const n = {};
                 (m.names || new Map()).forEach((v, k) => { n[k] = v; });
-                cache.sets[x.id] = { at: Date.now(), kind: x.eaKind, id: x.eaId, defs: galleryScanDefs(m.sum.byDef), names: n, partial: !!diag.partial, verdict: m.sum.verdict };
+                cache.sets[x.id] = { at: Date.now(), kind: x.eaKind, id: x.eaId, defs: galleryScanDefs(m.sum.byDef), names: n, partial: !!diag.partial, verdict: m.sum.verdict,
+                                     attrs: galleryScanAttrs(m.raw, v => Gauntlet.posName(v)), hyperSample: galleryHyperSample(m.raw) };
                 const rec = galleryEaCollectRecords(m.sum);
                 if (rec.length) { const mm = mergeCollectedRecords(collectedLoad(), rec); if (mm.added) { collectedSave(mm.list); newlyCollected += mm.added; } }
                 scanned++;
@@ -14363,6 +14455,85 @@ const HybridSbcEa = (() => {
         } finally {
             galleryBusy = false;
             galleryScanState.running = false;
+        }
+    }
+    /** v6.12.0: ein Rohwert von hyperCosmetics zum Nachmessen (Format unbekannt, Bonus "Holographic" bleibt bis dahin aus). */
+    function galleryHyperSample(raw) {
+        try { const r = (raw || []).find(x => x && x.hyperCosmetics != null && !(Array.isArray(x.hyperCosmetics) && !x.hyperCosmetics.length));
+              return r ? JSON.stringify(r.hyperCosmetics).slice(0, 200) : null; } catch (e) { return null; }
+    }
+    const GALLERY_RULES_TTL_MS = 12 * 3600 * 1000;
+    /** Regeln + fut.gg-Preise eines Sets: 12 h in IndexedDB, sonst die Set-Seite ueber die Bruecke (langsam, ~17 s live). */
+    async function galleryRulesLoad(row, force) {
+        const key = 'galleryRules:' + row.id;
+        if (!force) { try { const c = await idbRun('readonly', st => st.get(key)); if (c && c.rules && Date.now() - c.at < GALLERY_RULES_TTL_MS) return c.rules; } catch (e) {} }
+        if (!bridgeKind()) throw new Error(BRIDGE_HINT);
+        const r = await bridgeFetch(futggGallerySetUrl(row.path), 40000);
+        if (r.status !== 200) throw new Error('fut.gg ' + row.name + ': HTTP ' + r.status);
+        const rules = galleryRulesFromSsr(parseGallerySsr(r.text));
+        if (!rules) throw new Error('fut.gg ' + row.name + ': Regeln nicht lesbar');
+        try { await idbRun('readwrite', st => st.put({ at: Date.now(), rules: rules }, key)); } catch (e) {}
+        return rules;
+    }
+    function galleryFirstOwnedDefs() {
+        const out = new Set();
+        (STATE.pool || []).forEach(p => { const r = (p && p.raw) || {}; const d = Number(r.definitionId || r.resourceId || 0); if (d > 0 && r.owners === 1 && !(r.loans > 0)) out.add(String(d)); });
+        return out;
+    }
+    const galleryChancesState = { running: false, progress: null };
+    /** Chancenliste: Sets waehlen, fehlende Merkmale nachscannen, Regeln holen, je Set rechnen. Nur lesen. */
+    async function galleryChancesRun(opts) {
+        const o = opts || {};
+        if (galleryBusy || buyBusy || sellBusy) throw new Error('In der Galerie läuft gerade ein anderer Lauf - kurz warten.');
+        const persona = ownPersonaId();
+        if (!persona) throw new Error('EA-Persona unbekannt - einmal im Spiel klicken.');
+        galleryBusy = true; galleryChancesState.running = true; galleryChancesState.progress = 'Katalog …';
+        try {
+            const cat = await galleryCatalogLoad(false, t => { galleryChancesState.progress = t; });
+            const cache = (await galleryScanCacheLoad(persona)) || { v: 1, persona: persona, at: null, sets: {} };
+            let rows;
+            if (Array.isArray(o.sets) && o.sets.length) {
+                const f = o.sets.map(x => String(x).toLowerCase());
+                rows = cat.sets.filter(x => f.some(q => String(x.name).toLowerCase().indexOf(q) >= 0));
+            } else {
+                // Vorauswahl ohne Boni: vollstaendige oder fast vollstaendige Sets mit naechster Note.
+                const states = galleryScanRank(cat.sets.map(x => galleryScanSetState(x, cache.sets[x.id] || null)))
+                    .filter(st => st.scanned && st.nextGrade && st.missingCards != null && st.missingCards <= 3);
+                const ids = new Set(states.slice(0, Math.max(1, Math.min(20, Number(o.maxSets) || 8))).map(st => st.id));
+                rows = cat.sets.filter(x => ids.has(x.id));
+            }
+            rows = rows.filter(x => (x.eaKind === 'club' || x.eaKind === 'league') && x.eaId > 0);
+            const firstOwned = galleryFirstOwnedDefs();
+            const results = [];
+            let i = 0;
+            for (const row of rows) {
+                i++;
+                let entry = cache.sets[row.id];
+                if (!entry || !entry.attrs) {
+                    if (!sessionReady()) throw new Error('EA-Sitzung noch nicht erfasst - einmal im Spiel klicken.');
+                    galleryChancesState.progress = 'Sammelstand ' + i + ' von ' + rows.length + ': ' + row.name;
+                    const diag = { at: Date.now(), set: row.name, kind: row.eaKind, id: row.eaId, pages: 0, form: 'number', url: null, captured: 0, entities: 0, raw: 0, sample: null, rawKeys: null, stopped: null, via: 'chances' };
+                    const m = await galleryEaMeasure(row.eaKind, row.eaId, [], diag, null);
+                    if (m.sessionLost) throw new Error('EA-Sitzung abgelaufen - neu einloggen, dann erneut.');
+                    const n = {}; (m.names || new Map()).forEach((v, k) => { n[k] = v; });
+                    entry = cache.sets[row.id] = { at: Date.now(), kind: row.eaKind, id: row.eaId, defs: galleryScanDefs(m.sum.byDef), names: n, partial: !!diag.partial,
+                                                   verdict: m.sum.verdict, attrs: galleryScanAttrs(m.raw, v => Gauntlet.posName(v)), hyperSample: galleryHyperSample(m.raw) };
+                    await galleryScanCacheSave(persona, cache);
+                    await futbinSleep(randomBetween(MARKET_STEP_GAP_MIN_MS, MARKET_STEP_GAP_MAX_MS));
+                }
+                galleryChancesState.progress = 'Regeln ' + i + ' von ' + rows.length + ': ' + row.name;
+                let rules;
+                try { rules = await galleryRulesLoad(row, o.refreshRules === true); }
+                catch (e) { results.push({ name: row.name, error: String(e && e.message || e) }); continue; }
+                const res = galleryChanceForSet(row, entry, rules, firstOwned, galleryKnownGrade(row.id));
+                results.push(res);
+                await BgTimer.wait(0); // Seite atmen lassen (Bewertung ist rechenintensiv)
+            }
+            STATE.diag.galleryChances = { at: Date.now(), sets: results.map(r => ({ name: r.name, gradeNow: r.gradeNow, redeemed: r.redeemed, options: (r.options || []).length, error: r.error || null })),
+                                          hyperSamples: rows.map(r => cache.sets[r.id] && cache.sets[r.id].hyperSample).filter(Boolean).slice(0, 5) };
+            return { results: results, ranked: galleryChancesRank(results, o) };
+        } finally {
+            galleryBusy = false; galleryChancesState.running = false;
         }
     }
     async function onGalleryEaCollectClick() {
@@ -14924,7 +15095,9 @@ const HybridSbcEa = (() => {
                        // v6.10.0: Claude loest Laden selbst aus; lange Laeufe als Job (nur lesen)
                        'pittools_pool_load', 'pittools_gallery_load', 'pittools_job_status',
                        // v6.11.0: Galerie-Katalog + Sammelstand bei EA (nur lesen)
-                       'pittools_gallery_scan', 'pittools_gallery_state'];
+                       'pittools_gallery_scan', 'pittools_gallery_state',
+                       // v6.12.0: Chancenliste mit Bonusregeln; eingeloeste Note merken (nur lokal)
+                       'pittools_gallery_chances', 'pittools_gallery_grade'];
     const mcpState = { on: false, status: 'aus', log: [] };
     function mcpEnabledSaved() { try { return localStorage.getItem(MCP_KEY) === '1'; } catch (e) { return false; } }
     function mcpSetEnabled(on) {
@@ -15387,6 +15560,33 @@ const HybridSbcEa = (() => {
             return { state: galleryScanSetState(row, e), catalog: row.catalog, path: row.path, note: GALLERY_SCAN_NOTE,
                      cards: e ? e.defs.slice(0, 120).map(d => ({ defId: d[0], name: names[d[0]] || null, collected: d[1] === 1 ? true : d[1] === 0 ? false : null, score: d[2], rating: d[3] })) : null,
                      hint: e ? null : 'Für dieses Set gibt es noch keinen Scan - pittools_gallery_scan mit sets: ["' + row.name + '"].' };
+        }
+        if (tool === 'pittools_gallery_chances') {
+            const running = mcpRunningJob(tool);
+            if (running) return await mcpAwaitJob(running, a.wait);
+            const sets = Array.isArray(a.sets) ? a.sets.map(String).filter(Boolean) : null;
+            const grade = typeof a.grade === 'string' && /^[DCBAS]$/.test(a.grade) ? a.grade : null;
+            const job = mcpStartJob(tool, async () => {
+                const r = await galleryChancesRun({ sets: sets, maxSets: a.maxSets, maxCoins: a.maxCoins, grade: grade, sort: a.sort === 'grade' ? 'grade' : 'perToken', refreshRules: a.refreshRules === true });
+                const top = Math.max(1, Math.min(50, Number(a.top) || 15));
+                return { note: 'Punkte MIT Bonusregeln (Holo und Erstbesitz verkaufter Karten zählen nicht). Preise = fut.gg-Schätzung, vor einem Kauf wird live bei EA geprüft. Tokens-Gewinn nur, wenn die eingelöste Note bekannt ist (pittools_gallery_grade).',
+                         chances: r.ranked.slice(0, top),
+                         sets: r.results.map(x => x.error ? { name: x.name, error: x.error } : { name: x.name, gradeNow: x.gradeNow, scoreNow: x.scoreNow, bonusNow: x.bonusNow, redeemed: x.redeemed, freeUpgrade: x.freeUpgrade, options: x.options.length, unknownBonus: x.unknownBonus }) };
+            }, () => galleryChancesState.progress);
+            const v = await mcpAwaitJob(job, a.wait);
+            return v.state === 'done' ? v.result : v;
+        }
+        if (tool === 'pittools_gallery_grade') {
+            const cat = galleryCatalogCached(true);
+            if (!cat) throw new Error('Noch kein Galerie-Katalog - erst pittools_gallery_scan.');
+            const g = String(a.grade || '').toUpperCase();
+            if (!/^[NDCBAS]$/.test(g)) throw new Error('Note bitte als N (keine), D, C, B, A oder S.');
+            const q = String(a.set || '').toLowerCase();
+            const row = cat.sets.find(x => String(x.name).toLowerCase() === q) || cat.sets.find(x => q && String(x.name).toLowerCase().indexOf(q) >= 0);
+            if (!row) throw new Error('Kein Set „' + a.set + '“ im Katalog.');
+            const before = galleryKnownGrade(row.id);
+            galleryRememberGrade(row.id, g);
+            return { set: row.name, redeemed: g, before: before, note: 'Nur in PitTools auf diesem Gerät gemerkt - EA kennt die eingelöste Note in der Web App nicht.' };
         }
         if (tool === 'pittools_job_status') {
             if (!a.jobId) return { jobs: Array.from(mcpJobs.values()).slice(-10).map(j => { const v = mcpJobView(j); delete v.result; return v; }) };

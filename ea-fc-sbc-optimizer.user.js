@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.17.0
+// @version      6.18.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.17.0';
+    const VERSION = '6.18.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -14577,6 +14577,23 @@ const HybridSbcEa = (() => {
     // belegt fuer Vereine und Ligen), im Takt der Preisrunde, je Persona in
     // IndexedDB. Seltenheits-Sets (TOTW, Icons ...) haben noch kein EA-Kriterium.
     // [GALLERYSCAN-BEGIN]
+    /**
+     * v6.18.0: Set-Namen tolerant vergleichen. Rasmus schreibt "Bay FC", fut.gg
+     * fuehrt "Bay Football Club"; Akzente und Satzzeichen zaehlen nicht. Pure.
+     */
+    function galleryNameKey(s) {
+        return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+            .replace(/football club/g, 'fc').replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim();
+    }
+    /** 2 = gleicher Name, 1 = Teil davon oder alle Woerter enthalten, 0 = kein Treffer. Pure. */
+    function galleryNameHit(name, q) {
+        const n = galleryNameKey(name), k = galleryNameKey(q);
+        if (!k) return 0;
+        if (n === k) return 2;
+        if (n.indexOf(k) >= 0) return 1;
+        const words = n.split(' ');
+        return k.split(' ').every(w => words.indexOf(w) >= 0) ? 1 : 0;
+    }
     const GALLERY_CATALOG_KEY = 'sbcOptGalleryCatalog';
     const GALLERY_CATALOG_TTL_MS = 7 * 24 * 3600 * 1000;
     const GALLERY_SCAN_FRESH_MS = 24 * 3600 * 1000;
@@ -14742,8 +14759,8 @@ const HybridSbcEa = (() => {
     function galleryScanReport(catalog, cache, opts) {
         const o = opts || {};
         const rows = (catalog && Array.isArray(catalog.sets) ? catalog.sets : []);
-        const filt = Array.isArray(o.sets) && o.sets.length ? o.sets.map(x => String(x).toLowerCase()) : null;
-        const chosen = filt ? rows.filter(x => filt.some(f => String(x.name).toLowerCase().indexOf(f) >= 0)) : rows;
+        const filt = Array.isArray(o.sets) && o.sets.length ? o.sets.map(String) : null;
+        const chosen = filt ? rows.filter(x => filt.some(f => galleryNameHit(x.name, f) > 0)) : rows;
         const sets = (cache && cache.sets) || {};
         const states = galleryScanRank(chosen.map(x => galleryScanSetState(x, sets[x.id] || sets[String(x.id)] || null)));
         const top = Math.max(1, Math.min(200, Number(o.top) || 25));
@@ -14776,13 +14793,75 @@ const HybridSbcEa = (() => {
         return out;
     }
     /** Pure: Regeln einer Set-Seite (fut.gg-SSR): Kartenzahl, Schwellen, Bonusregeln, fut.gg-Preise je Version. */
+    /**
+     * v6.18.0: Tokens je Note aus den Belohnungen der Set-Seite (SSR
+     * grades[].rewards, type "event_token_1", value je Stufe). Der Katalog der
+     * Kategorieseite kennt Tokens nur fuer Noten, die fut.ggs eigene Loesung
+     * erreicht (FC Bayern: B/A/S null). Ergebnis KUMULATIV wie im Katalog;
+     * ohne rewards-Feld bleibt tokens weg (unbekannt). Pure.
+     */
+    function galleryGradeTokensFromRewards(grades) {
+        const list = (Array.isArray(grades) ? grades : []).filter(g => g && /^[DCBAS]$/.test(g.name) && Number.isFinite(g.threshold))
+            .slice().sort((a, b) => a.threshold - b.threshold);
+        const known = list.length > 0 && list.every(g => Array.isArray(g.rewards));
+        let cum = 0;
+        return list.map(g => {
+            const o = { name: g.name, threshold: g.threshold };
+            if (known) {
+                cum += g.rewards.filter(r => r && /^event_token/i.test(String(r.type || '')) && Number.isFinite(r.value))
+                    .reduce((a, r) => a + r.value * (Number.isFinite(r.count) && r.count > 0 ? r.count : 1), 0);
+                o.tokens = cum;
+            }
+            return o;
+        });
+    }
+    /** v6.18.0: fehlende Tokens einer Notenliste aus einer Tabelle {D: n, ...} ergaenzen, vorhandene bleiben. Pure. */
+    function galleryGradesWithTokens(grades, table) {
+        return (Array.isArray(grades) ? grades : []).map(g => (g && !Number.isFinite(g.tokens) && table && Number.isFinite(table[g.name]))
+            ? Object.assign({}, g, { tokens: table[g.name] }) : g);
+    }
+    /**
+     * v6.18.0: Vorauswahl der Chancenliste nach der ECHTEN Lage statt nur nach
+     * Grundpunkten: eingeloeste Note S oder keine Tokens mehr offen -> raus;
+     * Sets, deren Grundpunkte schon ueber der eingeloesten Note liegen, zuerst
+     * (Bewertung ohne Kauf), dann wenige fehlende Karten, dann kleine Luecke
+     * zur naechsten Note UEBER der eingeloesten. sets = Scan-Cache. Pure.
+     */
+    function galleryChanceShortlist(rows, sets, knownOf, max) {
+        const rank = g => 'NDCBAS'.indexOf(g || 'N');
+        const out = [];
+        (rows || []).forEach(row => {
+            if (!row || !(row.eaKind === 'club' || row.eaKind === 'league') || !(row.eaId > 0)) return;
+            const entry = sets && (sets[row.id] || sets[String(row.id)]);
+            if (!entry) return;
+            const st = galleryScanSetState(row, entry);
+            if (st.noCatalog || st.missingCards == null || st.missingCards > 3) return;
+            const known = knownOf ? knownOf(row.id) : null;
+            if (known === 'S') return;
+            const grades = ((row.catalog && row.catalog.grades) || []).filter(g => g && Number.isFinite(g.threshold)).slice().sort((a, b) => a.threshold - b.threshold);
+            const tok = { N: 0 };
+            grades.forEach(g => { tok[g.name] = g.tokens; });
+            const base = known ? tok[known] : 0;
+            const tokensLeft = Number.isFinite(tok.S) && Number.isFinite(base) ? tok.S - base : null;
+            if (tokensLeft === 0) return;
+            const floor = rank(known);
+            const free = !!(st.complete && st.gradeNow && rank(st.gradeNow) > floor);
+            const from = Math.max(floor, rank(st.gradeNow));
+            const next = grades.find(g => rank(g.name) > from);
+            const gap = st.complete && next ? Math.max(0, next.threshold - st.baseScore) / next.threshold : 1;
+            out.push({ id: row.id, name: row.name, known: known, gradeBase: st.gradeNow, missing: st.missingCards, free: free, tokensLeft: tokensLeft,
+                       key: [free ? 0 : 1, st.missingCards, gap] });
+        });
+        out.sort((a, b) => a.key[0] - b.key[0] || a.key[1] - b.key[1] || a.key[2] - b.key[2] || (b.tokensLeft || 0) - (a.tokensLeft || 0) || String(a.name).localeCompare(String(b.name)));
+        return out.slice(0, Math.max(1, max || 8)).map(x => { const o = Object.assign({}, x); delete o.key; return o; });
+    }
     function galleryRulesFromSsr(data) {
         if (!data || !data.set || !Number.isInteger(data.set.requiredCards) || !Array.isArray(data.set.grades) || !Array.isArray(data.tags)) return null;
         const prices = {};
         const take = items => (Array.isArray(items) ? items : []).forEach(p => { if (p && Number.isInteger(p.eaId) && p.eaId > 0 && Number.isFinite(p.price) && p.price > 0 && !(prices[p.eaId] <= p.price)) prices[p.eaId] = p.price; });
         if (data.solution) { take(data.solution.items); (data.solution.costTiers || []).forEach(t => take(t && t.items)); }
         return { id: data.set.id, name: data.set.name, requiredCards: data.set.requiredCards,
-                 grades: data.set.grades.filter(g => g && /^[DCBAS]$/.test(g.name) && Number.isFinite(g.threshold)).map(g => ({ name: g.name, threshold: g.threshold })),
+                 grades: galleryGradeTokensFromRewards(data.set.grades),
                  tags: data.tags, prices: prices,
                  firstOwnedDefs: (data.lineupCards || []).concat(data.lineupItems || []).filter(c => c && c.alwaysFirstOwner === true && Number.isInteger(c.eaId) && c.eaId > 0).map(c => c.eaId) };
     }
@@ -14799,6 +14878,7 @@ const HybridSbcEa = (() => {
         if (!row || !entry || !entry.attrs || !rules || !(req > 0)) return { name: row && row.name, error: !entry ? 'nicht gescannt' : !entry.attrs ? 'Scan ohne Merkmale' : 'keine Regeln' };
         const tokenOf = {};
         ((row.catalog && row.catalog.grades) || []).forEach(g => { tokenOf[g.name] = g.tokens; });
+        (rules.grades || []).forEach(g => { if (!Number.isFinite(tokenOf[g.name]) && Number.isFinite(g.tokens)) tokenOf[g.name] = g.tokens; });
         const names = entry.names || {};
         let cards = (entry.defs || []).filter(x => x[1] === 1 || (x[1] === 0 && rules.prices[x[0]] > 0)).map(x => {
             const a = entry.attrs[x[0]] || [];
@@ -14833,6 +14913,9 @@ const HybridSbcEa = (() => {
             gradeNow: cur, scoreNow: r.current ? r.current.score : null, bonusNow: r.current ? r.current.bonus : null,
             redeemed: known || null,
             freeUpgrade: cur && known && rank(cur) > rank(known) ? cur : null,
+            // v6.18.0: im Spiel ohne Kauf bewertbar (auch bei unbekannter eingeloester Note), mit Tokens, falls bekannt
+            gradeable: cur && rank(cur) > rank(known) ? cur : null,
+            gradeableTokens: cur && known && rank(cur) > rank(known) && Number.isFinite(tokenOf[cur]) ? tokenOf[cur] - (tokenOf[known] || 0) : null,
             options: options, unknownBonus: r.current ? r.current.unknown : [], limited: !!r.limited
         };
     }
@@ -14945,8 +15028,8 @@ const HybridSbcEa = (() => {
         const t0 = Date.now();
         try {
             const cat = await galleryCatalogLoad(!!o.refreshCatalog, t => { galleryScanState.progress = t; });
-            const filt = Array.isArray(o.sets) && o.sets.length ? o.sets.map(x => String(x).toLowerCase()) : null;
-            const rows = filt ? cat.sets.filter(x => filt.some(f => String(x.name).toLowerCase().indexOf(f) >= 0)) : cat.sets;
+            const filt = Array.isArray(o.sets) && o.sets.length ? o.sets.map(String) : null;
+            const rows = filt ? cat.sets.filter(x => filt.some(f => galleryNameHit(x.name, f) > 0)) : cat.sets;
             const cache = (await galleryScanCacheLoad(persona)) || { v: 1, persona: persona, at: null, sets: {} };
             const teamsKey = x => galleryTeamIdsOf(x).ids.join(',');
             const fresh = x => { const e = cache.sets[x.id]; return e && e.attrVersion === GALLERY_SCAN_ATTR_VERSION && Date.now() - e.at < GALLERY_SCAN_FRESH_MS && (x.eaKind !== 'club' || (Array.isArray(e.teams) && e.teams.join(',') === teamsKey(x))); };
@@ -14990,15 +15073,34 @@ const HybridSbcEa = (() => {
     }
     const GALLERY_RULES_TTL_MS = 12 * 3600 * 1000;
     /** Regeln + fut.gg-Preise eines Sets: 12 h in IndexedDB, sonst die Set-Seite ueber die Bruecke (langsam, ~17 s live). */
+    // v6.18.0: Tokens je Note aus den Set-Seiten dauerhaft (Katalog kennt sie nicht fuer alle Noten).
+    const GALLERY_TOKEN_TABLE_KEY = 'sbcOptGalleryTokenTable';
+    function galleryTokenTable() { try { const t = JSON.parse(localStorage.getItem(GALLERY_TOKEN_TABLE_KEY) || '{}'); return t && typeof t === 'object' ? t : {}; } catch (e) { return {}; } }
+    function galleryTokenTableNote(id, grades) {
+        const row = {};
+        (grades || []).forEach(g => { if (g && Number.isFinite(g.tokens)) row[g.name] = g.tokens; });
+        if (!Object.keys(row).length) return;
+        const t = galleryTokenTable();
+        if (JSON.stringify(t[id]) === JSON.stringify(row)) return;
+        t[id] = row;
+        try { localStorage.setItem(GALLERY_TOKEN_TABLE_KEY, JSON.stringify(t)); } catch (e) {}
+    }
+    function galleryRowWithTokens(row) {
+        if (!row || !row.catalog || !Array.isArray(row.catalog.grades)) return row;
+        const t = galleryTokenTable()[row.id];
+        if (!t) return row;
+        return Object.assign({}, row, { catalog: Object.assign({}, row.catalog, { grades: galleryGradesWithTokens(row.catalog.grades, t) }) });
+    }
     async function galleryRulesLoad(row, force) {
         const key = 'galleryRules:' + row.id;
-        if (!force) { try { const c = await idbRun('readonly', st => st.get(key)); if (c && c.v === 2 && c.rules && Date.now() - c.at < GALLERY_RULES_TTL_MS) return c.rules; } catch (e) {} }
+        if (!force) { try { const c = await idbRun('readonly', st => st.get(key)); if (c && c.v === 3 && c.rules && Date.now() - c.at < GALLERY_RULES_TTL_MS) { galleryTokenTableNote(row.id, c.rules.grades); return c.rules; } } catch (e) {} }
         if (!bridgeKind()) throw new Error(BRIDGE_HINT);
         const r = await bridgeFetch(futggGallerySetUrl(row.path), 40000);
         if (r.status !== 200) throw new Error('fut.gg ' + row.name + ': HTTP ' + r.status);
         const rules = galleryRulesFromSsr(parseGallerySsr(r.text));
         if (!rules) throw new Error('fut.gg ' + row.name + ': Regeln nicht lesbar');
-        try { await idbRun('readwrite', st => st.put({ v: 2, at: Date.now(), rules: rules }, key)); } catch (e) {}
+        try { await idbRun('readwrite', st => st.put({ v: 3, at: Date.now(), rules: rules }, key)); } catch (e) {}
+        galleryTokenTableNote(row.id, rules.grades);
         return rules;
     }
     function galleryFirstOwnedDefs() {
@@ -15019,16 +15121,15 @@ const HybridSbcEa = (() => {
             const cache = (await galleryScanCacheLoad(persona)) || { v: 1, persona: persona, at: null, sets: {} };
             let rows;
             if (Array.isArray(o.sets) && o.sets.length) {
-                const f = o.sets.map(x => String(x).toLowerCase());
-                rows = cat.sets.filter(x => f.some(q => String(x.name).toLowerCase().indexOf(q) >= 0));
+                const f = o.sets.map(String);
+                rows = cat.sets.filter(x => f.some(q => galleryNameHit(x.name, q) > 0));
             } else {
-                // Vorauswahl ohne Boni: vollstaendige oder fast vollstaendige Sets mit naechster Note.
-                const states = galleryScanRank(cat.sets.map(x => galleryScanSetState(x, cache.sets[x.id] || null)))
-                    .filter(st => st.scanned && st.nextGrade && st.missingCards != null && st.missingCards <= 3);
-                const ids = new Set(states.slice(0, Math.max(1, Math.min(20, Number(o.maxSets) || 8))).map(st => st.id));
+                // v6.18.0: Vorauswahl nach eingeloester Note und offenen Tokens (galleryChanceShortlist).
+                const pick = galleryChanceShortlist(cat.sets.map(galleryRowWithTokens), cache.sets, galleryKnownGrade, Math.max(1, Math.min(20, Number(o.maxSets) || 8)));
+                const ids = new Set(pick.map(x => x.id));
                 rows = cat.sets.filter(x => ids.has(x.id));
             }
-            rows = rows.filter(x => (x.eaKind === 'club' || x.eaKind === 'league') && x.eaId > 0);
+            rows = rows.filter(x => (x.eaKind === 'club' || x.eaKind === 'league') && x.eaId > 0).map(galleryRowWithTokens);
             const firstOwned = galleryFirstOwnedDefs();
             const results = [];
             let i = 0;
@@ -15070,8 +15171,8 @@ const HybridSbcEa = (() => {
         return out;
     }
     function galleryFindRow(cat, name) {
-        const q = String(name || '').toLowerCase();
-        return cat.sets.find(x => String(x.name).toLowerCase() === q) || cat.sets.find(x => q && String(x.name).toLowerCase().indexOf(q) >= 0) || null;
+        const sets = (cat && cat.sets) || [];
+        return sets.find(x => galleryNameHit(x.name, name) === 2) || sets.find(x => galleryNameHit(x.name, name) === 1) || null;
     }
     async function galleryEnsureScanEntry(row, cache, persona) {
         let entry = cache.sets[row.id];
@@ -15485,7 +15586,7 @@ const HybridSbcEa = (() => {
             if (!e || e.partial) return null;
             return galleryScanSetState(row, e).complete ? 'yes' : 'no';
         };
-        const cands = galleryTokenCandidates(ev.delta, cat.sets, galleryKnownGrade, stateOf);
+        const cands = galleryTokenCandidates(ev.delta, cat.sets.map(galleryRowWithTokens), galleryKnownGrade, stateOf);
         const d = galleryTokenDecide(cands);
         const slim = c => ({ id: c.id, name: c.name, from: c.from, to: c.to, known: c.known, state: c.state });
         ev.candidates = cands.single.slice(0, 12).map(slim);
@@ -16694,8 +16795,7 @@ const HybridSbcEa = (() => {
                 if (a.details === true) return { at: Date.now(), version: VERSION, catalog: cat, sets: cache.sets, firstOwnedDefs: Array.from(galleryFirstOwnedDefs()), note: 'Diagnose-Rohdaten derselben Persona; Kartenbestand und gespeicherte Konsolenauswahl können voneinander abweichen.' };
                 return galleryScanReport(cat, cache, { top: a.top });
             }
-            const q = String(a.set).toLowerCase();
-            const row = cat.sets.find(x => String(x.name).toLowerCase() === q) || cat.sets.find(x => String(x.name).toLowerCase().indexOf(q) >= 0);
+            const row = galleryFindRow(cat, a.set);
             if (!row) throw new Error('Kein Set „' + a.set + '“ im Katalog.');
             const e = cache.sets[row.id] || null;
             const names = (e && e.names) || {};
@@ -16711,9 +16811,11 @@ const HybridSbcEa = (() => {
             const job = mcpStartJob(tool, async () => {
                 const r = await galleryChancesRun({ sets: sets, maxSets: a.maxSets, maxCoins: a.maxCoins, grade: grade, sort: a.sort === 'grade' ? 'grade' : 'perToken', refreshRules: a.refreshRules === true });
                 const top = Math.max(1, Math.min(50, Number(a.top) || 15));
-                return { note: 'Punkte MIT Bonusregeln (Holo wird berücksichtigt; Erstbesitz früherer Karten zählt nur mit Beleg). Preise = fut.gg-Schätzung, vor einem Kauf wird live bei EA geprüft. Tokens-Gewinn nur, wenn die eingelöste Note bekannt ist (pittools_gallery_grade).',
+                return { note: 'Punkte MIT Bonusregeln (Holo wird berücksichtigt; Erstbesitz früherer Karten zählt nur mit Beleg). Preise = fut.gg-Schätzung, vor einem Kauf wird live bei EA geprüft. Tokens-Gewinn nur, wenn die eingelöste Note bekannt ist (pittools_gallery_grade). Vorauswahl ohne sets: eingelöste Note und offene Tokens (v6.18.0).',
+                         // v6.18.0: was Rasmus im Spiel OHNE Kauf bewerten kann - erst das, dann kaufen
+                         gradeWithoutBuying: r.results.filter(x => !x.error && x.gradeable).map(x => ({ set: x.name, grade: x.gradeable, redeemed: x.redeemed, tokens: x.gradeableTokens, score: x.scoreNow })),
                          chances: r.ranked.slice(0, top).map(c => { const o = Object.assign({}, c); delete o.selection; return o; }),
-                         sets: r.results.map(x => x.error ? { name: x.name, error: x.error } : { name: x.name, gradeNow: x.gradeNow, scoreNow: x.scoreNow, bonusNow: x.bonusNow, redeemed: x.redeemed, freeUpgrade: x.freeUpgrade, options: x.options.length, unknownBonus: x.unknownBonus }) };
+                         sets: r.results.map(x => x.error ? { name: x.name, error: x.error } : { name: x.name, gradeNow: x.gradeNow, scoreNow: x.scoreNow, bonusNow: x.bonusNow, redeemed: x.redeemed, freeUpgrade: x.freeUpgrade, gradeable: x.gradeable, options: x.options.length, unknownBonus: x.unknownBonus }) };
             }, () => galleryChancesState.progress);
             const v = await mcpAwaitJob(job, a.wait);
             return v.state === 'done' ? v.result : v;
@@ -16749,11 +16851,11 @@ const HybridSbcEa = (() => {
             const key = 'sbcOptGalleryConsole:' + persona;
             let snap = null; try { snap = JSON.parse(localStorage.getItem(key) || 'null'); } catch (e) {}
             if (Array.isArray(a.entries) && a.entries.length) {
-                const byName = new Map(cat.sets.map(x => [String(x.name).toLowerCase(), x]));
+                const byName = new Map(cat.sets.map(x => [galleryNameKey(x.name), x]));
                 const next = { at: Date.now(), source: String(a.source || 'Konsole'), sets: {} };
                 const unmatched = [];
                 a.entries.forEach(en => {
-                    const row = byName.get(String(en && en.set || '').toLowerCase());
+                    const row = byName.get(galleryNameKey(en && en.set));
                     if (!row) { unmatched.push(en && en.set); return; }
                     const rec = { name: row.name };
                     if (Number.isFinite(Number(en.points)) && en.points != null) rec.points = Number(en.points);
@@ -16780,8 +16882,7 @@ const HybridSbcEa = (() => {
                 const cat = galleryCatalogCached(true);
                 if (!cat) throw new Error('Noch kein Galerie-Katalog - erst pittools_gallery_scan.');
                 const picks = (Array.isArray(a.assign.picks) ? a.assign.picks : []).map(pk => {
-                    const q = String(pk && pk.set || '').toLowerCase();
-                    const row = cat.sets.find(x => String(x.name).toLowerCase() === q) || cat.sets.find(x => q && String(x.name).toLowerCase().indexOf(q) >= 0);
+                    const row = galleryFindRow(cat, pk && pk.set);
                     if (!row) throw new Error('Kein Set „' + (pk && pk.set) + '“ im Katalog.');
                     return { id: row.id, grade: String(pk.grade || '').toUpperCase() };
                 });
@@ -16800,8 +16901,7 @@ const HybridSbcEa = (() => {
             if (!cat) throw new Error('Noch kein Galerie-Katalog - erst pittools_gallery_scan.');
             const g = String(a.grade || '').toUpperCase();
             if (!/^[NDCBAS]$/.test(g)) throw new Error('Note bitte als N (keine), D, C, B, A oder S.');
-            const q = String(a.set || '').toLowerCase();
-            const row = cat.sets.find(x => String(x.name).toLowerCase() === q) || cat.sets.find(x => q && String(x.name).toLowerCase().indexOf(q) >= 0);
+            const row = galleryFindRow(cat, a.set);
             if (!row) throw new Error('Kein Set „' + a.set + '“ im Katalog.');
             const before = galleryKnownGrade(row.id);
             galleryRememberGrade(row.id, g);

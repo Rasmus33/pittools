@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.26.0
+// @version      6.27.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.26.0';
+    const VERSION = '6.27.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -3210,6 +3210,7 @@
         // sie meldet Luecken IM Durchlauf, das Flag meldet, DASS einer lief.
         if (!STATE.cancelLoad) STATE.poolFullLoadDone = true;
         rememberCollected(STATE.pool); // v5.61.0
+        try { galleryFirstOwnedDefs(); } catch (e) {} // v6.27.0: Erstbesitz-Beleg merken, bevor Karten verkauft werden
         log('Pool geladen:', STATE.pool.length, 'Spieler (Storage:', storage.length,
             ', Unassigned:', unassigned.length, ')' + (STATE.cancelLoad ? ' [abgebrochen]' : ''));
         if (STATE.loadIncomplete || (!storage.length && !STATE.cancelLoad)) {
@@ -15684,10 +15685,33 @@ const HybridSbcEa = (() => {
         galleryTokenTableNote(row.id, rules.grades);
         return rules;
     }
+    /*
+     * v6.27.0: Erstbesitz-Beleg dauerhaft merken. Live 19.11. (Al Hilal S): die
+     * Chancenliste plante EINEN Kauf (First Owner +4.467), die Kauf-Vorschau
+     * kurz danach SECHS fuer 104.000 - dazwischen lief Rasmus' Verkaufslauf,
+     * die Erstbesitz-Karten waren gerade nicht im Pool, und der Beleg kam nur
+     * aus STATE.pool. Die Galerie zaehlt eine einmal gesammelte Karte dauerhaft
+     * (Mainz: Erstbesitz an der Konsole bestaetigt), also merkt PitTools jede
+     * Definitions-ID, die es im Verein mit owners 1 gesehen hat, je Persona.
+     * Additiv: Pool-Beleg wie bisher, plus das Gedaechtnis.
+     */
+    const GALLERY_FIRST_OWNED_KEY = 'sbcOptFirstOwnedDefs';
+    const GALLERY_FIRST_OWNED_MAX = 6000;
+    /** Pure: gemerkte IDs + Pool (owners 1, keine Leihe) zusammenfuehren. */
+    function galleryFirstOwnedMerge(stored, pool) {
+        const out = new Set((Array.isArray(stored) ? stored : []).map(String).filter(d => /^[1-9][0-9]*$/.test(d)));
+        const before = out.size;
+        (Array.isArray(pool) ? pool : []).forEach(p => { const r = (p && p.raw) || {}; const d = Number(r.definitionId || r.resourceId || 0); if (d > 0 && r.owners === 1 && !(r.loans > 0)) out.add(String(d)); });
+        return { set: out, changed: out.size !== before };
+    }
     function galleryFirstOwnedDefs() {
-        const out = new Set();
-        (STATE.pool || []).forEach(p => { const r = (p && p.raw) || {}; const d = Number(r.definitionId || r.resourceId || 0); if (d > 0 && r.owners === 1 && !(r.loans > 0)) out.add(String(d)); });
-        return out;
+        const persona = typeof ownPersonaId === 'function' ? ownPersonaId() : null;
+        const key = persona ? GALLERY_FIRST_OWNED_KEY + ':' + persona : null;
+        let stored = [];
+        if (key) { try { const a = JSON.parse(localStorage.getItem(key) || '[]'); if (Array.isArray(a)) stored = a; } catch (e) {} }
+        const m = galleryFirstOwnedMerge(stored, STATE.pool || []);
+        if (key && m.changed) { try { localStorage.setItem(key, JSON.stringify(Array.from(m.set).slice(-GALLERY_FIRST_OWNED_MAX))); } catch (e) {} }
+        return m.set;
     }
     const galleryChancesState = { running: false, progress: null };
     let galleryLastChances = null;

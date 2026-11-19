@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.24.0
+// @version      6.24.1
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.24.0';
+    const VERSION = '6.24.1';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -13180,20 +13180,27 @@ const HybridSbcEa = (() => {
                  itemId: buyLedgerNum(it.id), lastSalePrice: buyLedgerNum(it.lastSalePrice), answered: !!(resp && typeof resp === 'object') };
     }
     /**
-     * Ein Eintrag. Abgebucht = Kontostand vorher - Kontostand danach laut EA;
-     * "vorher" ist EAs Antwort auf den vorigen Kauf DESSELBEN Laufs (prevCredits),
-     * sonst der Kontostand aus EAs Client (kann veraltet sein, deshalb mit Quelle).
+     * Ein Eintrag. Abgebucht = Kontostand vorher - Kontostand danach laut EA.
+     * "vorher" ist EAs Kontostand nach dem vorigen Kauf (prevCredits, auch aus
+     * einem frueheren Lauf - v6.24.1: EAs Client kennt unsere HTTP-Kaeufe nicht
+     * und zeigte live bei jedem neuen Lauf den Stand von vor dem ersten Kauf,
+     * Haidara "abgebucht 11.450" statt 200). Ein Kauf kann den Kontostand nie
+     * erhoehen: liegt EAs neuer Stand UEBER prevCredits (dazwischen verkauft),
+     * gilt der Client-Stand, und ist auch der unplausibel, bleibt "abgebucht" leer.
      */
     function buyLedgerEntry(c, prevCredits) {
         const ea = c.ea || {};
-        const before = Number.isFinite(prevCredits) ? prevCredits : (Number.isFinite(c.coinsBefore) ? c.coinsBefore : null);
+        const after = ea.credits != null ? ea.credits : null;
+        const fits = v => Number.isFinite(v) && (after == null || v >= after);
+        const usePrev = fits(prevCredits);
+        const before = usePrev ? prevCredits : (fits(c.coinsBefore) ? c.coinsBefore : null);
         return { at: c.at, run: c.run != null ? c.run : null, mode: c.mode || null, via: c.via || null,
                  name: c.name || null, defId: buyLedgerNum(c.defId), rating: buyLedgerNum(c.rating),
                  tradeId: c.tradeId != null ? String(c.tradeId) : null, itemId: ea.itemId != null ? ea.itemId : buyLedgerNum(c.itemId),
                  bid: buyLedgerNum(c.bid), planned: buyLedgerNum(c.planned), max: buyLedgerNum(c.max),
                  eaPrice: ea.currentBid != null ? ea.currentBid : null, eaBin: ea.buyNowPrice != null ? ea.buyNowPrice : null,
                  bidState: ea.bidState || null, tradeState: ea.tradeState || null, answered: !!ea.answered,
-                 coinsBefore: before, coinsBeforeFrom: Number.isFinite(prevCredits) ? 'EA (voriger Kauf)' : (before != null ? 'EA-Client' : null),
+                 coinsBefore: before, coinsBeforeFrom: usePrev ? 'EA (voriger Kauf)' : (before != null ? 'EA-Client' : null),
                  creditsAfter: ea.credits != null ? ea.credits : null,
                  charged: before != null && ea.credits != null ? before - ea.credits : null,
                  lastSaleBefore: buyLedgerNum(c.lastSaleBefore), lastSaleAfter: ea.lastSalePrice != null ? ea.lastSalePrice : null };
@@ -13202,10 +13209,14 @@ const HybridSbcEa = (() => {
         const keep = BUY_LEDGER_DAYS * 24 * 60 * 60 * 1000;
         return (Array.isArray(list) ? list : []).filter(e => e && Number.isFinite(e.at) && e.at <= now && now - e.at < keep).slice(-BUY_LEDGER_MAX);
     }
-    /** Kontostand nach dem letzten Kauf desselben Laufs (fuer "abgebucht"). */
-    function buyLedgerPrevCredits(list, run) {
-        if (run == null) return null;
-        for (let i = (list || []).length - 1; i >= 0; i--) { const e = list[i]; if (e && e.run === run && Number.isFinite(e.creditsAfter)) return e.creditsAfter; }
+    /** v6.24.1: EAs Kontostand nach dem letzten Kauf, ueber Laeufe hinweg, hoechstens 30 min alt (fuer "abgebucht"). */
+    const BUY_LEDGER_PREV_MAX_MS = 30 * 60 * 1000;
+    function buyLedgerPrevCredits(list, now) {
+        for (let i = (list || []).length - 1; i >= 0; i--) {
+            const e = list[i];
+            if (!e || !Number.isFinite(e.creditsAfter) || !Number.isFinite(e.at)) continue;
+            return now - e.at <= BUY_LEDGER_PREV_MAX_MS && e.at <= now ? e.creditsAfter : null;
+        }
         return null;
     }
     // [BUYLEDGER-END]
@@ -13216,7 +13227,7 @@ const HybridSbcEa = (() => {
         try {
             const now = Date.now();
             const list = buyLedgerLoad();
-            const entry = buyLedgerEntry(Object.assign({ at: now }, ctx), buyLedgerPrevCredits(list, ctx.run));
+            const entry = buyLedgerEntry(Object.assign({ at: now }, ctx), buyLedgerPrevCredits(list, now));
             list.push(entry);
             localStorage.setItem(buyLedgerKey(), JSON.stringify(buyLedgerPrune(list, now)));
             return entry;

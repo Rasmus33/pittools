@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.24.1
+// @version      6.24.2
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.24.1';
+    const VERSION = '6.24.2';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -15138,6 +15138,23 @@ const HybridSbcEa = (() => {
         const words = n.split(' ');
         return k.split(' ').every(w => words.indexOf(w) >= 0) ? 1 : 0;
     }
+    /**
+     * v6.24.2: Karten, die der KI-Kauf NICHT planen soll (live 19.11.: Inter Miami,
+     * Caicedo zweimal ohne Angebot bis 850 - der Plan nahm ihn immer wieder, weil
+     * er laut fut.gg die billigste fehlende Karte war). raw = defIds oder
+     * Spielernamen (wie in pittools_gallery_state), names = { defId: Name } des
+     * Scans. Ein Name trifft alle Versionen dieses Spielers. Pure.
+     */
+    function galleryExcludeDefs(raw, names) {
+        const out = new Set();
+        (Array.isArray(raw) ? raw : []).forEach(x => {
+            const s = String(x == null ? '' : x).trim();
+            if (/^\d+$/.test(s)) { out.add(Number(s)); return; }
+            if (!s) return;
+            Object.keys(names || {}).forEach(d => { if (/^\d+$/.test(d) && galleryNameHit(names[d], s) > 0) out.add(Number(d)); });
+        });
+        return out;
+    }
     const GALLERY_CATALOG_KEY = 'sbcOptGalleryCatalog';
     const GALLERY_CATALOG_TTL_MS = 7 * 24 * 3600 * 1000;
     const GALLERY_SCAN_FRESH_MS = 24 * 3600 * 1000;
@@ -15849,6 +15866,8 @@ const HybridSbcEa = (() => {
             if (!row) throw new Error('Kein Set „' + setName + '“ im Katalog.');
             const cache = (await galleryScanCacheLoad(persona)) || { v: 1, persona: persona, at: null, sets: {} };
             const entry = await galleryEnsureScanEntry(row, cache, persona);
+            galleryExcludeDefs((opts && opts.exclude) || [], entry.names).forEach(d => exclude.add(d)); // v6.24.2: auch per Spielername
+            if (exclude.size) diag.exclude = Array.from(exclude);
             const rules = await galleryRulesLoad(row);
             const o2 = opts || {};
             // v6.23.0: ein freigegebener Vorschlag (planId) bringt seinen Plan mit - keine zweite Pruefung am Markt.
@@ -17825,7 +17844,8 @@ const HybridSbcEa = (() => {
             if (running) return await mcpAwaitJob(running, a.wait);
             if (!a.set || !a.grade) throw new Error('set und grade angeben.');
             const job = mcpStartJob(tool, async () => {
-                const r = await galleryClaudeBuy(String(a.set), String(a.grade).toUpperCase(), { preview: a.preview === true, planId: typeof a.planId === 'string' ? a.planId : null });
+                const r = await galleryClaudeBuy(String(a.set), String(a.grade).toUpperCase(), { preview: a.preview === true, planId: typeof a.planId === 'string' ? a.planId : null,
+                    exclude: Array.isArray(a.exclude) && a.exclude.length ? a.exclude : undefined }); // v6.24.2: Karten nicht planen (defId/Name)
                 if (r && r.preview) return r;
                 // v6.18.4: ist das Set nach dem Kauf unvollstaendig, EINMAL ohne die ausgefallenen Karten neu planen.
                 // Der Ersatz braucht eine eigene Freigabe im Panel (galleryClaudeConfirm in galleryClaudeBuy).

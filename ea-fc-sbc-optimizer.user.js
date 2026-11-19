@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.24.2
+// @version      6.25.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.24.2';
+    const VERSION = '6.25.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -14075,7 +14075,23 @@ const HybridSbcEa = (() => {
                 }
                 if (!offers.length) {
                     step.status = 'kein Angebot bis Obergrenze';
-                    lines.push('– ' + escapeHtml(p.name) + ': kein Angebot bis ' + fmtCoins(p.maxPrice) + (step.replanned ? ' (auch nach Neubewertung)' : '') + ' - selbst kaufen.');
+                    // v6.25.0 (live 19.11.: Caicedo, Nanasi, Baldé je mehrfach "kein Angebot bis 700/850" -
+                    // fut.ggs Schaetzung lag unter dem Markt, jede neue Vorschau plante dieselbe Obergrenze):
+                    // beim KI-Kauf aus einer Schaetzung EINE Suche ohne Obergrenze, der guenstigste passende
+                    // Preis dieser Stichprobe geht an opts.onNoOffer (naechste Vorschau rechnet damit). Nur
+                    // Anzeige - gekauft wird hier NICHTS ueber der freigegebenen Obergrenze.
+                    if (opts.leanSearch && typeof opts.onNoOffer === 'function') {
+                        try {
+                            await futbinSleep(randomBetween(MARKET_STEP_GAP_MIN_MS, MARKET_STEP_GAP_MAX_MS));
+                            const sample = await marketOffers(p.resourceId);
+                            const fit = sample.filter(o => !deadTrades.has(String(o.tradeId)) && (!opts.offerMatches || opts.offerMatches(p, o)));
+                            step.marketNow = fit.length ? Math.min.apply(null, fit.map(o => o.bin)) : null;
+                            step.marketSample = sample.length;
+                            opts.onNoOffer(p, step.marketNow, fit.length);
+                        } catch (e) { step.marketNow = null; step.marketError = String(e && e.message || e); }
+                    }
+                    lines.push('– ' + escapeHtml(p.name) + ': kein Angebot bis ' + fmtCoins(p.maxPrice) + (step.replanned ? ' (auch nach Neubewertung)' : '') +
+                        (step.marketNow > 0 ? ' - günstigstes Angebot gerade ' + fmtCoins(step.marketNow) : '') + ' - selbst kaufen.');
                     fails = 0;
                     await futbinSleep(randomBetween(gapMin, gapMax));
                     continue;
@@ -15858,6 +15874,7 @@ const HybridSbcEa = (() => {
         if (!persona) throw new Error('EA-Persona unbekannt - einmal im Spiel klicken.');
         if (!/^[DCBAS]$/.test(String(grade))) throw new Error('Zielnote bitte als D, C, B, A oder S.');
         const running = () => { if (ownPersonaId() !== persona || STATE.loading || futbinBusy || sellBusy) throw new Error('Kauf gestoppt: anderer Lauf oder Account gewechselt.'); };
+        const noOfferPrices = new Map(); // v6.25.0: defId -> guenstigstes Angebot, wenn bis zur Obergrenze keines da war
         galleryBusy = true;
         const diag = STATE.diag.galleryClaudeBuy = { at: Date.now(), set: setName, grade: grade, phase: 'prüfen' };
         try {
@@ -15950,6 +15967,8 @@ const HybridSbcEa = (() => {
             let out = null;
             await buyPlannedPlayers(null, prepared.purchases, { noSquad: true, mode: 'gallery-claude', hardBudget: prepared.total, fixedCaps: true,
                 leanSearch: !!prepared.estimated || !!(saved && saved.prepared), // v6.23.0: hoechstens 2 Suchen je Karte
+                // v6.25.0: kein Angebot bis zur Obergrenze -> Marktpreis merken; die naechste Vorschau rechnet damit (30 min).
+                onNoOffer: (p, low) => { if (Number.isInteger(low) && low > 0) { galleryLiveQuotes.set(Number(p.resourceId), { price: low, at: Date.now() }); noOfferPrices.set(Number(p.resourceId), low); } },
                 maxPerRun: GALLERY_BUY_MAX_PER_RUN, gapMin: GALLERY_BUY_GAP_MIN_MS, gapMax: GALLERY_BUY_GAP_MAX_MS,
                 setResult: h => { setGalleryResult(h); },
                 cancelled: () => { try { running(); return false; } catch (_) { return true; } },
@@ -15973,10 +15992,11 @@ const HybridSbcEa = (() => {
                     diag.phase = ready ? 'Auswahl gesammelt' : 'teilweise';
                     if (ready) galleryExpectNote(row.id, grade, 'Kauf');
                     // v6.18.4: was fehlt, mit Namen (live 18.11.: Bay FC 14/15 - Silkowitz hatte nur ein Angebot, das beim Kauf weg war).
-                    const missing = prepared.cards.filter(c => !c.owned).map(c => ({ defId: c.id, name: c.name, rating: c.rating }));
+                    const missing = prepared.cards.filter(c => !c.owned).map(c => ({ defId: c.id, name: c.name, rating: c.rating, marketNow: noOfferPrices.has(c.id) ? noOfferPrices.get(c.id) : null }));
                     out = { set: row.name, grade: grade, confirmed: true, bought: d.bought, spent: d.spent, stopped: d.stopped || null, ready: ready, missing: missing,
                             note: ready ? 'Auswahl vollständig gesammelt - im Spiel bewerten. Gekaufte Karten stehen in der Verkaufsliste.'
-                                        : 'SET NOCH UNVOLLSTÄNDIG - nicht bekommen: ' + missing.map(m => m.name + ' (' + m.rating + ')').join(', ') + '. Nicht bewerten, erst Ersatz kaufen.' };
+                                        : 'SET NOCH UNVOLLSTÄNDIG - nicht bekommen: ' + missing.map(m => m.name + ' (' + m.rating + ')' + (m.marketNow ? ' - günstigstes Angebot gerade ' + m.marketNow : '')).join(', ') +
+                                          '. Nicht bewerten, erst Ersatz kaufen.' + (missing.some(m => m.marketNow) ? ' Eine neue Vorschau rechnet mit diesen Marktpreisen (30 min gemerkt) - Höchstpreis dann Marktpreis +10 %, wieder erst nach Freigabe.' : '') };
                 } });
             await galleryScanCacheSave(persona, cache);
             return out || { set: row.name, grade: grade, confirmed: true, bought: 0, note: 'Kauf-Lauf ohne Ergebnis - Galerie-Reiter prüfen.' };

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.25.0
+// @version      6.26.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.25.0';
+    const VERSION = '6.26.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -2803,8 +2803,12 @@
      * 461-Notweg) laufen nicht durch apiGet und fehlen in der Zaehlung.
      * Alles in diesem Block ist pure.
      */
-    const MARKET_GUARD = { searchWindowMs: 10 * 60 * 1000, searchMax: 30, bidWindowMs: 15 * 60 * 1000,
-                           buyRunGapMs: 2 * 60 * 1000, lockMs: 60 * 60 * 1000, waitMaxMs: 3 * 60 * 1000, keep: 200 };
+    // v6.26.0 (Rasmus 19.11.: "wirkt etwas zu strikt"): 40 statt 30 Suchen je
+    // 10 min (Vorfall lag bei ~43-86 je 10 min ueber 35 min), 1 statt 2 min
+    // zwischen Kauf-Laeufen, und ein KI-Lauf wartet bis 10 min (= ganzes
+    // Fenster) ab, statt abzubrechen - die Freigabe im Chat geht sonst verloren.
+    const MARKET_GUARD = { searchWindowMs: 10 * 60 * 1000, searchMax: 40, bidWindowMs: 15 * 60 * 1000,
+                           buyRunGapMs: 1 * 60 * 1000, lockMs: 60 * 60 * 1000, waitMaxMs: 10 * 60 * 1000, keep: 200 };
     /** Welche eigene Anfrage ist eine Marktsuche bzw. ein Gebot? */
     function marketGuardKind(method, path) {
         const p = String(path || '').replace(/^\//, '');

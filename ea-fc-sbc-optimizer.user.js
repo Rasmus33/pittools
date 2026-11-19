@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.22.0
+// @version      6.23.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.22.0';
+    const VERSION = '6.23.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -2788,6 +2788,137 @@
         warn('Session-Nudge: SID unverändert (Session evtl. noch gültig / Rate-Limit).');
         return false;
     }
+    // [MARKETGUARD-BEGIN]
+    /*
+     * v6.23.0: Markt-Takt ueber ALLE Laeufe. Vorfall 19.11.: in ~35 min acht
+     * Live-Preis-Abfragen (~60 Karten, je bis zu 5 Suchen), neun Kauf-Vorschauen
+     * und sieben Kaufversuche (je frisch geprueft) - grob 150-300 Marktsuchen,
+     * nach 5 Kaeufen "461 Permission Denied" bei AKTIVEM Angebot (Marktsperre).
+     * Nicht die Kaeufe, sondern die Suchen (sinkende Obergrenze in schneller
+     * Folge) sehen fuer EA nach Bot aus. Gezaehlt werden die eigenen Anfragen
+     * an EAs Transfermarkt (Suche, Gebot; Hook in apiGet/apiPut). Die KI-Wege
+     * (Live-Preise, Galerie-Kauf, Verkaufsvorschau nach dem Kauf) fragen vorher
+     * hier nach; Panel-Wege zaehlen nur mit und werden nicht aufgehalten.
+     * Client-Suchen ueber services.Item (nur ohne erfasste Sitzung bzw. beim
+     * 461-Notweg) laufen nicht durch apiGet und fehlen in der Zaehlung.
+     * Alles in diesem Block ist pure.
+     */
+    const MARKET_GUARD = { searchWindowMs: 10 * 60 * 1000, searchMax: 30, bidWindowMs: 15 * 60 * 1000,
+                           buyRunGapMs: 2 * 60 * 1000, lockMs: 60 * 60 * 1000, waitMaxMs: 3 * 60 * 1000, keep: 200 };
+    /** Welche eigene Anfrage ist eine Marktsuche bzw. ein Gebot? */
+    function marketGuardKind(method, path) {
+        const p = String(path || '').replace(/^\//, '');
+        if (method === 'GET' && /^transfermarket(\?|$)/.test(p)) return 'search';
+        if (method === 'PUT' && /^trade\/\d+\/bid(\?|$)/.test(p)) return 'bid';
+        return null;
+    }
+    function marketGuardClean(state, now) {
+        const s = state && typeof state === 'object' ? state : {};
+        const win = Math.max(MARKET_GUARD.searchWindowMs, MARKET_GUARD.bidWindowMs);
+        const num = v => (Number.isFinite(v) && v > 0 ? v : null);
+        return { persona: s.persona != null ? String(s.persona) : null,
+                 events: (Array.isArray(s.events) ? s.events : []).filter(e => e && (e.k === 'search' || e.k === 'bid') && Number.isFinite(e.t) && e.t <= now && now - e.t < win).slice(-MARKET_GUARD.keep),
+                 lastSearchAt: num(s.lastSearchAt), lastBidAt: num(s.lastBidAt),
+                 lockUntil: num(s.lockUntil) && s.lockUntil > now ? s.lockUntil : null, lockAt: num(s.lockUntil) && s.lockUntil > now ? num(s.lockAt) : null,
+                 lockReason: num(s.lockUntil) && s.lockUntil > now && s.lockReason ? String(s.lockReason) : null };
+    }
+    function marketGuardNote(state, kind, now) {
+        const s = marketGuardClean(state, now);
+        if (kind !== 'search' && kind !== 'bid') return s;
+        s.events.push({ k: kind, t: now });
+        if (s.events.length > MARKET_GUARD.keep) s.events = s.events.slice(-MARKET_GUARD.keep);
+        if (kind === 'bid') s.lastBidAt = now; else s.lastSearchAt = now;
+        return s;
+    }
+    /** Nach einem 461 bei aktivem Angebot: Markt fuer die KI-Wege lockMs lang tabu. */
+    function marketGuardLock(state, reason, now) {
+        const s = marketGuardClean(state, now);
+        s.lockUntil = now + MARKET_GUARD.lockMs; s.lockAt = now; s.lockReason = String(reason || 'Marktsperre');
+        return s;
+    }
+    /**
+     * Darf ein KI-Lauf jetzt an den Markt? need = { searches: geschaetzte Suchen,
+     * buyRun: true fuer einen Kauf-Lauf }. Liefert { ok, locked, waitMs, reason }.
+     * Mehr als searchMax Suchen auf einmal werden auf searchMax gekappt (sonst
+     * kaeme ein grosser Lauf nie durch; er zaehlt dann beim naechsten mit).
+     */
+    function marketGuardCheck(state, need, now) {
+        const s = marketGuardClean(state, now), n = need || {};
+        if (s.lockUntil) return { ok: false, locked: true, waitMs: s.lockUntil - now, reason: 'Marktsperre' + (s.lockReason ? ' (' + s.lockReason + ')' : '') };
+        let wait = 0, reason = null;
+        if (n.buyRun && s.lastBidAt && now - s.lastBidAt < MARKET_GUARD.buyRunGapMs) {
+            wait = MARKET_GUARD.buyRunGapMs - (now - s.lastBidAt); reason = 'Abstand zwischen zwei Kauf-Läufen';
+        }
+        const recent = s.events.filter(e => e.k === 'search' && now - e.t < MARKET_GUARD.searchWindowMs).map(e => e.t).sort((a, b) => a - b);
+        const want = Math.min(MARKET_GUARD.searchMax, Math.max(0, Math.floor(Number(n.searches) || 0)));
+        const over = recent.length + want - MARKET_GUARD.searchMax;
+        if (over > 0) {
+            const w = recent[over - 1] + MARKET_GUARD.searchWindowMs - now;
+            if (w > wait) { wait = w; reason = 'Suchen-Budget (' + MARKET_GUARD.searchMax + ' je 10 min, schon ' + recent.length + ')'; }
+        }
+        return { ok: wait <= 0, locked: false, waitMs: Math.max(0, wait), reason: reason };
+    }
+    /** Fuer Report und Status. */
+    function marketGuardSnapshot(state, now) {
+        const s = marketGuardClean(state, now);
+        return { searches10m: s.events.filter(e => e.k === 'search' && now - e.t < MARKET_GUARD.searchWindowMs).length,
+                 bids15m: s.events.filter(e => e.k === 'bid' && now - e.t < MARKET_GUARD.bidWindowMs).length,
+                 searchMax: MARKET_GUARD.searchMax, lastSearchAt: s.lastSearchAt, lastBidAt: s.lastBidAt,
+                 lockUntil: s.lockUntil, lockAt: s.lockAt, lockReason: s.lockReason,
+                 lockMinutesLeft: s.lockUntil ? Math.ceil((s.lockUntil - now) / 60000) : 0 };
+    }
+    // [MARKETGUARD-END]
+    const MARKET_GUARD_KEY = 'sbcOptMarketGuard';
+    let marketGuardState = null;
+    /** Stand je EA-Persona (eine Marktsperre gilt dem Account); im localStorage, damit ein Neuladen sie nicht vergisst. */
+    function marketGuardLoad() {
+        if (!marketGuardState) {
+            try { marketGuardState = JSON.parse(localStorage.getItem(MARKET_GUARD_KEY) || 'null'); } catch (e) { marketGuardState = null; }
+            if (!marketGuardState || typeof marketGuardState !== 'object') marketGuardState = {};
+        }
+        let persona = null;
+        try { persona = typeof ownPersonaId === 'function' ? ownPersonaId() : null; } catch (e) { persona = null; }
+        if (persona && marketGuardState.persona && String(marketGuardState.persona) !== persona) marketGuardState = {};
+        if (persona) marketGuardState.persona = persona;
+        return marketGuardState;
+    }
+    function marketGuardSave() { try { localStorage.setItem(MARKET_GUARD_KEY, JSON.stringify(marketGuardState || {})); } catch (e) {} }
+    function marketGuardRecord(method, path) {
+        try {
+            const kind = marketGuardKind(method, path);
+            if (!kind) return;
+            marketGuardState = marketGuardNote(marketGuardLoad(), kind, Date.now());
+            marketGuardSave();
+        } catch (e) {}
+    }
+    function marketGuardSetLock(reason) {
+        try { marketGuardState = marketGuardLock(marketGuardLoad(), reason, Date.now()); marketGuardSave(); } catch (e) {}
+    }
+    function marketGuardClock(t) { try { const d = new Date(t); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); } catch (e) { return '?'; } }
+    function marketGuardWaitText(c) {
+        const min = Math.max(1, Math.ceil((c.waitMs || 0) / 60000));
+        if (c.locked) {
+            const s = marketGuardClean(marketGuardLoad(), Date.now());
+            return 'Transfermarkt-Pause bis ' + marketGuardClock(s.lockUntil) + ' (noch ' + min + ' min): EA hat um ' + marketGuardClock(s.lockAt) +
+                   ' einen Kauf bei aktivem Angebot abgelehnt (461, vorübergehende Marktsperre). Bis dahin fragt PitTools für die KI nichts am Markt ab - bewerten im Spiel geht weiter.';
+        }
+        return 'Markt-Takt: frühestens in ' + min + ' min (' + (c.reason || 'Takt') + ').';
+    }
+    /**
+     * Vor jedem KI-Marktlauf. Kurze Wartezeiten (bis waitMaxMs) werden im Job
+     * abgewartet, laengere und eine Marktsperre brechen mit Klartext ab - ohne
+     * dass etwas gesucht oder gekauft wurde.
+     */
+    async function marketGuardGate(need, label, onWait) {
+        for (let i = 0; i < 10; i++) {
+            const c = marketGuardCheck(marketGuardLoad(), need, Date.now());
+            if (c.ok) return;
+            if (c.locked || c.waitMs > MARKET_GUARD.waitMaxMs) throw new Error((label ? label + ' nicht gestartet. ' : '') + marketGuardWaitText(c));
+            if (onWait) { try { onWait('Markt-Takt: warte ' + Math.ceil(c.waitMs / 1000) + ' s (' + c.reason + ')'); } catch (e) {} }
+            await BgTimer.wait(c.waitMs + 500);
+        }
+        throw new Error((label ? label + ' nicht gestartet. ' : '') + 'Markt-Takt: bitte später erneut.');
+    }
     // apiGet/apiPut bauen dieselbe Nudge->Sleep->Retry-Kaskade absichtlich
     // JEDER FUER SICH nach statt sie in einen gemeinsamen
     // apiRequest(method, path, body, _attempt)-Kern zu ziehen: solver-test.js
@@ -2800,6 +2931,7 @@
     // apiGet/apiPut existiert (analog zum fetchClubViaHttp-Test).
     async function apiGet(path, _attempt) {
         const url = STATE.session.apiBase + path.replace(/^\//, '');
+        marketGuardRecord('GET', path); // v6.23.0: Markt-Takt zaehlt jede eigene Marktsuche
         let resp;
         try {
             resp = await _origFetch(url, { method: 'GET', headers: apiHeaders(), credentials: 'omit' });
@@ -2829,6 +2961,7 @@
         const url = STATE.session.apiBase + path.replace(/^\//, '');
         const headers = apiHeaders();
         headers['Content-Type'] = 'application/json';
+        marketGuardRecord('PUT', path); // v6.23.0: Markt-Takt zaehlt jedes eigene Gebot
         let resp;
         try {
             resp = await _origFetch(url, {
@@ -10625,11 +10758,60 @@ const HybridSbcEa = (() => {
         const item = offer && (offer.raw || offer.item);
         return galleryOfferMatches(variant,offer,ea) && !!item && (item.isCollected === false || item.isCollected === 0);
     }
-    async function galleryPrepareTarget(data, target, o) {
+    /** Zielnote eines Plans pruefen (gleiche Pruefung fuer Live- und Schaetzweg). Wirft bei unvollstaendigem/veraendertem Plan. */
+    function galleryTargetGrade(data, target) {
         const grade = data && data.set && data.set.grades.find(g => g.name === target.grade);
         if (!grade || grade.threshold !== target.threshold || !Array.isArray(target.cards) ||
             target.cards.length !== data.set.requiredCards || new Set(target.cards.map(c => c.id)).size !== target.cards.length ||
             target.cards.some(c => !Number.isSafeInteger(c.id) || c.id <= 0 || !Number.isInteger(c.rating) || c.rating < 1 || c.rating > 99)) throw Error('Zielnotenplan unvollständig oder verändert.');
+        return grade;
+    }
+    /**
+     * v6.23.0: Preis einer Karte OHNE Marktanfrage. Zuerst ein gemerkter
+     * Live-Preis (hoechstens ttl alt), sonst fut.ggs Preis aus der Set-Seite.
+     * Liefert { price, source } oder null.
+     */
+    function galleryEstimateOf(defId, liveQuotes, futggPrices, now, ttl) {
+        const q = liveQuotes && typeof liveQuotes.get === 'function' ? liveQuotes.get(defId) : null;
+        if (q && Number.isInteger(q.price) && q.price > 0 && Number.isFinite(q.at) && now - q.at < ttl) return { price: q.price, source: 'live (gemerkt)' };
+        const f = futggPrices ? Number(futggPrices[defId]) : NaN;
+        if (Number.isInteger(f) && f > 0) return { price: f, source: 'fut.gg' };
+        return null;
+    }
+    /**
+     * v6.23.0 (Rasmus 19.11.: "die groben Preise immer erst von fut.gg oder
+     * futbin holen und dann erst im letzten Schritt eine Live-Abfrage"): Kauf-
+     * Vorschau OHNE Marktanfrage. Preis je fehlender Karte aus o.priceOf(c),
+     * Obergrenze o.cap(preis) (Aufrufer: planMaxPrice, +10 %, mindestens eine
+     * Stufe). Ob die Karte schon gesammelt ist, sagt der Scan (nur ungesammelte
+     * Versionen stehen in der Auswahl) und beim Kauf EAs Angebot
+     * (galleryTargetOfferMatches verlangt isCollected === false). Fehlt fuer
+     * eine Karte der Preis, liefert die Funktion null - der Aufrufer nimmt dann
+     * den alten Weg mit Live-Pruefung (galleryPrepareTarget).
+     */
+    function galleryPrepareTargetEstimated(data, target, o) {
+        const grade = galleryTargetGrade(data, target);
+        const cards = JSON.parse(JSON.stringify(target.cards)), purchases = [];
+        const needed = cards.filter(c => !c.owned && !o.known.has(String(c.id)));
+        for (const c of cards) if (o.known.has(String(c.id))) c.owned = true;
+        for (const c of needed) {
+            if (o.pending && o.pending.has(String(c.id))) throw Error(c.name+' wurde bereits gekauft. Bitte Transferziele/Verein prüfen, bevor erneut gekauft wird.');
+            const est = o.priceOf(c);
+            if (!est || !Number.isInteger(est.price) || est.price <= 0) return null;
+            const cap = o.cap(est.price);
+            if (!Number.isInteger(cap) || cap < est.price) return null;
+            const variant = {defId:c.id,rating:c.rating,score:c.score};
+            if (Object.prototype.hasOwnProperty.call(c,'holographicType')) variant.holographicType = c.holographicType;
+            purchases.push({resourceId:c.id,name:c.name,rating:c.rating,planned:est.price,maxPrice:cap,source:est.source,variant,
+                versionLabel:[c.version,c.holographicType === 'holographic' ? 'Holografisch' : c.holographicType === 'pristine' ? 'Pristine' : null].filter(Boolean).join(' · ')});
+            if (c.attrs) c.attrs.FIRST_OWNED = 0; // Nachkauf kann keinen Erstbesitz-Bonus liefern.
+        }
+        const assessment = galleryPersonalScore(cards,data.set.requiredCards,data.tags,data.set.grades);
+        if (!assessment || !assessment.complete || assessment.score < grade.threshold) throw Error('Zielnote nach der Prüfung nicht mehr erreicht. Es wurde nichts gekauft.');
+        return {cards,purchases,found:[],assessment,total:purchases.reduce((s,p) => s+p.maxPrice,0),estimated:true};
+    }
+    async function galleryPrepareTarget(data, target, o) {
+        const grade = galleryTargetGrade(data, target);
         const cards = JSON.parse(JSON.stringify(target.cards)), purchases = [], found = [];
         const needed = cards.filter(c => !c.owned && !o.known.has(String(c.id)));
         for (const c of cards) if (o.known.has(String(c.id))) c.owned = true;
@@ -12888,6 +13070,23 @@ const HybridSbcEa = (() => {
         }
         return { offers: sortOffersForBuy(all), at: at, pages: pages };
     }
+    /**
+     * v6.23.0: sparsame Kauf-Suche fuer den KI-Kauf aus einer Vorschau
+     * (opts.leanSearch). Hoechstens ZWEI Suchen statt bis zu 4 Stufen plus
+     * 3 Seiten: erst bis zum Plan (Schaetzpreis), ohne Treffer einmal bis zur
+     * freigegebenen Obergrenze. Kein Blaettern - ein totes Angebot ersetzt
+     * buyPlannedPlayers aus derselben Liste (BUY_OFFER_TRIES).
+     */
+    async function marketOffersForBuyLean(rid, planned, maxPrice) {
+        let at = 'max', page = null, searches = 0;
+        if (planned > 0 && planned < maxPrice) {
+            page = await marketOffers(rid, planned); searches++;
+            if (page.length) at = 'plan';
+            else { page = null; await futbinSleep(randomBetween(MARKET_STEP_GAP_MIN_MS, MARKET_STEP_GAP_MAX_MS)); }
+        }
+        if (!page) { page = await marketOffers(rid, maxPrice); searches++; }
+        return { offers: sortOffersForBuy(page), at: at, pages: 1, searches: searches };
+    }
     /** Eigene Persona-ID (Verkaeufer-Kennung in EAs auctionInfo.sellerId), null wenn nicht lesbar. */
     function ownPersonaId() {
         try {
@@ -13738,6 +13937,7 @@ const HybridSbcEa = (() => {
         const maxPerRun = opts.maxPerRun || BUY_MAX_PER_RUN;
         const gapMin = opts.gapMin || BUY_GAP_MIN_MS, gapMax = opts.gapMax || BUY_GAP_MAX_MS;
         const diag = { at: Date.now(), mode: opts.mode || (opts.noSquad ? 'gallery' : 'sbc'), planned: plan.length, bought: 0, spent: 0, plannedSpent: 0, steps: [], stopped: null };
+        if (opts.leanSearch) diag.leanSearch = true;
         STATE.diag.futbinBuy = diag;
         buyBusy = true;
         let fails = 0;
@@ -13764,7 +13964,7 @@ const HybridSbcEa = (() => {
                 // gelieferte) Trades ausblenden. Report 21.09.: Russell-Rowe - dreimal
                 // dasselbe Angebot 608750162402, dreimal 461, Status "closed".
                 let offers;
-                try { const fb = await marketOffersForBuy(p.resourceId, p.planned, p.maxPrice); step.searchAt = fb.at; step.pages = fb.pages; offers = fb.offers.filter(o => !deadTrades.has(String(o.tradeId))); }
+                try { const fb = opts.leanSearch ? await marketOffersForBuyLean(p.resourceId, p.planned, p.maxPrice) /* v6.23.0: KI-Kauf aus Vorschau sucht sparsam */ : await marketOffersForBuy(p.resourceId, p.planned, p.maxPrice); step.searchAt = fb.at; step.pages = fb.pages; if (fb.searches) step.searches = fb.searches; offers = fb.offers.filter(o => !deadTrades.has(String(o.tradeId))); }
                 catch (e) {
                     step.status = 'suche: ' + (e && e.message || e);
                     if (isRateLimit(e && e.status)) { diag.stopped = 'Rate-Limit bei der Suche'; lines.push('⚠ EA drosselt - Lauf gestoppt.'); break; }
@@ -13850,6 +14050,7 @@ const HybridSbcEa = (() => {
                             }
                         }
                         if (denied461 >= BUY_461_LOCK_LIMIT) {
+                            marketGuardSetLock('461 x' + denied461 + ' in Folge'); // v6.23.0: KI-Wege pausieren den Markt
                             step.status = 'EA lehnt jeden Kauf ab (461 x' + denied461 + ')';
                             diag.stopped = 'EA lehnt alle Käufe ab (461 in Folge) - Transfermarkt vermutlich vorübergehend gesperrt';
                             lines.push('⚠ ' + denied461 + ' Käufe in Folge abgelehnt, auch bei frischen Angeboten. Das ist meist eine zeitweise Marktsperre nach vielen Aktionen (Listings, Suchen). Bitte im Spiel einen Kauf von Hand probieren; klappt der nicht, 30-60 Minuten warten.');
@@ -13880,8 +14081,9 @@ const HybridSbcEa = (() => {
                                     break;
                                 }
                             }
+                            marketGuardSetLock('461 bei aktivem Angebot: ' + p.name); // v6.23.0: KI-Wege pausieren den Markt 60 min
                             step.status = 'EA verweigert den Kauf (461) - Angebot ist aktiv';
-                            diag.stopped = 'EA verweigert Käufe (461) bei aktivem Angebot - Transfermarkt vermutlich vorübergehend gesperrt';
+                            diag.stopped ='EA verweigert Käufe (461) bei aktivem Angebot - Transfermarkt vermutlich vorübergehend gesperrt';
                             lines.push('⚠ ' + escapeHtml(p.name) + ': EA verweigert den Kauf, obwohl das Angebot aktiv ist. Das ist meist eine zeitweise Marktsperre nach vielen Aktionen - bitte im Spiel einen Kauf von Hand probieren und später erneut.');
                             hardStop = true; break;
                         }
@@ -15423,6 +15625,7 @@ const HybridSbcEa = (() => {
     // jede Karte hoechstens zum frisch gemessenen Marktminimum (robustMinBin,
     // dieselbe Messung wie Aufwertung/Verkauf), Preise werden NIE erhoeht.
     const GALLERY_LIVE_QUOTE_TTL_MS = 30 * 60 * 1000;
+    const GALLERY_EST_TOLERANCE = 0.10; // v6.23.0: Hoechstpreis einer geschaetzten Karte (fut.gg/gemerkt) = +10 %, mindestens eine Stufe
     const galleryLiveQuotes = new Map(); // defId -> { price, at }
     function galleryLivePrices(rules) {
         const out = Object.assign({}, rules.prices);
@@ -15455,6 +15658,8 @@ const HybridSbcEa = (() => {
         if (!sessionReady()) throw new Error('EA-Sitzung noch nicht erfasst - einmal im Spiel klicken.');
         const persona = ownPersonaId();
         if (!persona) throw new Error('EA-Persona unbekannt - einmal im Spiel klicken.');
+        // v6.23.0: teuer (je Karte bis zu 5 Suchen) - nur im Markt-Takt, nie waehrend einer Marktsperre.
+        await marketGuardGate({ searches: Math.max(1, Math.min(20, Number(maxCards) || 10)) * 2 }, 'Live-Preise', t => { galleryClaudeState.progress = t; });
         galleryBusy = true;
         try {
             const cat = await galleryCatalogLoad(false, t => { galleryClaudeState.progress = t; });
@@ -15556,42 +15761,70 @@ const HybridSbcEa = (() => {
             const cache = (await galleryScanCacheLoad(persona)) || { v: 1, persona: persona, at: null, sets: {} };
             const entry = await galleryEnsureScanEntry(row, cache, persona);
             const rules = await galleryRulesLoad(row);
+            const o2 = opts || {};
+            // v6.23.0: ein freigegebener Vorschlag (planId) bringt seinen Plan mit - keine zweite Pruefung am Markt.
+            let saved = null;
+            if (o2.planId) {
+                saved = galleryChatPlans.get(String(o2.planId));
+                if (!saved || Date.now() - saved.at > GALLERY_CHAT_PLAN_TTL_MS || saved.persona !== persona || saved.setId !== row.id || saved.grade !== grade)
+                    throw new Error('Freigegebener Plan unbekannt oder abgelaufen - bitte neu vorschlagen (preview).');
+            }
             const livePrices = galleryLivePrices(rules);
             exclude.forEach(d => { delete livePrices[d]; });
             const res = galleryChanceForSet(row, entry, Object.assign({}, rules, { prices: livePrices }), galleryFirstOwnedDefs(), galleryKnownGrade(row.id));
             const option = (res.options || []).find(o => o.grade === grade);
-            if (!option) throw new Error('Für ' + row.name + ' gibt es keinen Kaufplan auf Note ' + grade + ' (erst pittools_gallery_quote, oder die Note ist schon erreicht).');
+            if (!option && !(saved && saved.prepared)) throw new Error('Für ' + row.name + ' gibt es keinen Kaufplan auf Note ' + grade + ' (erst pittools_gallery_quote, oder die Note ist schon erreicht).');
             const data = { set: { requiredCards: rules.requiredCards, grades: rules.grades }, tags: rules.tags };
-            const target = { grade: grade, threshold: option.threshold, cards: option.selection };
+            const threshold = option ? option.threshold : saved.prepared.threshold;
+            const target = option ? { grade: grade, threshold: option.threshold, cards: option.selection } : null;
             const known = collectedIdSet(collectedRecordsFromPool(STATE.pool).concat(collectedLoad()));
-            const prepared = await galleryPrepareTarget(data, target, { known: known, running: running,
-                pending: new Set(galleryBoughtLoad().map(p => String(p.defId))),
-                quote: rid => marketOffersLowest(rid, { fresh: true }), matches: (v, o) => galleryOfferMatches(v, o, window),
-                estimate: bins => robustMinBin(bins).robust, cap: price => price, // Rasmus: nie mehr als noetig
-                wait: () => futbinSleep(FUTBIN_MARKET_GAP_MS),
-                progress: (i, n, c) => { galleryClaudeState.progress = 'Prüfe ' + row.name + ' → ' + grade + ': ' + i + '/' + n + ' (' + c.name + ')'; } });
+            let prepared = null;
+            if (saved && saved.prepared) {
+                prepared = JSON.parse(JSON.stringify(saved.prepared));
+                const already = new Set(galleryBoughtLoad().map(p => String(p.defId)));
+                const dup = prepared.purchases.find(p => already.has(String(p.resourceId)));
+                if (dup) throw new Error(dup.name + ' wurde bereits gekauft. Bitte Transferziele/Verein prüfen, bevor erneut gekauft wird.');
+                diag.priceSource = 'Vorschlag';
+            } else if (o2.preview) {
+                // v6.23.0: Vorschlag aus fut.gg bzw. gemerkten Live-Preisen, OHNE Marktanfrage.
+                prepared = galleryPrepareTargetEstimated(data, target, { known: known, pending: new Set(galleryBoughtLoad().map(p => String(p.defId))),
+                    priceOf: c => exclude.has(c.id) ? null : galleryEstimateOf(c.id, galleryLiveQuotes, rules.prices, Date.now(), GALLERY_LIVE_QUOTE_TTL_MS),
+                    cap: price => planMaxPrice(price, GALLERY_EST_TOLERANCE, eaPriceTiers()) });
+                if (prepared) diag.priceSource = 'Schätzung';
+            }
+            if (!prepared) {
+                // Alter Weg: jede Karte frisch am Markt pruefen (Version, schon gesammelt, Preis) - jetzt im Markt-Takt.
+                await marketGuardGate({ searches: target.cards.filter(c => !c.owned && !known.has(String(c.id))).length * 3 }, 'Live-Prüfung',
+                    t => { galleryClaudeState.progress = t; });
+                prepared = await galleryPrepareTarget(data, target, { known: known, running: running,
+                    pending: new Set(galleryBoughtLoad().map(p => String(p.defId))),
+                    quote: rid => marketOffersLowest(rid, { fresh: true }), matches: (v, o) => galleryOfferMatches(v, o, window),
+                    estimate: bins => robustMinBin(bins).robust, cap: price => price, // Rasmus: nie mehr als noetig
+                    wait: () => futbinSleep(FUTBIN_MARKET_GAP_MS),
+                    progress: (i, n, c) => { galleryClaudeState.progress = 'Prüfe ' + row.name + ' → ' + grade + ': ' + i + '/' + n + ' (' + c.name + ')'; } });
+                diag.priceSource = 'live';
+            }
             diag.plan = prepared.purchases; diag.score = prepared.assessment.score; diag.total = prepared.total;
             if (prepared.found.length) { const m = mergeCollectedRecords(collectedLoad(), galleryTargetRecords(prepared.found)); collectedSave(m.list); }
             if (!prepared.purchases.length) { diag.phase = 'nichts zu kaufen'; return { set: row.name, grade: grade, bought: 0, note: 'Alle Karten der Auswahl sind schon gesammelt - im Spiel bewerten.', score: prepared.assessment.score }; }
             const coins = userCoins();
             if (coins != null && coins < prepared.total) throw new Error('Kontostand reicht nicht: ' + fmtCoins(prepared.total) + ' nötig.');
-            const o2 = opts || {};
             if (o2.preview) {
                 const id = 'p' + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36);
                 galleryChatPlans.set(id, { at: Date.now(), persona: persona, setId: row.id, grade: grade, total: prepared.total,
-                                           items: prepared.purchases.map(p => ({ id: p.resourceId, max: p.maxPrice })) });
+                                           items: prepared.purchases.map(p => ({ id: p.resourceId, max: p.maxPrice })),
+                                           // v6.23.0: der ganze Plan reist mit, der Kauf mit planId prueft nicht noch einmal am Markt
+                                           prepared: { cards: prepared.cards, purchases: prepared.purchases, found: [], assessment: prepared.assessment, total: prepared.total, estimated: !!prepared.estimated, threshold: threshold } });
                 diag.phase = 'Vorschlag (Chat)';
-                return { preview: true, planId: id, set: row.name, grade: grade, total: prepared.total, score: prepared.assessment.score, threshold: option.threshold,
-                         chatApproval: galleryChatOkEnabled(),
-                         purchases: prepared.purchases.map(p => ({ name: p.name, rating: p.rating, version: p.versionLabel || null, maxPrice: p.maxPrice })),
-                         note: galleryChatOkEnabled() ? 'Nichts gekauft. Rasmus im Chat fragen; bei Ja pittools_gallery_buy mit planId (10 min gültig).'
-                                                       : 'Nichts gekauft. Chat-Freigabe ist im Panel AUS - ein Kauf mit planId braucht weiterhin den Tipp im Panel.' };
+                return { preview: true, planId: id, set: row.name, grade: grade, total: prepared.total, score: prepared.assessment.score, threshold: threshold,
+                         chatApproval: galleryChatOkEnabled(), priceSource: prepared.estimated ? 'Schätzung ohne EA-Anfrage' : 'live geprüft',
+                         purchases: prepared.purchases.map(p => ({ name: p.name, rating: p.rating, version: p.versionLabel || null, planned: p.planned, maxPrice: p.maxPrice, source: p.source || 'live' })),
+                         note: (prepared.estimated ? 'Preise geschätzt (fut.gg bzw. gemerkter Live-Preis), Höchstpreis = Schätzung +10 % (mindestens eine Preisstufe). Beim Kauf sucht PitTools je Karte höchstens zweimal live (erst bis zur Schätzung, dann bis zum Höchstpreis) und zahlt das günstigste Angebot. ' : '') +
+                               (galleryChatOkEnabled() ? 'Nichts gekauft. Rasmus im Chat fragen; bei Ja pittools_gallery_buy mit planId (10 min gültig).'
+                                                       : 'Nichts gekauft. Chat-Freigabe ist im Panel AUS - ein Kauf mit planId braucht weiterhin den Tipp im Panel.') };
             }
             let chatOk = false;
             if (o2.planId) {
-                const saved = galleryChatPlans.get(String(o2.planId));
-                if (!saved || Date.now() - saved.at > GALLERY_CHAT_PLAN_TTL_MS || saved.persona !== persona || saved.setId !== row.id || saved.grade !== grade)
-                    throw new Error('Freigegebener Plan unbekannt oder abgelaufen - bitte neu vorschlagen (preview).');
                 const m = galleryChatPlanMatches(saved, prepared.purchases, prepared.total);
                 if (!m.ok) throw new Error('Plan hat sich geändert (' + m.why + ') - nichts gekauft, bitte neu vorschlagen.');
                 galleryChatPlans.delete(String(o2.planId));
@@ -15601,11 +15834,14 @@ const HybridSbcEa = (() => {
             galleryClaudeState.progress = chatOk ? 'Im Chat freigegeben - kaufe' : 'Warte auf Rasmus\' Freigabe im Panel (Reiter Galerie)';
             diag.approval = chatOk ? 'chat' : 'panel';
             const ok = chatOk ? true : await galleryClaudeConfirm(row.name + ' → Note ' + grade, prepared.purchases.map(p => p.name + ' (' + p.rating + (p.versionLabel ? ', ' + p.versionLabel : '') + '): höchstens ' + fmtCoins(p.maxPrice))
-                .concat(['Zusammen höchstens ' + fmtCoins(prepared.total) + ' · danach ' + prepared.assessment.score + ' Punkte (Ziel ' + option.threshold + ')']));
+                .concat(['Zusammen höchstens ' + fmtCoins(prepared.total) + ' · danach ' + prepared.assessment.score + ' Punkte (Ziel ' + threshold + ')']));
             if (!ok) { diag.phase = 'nicht freigegeben'; setGalleryResult('<div class="sbc-opt-dim">Kauf für ' + escapeHtml(row.name) + ' nicht freigegeben - nichts gekauft.</div>'); return { set: row.name, grade: grade, confirmed: false, bought: 0 }; }
+            // v6.23.0: Markt-Takt - Marktsperre, Abstand zum letzten Kauf-Lauf, Suchen-Budget.
+            await marketGuardGate({ searches: prepared.purchases.length * 2, buyRun: true }, 'Kauf', t => { galleryClaudeState.progress = t; });
             running(); diag.phase = 'kaufen';
             let out = null;
             await buyPlannedPlayers(null, prepared.purchases, { noSquad: true, mode: 'gallery-claude', hardBudget: prepared.total, fixedCaps: true,
+                leanSearch: !!prepared.estimated || !!(saved && saved.prepared), // v6.23.0: hoechstens 2 Suchen je Karte
                 maxPerRun: GALLERY_BUY_MAX_PER_RUN, gapMin: GALLERY_BUY_GAP_MIN_MS, gapMax: GALLERY_BUY_GAP_MAX_MS,
                 setResult: h => { setGalleryResult(h); },
                 cancelled: () => { try { running(); return false; } catch (_) { return true; } },
@@ -15646,6 +15882,9 @@ const HybridSbcEa = (() => {
      */
     async function galleryClaudeSellPreview() {
         if (!galleryBoughtLoad().length) return { opened: false, note: 'Keine gekauften Galerie-Karten gemerkt.' };
+        // v6.23.0: die Vorschau fragt je Karte den Markt ab - nicht waehrend einer Sperre oder ueber dem Suchen-Budget.
+        const g = marketGuardCheck(marketGuardLoad(), { searches: galleryBoughtLoad().length * 2 }, Date.now());
+        if (!g.ok) return { opened: false, deferred: true, note: 'Verkaufsvorschau später: ' + marketGuardWaitText(g) + ' Danach im Panel „Gekaufte Karten verkaufen“ tippen oder pittools_gallery_sell.' };
         for (let i = 0; i < 20 && (sellBusy || buyBusy || galleryBusy); i++) await futbinSleep(500);
         try { if (tabCurrent !== 'galerie') setTab('galerie'); } catch (e) {}
         try { if (ui.panel && !ui.panel.classList.contains('open')) togglePanel(); } catch (e) {}
@@ -17346,6 +17585,8 @@ const HybridSbcEa = (() => {
                      // v6.21.0: ueber welchen Weg die KI gerade spricht (App/Browser, Internet/PC)
                      connection: { internet: relayState.on ? relayState.status : 'aus', pc: mcpState.on ? mcpState.status : 'aus', device: relayInApp() ? 'App' : 'Browser',
                                    backgroundSafe: relayInApp() ? (function () { try { return !!window.PitBridgeNative.keepAlive; } catch (e) { return false; } })() : null },
+                     // v6.23.0: Markt-Takt (Suchen/Gebote, Marktsperre) - vor Kaeufen hier schauen
+                     market: (function () { try { const m = marketGuardSnapshot(marketGuardLoad(), Date.now()); return { searches10m: m.searches10m, searchMax: m.searchMax, bids15m: m.bids15m, lockMinutesLeft: m.lockMinutesLeft, lockReason: m.lockReason }; } catch (e) { return null; } })(),
                      hint: pool.length ? null : 'Kein Verein geladen - mit pittools_pool_load laden.' };
         }
         if (tool === 'pittools_club_overview') {
@@ -19075,7 +19316,7 @@ const HybridSbcEa = (() => {
             // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten mit
             // Kosten, Marktabfragen, Fehler, eingefuegte Loesung.
             hybridSbc: STATE.diag.hybridSbc || null,
-            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, batchSpare: STATE.diag.batchSpare || null, mcp: STATE.diag.mcp || null, relay: STATE.diag.relay || null, liveChecks: liveChecksLoad(), points: STATE.diag.points || null, pointsBuy: STATE.diag.pointsBuy || null, galleryTokens: (function () { try { const p = ownPersonaId(); return p ? galleryTokenBookLoad(p) : null; } catch (e) { return null; } })(), galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null,
+            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, batchSpare: STATE.diag.batchSpare || null, mcp: STATE.diag.mcp || null, relay: STATE.diag.relay || null, liveChecks: liveChecksLoad(), marketBudget: (function () { try { return marketGuardSnapshot(marketGuardLoad(), Date.now()); } catch (e) { return null; } })(), points: STATE.diag.points || null, pointsBuy: STATE.diag.pointsBuy || null, galleryTokens: (function () { try { const p = ownPersonaId(); return p ? galleryTokenBookLoad(p) : null; } catch (e) { return null; } })(), galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null,
             futbinBuy: STATE.diag.futbinBuy || null,
             futbinBuyPlan: STATE.diag.futbinBuyPlan || null,
             marketUrls: STATE.diag.marketUrls,

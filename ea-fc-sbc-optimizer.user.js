@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.23.0
+// @version      6.24.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.23.0';
+    const VERSION = '6.24.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7927,6 +7927,10 @@
                         <div id="sbc-opt-ki-gallery" class="sbc-opt-dim">–</div>
                     </div>
                     <div class="sbc-opt-card">
+                        <div class="sbc-opt-group-title" style="margin-top:0;">Kaufbuch (letzte Käufe)</div>
+                        <div id="sbc-opt-ki-ledger" class="sbc-opt-dim">Noch keine Käufe festgehalten.</div>
+                    </div>
+                    <div class="sbc-opt-card">
                         <div class="sbc-opt-group-title" style="margin-top:0;">Verlauf</div>
                         <div class="sbc-opt-dim" id="sbc-opt-mcp-log"></div>
                     </div>
@@ -13143,6 +13147,7 @@ const HybridSbcEa = (() => {
             catch (e) { return { tried: true, ok: false, why: String(e && e.message || e), sameTrade: same }; }
             const ok = responseOk(r);
             return { tried: true, ok: ok, status: r && r.status, sameTrade: same, bin: pick.bin, item: pick.it, tradeId: pick.tid,
+                     resp: (r && (r.response || r.data)) || null, // v6.24.0: fuer das Kaufbuch
                      why: ok ? null : ('Client-Kauf Status ' + (r && r.status) + (r && r.error ? ' ' + (r.error.code != null ? r.error.code : r.error.message) : '')) };
         } catch (e) { return { tried: true, ok: false, why: String(e && e.message || e) }; }
     }
@@ -13150,6 +13155,72 @@ const HybridSbcEa = (() => {
     async function bidHttp(tradeId, bin) {
         try { return await apiPut('trade/' + tradeId + '/bid', { bid: Math.floor(bin) }); }
         catch (e) { const err = new Error('Kauf: ' + (e && e.message || e)); err.status = httpStatusOf(e); throw err; }
+    }
+    // [BUYLEDGER-BEGIN]
+    /*
+     * v6.24.0: Kaufbuch (Rasmus 19.11.: Gosens zeigte im Spiel "Bought For
+     * 41.250", PitTools hatte 23.500 gerechnet - und keinen Beleg, weil EAs
+     * Antwort auf das Gebot nirgends gespeichert war und der Kaufbericht vom
+     * naechsten Lauf ueberschrieben wurde). Je Kauf: was wir geboten haben, was
+     * EA zurueckmeldet (Kontostand danach, Preis/Status des Trades, gespeicherter
+     * Verkaufspreis der Karte) und - entscheidend fuer "Bought For" - der
+     * Verkaufspreis, den die Karte im ANGEBOT schon trug (lastSalePrice des
+     * Vorbesitzers). 7 Tage, hoechstens 300 Eintraege, je Persona. Pure.
+     */
+    const BUY_LEDGER_DAYS = 7, BUY_LEDGER_MAX = 300;
+    function buyLedgerNum(v) { return v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v); }
+    /** Das Wichtige aus EAs Antwort auf ein Gebot (PUT trade/<id>/bid bzw. Client-Antwort). */
+    function buyLedgerFromResponse(resp, tradeId) {
+        const r = resp && typeof resp === 'object' ? resp : {};
+        const list = Array.isArray(r.auctionInfo) ? r.auctionInfo : [];
+        const a = list.find(x => x && tradeId != null && String(x.tradeId) === String(tradeId)) || list[0] || null;
+        const it = (a && a.itemData) || {};
+        return { credits: buyLedgerNum(r.credits), currentBid: buyLedgerNum(a && a.currentBid), buyNowPrice: buyLedgerNum(a && a.buyNowPrice),
+                 bidState: a && a.bidState != null ? String(a.bidState) : null, tradeState: a && a.tradeState != null ? String(a.tradeState) : null,
+                 itemId: buyLedgerNum(it.id), lastSalePrice: buyLedgerNum(it.lastSalePrice), answered: !!(resp && typeof resp === 'object') };
+    }
+    /**
+     * Ein Eintrag. Abgebucht = Kontostand vorher - Kontostand danach laut EA;
+     * "vorher" ist EAs Antwort auf den vorigen Kauf DESSELBEN Laufs (prevCredits),
+     * sonst der Kontostand aus EAs Client (kann veraltet sein, deshalb mit Quelle).
+     */
+    function buyLedgerEntry(c, prevCredits) {
+        const ea = c.ea || {};
+        const before = Number.isFinite(prevCredits) ? prevCredits : (Number.isFinite(c.coinsBefore) ? c.coinsBefore : null);
+        return { at: c.at, run: c.run != null ? c.run : null, mode: c.mode || null, via: c.via || null,
+                 name: c.name || null, defId: buyLedgerNum(c.defId), rating: buyLedgerNum(c.rating),
+                 tradeId: c.tradeId != null ? String(c.tradeId) : null, itemId: ea.itemId != null ? ea.itemId : buyLedgerNum(c.itemId),
+                 bid: buyLedgerNum(c.bid), planned: buyLedgerNum(c.planned), max: buyLedgerNum(c.max),
+                 eaPrice: ea.currentBid != null ? ea.currentBid : null, eaBin: ea.buyNowPrice != null ? ea.buyNowPrice : null,
+                 bidState: ea.bidState || null, tradeState: ea.tradeState || null, answered: !!ea.answered,
+                 coinsBefore: before, coinsBeforeFrom: Number.isFinite(prevCredits) ? 'EA (voriger Kauf)' : (before != null ? 'EA-Client' : null),
+                 creditsAfter: ea.credits != null ? ea.credits : null,
+                 charged: before != null && ea.credits != null ? before - ea.credits : null,
+                 lastSaleBefore: buyLedgerNum(c.lastSaleBefore), lastSaleAfter: ea.lastSalePrice != null ? ea.lastSalePrice : null };
+    }
+    function buyLedgerPrune(list, now) {
+        const keep = BUY_LEDGER_DAYS * 24 * 60 * 60 * 1000;
+        return (Array.isArray(list) ? list : []).filter(e => e && Number.isFinite(e.at) && e.at <= now && now - e.at < keep).slice(-BUY_LEDGER_MAX);
+    }
+    /** Kontostand nach dem letzten Kauf desselben Laufs (fuer "abgebucht"). */
+    function buyLedgerPrevCredits(list, run) {
+        if (run == null) return null;
+        for (let i = (list || []).length - 1; i >= 0; i--) { const e = list[i]; if (e && e.run === run && Number.isFinite(e.creditsAfter)) return e.creditsAfter; }
+        return null;
+    }
+    // [BUYLEDGER-END]
+    function buyLedgerKey() { let p = null; try { p = ownPersonaId(); } catch (e) {} return 'sbcOptBuyLedger:' + (p || 'unbekannt'); }
+    function buyLedgerLoad() { try { const a = JSON.parse(localStorage.getItem(buyLedgerKey()) || '[]'); return buyLedgerPrune(a, Date.now()); } catch (e) { return []; } }
+    /** Einen Kauf festhalten; Fehler hier duerfen nie einen Kauf-Lauf stoeren. Liefert den Eintrag. */
+    function buyLedgerRecord(ctx) {
+        try {
+            const now = Date.now();
+            const list = buyLedgerLoad();
+            const entry = buyLedgerEntry(Object.assign({ at: now }, ctx), buyLedgerPrevCredits(list, ctx.run));
+            list.push(entry);
+            localStorage.setItem(buyLedgerKey(), JSON.stringify(buyLedgerPrune(list, now)));
+            return entry;
+        } catch (e) { reportError('Kaufbuch', e); return null; }
     }
     /** Karte aus dem Kauf-Stapel in den Verein per eigenem PUT (EAs /item, pile club). */
     /**
@@ -14001,6 +14072,7 @@ const HybridSbcEa = (() => {
                 // v5.43.0: bis zu BUY_OFFER_TRIES Angebote desselben Suchergebnisses
                 // nacheinander - ein totes Angebot kostet keinen Schritt mehr.
                 let offer = null, ok = false, why = null, status = null, hardStop = false;
+                let bidResp = null, bidVia = null, coinsBefore = null; // v6.24.0: fuer das Kaufbuch
                 for (let t = 0; t < offers.length && t < BUY_OFFER_TRIES && !ok; t++) {
                     offer = offers[t];
                     step.found = offer.bin;
@@ -14012,7 +14084,7 @@ const HybridSbcEa = (() => {
                     if ((opts.cancelled && opts.cancelled()) || !buyBudgetAllows(plan,p,offer,diag.spent,opts)) {
                         diag.stopped = 'Kaufwache: Lauf gestoppt oder Budget überschritten'; hardStop = true; break;
                     }
-                    const coins = userCoins();
+                    const coins = userCoins(); coinsBefore = coins;
                     if (coins != null && coins < offer.bin) { step.status = 'zu wenig Coins'; diag.stopped = 'Coins reichen nicht'; lines.push('⚠ Coins reichen nicht mehr (' + fmtCoins(coins) + ').'); hardStop = true; break; }
                     render('Kaufe ' + p.name + ' für ' + fmtCoins(offer.bin) + (t ? ' (Angebot ' + (t + 1) + ')' : '') + ' ...');
                     // v5.24.0: Kauf ueber EAs Bid-Endpunkt (eigener PUT, wie die
@@ -14020,13 +14092,13 @@ const HybridSbcEa = (() => {
                     // die HTTP-Angebote haben tradeId + Rohdaten.
                     ok = false; why = null; status = null;
                     if (offer.tradeId != null) {
-                        try { await bidHttp(offer.tradeId, offer.bin); ok = true; }
+                        try { bidResp = await bidHttp(offer.tradeId, offer.bin); bidVia = 'http'; ok = true; }
                         catch (e) { why = String(e && e.message || e); status = e && e.status; }
                     } else if (offer.item) {
                         let resp = null;
                         try { resp = await obsPromise(window.services.Item.bid(offer.item, offer.bin)); }
                         catch (e) { resp = { success: false, status: 0, error: { message: String(e && e.message || e) } }; }
-                        ok = responseOk(resp); status = resp && resp.status;
+                        ok = responseOk(resp); status = resp && resp.status; bidResp = (resp && (resp.response || resp.data)) || null; bidVia = 'client';
                         if (!ok) why = 'Status ' + status + (resp && resp.error ? ', ' + (resp.error.code != null ? resp.error.code : resp.error.message) : '');
                     } else { why = 'Angebot ohne tradeId'; }
                     if (ok) { denied461 = 0; break; }
@@ -14075,7 +14147,7 @@ const HybridSbcEa = (() => {
                                 step.clientBid = { tried: !!cb.tried, ok: !!cb.ok, status: cb.status || null, sameTrade: !!cb.sameTrade, bin: cb.bin || null, why: cb.why || null };
                                 if (cb.ok) {
                                     offer = { tradeId: cb.tradeId, bin: cb.bin, item: cb.item, itemId: cb.item && cb.item.id, raw: null };
-                                    step.found = cb.bin; step.via = 'client';
+                                    step.found = cb.bin; step.via = 'client'; bidResp = cb.resp || null; bidVia = 'client-notweg';
                                     ok = true; denied461 = 0;
                                     lines.push('✓ ' + escapeHtml(p.name) + ' über EAs Client gekauft (eigener Weg: 461).');
                                     break;
@@ -14106,6 +14178,12 @@ const HybridSbcEa = (() => {
                 fails = 0;
                 step.paid = offer.bin; step.status = 'gekauft';
                 diag.bought++; diag.spent += offer.bin; diag.plannedSpent += p.planned;
+                // v6.24.0: Kaufbuch - EAs eigene Antwort festhalten (Kontostand, Preis, Verkaufspreis der Karte vorher/nachher).
+                const led = buyLedgerRecord({ run: diag.at, mode: diag.mode, via: bidVia, name: p.name, defId: p.resourceId, rating: p.rating,
+                    tradeId: offer.tradeId, itemId: offer.itemId != null ? offer.itemId : (offer.item && offer.item.id), bid: offer.bin,
+                    planned: p.planned, max: p.maxPrice, coinsBefore: coinsBefore, lastSaleBefore: offer.raw ? offer.raw.lastSalePrice : (offer.item ? offer.item.lastSalePrice : null),
+                    ea: buyLedgerFromResponse(bidResp, offer.tradeId) });
+                if (led) step.ledger = { eaPrice: led.eaPrice, charged: led.charged, creditsAfter: led.creditsAfter, lastSaleBefore: led.lastSaleBefore, lastSaleAfter: led.lastSaleAfter };
                 // v5.21.0: gekaufte Karte sofort in den VEREIN. Sie liegt sonst
                 // im Kauf-Stapel (Unassigned), und EA lehnte den Kader-PUT mit
                 // 475 ab (Report v5.20.0, "sie werden nicht direkt im verein
@@ -16526,6 +16604,20 @@ const HybridSbcEa = (() => {
         if (chances && Array.isArray(chances.free) && chances.free.length) parts.push('<div>Ohne Kauf höher bewertbar: ' + escapeHtml(chances.free.map(x => x.set + ' → ' + x.grade).join(', ')) + '</div>');
         return parts.join('');
     }
+    /**
+     * v6.24.0: Kaufbuch im Reiter KI - je Kauf, was geboten wurde, was EA als
+     * Preis und Abbuchung meldet, und welcher "Bought For"-Wert an der Karte
+     * vorher stand (Vorbesitzer) und nachher steht. Neueste zuerst, hoechstens 8.
+     */
+    function kiLedgerHtml(list) {
+        const rows = (Array.isArray(list) ? list : []).slice(-8).reverse();
+        if (!rows.length) return 'Noch keine Käufe festgehalten.';
+        const n = v => (v == null ? '–' : Number(v).toLocaleString('de-DE'));
+        const t = at => { try { const d = new Date(at); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); } catch (e) { return ''; } };
+        return rows.map(e => '<div>' + t(e.at) + ' <b>' + escapeHtml(e.name || '?') + '</b>' + (e.rating ? ' (' + e.rating + ')' : '') +
+            ': geboten ' + n(e.bid) + (e.answered ? ' · EA-Preis ' + n(e.eaPrice) + ' · abgebucht ' + n(e.charged) + ' · Kontostand danach ' + n(e.creditsAfter) : ' · keine EA-Antwort gespeichert') +
+            '<div class="sbc-opt-muted">„Bought For“ der Karte vorher ' + n(e.lastSaleBefore) + ' → nachher ' + n(e.lastSaleAfter) + '</div></div>').join('');
+    }
     function renderKiTab() {
         const jobsEl = document.getElementById('sbc-opt-ki-jobs');
         if (jobsEl) {
@@ -16539,6 +16631,8 @@ const HybridSbcEa = (() => {
             const h = kiGalleryHtml(p ? galleryTokenBookLoad(p) : null, galleryExpectLoad(), galleryCatalogCached(true), galleryBoughtLoad().length, galleryLastChances);
             if (gEl.innerHTML !== h) gEl.innerHTML = h;
         }
+        const lEl = document.getElementById('sbc-opt-ki-ledger');
+        if (lEl) { const h = kiLedgerHtml(buyLedgerLoad()); if (lEl.innerHTML !== h) lEl.innerHTML = h; }
     }
     function initGalleryTokens() {
         const card = document.getElementById('sbc-opt-gtokens');
@@ -19316,7 +19410,7 @@ const HybridSbcEa = (() => {
             // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten mit
             // Kosten, Marktabfragen, Fehler, eingefuegte Loesung.
             hybridSbc: STATE.diag.hybridSbc || null,
-            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, batchSpare: STATE.diag.batchSpare || null, mcp: STATE.diag.mcp || null, relay: STATE.diag.relay || null, liveChecks: liveChecksLoad(), marketBudget: (function () { try { return marketGuardSnapshot(marketGuardLoad(), Date.now()); } catch (e) { return null; } })(), points: STATE.diag.points || null, pointsBuy: STATE.diag.pointsBuy || null, galleryTokens: (function () { try { const p = ownPersonaId(); return p ? galleryTokenBookLoad(p) : null; } catch (e) { return null; } })(), galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null,
+            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, batchSpare: STATE.diag.batchSpare || null, mcp: STATE.diag.mcp || null, relay: STATE.diag.relay || null, liveChecks: liveChecksLoad(), buyLedger: (function () { try { return buyLedgerLoad().slice(-50); } catch (e) { return null; } })(), marketBudget: (function () { try { return marketGuardSnapshot(marketGuardLoad(), Date.now()); } catch (e) { return null; } })(), points: STATE.diag.points || null, pointsBuy: STATE.diag.pointsBuy || null, galleryTokens: (function () { try { const p = ownPersonaId(); return p ? galleryTokenBookLoad(p) : null; } catch (e) { return null; } })(), galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null,
             futbinBuy: STATE.diag.futbinBuy || null,
             futbinBuyPlan: STATE.diag.futbinBuyPlan || null,
             marketUrls: STATE.diag.marketUrls,

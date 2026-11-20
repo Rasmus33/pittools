@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.29.2
+// @version      6.29.3
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.29.2';
+    const VERSION = '6.29.3';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -11122,6 +11122,18 @@ const HybridSbcEa = (() => {
     // einem Abstand ist der Markt leergekauft (Galerie-Ansturm) oder fut.gg
     // veraltet; in beiden Faellen entscheidet Rasmus selbst.
     const GALLERY_PRICE_GUARD = { factor: 3, minGap: 1000 };
+    /** v6.29.3: Diagnose - Felder eines verworfenen Angebots neben der verlangten Version. */
+    function offerRejectSample(variant, offer) {
+        const raw = offer && offer.raw, it = offer && offer.item;
+        const out = { want: variant ? { defId: variant.defId, rating: variant.rating, score: variant.score, holo: Object.prototype.hasOwnProperty.call(variant, 'holographicType') ? variant.holographicType : 'egal' } : null,
+            got: { defId: raw ? raw.resourceId : it && it.definitionId, rating: raw ? raw.rating : it && it.rating, score: raw ? raw.gradingScore : it && it.gradingScore,
+                   rareflag: raw ? raw.rareflag : it && it.rareflag, hyper: raw && raw.hyperCosmetics !== undefined ? JSON.stringify(raw.hyperCosmetics).slice(0, 120) : undefined, bin: offer && offer.bin } };
+        try {
+            const e = it || (window.factories && window.factories.Item && window.factories.Item.createItem(JSON.parse(JSON.stringify(raw))));
+            out.got.foil = e && typeof e.getFoilSubtype === 'function' ? e.getFoilSubtype() : 'keine getFoilSubtype';
+        } catch (err) { out.got.foil = 'Fehler: ' + String(err && err.message || err).slice(0, 80); }
+        return out;
+    }
     function galleryOfferMatches(variant, offer, ea) {
         if (!variant) return true;
         const raw = offer && offer.raw, original = offer && offer.item;
@@ -14111,7 +14123,12 @@ const HybridSbcEa = (() => {
                 for (let t = 0; t < offers.length && t < BUY_OFFER_TRIES && !ok; t++) {
                     offer = offers[t];
                     step.found = offer.bin;
-                    if (opts.offerMatches && !opts.offerMatches(p,offer)) { step.variantRejected = (step.variantRejected || 0) + 1; continue; }
+                    if (opts.offerMatches && !opts.offerMatches(p,offer)) {
+                        step.variantRejected = (step.variantRejected || 0) + 1;
+                        // v6.29.3: WARUM abgelehnt (live 20.11. Racing Louisville: 2 Laeufe, jedes Angebot verworfen).
+                        try { if (!step.rejectSamples) step.rejectSamples = []; if (step.rejectSamples.length < 3) step.rejectSamples.push(offerRejectSample(p.variant, offer)); } catch (e) {}
+                        continue;
+                    }
                     if ((opts.cancelled && opts.cancelled()) || !buyBudgetAllows(plan,p,offer,diag.spent,opts)) {
                         diag.stopped = 'Kaufwache: Lauf gestoppt oder Budget überschritten'; hardStop = true; break;
                     }

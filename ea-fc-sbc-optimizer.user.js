@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.29.1
+// @version      6.29.2
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.29.1';
+    const VERSION = '6.29.2';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -12755,6 +12755,7 @@ const HybridSbcEa = (() => {
     }
     // [HYBRIDUI-END]
     // [HYBRIDEXEC-BEGIN]
+    function hybridActionRunningOf(last) { return hybridActionRunning(last); }
     function hybridActionRunning(last) {
         if (!last || last !== hybridLast || hybridClubCancel || hybridOpenChallenge() !== last.live ||
             ownPersonaId() !== last.persona || galleryBusy || sellBusy || (vorlagenRun && !vorlagenRun.fertig)) throw Error('SBC-Plan gestoppt, Account oder Ansicht gewechselt.');
@@ -12769,7 +12770,9 @@ const HybridSbcEa = (() => {
             });
         } catch (_) { return false; }
     }
-    async function hybridGuardSelected(last, pool) {
+    async function hybridGuardSelected(last, pool, runCheck) {
+        // v6.29.2: eigener Lauf-Waechter fuer pittools_sbc_solve; ohne Angabe wie bisher.
+        const hybridActionRunning = runCheck ? (() => runCheck()) : hybridActionRunningOf;
         hybridActionRunning(last);
         const cancelled = () => { try { hybridActionRunning(last); return false; } catch (_) { return true; } };
         const squads = await HybridSbcEa.readSavedSquads({ea:window,observe:obsPromise,wait:sleep,cancelled});
@@ -17411,10 +17414,6 @@ const HybridSbcEa = (() => {
     const SBC_SOLVE_PLAN_TTL_MS = 10 * 60 * 1000;
     const sbcSolvePlans = new Map();
     const sbcSolveState = { progress: null };
-    function sbcSolveHasConstraints() {
-        const sb = STATE.sbc || {};
-        return !!(sb.targetOVR || (sb.playerLevelConstraints || []).length || (sb.rarityConstraints || []).length || (sb.qualityConstraints || []).length);
-    }
     /** Pure: Obergrenzen des freigegebenen Plans auf einen frischen Kaufplan anwenden. Nie hoeher, nur Karten des Plans. */
     function sbcSolveCapPlan(saved, plan) {
         if (!saved || !Array.isArray(saved.items) || !Array.isArray(plan)) return { ok: false, why: 'kein gemerkter Plan' };
@@ -17481,7 +17480,7 @@ const HybridSbcEa = (() => {
     }
     async function sbcClaudeSolve(o) {
         o = o || {};
-        if (galleryBusy || buyBusy || sellBusy || futbinBusy || STATE.loading || (vorlagenRun && !vorlagenRun.fertig)) throw new Error('Es läuft gerade ein anderer Lauf - kurz warten.');
+        if (galleryBusy || buyBusy || sellBusy || futbinBusy || hybridClubBusy || STATE.loading || (vorlagenRun && !vorlagenRun.fertig)) throw new Error('Es läuft gerade ein anderer Lauf - kurz warten.');
         if (!sessionReady()) throw new Error('EA-Sitzung noch nicht erfasst - einmal im Spiel klicken.');
         if (!STATE.poolFullLoadDone || STATE.loadIncomplete) throw new Error('Verein nicht vollständig geladen - erst pittools_pool_load.');
         const persona = ownPersonaId();
@@ -17495,51 +17494,142 @@ const HybridSbcEa = (() => {
         } catch (e) { diag.error = String(e && e.message || e); throw e; }
         finally { sbcSolveState.progress = null; }
     }
-    async function sbcSolvePreview(cid, persona, diag) {
-        // Weg A: aus dem Verein nach den Produkt-Regeln (Storage zuerst, keine Evos, keine Sperren ...).
-        let club = { ok: false, reason: 'keine Rating-/Stufen-Vorgaben erkannt' };
-        if (sbcSolveHasConstraints()) {
-            try {
-                const res = SolverCore.solve(STATE.pool, readConfig());
-                club = res && res.ok ? { ok: true, ovr: res.ovr, warnings: res.warnings || [],
-                    players: res.players.map(p => ({ name: displayName(p), rating: p.rating, storage: !!p.isStorage })) }
-                    : { ok: false, reason: (res && res.reason) || 'keine Lösung aus dem Verein' };
-            } catch (e) { club = { ok: false, reason: String(e && e.message || e) }; }
-        }
-        diag.club = { ok: club.ok, reason: club.reason || null };
-        // Weg B: guenstigste Futbin-/FUT.GG-Loesung samt Marktcheck (derselbe Weg wie der Panel-Knopf).
-        let buy = null, cand = null;
+    // v6.29.2 (Rasmus 20.11.): Loesen ueber den Hybrid-Loeser - EA prueft ALLE Vorgaben (Chemie,
+    // Ligen ...), eigene Karten und Zukaeufe in EINEM Vergleich. Wert einer eigenen Karte = ihre
+    // SBC-Punkte (Item Score) x Coins je Punkt (guenstigste Quelle laut fut.gg, meist 84er);
+    // verkaeuflich: hoeherer Wert von Marktpreis und Punktewert. Kauf = Kaufpreis. Gewinnt die
+    // kleinste Summe ("ein untradeable Silber kostet 35 Punkte, fuer 600 Muenzen bekomme ich 500").
+    const SBC_SOLVE_BUDGET = 100000;
+    const SBC_SOLVE_RATE_FALLBACK = 1;
+    /** Pure: Coins je Punkt - je Rating das guenstigste Angebot geteilt durch die Punkte, nur Ratings mit mind. 3 Angeboten. */
+    function sbcSolveCoinsPerPoint(cands, table) {
+        const by = {};
+        (cands || []).forEach(c => { if (table && table[c.rating] > 0 && c.price > 0) (by[c.rating] = by[c.rating] || []).push(c.price); });
+        let best = null;
+        Object.keys(by).forEach(r => {
+            if (by[r].length < 3) return;
+            const price = Math.min.apply(null, by[r]), per = price / table[r];
+            if (!best || per < best.perPoint) best = { rating: Number(r), price: price, score: table[r], perPoint: per };
+        });
+        return best;
+    }
+    /** Pure: Coin-Gegenwert einer EIGENEN Karte. */
+    function sbcSolveOwnValue(card, rate) {
+        const pts = Math.round(Number(card.score) * rate);
+        const mv = !card.untradeable && card.market && card.market.value > 0 ? card.market.value : 0;
+        return Math.max(1, pts, mv);
+    }
+    /** Pure: Karten fuer die Suche - 'score' wird zum Gegenwert eigener Karten (Kaufkarte 1), 'coins' bleibt der Kaufpreis; 'pts' behaelt EAs Punkte. */
+    function sbcSolveValueCards(cards, rate) {
+        return (cards || []).map(c => Object.assign({}, c, { pts: c.score, score: c.source === 'market' ? 1 : sbcSolveOwnValue(c, rate) }));
+    }
+    /** Pure: guenstigster Plan nach Gesamtwert (Gegenwert eigener Karten + Kauf-Coins), bei Gleichstand weniger Kaeufe. */
+    function sbcSolvePickPlan(plans) {
+        let best = null;
+        (plans || []).forEach(p => {
+            const v = (p.score - p.purchases) + p.coins;
+            if (!best || v < best.v || (v === best.v && p.purchases < best.p.purchases)) best = { p: p, v: v };
+        });
+        return best ? Object.assign({ total: best.v }, best.p) : null;
+    }
+    async function sbcSolveRate(diag) {
+        const sc = it => Number(it && it.gradingScore) || 0;
+        const normal = (STATE.pool || []).map(p => p.raw).filter(r => r && isNormalCard(parseInt(r.rareflag, 10)) && !isEvolution(r)).map(r => ({ rating: Number(r.rating) || 0, score: sc(r) }));
+        const table = PointsBuyCore.scoreTable(normal);
         try {
-            sbcSolveState.progress = 'Futbin-Lösungen suchen';
-            await marketGuardGate(12, 'Lösungssuche', t => { sbcSolveState.progress = t; });
-            await onFutbinSearchClick();
-            cand = futbinLast && Array.isArray(futbinLast.ranked) ? futbinLast.ranked[0] : null;
-            if (cand && String(STATE.sbc.challengeId) === String(cid)) {
-                const plan = buildBuyPlan(cand, futbinLast.platform);
-                const missing = cand.squad.players.filter((pl, i) => !cand.owned[i]).length;
-                buy = { coins: cand.liveCost != null ? cand.liveCost : cand.adjCost, priceSource: cand.liveCost != null ? 'EA-Markt geprüft' : 'futbin-Schätzung',
-                        maxTotal: plan.reduce((a, p) => a + p.maxPrice, 0), ownCards: cand.eval.ownedCount, buys: plan.length, unpriced: missing - plan.length,
-                        formationOk: cand.formationOk, source: cand.row.source === 'futgg' ? 'FUT.GG' : 'Futbin',
-                        cards: plan.map(p => ({ name: p.name, rating: p.rating, planned: p.planned, maxPrice: p.maxPrice, source: p.source })),
-                        _plan: plan };
-            } else {
-                diag.buyError = (STATE.diag.futbin && STATE.diag.futbin.errors || []).slice(-3).join(' | ') || 'keine Lösung gefunden';
-            }
-        } catch (e) { diag.buyError = String(e && e.message || e); }
-        if (!club.ok && !buy) throw new Error('Keine Lösung: Verein ' + (club.reason || '-') + ' · Futbin ' + (diag.buyError || '-'));
+            const year = futbinYear(STATE.diag.gameName, window.fut_year), platform = readFutbinSettings().platform;
+            const r = await bridgeFetch('https://www.fut.gg/api/fut/market/' + year + '/cheapest-by-rating/v2/overview/?platform=' + (platform === 'pc' ? 'pc' : 'ps'), 30000);
+            if (!r || r.status !== 200) throw new Error('fut.gg HTTP ' + (r && r.status));
+            const best = sbcSolveCoinsPerPoint(PointsBuyCore.parseCheapest(JSON.parse(r.text), { minRating: 75 }), table);
+            if (best) { diag.rate = best; return { rate: best.perPoint, from: best.rating + 'er: ' + best.price + ' Coins für ' + best.score + ' Punkte' }; }
+            diag.rateError = 'keine Rating-Stufe mit genug Angeboten';
+        } catch (e) { diag.rateError = String(e && e.message || e); }
+        return { rate: SBC_SOLVE_RATE_FALLBACK, from: 'Schätzwert 1 Coin je Punkt (fut.gg nicht lesbar)' };
+    }
+    async function sbcSolvePreview(cid, persona, diag) {
+        const live = hybridOpenChallenge();
+        if (!live || !live.squad || String(live.id) !== String(cid)) throw new Error('Bitte die Team-SBC mit geöffnetem Kader öffnen.');
+        if (live.type !== 'OPEN_CHALLENGE') throw new Error('Nur Team-SBCs (keine Punkte-SBCs/Pflicht-Slots) - Typ ' + live.type + '.');
+        if (!bridgeKind()) throw new Error(BRIDGE_HINT);
+        const cancelled = () => hybridOpenChallenge() !== live || ownPersonaId() !== persona;
+        sbcSolveState.progress = 'lese Vorgaben';
+        const cachedSet = (STATE.setChallengesBySet || {})[Number(live.setId)];
+        let dto = cachedSet && findChallengeNode(cachedSet, live.id);
+        if (!dto || !Array.isArray(dto.elgReq)) dto = findChallengeNode(await apiGet('sbs/setId/' + Number(live.setId) + '/challenges'), live.id);
+        const oracle = HybridSbcEa.createTeamOracle({ ea: window, challengeDTO: dto, liveChallenge: live });
+        if (oracle.rules.some(r => r.field === 'score')) throw new Error('SBC mit Punkte-Vorgabe - hier nicht unterstützt.');
+        diag.rules = oracle.rules;
+        sbcSolveState.progress = 'Coins je Punkt (fut.gg)';
+        const rate = await sbcSolveRate(diag);
+        // Kaufkandidaten: die 4 guenstigsten Futbin-/FUT.GG-Loesungen, je Karte EINE Marktsuche bis 1,5x Futbin-Preis.
+        sbcSolveState.progress = 'Kaufkandidaten';
+        await marketGuardGate(24, 'Lösungssuche', t => { sbcSolveState.progress = t; });
+        const year = futbinYear(STATE.diag.gameName, window.fut_year), platform = readFutbinSettings().platform, tiers = eaPriceTiers();
+        const priceOf = new Map(), clubDefs = new Set((STATE.pool || []).filter(p => !p.isStorage && p.raw).map(p => String(p.raw.resourceId)));
+        const fdiag = {};
+        const market = await HybridSbcMarket.collect({ budget: SBC_SOLVE_BUDGET, cancelled,
+            rows: async () => {
+                let rows = [];
+                try { rows = await loadFutbinSolutions(year, live.id, u => bridgeFetch(u, 30000), fdiag); } catch (e) { (diag.errors = diag.errors || []).push('Futbin: ' + String(e.message || e)); }
+                if (!rows.length) rows = await loadFutggSolution(year, live.id, platform, u => bridgeFetch(u, 30000), fdiag);
+                return rows.sort((a, b) => (futbinPrice(a, platform) || Infinity) - (futbinPrice(b, platform) || Infinity));
+            },
+            squad: async row => {
+                let sq = row.squad;
+                if (!sq) {
+                    const r = await bridgeFetch(futbinSquadUrl(year, row.squadId), 40000);
+                    if (r.status !== 200) throw Error('Kaderquelle HTTP ' + r.status);
+                    sq = parseFutbinSquad(r.text);
+                }
+                (sq && sq.players || []).forEach(p => { const v = platform === 'pc' ? p.pricePc : p.pricePs; if (p.resourceId && v > 0) priceOf.set(String(p.resourceId), v); });
+                return sq;
+            },
+            quote: async rid => {
+                if (clubDefs.has(String(rid))) return null; // eigene Karte - nicht kaufen
+                const hit = marketLowCache.get(String(rid));
+                if (hit && Date.now() - hit.at < MARKET_LOW_CACHE_MS) return hit.low;
+                const fp = priceOf.get(String(rid));
+                return { offers: await marketOffers(rid, fp > 0 ? planMaxPrice(fp, 0.5, tiers) : 0) };
+            },
+            estimate: bins => robustMinBin(bins).robust,
+            cap: price => planMaxPrice(price, BUY_TOLERANCE, tiers),
+            normalize: (rid, offer, coins, est) => HybridSbcEa.normalizeMarket({ rid, offer, coins, estimatedCoins: est, ea: window }),
+            fatal: e => isRateLimit(e.status) || isSessionExpired(e.status), wait: () => futbinSleep(FUTBIN_MARKET_GAP_MS),
+            progress: (k, n) => { sbcSolveState.progress = 'Kaufkandidat ' + k + '/' + n; } });
+        diag.market = { asked: market.asked, candidates: market.cards.length, teams: market.teams.length, errors: market.errors };
+        sbcSolveState.progress = 'schütze Mannschaften';
+        const squads = await HybridSbcEa.readSavedSquads({ ea: window, observe: obsPromise, wait: sleep, cancelled });
+        const locked = Array.from(readPaletoolsLocks()), lockDiag = STATE.diag.locks;
+        const model = HybridSbcEa.normalizePool({ pool: STATE.pool.filter(p => !isEvolution(p.raw)), ea: window, squads,
+            locks: { complete: !!lockDiag && !lockDiag.error && !lockDiag.skippedKeys, ids: locked }, marketCache: marketLowCache });
+        const allCards = sbcSolveValueCards(model.cards.concat(market.cards.filter(c => !clubDefs.has(String(c.defId)))), rate.rate);
+        const g = Object.assign({}, model.guards, { squadIds: new Set(model.guards.squadIds.map(String)), lockedIds: new Set(locked.map(String)) });
+        const starts = HybridSbcMarket.starts(market.teams, allCards.filter(c => !HybridSbcCore.exclusion(c, g, Date.now())), oracle.preferredSlots, assignSlots, true);
+        sbcSolveState.progress = 'suche das günstigste Team (EA prüft Chemie und Vorgaben)';
+        const result = await HybridSbcCore.search({ cards: allCards, guards: model.guards, slots: oracle.slots, initialTeams: starts,
+            preferredSlots: oracle.preferredSlots, rules: oracle.rules, budget: SBC_SOLVE_BUDGET, maxPurchases: 11,
+            maxMs: 12000, maxNodes: 150000, cancelled, accept: oracle.assess });
+        Object.assign(diag, { nodes: result.nodes, checked: result.checked, plans: result.plans.length, stopped: result.stopped, excluded: result.excluded });
+        if (cancelled()) throw new Error('SBC oder Account gewechselt - abgebrochen.');
+        const best = sbcSolvePickPlan(result.plans);
+        if (!best) throw new Error('Kein gültiges Team gefunden (EA-Prüfung) - ' + (result.stopped === 'limit' ? 'Suchlimit erreicht.' : 'auch mit Zukäufen nicht lösbar.'));
+        const check = oracle.assess(best.players);
+        if (!check.valid) throw new Error('EA-Vorgabenprüfung hat den Plan verworfen.');
+        const own = best.players.filter(c => c.source !== 'market'), buys = best.players.filter(c => c.source === 'market');
         const id = 'sbc' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-        const usableBuy = buy && !buy.unpriced;
-        sbcSolvePlans.set(id, { at: Date.now(), persona: persona, challengeId: cid, club: club.ok, cand: usableBuy ? cand : null,
-                                items: usableBuy ? buy._plan.map(p => ({ id: p.resourceId, max: p.maxPrice })) : [], maxTotal: usableBuy ? buy.maxTotal : 0 });
-        if (buy) delete buy._plan;
-        diag.planId = id; diag.recommended = club.ok ? 'verein' : 'kauf';
-        return { preview: true, planId: id, challengeId: cid, setId: STATE.sbc.setId, chatApproval: galleryChatOkEnabled(),
-                 recommended: club.ok ? 'verein' : usableBuy ? 'kauf' : null,
-                 verein: club, kauf: buy,
-                 maxCoins: usableBuy ? buy.maxTotal : 0, // hoechstens - beim Vereinsweg nur, falls EA das Team ablehnt
-                 note: (club.ok ? 'Erst aus dem Verein (0 Coins). Lehnt EA das Team ab, ' + (usableBuy ? 'kauft PitTools die Futbin-Lösung bis höchstens ' + buy.maxTotal + ' Coins.' : 'wird nichts weiter gemacht.') :
-                        usableBuy ? 'Futbin-Lösung: eigene Karten + Zukauf bis höchstens ' + buy.maxTotal + ' Coins.' : 'Futbin-Lösung hat Karten ohne Preis - nicht automatisch lösbar.') +
-                       ' Nichts eingetragen, nichts gekauft. Nutzer im Chat fragen; bei Ja pittools_sbc_solve mit planId (10 min gültig).' };
+        sbcSolvePlans.set(id, { at: Date.now(), persona, challengeId: cid, live, dto, players: best.players, maxTotal: best.coins,
+            items: buys.map(c => ({ id: c.defId, max: c.coins })) });
+        diag.planId = id; diag.pick = { total: best.total, coins: best.coins, own: own.length, buys: buys.length, rating: check.rating, chemistry: check.chemistry };
+        const nm = c => c.name || (c.raw && c.raw.lastName) || ('#' + c.defId);
+        return { preview: true, planId: id, challengeId: cid, chatApproval: galleryChatOkEnabled(),
+            rating: check.rating, chemistry: check.chemistry,
+            coinsPerPoint: Math.round(rate.rate * 100) / 100, rateSource: rate.from,
+            maxCoins: best.coins, ownValueCoins: best.total - best.coins,
+            own: own.map(c => ({ name: nm(c), rating: c.rating, from: c.source === 'storage' ? 'Storage' : 'Verein', untradeable: !!c.untradeable, points: c.pts, valueCoins: c.score })),
+            buy: buys.map(c => ({ name: nm(c), rating: c.rating, expected: c.estimatedCoins, maxPrice: c.coins })),
+            alternatives: result.plans.length,
+            note: 'Gegenwert eigener Karten: SBC-Punkte × ' + (Math.round(rate.rate * 100) / 100) + ' Coins je Punkt (' + rate.from + '), verkäufliche mindestens ihr Marktpreis. ' +
+                  'Nichts eingetragen, nichts gekauft. Nutzer im Chat fragen (Kosten: höchstens ' + best.coins + ' Coins Zukauf); bei Ja pittools_sbc_solve mit planId (10 min gültig).' };
     }
     async function sbcSolveExecute(planId, cid, persona, diag) {
         const saved = sbcSolvePlans.get(planId);
@@ -17548,45 +17638,46 @@ const HybridSbcEa = (() => {
         if (!galleryChatOkEnabled()) throw new Error('Im Reiter „KI“ ist „Käufe im Chat freigeben“ aus - ohne den Schalter löst die KI keine SBC.');
         sbcSolvePlans.delete(planId); // eine Freigabe = ein Lauf
         const result = { challengeId: cid, via: null, submitted: false, notes: [] };
-        if (saved.club) {
-            sbcSolveState.progress = 'trage Team aus dem Verein ein';
-            try {
-                const res = SolverCore.solve(STATE.pool, readConfig());
-                if (!res || !res.ok) throw new Error((res && res.reason) || 'keine Lösung mehr aus dem Verein');
-                STATE.lastResult = res;
-                const sub = await submitToSbc(res);
-                if (sub.via !== 'app') { await refreshChallengeCache(); refreshOpenSbcView(); }
-                await sbcSolveSubmit(cid, result);
-                if (result.submitted === true) removeFromPool(res.players);
-                result.via = 'verein'; result.coins = 0;
-                result.players = res.players.map(p => displayName(p) + ' ' + p.rating + (p.isStorage ? ' (Storage)' : ''));
-                diag.result = { via: 'verein', award: result.awardConfirmed };
-                return result;
-            } catch (e) {
-                result.notes.push('Aus dem Verein nicht abgegeben: ' + (e && e.message || e));
-                // Nur weiter zum Kaufweg, wenn sicher NICHT abgegeben wurde.
-                if (!saved.cand || !(e && e.notSubmitted)) throw new Error(result.notes.join(' '));
-            }
+        const live = saved.live;
+        const last = { live, persona, selected: { players: saved.players } };
+        const running = () => { if (hybridOpenChallenge() !== live || ownPersonaId() !== persona) throw new Error('SBC oder Account gewechselt - abgebrochen, nicht abgegeben.'); };
+        running();
+        const market = saved.players.filter(c => c.source === 'market');
+        const concepts = new Map();
+        for (const c of market) {
+            sbcSolveState.progress = 'Konzept-Karte ' + c.defId;
+            const item = await conceptEntity(c.defId); running();
+            if (!item || String(item.definitionId) !== String(c.defId) || String(item.databaseId) !== String(c.playerId)) throw new Error('Konzept-Suche liefert eine andere Kartenversion - nichts gekauft.');
+            concepts.set(String(c.defId), item);
         }
-        const c = saved.cand;
-        if (!c) throw new Error('Kein Kaufweg im Plan.');
-        sbcSolveState.progress = 'füge die Futbin-Lösung ein';
-        const ins = await insertFutbinSolution(c.squad, c.owned);
-        result.inserted = { own: ins.ownedPlaced, concept: ins.conceptPlaced, offPosition: ins.fallbackPlaced || 0 };
-        if (ins.bricks && ins.bricks.open && ins.bricks.open.length) throw new Error('Pflicht-Slot ohne passenden Spieler - nicht abgegeben. ' + result.notes.join(' '));
-        // Vor dem ersten Kauf: erfuellt das eingefuegte Team (mit Konzept-Spielern) EAs Vorgaben?
+        sbcSolveState.progress = 'prüfe eigene Karten';
+        const guarded = await hybridGuardSelected(last, STATE.pool, running);
+        const oracle = HybridSbcEa.createTeamOracle({ ea: window, challengeDTO: saved.dto, liveChallenge: live });
+        if (!oracle.assess(guarded.players).valid) throw new Error('EA-Vorgaben mit diesen Karten nicht mehr erfüllt - nichts gekauft.');
+        const entities = guarded.players.map(c => c.source === 'market' ? concepts.get(String(c.defId)) : window.factories.Item.createItem(JSON.parse(JSON.stringify(c.raw))));
+        if (entities.some((it, i) => !it || String(it.definitionId) !== String(guarded.players[i].defId))) throw new Error('EA-Kartenidentität passt nicht zum Plan - nichts gekauft.');
+        if (!window.services || !window.services.SBC || typeof window.services.SBC.saveChallenge !== 'function') throw new Error('EA-Speicherweg fehlt.');
+        sbcSolveState.progress = 'trage das Team ein';
+        live.squad.setPlayers(entities, true);
+        const response = await obsPromise(window.services.SBC.saveChallenge(live));
+        if (!responseOk(response)) throw new Error('EA konnte den Kader nicht speichern - nichts gekauft, nicht abgegeben.');
+        running();
+        if (!hybridPitchMatches(last)) throw new Error('Gespeicherter Kader entspricht nicht dem Plan - nichts gekauft, nicht abgegeben.');
+        try { refreshOpenSbcView(); } catch (e) {}
         const pre = sbcSolveEaCheck(true);
         result.preBuyCheck = pre;
-        if (!pre.ok) throw new Error('EA: ' + pre.why + ' mit der eingefügten Lösung - nichts gekauft, nicht abgegeben. ' + result.notes.join(' '));
-        const fresh = buildBuyPlan(c, futbinLast ? futbinLast.platform : readFutbinSettings().platform);
+        if (!pre.ok) throw new Error('EA: ' + pre.why + ' mit dem eingetragenen Team - nichts gekauft, nicht abgegeben.');
         let bought = 0, spent = 0;
-        if (fresh.length) {
-            const capped = sbcSolveCapPlan(saved, fresh);
-            if (!capped.ok) throw new Error('Plan passt nicht mehr zur Freigabe (' + capped.why + ') - nichts gekauft, nicht abgegeben.');
+        if (market.length) {
+            const plan = market.map(c => ({ resourceId: c.defId, name: c.name || ('#' + c.defId), rating: c.rating, planned: c.estimatedCoins, maxPrice: c.coins, source: 'live',
+                variant: { defId: c.defId, rating: c.rating, score: c.pts } }));
+            const capped = sbcSolveCapPlan(saved, plan);
+            if (!capped.ok) throw new Error('Kaufplan passt nicht zur Freigabe (' + capped.why + ') - nichts gekauft.');
             sbcSolveState.progress = 'kaufe ' + capped.plan.length + ' Karten';
             await marketGuardGate(capped.plan.length * 2, 'Kauf', t => { sbcSolveState.progress = t; });
-            await buyPlannedPlayers(c, capped.plan, { fixedCaps: true, hardBudget: saved.maxTotal, leanSearch: true, mode: 'sbc-claude',
-                cancelled: () => ownPersonaId() !== persona || String(STATE.sbc.challengeId) !== String(cid) });
+            await buyPlannedPlayers(null, capped.plan, { fixedCaps: true, hardBudget: saved.maxTotal, leanSearch: true, mode: 'sbc-claude',
+                offerMatches: (p, o) => galleryOfferMatches(p.variant, o, window),
+                cancelled: () => { try { running(); return false; } catch (e) { return true; } } });
             const d = STATE.diag.futbinBuy || {};
             bought = d.bought || 0; spent = d.spent || 0;
             result.bought = bought; result.spent = spent;
@@ -17595,8 +17686,10 @@ const HybridSbcEa = (() => {
             if (!d.saved) throw new Error('Kader nach dem Kauf nicht gespeichert - NICHT abgegeben.');
         }
         await sbcSolveSubmit(cid, result);
-        result.via = 'kauf'; result.coins = spent;
-        diag.result = { via: 'kauf', bought: bought, spent: spent, award: result.awardConfirmed };
+        if (result.submitted === true) removeFromPool(STATE.pool.filter(p => saved.players.some(c => c.source !== 'market' && String(c.id) === String(p.id))));
+        result.via = market.length ? 'verein+kauf' : 'verein'; result.coins = spent;
+        result.players = saved.players.map(c => (c.name || ('#' + c.defId)) + ' ' + c.rating + (c.source === 'market' ? ' (gekauft)' : c.source === 'storage' ? ' (Storage)' : ''));
+        diag.result = { via: result.via, bought, spent, award: result.awardConfirmed };
         return result;
     }
     // ===================== v6.8.0 KI-Verbindung (Claude ueber MCP) =====================

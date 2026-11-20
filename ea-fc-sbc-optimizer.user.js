@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.29.4
+// @version      6.29.5
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.29.4';
+    const VERSION = '6.29.5';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -9890,8 +9890,19 @@ const HybridSbcEa = (() => {
      * unverkaeuflich vor Rest (Storage ist Verbrauchsmaterial, CLAUDE.md).
      * Liefert pro Spieler die Pool-Karte oder null.
      */
-    function matchOwned(players, pool, lockedIds) {
+    function matchOwned(players, pool, lockedIds, opts) {
         const lockSet = new Set((lockedIds || []).map(String));
+        // v6.29.5 (live 20.11. Flash SBC: eine 86er-Special aus dem VEREIN wurde als
+        // "eigene Karte, kostet 0" eingetragen): fuer SBCs gelten die Kartenregeln -
+        // keine Vereins-Specials, keine Evolutions. Die Galerie zaehlt weiter alles.
+        const sbcRules = !!(opts && opts.sbcRules);
+        const banned = p => {
+            if (!sbcRules) return false;
+            const r = p.raw || {};
+            try { if (isEvolution(r)) return true; } catch (e) {}
+            const rf = parseInt(r.rareflag, 10);
+            return !p.isStorage && !(Number.isInteger(rf) && isNormalCard(rf));
+        };
         const used = new Set();
         const prefer = p => (p.isStorage ? 2 : 0) + (p.untradeable ? 1 : 0);
         return (players || []).map(pl => {
@@ -9899,7 +9910,7 @@ const HybridSbcEa = (() => {
             if (!rid) return null;
             let best = null;
             for (const p of (pool || [])) {
-                if (!p || used.has(p.id) || lockSet.has(String(p.id))) continue;
+                if (!p || used.has(p.id) || lockSet.has(String(p.id)) || banned(p)) continue;
                 const r = p.raw || {};
                 const hit = Number(r.resourceId) === rid || Number(r.definitionId) === rid ||
                             (rid < 16777216 && Number(p.assetId) === rid);
@@ -13694,7 +13705,7 @@ const HybridSbcEa = (() => {
                     const bricks = (STATE.sbc.customBricks || []).length;
                     const needPlayers = Math.max(1, ((STATE.sbc.usableSlots && STATE.sbc.usableSlots.length) || 11) - bricks);
                     if (!squad || squad.players.length < needPlayers) throw new Error('Kader nicht lesbar (' + (squad ? squad.players.length : 0) + ' Spieler, erwartet ' + needPlayers + ')');
-                    const owned = matchOwned(squad.players, STATE.pool, locked);
+                    const owned = matchOwned(squad.players, STATE.pool, locked, { sbcRules: true });
                     const ev = evaluateSolution(squad.players, owned, s.platform);
                     cands.push({
                         row: row, squad: squad, owned: owned, eval: ev, listRank: row.listRank,
@@ -17501,6 +17512,43 @@ const HybridSbcEa = (() => {
         else result.notes.push('Abgabe gesendet, aber EAs Belohnungs-Antwort kam nicht - bitte in der Web App nachsehen. Kein zweiter Versuch.');
         return result;
     }
+    /** v6.29.5: EAs Hauptnavigation (Tab-Leiste) per exakter Beschriftung - gleiche Technik wie clickStoreTab. */
+    function clickEaNavTab(labels) {
+        const want = (labels || []).map(x => String(x).toLowerCase());
+        try {
+            for (const bar of visibleAll('[class*="tab-bar"], nav, [class*="navigation"]')) {
+                const els = bar.querySelectorAll('button, a, [role="button"], li, div, span');
+                for (let i = 0; i < els.length; i++) {
+                    const el = els[i];
+                    const t = String(el.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+                    if (want.indexOf(t) < 0) continue;
+                    const pt = el.parentElement ? String(el.parentElement.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase() : null;
+                    if (pt === t) continue; // aeusserste Huelle nehmen
+                    const ok = clickLike(el);
+                    try { const kids = Array.prototype.slice.call(el.children || []); const j = pickRowInnerTarget(kids); if (j >= 0) clickLike(kids[j]); } catch (e2) {}
+                    return { ok: ok, label: t };
+                }
+            }
+        } catch (e) {}
+        return { ok: false, why: 'kein Navigationspunkt ' + want.join('/') };
+    }
+    /** v6.29.5: SBC nach Namen oeffnen - von ueberall: SBC-Bereich, Hub-Kachel, Ein-Challenge-Sets direkt in den Kader. */
+    async function sbcSolveOpen(name) {
+        sbcSolveState.progress = 'öffne „' + name + '“';
+        const inSbcArea = () => visibleAll('.ut-sbc-set-tile-view').length > 0 || !!findSbcController() || visibleChallengeRowTexts().length > 0;
+        if (!inSbcArea()) {
+            const nav = clickEaNavTab(['sbc', 'sbcs', 'squad building challenges']);
+            if (!nav.ok) return { ok: false, why: 'SBC-Bereich nicht erreichbar (' + nav.why + ')' };
+            for (let i = 0; i < 30 && !inSbcArea(); i++) await BgTimer.wait(300);
+            if (!inSbcArea()) return { ok: false, why: 'SBC-Bereich lädt nicht' };
+        }
+        const r = await openSetForVorlage({ setName: name, type: 'reihe' }, null);
+        if (r.ok && r.mode === 'squad' && findSbcController()) return { ok: true, mode: 'squad' };
+        if (r.ok && r.mode === 'liste') return { ok: false, why: 'das Set hat mehrere Challenges - bitte die gewünschte in der Web App öffnen', rows: visibleChallengeRowTexts().slice(0, 8) };
+        let titles = [];
+        try { titles = listHubSetTitles().slice(0, 12); } catch (e) {}
+        return { ok: false, why: r.why || 'nicht geöffnet', titles: titles };
+    }
     async function sbcClaudeSolve(o) {
         o = o || {};
         if (galleryBusy || buyBusy || sellBusy || futbinBusy || hybridClubBusy || STATE.loading || (vorlagenRun && !vorlagenRun.fertig)) throw new Error('Es läuft gerade ein anderer Lauf - kurz warten.');
@@ -17509,8 +17557,15 @@ const HybridSbcEa = (() => {
         const persona = ownPersonaId();
         if (!persona) throw new Error('EA-Persona unbekannt - einmal im Spiel klicken.');
         try { syncSbcWithOpenChallenge(); } catch (e) {}
+        // v6.29.5 (Rasmus 20.11.: "bau das so um, dass du das selbst öffnen kannst"): mit Namen oeffnet PitTools die SBC selbst.
+        if (o.sbc && !o.planId) {
+            const nav = await sbcSolveOpen(String(o.sbc));
+            STATE.diag.sbcSolveOpen = nav;
+            if (!nav.ok) throw new Error('SBC „' + o.sbc + '“ nicht geöffnet: ' + nav.why + (nav.titles && nav.titles.length ? ' · sichtbare SBCs: ' + nav.titles.join(', ') : ''));
+            try { syncSbcWithOpenChallenge(); } catch (e) {}
+        }
         const cid = STATE.sbc.challengeId;
-        if (cid == null || !findSbcController()) throw new Error('Keine SBC geöffnet - bitte die Challenge in der Web App öffnen (Kader-Ansicht der Challenge).');
+        if (cid == null || !findSbcController()) throw new Error('Keine SBC geöffnet - Namen mitgeben (sbc: "Black Friday Flash 2"), dann öffnet PitTools sie selbst, oder die Challenge in der Web App öffnen.');
         const diag = STATE.diag.sbcSolve = { at: Date.now(), challengeId: cid, setId: STATE.sbc.setId, phase: o.planId ? 'ausführen' : 'planen' };
         try {
             return o.planId ? await sbcSolveExecute(String(o.planId), cid, persona, diag) : await sbcSolvePreview(cid, persona, diag);
@@ -18361,7 +18416,7 @@ const HybridSbcEa = (() => {
         if (tool === 'pittools_sbc_solve') {
             const running = mcpRunningJob(tool);
             if (running) return await mcpAwaitJob(running, a.wait);
-            const job = mcpStartJob(tool, () => sbcClaudeSolve({ planId: typeof a.planId === 'string' ? a.planId : null }), () => sbcSolveState.progress);
+            const job = mcpStartJob(tool, () => sbcClaudeSolve({ planId: typeof a.planId === 'string' ? a.planId : null, sbc: typeof a.sbc === 'string' && a.sbc.trim() ? a.sbc.trim().slice(0, 80) : null }), () => sbcSolveState.progress);
             const v = await mcpAwaitJob(job, a.wait);
             return v.state === 'done' ? v.result : v;
         }

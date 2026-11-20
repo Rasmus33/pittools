@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.29.0
+// @version      6.29.1
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.29.0';
+    const VERSION = '6.29.1';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -17429,17 +17429,54 @@ const HybridSbcEa = (() => {
         if (!(total <= saved.maxTotal)) return { ok: false, why: 'Summe jetzt höher als freigegeben' };
         return { ok: true, plan: out, total: total };
     }
+    /**
+     * v6.29.1: EAs VOLLE Vorgaben-Pruefung am offenen Kader (live 20.11.: isSBCSquadEligible
+     * allein liess einen Flash-Kader mit 4/7 Vorgaben durch, LEARNINGS v6.3.5). Gleiche Pruefung
+     * wie der Hybrid-Pruefkader: voller Kader + isSBCSquadEligible + challenge.meetsRequirements.
+     * concept=true: Konzept-Spieler duerfen noch drin sein - dann zaehlt nur meetsRequirements.
+     * Ohne Pruefmoeglichkeit gilt NICHT erfuellt (nie auf Verdacht abgeben).
+     */
+    function sbcSolveEaCheck(concept) {
+        const out = { ok: false, why: null, met: null, total: null };
+        try {
+            const ctrl = findSbcController();
+            const squad = ctrl && (ctrl._squad || (ctrl.getSquad && ctrl.getSquad()));
+            const ch = findLiveChallenge();
+            if (!squad || !ch || typeof ch.meetsRequirements !== 'function') { out.why = 'EAs Vorgaben-Prüfung nicht erreichbar'; return out; }
+            if (ch.squad && ch.squad !== squad) { out.why = 'Kader und Challenge passen nicht zusammen'; return out; }
+            try {
+                const reqs = Array.isArray(ch.eligibilityRequirements) ? ch.eligibilityRequirements : [];
+                if (reqs.length && typeof ch.isRequirementMet === 'function') {
+                    out.total = reqs.length; out.met = reqs.filter(r => { try { return !!ch.isRequirementMet(r); } catch (e) { return false; } }).length;
+                }
+            } catch (e) {}
+            if (ch.meetsRequirements() !== true) { out.why = 'Vorgaben nicht erfüllt' + (out.total ? ' (' + out.met + '/' + out.total + ')' : ''); return out; }
+            if (!concept) {
+                if (typeof squad.isSquadFull !== 'function' || squad.isSquadFull() !== true) { out.why = 'Kader nicht voll'; return out; }
+                if (typeof squad.isSBCSquadEligible !== 'function' || squad.isSBCSquadEligible() !== true) { out.why = 'EA hält den Kader nicht für abgabefähig'; return out; }
+            }
+            out.ok = true;
+        } catch (e) { out.why = 'Prüfung fehlgeschlagen: ' + String(e && e.message || e); }
+        return out;
+    }
+    function sbcSolveNotSubmitted(msg) { const e = new Error(msg); e.notSubmitted = true; return e; }
     async function sbcSolveSubmit(cid, result) {
+        sbcSolveState.progress = 'prüfe Vorgaben bei EA';
+        const chk = sbcSolveEaCheck(false);
+        result.eaCheck = chk;
+        if (!chk.ok) throw sbcSolveNotSubmitted('EA: ' + chk.why + ' - NICHT abgegeben.');
         const t = Date.now();
         sbcSolveState.progress = 'gebe ab';
-        await submitChallengeToEa(); // prueft selbst isSBCSquadEligible - sonst Fehler, NICHT abgegeben
+        try { await submitChallengeToEa(); }
+        catch (e) { throw sbcSolveNotSubmitted('Abgabe abgelehnt: ' + String(e && e.message || e)); }
         let ok = awardConfirms(STATE.lastAward, cid, t);
         for (let i = 0; i < 12 && !ok; i++) { await BgTimer.wait(500); ok = awardConfirms(STATE.lastAward, cid, t); }
-        result.submitted = true;
         result.awardConfirmed = ok;
         result.award = STATE.lastAward || null;
-        await BgTimer.wait(800);
-        try { result.popupClosed = dismissRewardPopup(); } catch (e) {}
+        // Nur EAs Belohnungs-Antwort heisst "abgegeben"; ohne sie ist der Ausgang offen (kein zweiter Versuch).
+        result.submitted = ok ? true : 'unbestätigt';
+        if (ok) { await BgTimer.wait(800); try { result.popupClosed = dismissRewardPopup(); } catch (e) {} }
+        else result.notes.push('Abgabe gesendet, aber EAs Belohnungs-Antwort kam nicht - bitte in der Web App nachsehen. Kein zweiter Versuch.');
         return result;
     }
     async function sbcClaudeSolve(o) {
@@ -17520,14 +17557,15 @@ const HybridSbcEa = (() => {
                 const sub = await submitToSbc(res);
                 if (sub.via !== 'app') { await refreshChallengeCache(); refreshOpenSbcView(); }
                 await sbcSolveSubmit(cid, result);
-                removeFromPool(res.players);
+                if (result.submitted === true) removeFromPool(res.players);
                 result.via = 'verein'; result.coins = 0;
                 result.players = res.players.map(p => displayName(p) + ' ' + p.rating + (p.isStorage ? ' (Storage)' : ''));
                 diag.result = { via: 'verein', award: result.awardConfirmed };
                 return result;
             } catch (e) {
                 result.notes.push('Aus dem Verein nicht abgegeben: ' + (e && e.message || e));
-                if (!saved.cand) throw new Error(result.notes.join(' '));
+                // Nur weiter zum Kaufweg, wenn sicher NICHT abgegeben wurde.
+                if (!saved.cand || !(e && e.notSubmitted)) throw new Error(result.notes.join(' '));
             }
         }
         const c = saved.cand;
@@ -17536,6 +17574,10 @@ const HybridSbcEa = (() => {
         const ins = await insertFutbinSolution(c.squad, c.owned);
         result.inserted = { own: ins.ownedPlaced, concept: ins.conceptPlaced, offPosition: ins.fallbackPlaced || 0 };
         if (ins.bricks && ins.bricks.open && ins.bricks.open.length) throw new Error('Pflicht-Slot ohne passenden Spieler - nicht abgegeben. ' + result.notes.join(' '));
+        // Vor dem ersten Kauf: erfuellt das eingefuegte Team (mit Konzept-Spielern) EAs Vorgaben?
+        const pre = sbcSolveEaCheck(true);
+        result.preBuyCheck = pre;
+        if (!pre.ok) throw new Error('EA: ' + pre.why + ' mit der eingefügten Lösung - nichts gekauft, nicht abgegeben. ' + result.notes.join(' '));
         const fresh = buildBuyPlan(c, futbinLast ? futbinLast.platform : readFutbinSettings().platform);
         let bought = 0, spent = 0;
         if (fresh.length) {

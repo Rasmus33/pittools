@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.29.3
+// @version      6.29.4
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.29.3';
+    const VERSION = '6.29.4';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -14125,6 +14125,8 @@ const HybridSbcEa = (() => {
                     step.found = offer.bin;
                     if (opts.offerMatches && !opts.offerMatches(p,offer)) {
                         step.variantRejected = (step.variantRejected || 0) + 1;
+                        // v6.29.4: Galerie-Kaeufe lehnen schon gesammelte Karten ab - das ist kein Versionsproblem.
+                        try { const it = offer.raw || offer.item; if (it && (it.isCollected === true || it.isCollected === 1)) step.alreadyCollected = (step.alreadyCollected || 0) + 1; } catch (e) {}
                         // v6.29.3: WARUM abgelehnt (live 20.11. Racing Louisville: 2 Laeufe, jedes Angebot verworfen).
                         try { if (!step.rejectSamples) step.rejectSamples = []; if (step.rejectSamples.length < 3) step.rejectSamples.push(offerRejectSample(p.variant, offer)); } catch (e) {}
                         continue;
@@ -14220,7 +14222,7 @@ const HybridSbcEa = (() => {
                 }
                 if (hardStop) break;
                 if (!ok) {
-                    step.status = step.variantRejected && !why ? 'Kein Angebot mit der verlangten Kartenversion/Holografie nachweisbar' : 'Kauf abgelehnt (' + (why || '?') + ')';
+                    step.status = step.variantRejected && !why ? (step.alreadyCollected === step.variantRejected ? 'Laut EA schon gesammelt - nicht gekauft' : 'Kein Angebot mit der verlangten Kartenversion/Holografie nachweisbar') : 'Kauf abgelehnt (' + (why || '?') + ')';
                     fails++;
                     lines.push('⚠ ' + escapeHtml(p.name) + ': ' + escapeHtml(step.status) + (step.deadTried ? ' - ' + step.deadTried + ' Angebot(e) waren schon weg.' : ' - vermutlich schon weg.'));
                     if (fails >= BUY_MAX_CONSECUTIVE_FAILS) { diag.stopped = 'zwei Fehler hintereinander'; break; }
@@ -15917,10 +15919,12 @@ const HybridSbcEa = (() => {
         const sets = (cat && cat.sets) || [];
         return sets.find(x => galleryNameHit(x.name, name) === 2) || sets.find(x => galleryNameHit(x.name, name) === 1) || null;
     }
-    async function galleryEnsureScanEntry(row, cache, persona) {
+    async function galleryEnsureScanEntry(row, cache, persona, maxAgeMs) {
         let entry = cache.sets[row.id];
         const want = galleryTeamIdsOf(row).ids.join(',');
-        if (entry && entry.attrs && entry.attrVersion === GALLERY_SCAN_ATTR_VERSION && (row.eaKind !== 'club' || (Array.isArray(entry.teams) && entry.teams.join(',') === want))) return entry;
+        // v6.29.4: optional hoechstes Alter (live 20.11. Racing Louisville: Plan aus einem 2 Tage alten Scan, 9 Karten laengst gesammelt).
+        const fresh = !(maxAgeMs > 0) || (entry && Number.isFinite(entry.at) && Date.now() - entry.at <= maxAgeMs);
+        if (fresh && entry && entry.attrs && entry.attrVersion === GALLERY_SCAN_ATTR_VERSION && (row.eaKind !== 'club' || (Array.isArray(entry.teams) && entry.teams.join(',') === want))) return entry;
         if (!(row.eaKind === 'club' || row.eaKind === 'league') || !(row.eaId > 0)) throw new Error(row.name + ': kein EA-Kriterium (Seltenheits-Set).');
         const m = await galleryMeasureSet(row, 'quote');
         if (m.sessionLost) throw new Error('EA-Sitzung abgelaufen - neu einloggen, dann erneut.');
@@ -15933,6 +15937,7 @@ const HybridSbcEa = (() => {
         return entry;
     }
     const galleryClaudeState = { progress: null };
+    const GALLERY_BUY_SCAN_MAX_AGE_MS = 3 * 60 * 60 * 1000;
     /** Live-Preise fuer die staerksten noch nicht gesammelten Versionen eines Sets, dann Chancen neu rechnen. Kauft nichts. */
     async function galleryQuoteRun(setName, maxCards) {
         if (galleryBusy || buyBusy || sellBusy) throw new Error('In der Galerie läuft gerade ein anderer Lauf - kurz warten.');
@@ -16041,7 +16046,8 @@ const HybridSbcEa = (() => {
             const row = galleryFindRow(cat, setName);
             if (!row) throw new Error('Kein Set „' + setName + '“ im Katalog.');
             const cache = (await galleryScanCacheLoad(persona)) || { v: 1, persona: persona, at: null, sets: {} };
-            const entry = await galleryEnsureScanEntry(row, cache, persona);
+            // v6.29.4: ein Vorschlag rechnet nie mit einem Sammelstand, der aelter als GALLERY_BUY_SCAN_MAX_AGE_MS ist (eine EA-Anfrage, keine Marktsuche).
+            const entry = await galleryEnsureScanEntry(row, cache, persona, opts && opts.preview && !opts.planId ? GALLERY_BUY_SCAN_MAX_AGE_MS : 0);
             galleryExcludeDefs((opts && opts.exclude) || [], entry.names).forEach(d => exclude.add(d)); // v6.24.2: auch per Spielername
             if (exclude.size) diag.exclude = Array.from(exclude);
             const rules = await galleryRulesLoad(row);

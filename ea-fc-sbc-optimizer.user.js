@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.27.0
+// @version      6.28.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.27.0';
+    const VERSION = '6.28.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -15501,6 +15501,99 @@ const HybridSbcEa = (() => {
             options: options, unknownBonus: r.current ? r.current.unknown : [], limited: !!r.limited
         };
     }
+    /**
+     * v6.28.0: Was-waere-wenn wie PaleTools' Galerie-Rechner (Rasmus 20.11.: "da
+     * kann ich Spieler, die ich nicht habe, auf Include setzen ... warum kannst
+     * du das nicht?"). Dieselbe Bewertung wie die Chancenliste (galleryPersonalScore),
+     * aber die Auswahl bestimmt der Nutzer: o.include (defIds oder Namen, "Name@85"
+     * pinnt die Version), aufgefuellt mit den eigenen gesammelten Karten nach
+     * Punkten (o.fill 'none' = nur include). Nicht gesammelte Karten zaehlen zum
+     * fut.gg-Preis als Kauf. Erstbesitz (Rasmus' Faustregel, nicht allgemeingueltig:
+     * er verkauft alle handelbaren Karten sofort, was im Verein liegt ist also
+     * normalerweise Erstbesitz; auch SBC-verbrauchte Karten waeren es, nur
+     * fuer die Galerie gekaufte+verkaufte nicht):
+     *   'belegt'   nur Beleg (Verein mit owners 1, gemerkt, Belohnungs-Versionen)
+     *   'verein'   (Default) gesammelt UND gerade im Verein (o.clubDefs) = Erstbesitz
+     *   'gesammelt' alle gesammelten Karten (Obergrenze, kann zu hoch sein)
+     * o.firstOwnerAlso: weitere Karten, die der Nutzer als Erstbesitz meldet.
+     * range zeigt immer alle drei Ergebnisse fuer dieselbe Auswahl. Pure.
+     */
+    function galleryWhatIf(row, entry, rules, firstOwned, o) {
+        o = o || {};
+        const req = rules && rules.requiredCards;
+        if (!row || !entry || !entry.attrs || !rules || !(req > 0)) return { name: row && row.name, error: !entry ? 'nicht gescannt' : !entry.attrs ? 'Scan ohne Merkmale' : 'keine Regeln' };
+        const names = entry.names || {}, prices = rules.prices || {};
+        const tokenOf = {};
+        ((row.catalog && row.catalog.grades) || []).forEach(g => { tokenOf[g.name] = g.tokens; });
+        (rules.grades || []).forEach(g => { if (!Number.isFinite(tokenOf[g.name]) && Number.isFinite(g.tokens)) tokenOf[g.name] = g.tokens; });
+        const all = (entry.defs || []).map(x => {
+            const a = entry.attrs[x[0]] || [];
+            return { id: x[0], name: names[x[0]] || ('#' + x[0]), rating: x[3], score: x[2], owned: x[1] === 1,
+                     price: x[1] === 1 ? 0 : (prices[x[0]] > 0 ? prices[x[0]] : null),
+                     attrs: { NATION: a[0], CLUB: a[1], LEAGUEID: a[2], RARE: a[3], BASE_DEF_ID: a[4],
+                              LEVEL: x[3] < 65 ? 'bronze' : x[3] < 75 ? 'silver' : 'gold',
+                              HYPER_COSMETIC_TYPE: a.length > 8 ? a[8] : null, WEAK_FOOT: a[6], SKILL_MOVES: a[5], POSSIBLE_POSITIONS: a[7] } };
+        });
+        const byId = new Map(all.map(c => [c.id, c]));
+        const brief = c => ({ defId: c.id, name: c.name, rating: c.rating, score: c.score, gesammelt: c.owned, preis: c.owned ? 0 : c.price });
+        // Eine Angabe -> Karten. defId (Ziffern), Name oder "Name@Rating". Mehrdeutig = alle Treffer.
+        const resolve = raw => {
+            const q = String(raw == null ? '' : raw).trim();
+            if (/^[0-9]+$/.test(q)) { const c = byId.get(Number(q)); return c ? { cards: [c] } : { none: q }; }
+            const m = /^(.*?)\s*@\s*([0-9]{2,3})$/.exec(q), nameQ = m ? m[1] : q, rate = m ? Number(m[2]) : null;
+            let hits = all.filter(c => galleryNameHit(c.name, nameQ) > 0 && (rate == null || c.rating === rate));
+            const exact = hits.filter(c => galleryNameHit(c.name, nameQ) === 2);
+            if (exact.length) hits = exact;
+            return hits.length === 1 ? { cards: hits } : hits.length ? { ambiguous: hits } : { none: q };
+        };
+        const list = v => (Array.isArray(v) ? v : []).filter(x => x != null && String(x).trim() !== '');
+        const unresolved = [], picked = [], excluded = new Set(), alsoFirst = new Set();
+        list(o.include).forEach(r => { const x = resolve(r);
+            if (x.cards) x.cards.forEach(c => { if (!picked.includes(c)) picked.push(c); });
+            else unresolved.push({ angabe: String(r), grund: x.ambiguous ? 'mehrdeutig - defId oder "Name@Rating" angeben' : 'nicht im Set gefunden', kandidaten: x.ambiguous ? x.ambiguous.map(brief) : [] }); });
+        list(o.exclude).forEach(r => { const x = resolve(r); (x.cards || x.ambiguous || []).forEach(c => excluded.add(c.id)); if (x.none) unresolved.push({ angabe: String(r), grund: 'nicht im Set gefunden', kandidaten: [] }); });
+        list(o.firstOwnerAlso).forEach(r => { const x = resolve(r); (x.cards || x.ambiguous || []).forEach(c => alsoFirst.add(c.id)); if (x.none) unresolved.push({ angabe: String(r), grund: 'nicht im Set gefunden', kandidaten: [] }); });
+        if (unresolved.length) return { id: row.id, name: row.name, error: 'Angaben nicht eindeutig oder unbekannt', unresolved: unresolved };
+        const clash = picked.filter(c => excluded.has(c.id));
+        if (clash.length) return { id: row.id, name: row.name, error: 'Karte steht in include UND exclude: ' + clash.map(c => c.name).join(', ') };
+        if (picked.length > req) return { id: row.id, name: row.name, error: 'include hat ' + picked.length + ' Karten, das Set braucht nur ' + req };
+        if (o.fill !== 'none') {
+            all.filter(c => c.owned && !excluded.has(c.id) && !picked.includes(c)).sort((a, b) => b.score - a.score || a.id - b.id)
+                .slice(0, req - picked.length).forEach(c => picked.push(c));
+        }
+        const clubDefs = o.clubDefs || new Set();
+        const proven = id => !!((firstOwned && firstOwned.has(String(id))) || (rules.firstOwnedDefs || []).includes(Number(id)));
+        // Beleg je Karte unter einem Modus. Gekaufte (nicht gesammelte) Karten sind NIE Erstbesitz.
+        const basisOf = (c, mode) => !c.owned ? null : alsoFirst.has(c.id) ? 'manuell' : proven(c.id) ? 'beleg' :
+            mode === 'verein' && clubDefs.has(String(c.id)) ? 'verein' : mode === 'gesammelt' ? 'gesammelt' : null;
+        const evalMode = mode => {
+            const cs = picked.map(c => Object.assign({}, c, { basis: basisOf(c, mode), attrs: Object.assign({}, c.attrs, { FIRST_OWNED: basisOf(c, mode) ? 1 : 0 }) }));
+            return { cs: cs, a: galleryPersonalScore(cs, req, rules.tags, rules.grades) };
+        };
+        const modes = ['belegt', 'verein', 'gesammelt'], res = {};
+        modes.forEach(m => { res[m] = evalMode(m); });
+        const mode = modes.indexOf(o.assume) >= 0 ? o.assume : 'verein';
+        const main = res[mode];
+        if (!main.a) return { id: row.id, name: row.name, error: 'Bewertung nicht möglich (Regelformat oder Karte ohne Punkte)' };
+        const a = main.a, rank = g => GALLERY_GRADE_ORDER.indexOf(g || 'N');
+        const buys = main.cs.filter(c => !c.owned), missingPrice = buys.filter(c => !(c.price > 0)).map(c => c.name);
+        const grades = (rules.grades || []).filter(g => g && Number.isFinite(g.threshold)).slice().sort((p, q) => p.threshold - q.threshold);
+        const next = a.complete ? grades.find(g => g.threshold > a.score) : null;
+        const known = o.known || null;
+        return {
+            id: row.id, name: row.name, requiredCards: req, complete: a.complete, firstOwnerMode: mode,
+            selected: main.cs.map(c => ({ defId: c.id, name: c.name, rating: c.rating, score: c.score, quelle: c.owned ? 'gesammelt' : 'kauf',
+                                          imVerein: clubDefs.has(String(c.id)), erstbesitz: c.basis, preis: c.owned ? 0 : (c.price > 0 ? c.price : null) })),
+            base: a.base, bonus: a.bonus, score: a.score, grade: a.grade, tokens: a.grade && Number.isFinite(tokenOf[a.grade]) ? tokenOf[a.grade] : null,
+            tokensGain: a.grade && known && Number.isFinite(tokenOf[a.grade]) ? tokenOf[a.grade] - (tokenOf[known] || 0) : null, redeemed: known,
+            coins: buys.reduce((s, c) => s + (c.price > 0 ? c.price : 0), 0), buys: buys.length, missingPrice: missingPrice,
+            nextGrade: next ? next.name : null, pointsToNext: next ? next.threshold - a.score : null,
+            erstbesitzKarten: main.cs.filter(c => c.basis).length,
+            bonusBreakdown: a.breakdown, excludedBonuses: a.excludedBonuses, unknownBonus: a.unknown,
+            range: modes.reduce((r, m) => { r[m] = res[m].a ? { score: res[m].a.score, grade: res[m].a.grade, erstbesitzKarten: res[m].cs.filter(c => c.basis).length } : null; return r; }, {}),
+            filled: o.fill !== 'none', worseThanKnown: !!(known && a.grade && rank(a.grade) < rank(known))
+        };
+    }
     /** Pure: alle Chancen ueber Sets sortiert - Kurs je Token (bekannte eingeloeste Note) oder Zielnote. */
     function galleryChancesRank(results, opts) {
         const o = opts || {};
@@ -15768,6 +15861,24 @@ const HybridSbcEa = (() => {
         } finally {
             galleryBusy = false; galleryChancesState.running = false;
         }
+    }
+    /** v6.28.0: Was-waere-wenn fuer EIN Set (Scan-Cache + Regeln wie die Chancenliste, keine EA-Anfrage ausser fehlender Regeln von fut.gg). Nur lesen. */
+    async function galleryWhatIfRun(a) {
+        const persona = ownPersonaId();
+        if (!persona) throw new Error('EA-Persona unbekannt - einmal im Spiel klicken.');
+        if (!a || !a.set) throw new Error('Welches Set? Parameter set.');
+        const cat = await galleryCatalogLoad(false, () => {});
+        const found = galleryFindRow(cat, String(a.set));
+        if (!found) throw new Error('Set nicht gefunden: ' + a.set + ' (pittools_gallery_load, dann Namen wie im Katalog).');
+        const row = galleryRowWithTokens(found);
+        const cache = await galleryScanCacheLoad(persona);
+        const entry = cache && cache.sets && cache.sets[row.id];
+        if (!entry || !entry.attrs || entry.attrVersion !== GALLERY_SCAN_ATTR_VERSION) throw new Error('Für dieses Set fehlt ein aktueller Scan - pittools_gallery_scan mit sets: ["' + row.name + '"].');
+        const rules = await galleryRulesLoad(row, false);
+        const clubDefs = new Set();
+        (STATE.pool || []).forEach(p => { const r = (p && p.raw) || {}; const d = Number(r.definitionId || r.resourceId || 0); if (d > 0) clubDefs.add(String(d)); });
+        return galleryWhatIf(row, entry, rules, galleryFirstOwnedDefs(), { include: a.include, exclude: a.exclude, firstOwnerAlso: a.firstOwnerAlso,
+            fill: a.fill === 'none' ? 'none' : 'score', assume: a.assume, known: galleryKnownGrade(row.id), clubDefs: clubDefs });
     }
     // ===================== v6.13.0 Live-Preise + Kauf nach Freigabe (Claude) =====================
     // Rasmus 18.11.: "Kaufen ja, immer erst gegen Nachfrage" (Chat UND Panel) und
@@ -17306,7 +17417,9 @@ const HybridSbcEa = (() => {
                        // v6.17.0: Galerie-Tokens mitschreiben, Note aus dem Zuwachs (nur lokal)
                        'pittools_gallery_tokens',
                        // v6.18.3: Verkaufsvorschau der gekauften Galerie-Karten (listen nur per Panel-Tipp)
-                       'pittools_gallery_sell'];
+                       'pittools_gallery_sell',
+                       // v6.28.0: Was-waere-wenn wie PaleTools' Galerie-Rechner (nur lesen)
+                       'pittools_gallery_whatif'];
     const mcpState = { on: false, status: 'aus', log: [] };
     function mcpEnabledSaved() { try { return localStorage.getItem(MCP_KEY) === '1'; } catch (e) { return false; } }
     function mcpSetEnabled(on) {
@@ -17366,7 +17479,7 @@ const HybridSbcEa = (() => {
                     return { set: pk.set.slice(0, 200), grade: pk.grade };
                 }) };
             }
-            else if (Array.isArray(v)) out[k] = v.slice(0, 10).map(x => Array.isArray(x) ? x.slice(0, 11).map(y => String(y).slice(0, 80)) : String(x).slice(0, 80));
+            else if (Array.isArray(v)) out[k] = v.slice(0, (k === 'include' || k === 'firstOwnerAlso') ? 30 : 10).map(x => Array.isArray(x) ? x.slice(0, 11).map(y => String(y).slice(0, 80)) : String(x).slice(0, 80));
         });
         return out;
     }
@@ -17869,6 +17982,19 @@ const HybridSbcEa = (() => {
                          chances: r.ranked.slice(0, top).map(c => { const o = Object.assign({}, c); delete o.selection; return o; }),
                          sets: r.results.map(x => x.error ? { name: x.name, error: x.error } : { name: x.name, gradeNow: x.gradeNow, scoreNow: x.scoreNow, bonusNow: x.bonusNow, redeemed: x.redeemed, freeUpgrade: x.freeUpgrade, gradeable: x.gradeable, options: x.options.length, unknownBonus: x.unknownBonus }) };
             }, () => galleryChancesState.progress);
+            const v = await mcpAwaitJob(job, a.wait);
+            return v.state === 'done' ? v.result : v;
+        }
+        if (tool === 'pittools_gallery_whatif') {
+            const running = mcpRunningJob(tool);
+            if (running) return await mcpAwaitJob(running, a.wait);
+            if (!a.set) throw new Error('Welches Set? Parameter set.');
+            const job = mcpStartJob(tool, async () => {
+                const r = await galleryWhatIfRun({ set: String(a.set), include: a.include, exclude: a.exclude, firstOwnerAlso: a.firstOwnerAlso, fill: a.fill, assume: a.assume });
+                if (r && r.error) throw new Error(r.error + (r.unresolved ? ': ' + JSON.stringify(r.unresolved) : ''));
+                r.note = 'Punkte MIT Bonusregeln wie PaleTools. Erstbesitz-Modus "' + r.firstOwnerMode + '": belegt = nur Beleg, verein = gesammelt und gerade im Verein (Faustregel des Nutzers), gesammelt = Obergrenze. Preise = fut.gg-Schätzung, nichts wird gekauft.';
+                return r;
+            }, () => 'Was-wäre-wenn …');
             const v = await mcpAwaitJob(job, a.wait);
             return v.state === 'done' ? v.result : v;
         }

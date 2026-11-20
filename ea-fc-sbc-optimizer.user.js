@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.28.0
+// @version      6.29.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.28.0';
+    const VERSION = '6.29.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7914,9 +7914,9 @@
                         <label class="sbc-opt-switch">
                             <input type="checkbox" id="sbc-opt-mcp-chatok">
                             <span class="track" aria-hidden="true"></span>
-                            <span class="txt">Galerie-Kauf im Chat freigeben<small>Dein Ja im Chat ersetzt den Tipp hier – z.B. aus der Chat-App am Handy</small></span>
+                            <span class="txt">Käufe im Chat freigeben<small>Dein Ja im Chat ersetzt den Tipp hier (Galerie) und erlaubt der KI, eine offene SBC zu lösen</small></span>
                         </label>
-                        <div class="sbc-opt-debug">Die KI kann lesen, planen und Galerie-Käufe vorschlagen. Gekauft wird nur für die Galerie und nur mit deiner Freigabe, gelistet erst nach deinem Tipp auf „Karten listen“. Eintragen und Abgeben nie. Anleitung: pittools-mcp/README.md.</div>
+                        <div class="sbc-opt-debug">Die KI kann lesen, planen und Galerie-Käufe vorschlagen. Gekauft wird nur mit deiner Freigabe: für die Galerie und – ab v6.29.0 – für eine offene SBC, die die KI dann auch einträgt und abgibt (nur mit Schalter „Käufe im Chat freigeben“). Gelistet wird erst nach deinem Tipp auf „Karten listen“. Anleitung: pittools-mcp/README.md.</div>
                     </div>
                     <div class="sbc-opt-card">
                         <div class="sbc-opt-group-title" style="margin-top:0;">Nachricht der KI</div>
@@ -17395,6 +17395,168 @@ const HybridSbcEa = (() => {
         renderSellPreview(rows, sellable, byMode);
     }
     /** v5.37.0: alle unverkauften Spieler der Transferliste zum Marktpreis listen (Reiter "Mehr"). */
+    // ===================== v6.29.0 SBC per KI loesen (Rasmus 20.11.) =====================
+    // Rasmus 20.11. (Black-Friday-Flash-SBCs): "lös mir die Flash-SBC ... komplett autonom
+    // fuer den guenstigsten Preis. Du kannst einmal im Chat nachfragen, ob der Preis ok ist,
+    // ansonsten moechte ich nichts klicken muessen." Ablauf wie beim Galerie-Kauf:
+    // 1) preview: offene SBC lesen, Weg A (aus dem Verein, SolverCore, 0 Coins) und Weg B
+    //    (guenstigste Futbin-/FUT.GG-Loesung, eigene Karten + Zukauf) planen -> planId.
+    //    Nichts eingetragen, nichts gekauft.
+    // 2) Rasmus sagt im Chat ja -> mit planId: A versuchen (eintragen, abgeben - EA prueft
+    //    selbst, ob abgabefaehig; sonst NICHT abgegeben), sonst B: einfuegen, fehlende Karten
+    //    kaufen (je Karte nie ueber der freigegebenen Obergrenze, Summe nie ueber dem
+    //    freigegebenen Gesamtbetrag), Kader speichern, abgeben, EAs Belohnungs-Antwort pruefen.
+    // Geht etwas schief (Karte nicht bekommen, Pflicht-Slot offen, EA haelt den Kader nicht fuer
+    // abgabefaehig), wird NICHT abgegeben. Braucht den Schalter "Käufe im Chat freigeben".
+    const SBC_SOLVE_PLAN_TTL_MS = 10 * 60 * 1000;
+    const sbcSolvePlans = new Map();
+    const sbcSolveState = { progress: null };
+    function sbcSolveHasConstraints() {
+        const sb = STATE.sbc || {};
+        return !!(sb.targetOVR || (sb.playerLevelConstraints || []).length || (sb.rarityConstraints || []).length || (sb.qualityConstraints || []).length);
+    }
+    /** Pure: Obergrenzen des freigegebenen Plans auf einen frischen Kaufplan anwenden. Nie hoeher, nur Karten des Plans. */
+    function sbcSolveCapPlan(saved, plan) {
+        if (!saved || !Array.isArray(saved.items) || !Array.isArray(plan)) return { ok: false, why: 'kein gemerkter Plan' };
+        const cap = new Map(saved.items.map(x => [String(x.id), x.max]));
+        const out = [];
+        for (const p of plan) {
+            const m = cap.get(String(p.resourceId));
+            if (m == null) return { ok: false, why: p.name + ' war nicht im freigegebenen Plan' };
+            out.push(Object.assign({}, p, { maxPrice: Math.min(p.maxPrice, m), planned: Math.min(p.planned, m) }));
+        }
+        const total = out.reduce((a, p) => a + p.maxPrice, 0);
+        if (!(total <= saved.maxTotal)) return { ok: false, why: 'Summe jetzt höher als freigegeben' };
+        return { ok: true, plan: out, total: total };
+    }
+    async function sbcSolveSubmit(cid, result) {
+        const t = Date.now();
+        sbcSolveState.progress = 'gebe ab';
+        await submitChallengeToEa(); // prueft selbst isSBCSquadEligible - sonst Fehler, NICHT abgegeben
+        let ok = awardConfirms(STATE.lastAward, cid, t);
+        for (let i = 0; i < 12 && !ok; i++) { await BgTimer.wait(500); ok = awardConfirms(STATE.lastAward, cid, t); }
+        result.submitted = true;
+        result.awardConfirmed = ok;
+        result.award = STATE.lastAward || null;
+        await BgTimer.wait(800);
+        try { result.popupClosed = dismissRewardPopup(); } catch (e) {}
+        return result;
+    }
+    async function sbcClaudeSolve(o) {
+        o = o || {};
+        if (galleryBusy || buyBusy || sellBusy || futbinBusy || STATE.loading || (vorlagenRun && !vorlagenRun.fertig)) throw new Error('Es läuft gerade ein anderer Lauf - kurz warten.');
+        if (!sessionReady()) throw new Error('EA-Sitzung noch nicht erfasst - einmal im Spiel klicken.');
+        if (!STATE.poolFullLoadDone || STATE.loadIncomplete) throw new Error('Verein nicht vollständig geladen - erst pittools_pool_load.');
+        const persona = ownPersonaId();
+        if (!persona) throw new Error('EA-Persona unbekannt - einmal im Spiel klicken.');
+        try { syncSbcWithOpenChallenge(); } catch (e) {}
+        const cid = STATE.sbc.challengeId;
+        if (cid == null || !findSbcController()) throw new Error('Keine SBC geöffnet - bitte die Challenge in der Web App öffnen (Kader-Ansicht der Challenge).');
+        const diag = STATE.diag.sbcSolve = { at: Date.now(), challengeId: cid, setId: STATE.sbc.setId, phase: o.planId ? 'ausführen' : 'planen' };
+        try {
+            return o.planId ? await sbcSolveExecute(String(o.planId), cid, persona, diag) : await sbcSolvePreview(cid, persona, diag);
+        } catch (e) { diag.error = String(e && e.message || e); throw e; }
+        finally { sbcSolveState.progress = null; }
+    }
+    async function sbcSolvePreview(cid, persona, diag) {
+        // Weg A: aus dem Verein nach den Produkt-Regeln (Storage zuerst, keine Evos, keine Sperren ...).
+        let club = { ok: false, reason: 'keine Rating-/Stufen-Vorgaben erkannt' };
+        if (sbcSolveHasConstraints()) {
+            try {
+                const res = SolverCore.solve(STATE.pool, readConfig());
+                club = res && res.ok ? { ok: true, ovr: res.ovr, warnings: res.warnings || [],
+                    players: res.players.map(p => ({ name: displayName(p), rating: p.rating, storage: !!p.isStorage })) }
+                    : { ok: false, reason: (res && res.reason) || 'keine Lösung aus dem Verein' };
+            } catch (e) { club = { ok: false, reason: String(e && e.message || e) }; }
+        }
+        diag.club = { ok: club.ok, reason: club.reason || null };
+        // Weg B: guenstigste Futbin-/FUT.GG-Loesung samt Marktcheck (derselbe Weg wie der Panel-Knopf).
+        let buy = null, cand = null;
+        try {
+            sbcSolveState.progress = 'Futbin-Lösungen suchen';
+            await marketGuardGate(12, 'Lösungssuche', t => { sbcSolveState.progress = t; });
+            await onFutbinSearchClick();
+            cand = futbinLast && Array.isArray(futbinLast.ranked) ? futbinLast.ranked[0] : null;
+            if (cand && String(STATE.sbc.challengeId) === String(cid)) {
+                const plan = buildBuyPlan(cand, futbinLast.platform);
+                const missing = cand.squad.players.filter((pl, i) => !cand.owned[i]).length;
+                buy = { coins: cand.liveCost != null ? cand.liveCost : cand.adjCost, priceSource: cand.liveCost != null ? 'EA-Markt geprüft' : 'futbin-Schätzung',
+                        maxTotal: plan.reduce((a, p) => a + p.maxPrice, 0), ownCards: cand.eval.ownedCount, buys: plan.length, unpriced: missing - plan.length,
+                        formationOk: cand.formationOk, source: cand.row.source === 'futgg' ? 'FUT.GG' : 'Futbin',
+                        cards: plan.map(p => ({ name: p.name, rating: p.rating, planned: p.planned, maxPrice: p.maxPrice, source: p.source })),
+                        _plan: plan };
+            } else {
+                diag.buyError = (STATE.diag.futbin && STATE.diag.futbin.errors || []).slice(-3).join(' | ') || 'keine Lösung gefunden';
+            }
+        } catch (e) { diag.buyError = String(e && e.message || e); }
+        if (!club.ok && !buy) throw new Error('Keine Lösung: Verein ' + (club.reason || '-') + ' · Futbin ' + (diag.buyError || '-'));
+        const id = 'sbc' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+        const usableBuy = buy && !buy.unpriced;
+        sbcSolvePlans.set(id, { at: Date.now(), persona: persona, challengeId: cid, club: club.ok, cand: usableBuy ? cand : null,
+                                items: usableBuy ? buy._plan.map(p => ({ id: p.resourceId, max: p.maxPrice })) : [], maxTotal: usableBuy ? buy.maxTotal : 0 });
+        if (buy) delete buy._plan;
+        diag.planId = id; diag.recommended = club.ok ? 'verein' : 'kauf';
+        return { preview: true, planId: id, challengeId: cid, setId: STATE.sbc.setId, chatApproval: galleryChatOkEnabled(),
+                 recommended: club.ok ? 'verein' : usableBuy ? 'kauf' : null,
+                 verein: club, kauf: buy,
+                 maxCoins: usableBuy ? buy.maxTotal : 0, // hoechstens - beim Vereinsweg nur, falls EA das Team ablehnt
+                 note: (club.ok ? 'Erst aus dem Verein (0 Coins). Lehnt EA das Team ab, ' + (usableBuy ? 'kauft PitTools die Futbin-Lösung bis höchstens ' + buy.maxTotal + ' Coins.' : 'wird nichts weiter gemacht.') :
+                        usableBuy ? 'Futbin-Lösung: eigene Karten + Zukauf bis höchstens ' + buy.maxTotal + ' Coins.' : 'Futbin-Lösung hat Karten ohne Preis - nicht automatisch lösbar.') +
+                       ' Nichts eingetragen, nichts gekauft. Nutzer im Chat fragen; bei Ja pittools_sbc_solve mit planId (10 min gültig).' };
+    }
+    async function sbcSolveExecute(planId, cid, persona, diag) {
+        const saved = sbcSolvePlans.get(planId);
+        if (!saved || Date.now() - saved.at > SBC_SOLVE_PLAN_TTL_MS) throw new Error('Freigegebener Plan unbekannt oder abgelaufen - bitte neu vorschlagen (preview).');
+        if (saved.persona !== persona || String(saved.challengeId) !== String(cid)) throw new Error('Gerade ist eine andere SBC oder ein anderer Account offen als im Plan - neu vorschlagen.');
+        if (!galleryChatOkEnabled()) throw new Error('Im Reiter „KI“ ist „Käufe im Chat freigeben“ aus - ohne den Schalter löst die KI keine SBC.');
+        sbcSolvePlans.delete(planId); // eine Freigabe = ein Lauf
+        const result = { challengeId: cid, via: null, submitted: false, notes: [] };
+        if (saved.club) {
+            sbcSolveState.progress = 'trage Team aus dem Verein ein';
+            try {
+                const res = SolverCore.solve(STATE.pool, readConfig());
+                if (!res || !res.ok) throw new Error((res && res.reason) || 'keine Lösung mehr aus dem Verein');
+                STATE.lastResult = res;
+                const sub = await submitToSbc(res);
+                if (sub.via !== 'app') { await refreshChallengeCache(); refreshOpenSbcView(); }
+                await sbcSolveSubmit(cid, result);
+                removeFromPool(res.players);
+                result.via = 'verein'; result.coins = 0;
+                result.players = res.players.map(p => displayName(p) + ' ' + p.rating + (p.isStorage ? ' (Storage)' : ''));
+                diag.result = { via: 'verein', award: result.awardConfirmed };
+                return result;
+            } catch (e) {
+                result.notes.push('Aus dem Verein nicht abgegeben: ' + (e && e.message || e));
+                if (!saved.cand) throw new Error(result.notes.join(' '));
+            }
+        }
+        const c = saved.cand;
+        if (!c) throw new Error('Kein Kaufweg im Plan.');
+        sbcSolveState.progress = 'füge die Futbin-Lösung ein';
+        const ins = await insertFutbinSolution(c.squad, c.owned);
+        result.inserted = { own: ins.ownedPlaced, concept: ins.conceptPlaced, offPosition: ins.fallbackPlaced || 0 };
+        if (ins.bricks && ins.bricks.open && ins.bricks.open.length) throw new Error('Pflicht-Slot ohne passenden Spieler - nicht abgegeben. ' + result.notes.join(' '));
+        const fresh = buildBuyPlan(c, futbinLast ? futbinLast.platform : readFutbinSettings().platform);
+        let bought = 0, spent = 0;
+        if (fresh.length) {
+            const capped = sbcSolveCapPlan(saved, fresh);
+            if (!capped.ok) throw new Error('Plan passt nicht mehr zur Freigabe (' + capped.why + ') - nichts gekauft, nicht abgegeben.');
+            sbcSolveState.progress = 'kaufe ' + capped.plan.length + ' Karten';
+            await marketGuardGate(capped.plan.length * 2, 'Kauf', t => { sbcSolveState.progress = t; });
+            await buyPlannedPlayers(c, capped.plan, { fixedCaps: true, hardBudget: saved.maxTotal, leanSearch: true, mode: 'sbc-claude',
+                cancelled: () => ownPersonaId() !== persona || String(STATE.sbc.challengeId) !== String(cid) });
+            const d = STATE.diag.futbinBuy || {};
+            bought = d.bought || 0; spent = d.spent || 0;
+            result.bought = bought; result.spent = spent;
+            result.buySteps = (d.steps || []).map(st => ({ name: st.name, paid: st.paid, max: st.max, status: st.status }));
+            if (bought < capped.plan.length) throw new Error('Nur ' + bought + ' von ' + capped.plan.length + ' Karten bekommen (' + (d.stopped || 'kein Angebot bis zur Obergrenze') + ') - NICHT abgegeben. Die gekauften Karten liegen im Verein.');
+            if (!d.saved) throw new Error('Kader nach dem Kauf nicht gespeichert - NICHT abgegeben.');
+        }
+        await sbcSolveSubmit(cid, result);
+        result.via = 'kauf'; result.coins = spent;
+        diag.result = { via: 'kauf', bought: bought, spent: spent, award: result.awardConfirmed };
+        return result;
+    }
     // ===================== v6.8.0 KI-Verbindung (Claude ueber MCP) =====================
     // Rasmus' Claude-Abo (Claude Desktop / Claude Code am PC) ruft ueber den lokalen
     // PitTools-MCP-Server (pittools-mcp/server.js) und die Bridge (ab 1.2.0) diese
@@ -17419,7 +17581,9 @@ const HybridSbcEa = (() => {
                        // v6.18.3: Verkaufsvorschau der gekauften Galerie-Karten (listen nur per Panel-Tipp)
                        'pittools_gallery_sell',
                        // v6.28.0: Was-waere-wenn wie PaleTools' Galerie-Rechner (nur lesen)
-                       'pittools_gallery_whatif'];
+                       'pittools_gallery_whatif',
+                       // v6.29.0: SBC loesen (Plan, dann nach Ja im Chat kaufen/eintragen/abgeben) - NUR ueber sbcClaudeSolve
+                       'pittools_sbc_solve'];
     const mcpState = { on: false, status: 'aus', log: [] };
     function mcpEnabledSaved() { try { return localStorage.getItem(MCP_KEY) === '1'; } catch (e) { return false; } }
     function mcpSetEnabled(on) {
@@ -18033,6 +18197,13 @@ const HybridSbcEa = (() => {
                 if (r && r.bought > 0) { try { r.sellPreview = await galleryClaudeSellPreview(); } catch (e) { r.sellPreview = { error: String(e && e.message || e) }; } }
                 return r;
             }, () => galleryClaudeState.progress);
+            const v = await mcpAwaitJob(job, a.wait);
+            return v.state === 'done' ? v.result : v;
+        }
+        if (tool === 'pittools_sbc_solve') {
+            const running = mcpRunningJob(tool);
+            if (running) return await mcpAwaitJob(running, a.wait);
+            const job = mcpStartJob(tool, () => sbcClaudeSolve({ planId: typeof a.planId === 'string' ? a.planId : null }), () => sbcSolveState.progress);
             const v = await mcpAwaitJob(job, a.wait);
             return v.state === 'done' ? v.result : v;
         }

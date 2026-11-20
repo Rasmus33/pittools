@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.29.5
+// @version      6.29.6
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.29.5';
+    const VERSION = '6.29.6';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -9912,8 +9912,12 @@ const HybridSbcEa = (() => {
             for (const p of (pool || [])) {
                 if (!p || used.has(p.id) || lockSet.has(String(p.id)) || banned(p)) continue;
                 const r = p.raw || {};
+                // v6.29.6 (Rasmus 20.11.: "es ist unmöglich, dass bei futbin genau diese karte drin war"):
+                // assetId ist der SPIELER, nicht die Kartenversion - futbins Gold-Karte (resourceId = Basis-ID)
+                // traf darueber die 86er-Special desselben Spielers. Basis-ID nur, wenn die Karte KEINE Versions-ID traegt.
+                const hasVersion = Number(r.resourceId) > 0 || Number(r.definitionId) > 0;
                 const hit = Number(r.resourceId) === rid || Number(r.definitionId) === rid ||
-                            (rid < 16777216 && Number(p.assetId) === rid);
+                            (!hasVersion && rid < 16777216 && Number(p.assetId) === rid);
                 if (!hit) continue;
                 if (!best || prefer(p) > prefer(best)) best = p;
             }

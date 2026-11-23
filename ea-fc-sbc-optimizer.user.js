@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.39.0
+// @version      6.40.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.39.0';
+    const VERSION = '6.40.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -6212,7 +6212,9 @@
             /* ---------- 3 · SKALEN ---------- */
             --pt-space-0-5: 2px;
             --pt-space-1: 4px;
+            --pt-space-1-5: 6px;
             --pt-space-2: 8px;
+            --pt-space-2-5: 10px;
             --pt-space-3: 12px;
             --pt-space-4: 16px;
             --pt-space-5: 20px;
@@ -6264,10 +6266,24 @@
             --pt-panel-w: 360px;
             --pt-panel-radius: var(--pt-radius-xl);
             --pt-panel-pad: var(--pt-space-4);
-            --pt-card-radius: var(--pt-radius-lg);
+            --pt-card-radius: var(--pt-radius-md);
             --pt-card-pad: var(--pt-space-3);
             --pt-btn-radius: var(--pt-radius-md);
             --pt-field-radius: var(--pt-radius-sm);
+            /* v6.40.0: Schrift-Rollen (fuenf im Panel; 30px nur im Netto-Kasten)
+               und Raster-Rollen. Komponenten lesen diese, nicht die Skala. */
+            --pt-type-meta: var(--pt-text-xs);
+            --pt-type-label: var(--pt-text-sm);
+            --pt-type-body: var(--pt-text-md);
+            --pt-type-title: var(--pt-text-lg);
+            --pt-type-num: var(--pt-text-2xl);
+            --pt-gutter: var(--pt-space-4);
+            --pt-inset: var(--pt-space-3);
+            --pt-stack: var(--pt-space-3);
+            --pt-stack-tight: var(--pt-space-2);
+            --pt-row-h: 44px;
+            --pt-tip-w: 260px;
+            --pt-z-tip: 3;
             --pt-z-panel: 999999;
             --pt-z-overlay: 1000000;
         }
@@ -6278,7 +6294,7 @@
             position: fixed; right: 22px; bottom: 22px; z-index: 999999;
             width: 56px; height: 56px; border-radius: 50%;
             background: var(--pt-bg-base);
-            color: var(--pt-fg-default); font-size: 26px; border: none; cursor: grab;
+            color: var(--pt-fg-default); font-size: var(--pt-type-num); border: none; cursor: grab;
             box-shadow: var(--pt-shadow-2), 0 0 0 2px var(--pt-accent), 0 0 0 6px var(--pt-accent-soft); display: flex;
             align-items: center; justify-content: center;
             transition: transform var(--pt-dur-base) var(--pt-ease-out); padding: 0; overflow: hidden;
@@ -6301,7 +6317,7 @@
            fuer Icon + Beschriftung. */
         #pittools-sbc-btn {
             display: inline-flex; align-items: center; justify-content: center;
-            gap: 6px; cursor: pointer;
+            gap: var(--pt-space-1-5); cursor: pointer;
         }
         #pittools-sbc-btn img {
             width: 1.4em; height: 1.4em; border-radius: 50%;
@@ -6322,8 +6338,8 @@
             background: var(--pt-bg-glass); color: var(--pt-fg-default);
             -webkit-backdrop-filter: blur(var(--pt-blur-glass)); backdrop-filter: blur(var(--pt-blur-glass));
             border: 1px solid var(--pt-border-subtle);
-            border-radius: var(--pt-radius-xl); box-shadow: var(--pt-shadow-3);
-            font-family: var(--pt-font-sans); font-size: var(--pt-text-md);
+            border-radius: var(--pt-panel-radius); box-shadow: var(--pt-shadow-3);
+            font-family: var(--pt-font-sans); font-size: var(--pt-type-body);
             font-variant-numeric: tabular-nums;
             display: none; padding: 0;
             /* Ohne das zeichnet Android eine helle Scrollbar in ein dunkles
@@ -6334,7 +6350,7 @@
         #sbc-opt-panel::-webkit-scrollbar { width: 10px; }
         #sbc-opt-panel::-webkit-scrollbar-track { background: transparent; }
         #sbc-opt-panel::-webkit-scrollbar-thumb {
-            background: var(--pt-border-default); border-radius: 6px;
+            background: var(--pt-border-default); border-radius: var(--pt-radius-sm);
             border: 3px solid var(--pt-bg-base);
         }
         #sbc-opt-panel.open { display: block; animation: pt-pop var(--pt-dur-slow) var(--pt-ease-out); }
@@ -6347,8 +6363,8 @@
         .sbc-opt-header {
             /* v6.0.0: kein Verlauf mehr - der Akzent gehoert der Hauptaktion. */
             background: var(--pt-bg-base); border-bottom: 1px solid var(--pt-border-subtle);
-            color:var(--pt-fg-default); font-weight:var(--pt-weight-semibold); font-size:var(--pt-text-lg);
-            padding:8px 12px 8px 16px; border-radius:var(--pt-radius-xl) var(--pt-radius-xl) 0 0;
+            color:var(--pt-fg-default); font-weight:var(--pt-weight-semibold); font-size:var(--pt-type-title);
+            padding:var(--pt-space-2) var(--pt-space-3) var(--pt-space-2) var(--pt-space-4); border-radius:var(--pt-panel-radius) var(--pt-panel-radius) 0 0;
             display:flex; justify-content:space-between; align-items:center;
             cursor:move; user-select:none; touch-action:none;
             /* Klebt beim Scrollen oben - der Zuklapp-Knopf und der Ziehgriff
@@ -6357,13 +6373,13 @@
         }
         .sbc-opt-header img.sbc-opt-logo {
             width:28px; height:28px; border-radius:50%;
-            vertical-align:-9px; margin-right:10px;
+            vertical-align:-9px; margin-right:var(--pt-space-2-5);
             box-shadow: 0 0 0 1.5px var(--pt-accent);
         }
         .sbc-opt-header .sbc-opt-ver {
-            font-family: var(--pt-font-mono); font-size: var(--pt-text-xs); font-weight: var(--pt-weight-regular);
+            font-family: var(--pt-font-mono); font-size: var(--pt-type-meta); font-weight: var(--pt-weight-regular);
             color: var(--pt-fg-muted); background: var(--pt-bg-raised);
-            border-radius: var(--pt-radius-full); padding: 2px 8px; margin-left: 6px; vertical-align: 1px;
+            border-radius: var(--pt-radius-full); padding: var(--pt-space-0-5) var(--pt-space-2); margin-left: var(--pt-space-1-5); vertical-align: 1px;
         }
         #sbc-opt-close {
             /* Vorher ein nackter Text von ~12px. Ein Zuklapp-Knopf ist die
@@ -6372,7 +6388,7 @@
                bisherigen Hoehe - nur die TREFFERflaeche waechst. */
             width:44px; height:44px; margin:-4px -4px -4px 0; border-radius:50%;
             display:flex; align-items:center; justify-content:center;
-            font-size:15px; line-height:1; flex:0 0 auto; color: var(--pt-fg-muted);
+            font-size:var(--pt-type-title); line-height:1; flex:0 0 auto; color: var(--pt-fg-muted); cursor:pointer;
             transition: background var(--pt-dur-fast) ease, color var(--pt-dur-fast) ease;
         }
         #sbc-opt-close:hover { background: var(--pt-state-hover); color: var(--pt-fg-default); }
@@ -6383,7 +6399,7 @@
            Rumpf zum Scroll-Container, und dann klebt #sbc-opt-run (sticky)
            an einem Kasten, der nie scrollt. hidden bleibt als Rueckfall fuer
            alte WebViews ohne clip. */
-        .sbc-opt-body { padding: 14px 16px; overflow-x: hidden; overflow-x: clip; }
+        .sbc-opt-body { padding: var(--pt-stack) var(--pt-gutter); overflow-x: hidden; overflow-x: clip; }
         /* v6.0.0: die Hauptaktion bleibt unten stehen, solange sie beim
            Scrollen noch nicht erreicht ist (Muster aus Trading-Apps, siehe
            Design-Canvas). Reine CSS-Loesung: Position im Markup und damit
@@ -6392,13 +6408,13 @@
             /* Der zweite Schatten fuellt die 12px bis zum Panel-Rand, sonst
                scheint dort der Inhalt durch, der unter dem Knopf scrollt. */
             box-shadow: var(--pt-glow-accent), 0 12px 0 0 var(--pt-bg-base); }
-        #sbc-opt-advanced { margin: 4px 0 10px; }
+        #sbc-opt-advanced { margin: var(--pt-space-1) 0 var(--pt-space-2-5); }
         /* Gemeinsame Aufklapp-Optik fuer "Erweiterte Einstellungen" UND die
            Batch-Team-Details (Ticket #73) - eine Stelle statt zweier
            synchron zu haltender Kopien. */
         .sbc-opt-details-toggle summary {
             cursor: pointer; color: var(--pt-fg-muted); font-weight: 600;
-            padding: 10px 12px; background: var(--pt-bg-surface);
+            padding: var(--pt-space-2-5) var(--pt-space-3); background: var(--pt-bg-surface);
             border: 1px solid var(--pt-border-subtle);
             border-radius: var(--pt-radius-md); user-select: none; list-style: none;
             transition: background var(--pt-dur-fast) ease, border-color var(--pt-dur-fast) ease;
@@ -6409,31 +6425,31 @@
         .sbc-opt-details-toggle summary::-webkit-details-marker { display: none; }
         .sbc-opt-details-toggle summary::before { content: '▸ '; color: var(--pt-accent); }
         .sbc-opt-details-toggle[open] summary::before { content: '▾ '; }
-        .sbc-opt-details-toggle[open] summary { margin-bottom: 10px; }
+        .sbc-opt-details-toggle[open] summary { margin-bottom: var(--pt-space-2-5); }
         .sbc-opt-info {
             background:var(--pt-bg-surface); border:1px solid var(--pt-border-subtle);
             border-radius:var(--pt-radius-md);
-            padding:10px 12px; margin-bottom:12px; line-height:1.6;
+            padding:var(--pt-space-2-5) var(--pt-space-3); margin-bottom:var(--pt-space-3); line-height:1.6;
         }
         .sbc-opt-info b { color:var(--pt-fg-default); }
         /* v6.0.0: nur die Zahl, nach der gesucht wird, traegt den Akzent. */
-        #sbc-opt-target { color:var(--pt-accent); font-family:var(--pt-font-mono); font-size:var(--pt-text-2xl); font-weight:var(--pt-weight-medium); line-height:1.1; }
+        #sbc-opt-target { color:var(--pt-accent); font-family:var(--pt-font-mono); font-size:var(--pt-type-num); font-weight:var(--pt-weight-medium); line-height:1.1; }
         #sbc-opt-poolcount { font-family:var(--pt-font-mono); font-weight:var(--pt-weight-medium); }
         /* v5.31.0: Kennzahl-Kacheln */
-        .sbc-opt-stats { display:grid; grid-template-columns:1fr 1fr; gap:6px; padding:8px; line-height:1.35; }
-        .sbc-opt-stat { background:var(--pt-bg-sunken); border-radius:var(--pt-radius-md); padding:8px 12px; min-width:0; }
-        .sbc-opt-stat .k { display:block; font-size:var(--pt-text-2xs); text-transform:uppercase; letter-spacing:var(--pt-tracking-caps); color:var(--pt-fg-subtle); margin-bottom:1px; }
-        .sbc-opt-stat b { display:block; font-size:var(--pt-text-md); font-weight:var(--pt-weight-semibold); overflow-wrap:anywhere; }
+        .sbc-opt-stats { display:grid; grid-template-columns:1fr 1fr; gap:var(--pt-space-1-5); padding:var(--pt-space-2); line-height:1.35; }
+        .sbc-opt-stat { background:var(--pt-bg-sunken); border-radius:var(--pt-radius-md); padding:var(--pt-space-2) var(--pt-space-3); min-width:0; }
+        .sbc-opt-stat .k { display:block; font-size:var(--pt-type-meta); text-transform:uppercase; letter-spacing:var(--pt-tracking-caps); color:var(--pt-fg-subtle); margin-bottom:1px; }
+        .sbc-opt-stat b { display:block; font-size:var(--pt-type-body); font-weight:var(--pt-weight-semibold); overflow-wrap:anywhere; }
         .sbc-opt-stat-wide { grid-column:1 / -1; }
-        .sbc-opt-stats .sbc-opt-debug { margin-top:0; padding:0 2px; }
+        .sbc-opt-stats .sbc-opt-debug { margin-top:0; padding:0 var(--pt-space-0-5); }
         /* v6.1.0: Statuszeile ueber den Kacheln; die Kacheln klappen auf Tipp
            auf. Unter "Mehr" bleiben sie offen (dort steht die Technikzeile). */
         .sbc-opt-infobar {
-            width:100%; display:flex; align-items:center; gap:10px; margin:0 0 12px;
-            min-height:var(--pt-control-h); padding:8px 12px; box-sizing:border-box;
+            width:100%; display:flex; align-items:center; gap:var(--pt-space-2-5); margin:0 0 var(--pt-space-3);
+            min-height:var(--pt-control-h); padding:var(--pt-space-2) var(--pt-space-3); box-sizing:border-box;
             background:var(--pt-bg-sunken); color:var(--pt-fg-muted);
             border:1px solid var(--pt-border-subtle); border-radius:var(--pt-radius-md);
-            font-family:inherit; font-size:var(--pt-text-sm); text-align:left; cursor:pointer;
+            font-family:inherit; font-size:var(--pt-type-label); text-align:left; cursor:pointer;
             transition: background var(--pt-dur-fast) ease;
         }
         .sbc-opt-infobar:hover { background:var(--pt-state-hover); }
@@ -6441,7 +6457,7 @@
         .sbc-opt-infobar-txt { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
         .sbc-opt-infobar-txt b { color:var(--pt-fg-default); font-family:var(--pt-font-mono); font-weight:var(--pt-weight-medium); }
         .sbc-opt-infobar-txt .warn { color:var(--pt-warning-fg); font-weight:var(--pt-weight-semibold); }
-        .sbc-opt-infobar-more { flex:0 0 auto; font-size:var(--pt-text-xs); color:var(--pt-fg-subtle); }
+        .sbc-opt-infobar-more { flex:0 0 auto; font-size:var(--pt-type-meta); color:var(--pt-fg-subtle); }
         .sbc-opt-infobar-more::after { content:' ▾'; }
         #sbc-opt-panel[data-info="open"] .sbc-opt-infobar-more::after { content:' ▴'; }
         #sbc-opt-panel[data-info="closed"] #sbc-opt-info { display:none; }
@@ -6450,25 +6466,25 @@
            dort zeigt die Info-Box nur die Technikzeile. */
         #sbc-opt-panel[data-tab="mehr"] #sbc-opt-info .sbc-opt-stat { display:none; }
         /* v6.3.0: "Min. Rating" klebte direkt unter "Spieler laden". */
-        #sbc-opt-load + .sbc-opt-row { margin-top:14px; }
+        #sbc-opt-load + .sbc-opt-row { margin-top:var(--pt-space-3); }
         .sbc-opt-bridge-link {
-            display:flex; flex-direction:column; gap:2px; margin:-4px 0 14px; padding:10px 12px;
+            display:flex; flex-direction:column; gap:var(--pt-space-0-5); margin:-4px 0 var(--pt-space-3); padding:var(--pt-space-2-5) var(--pt-space-3);
             border-radius:var(--pt-radius-md); background:var(--pt-warning-soft);
             border:1px solid var(--pt-warning-border); color:var(--pt-warning-fg);
-            font-size:var(--pt-text-md); font-weight:var(--pt-weight-semibold); text-decoration:none;
+            font-size:var(--pt-type-body); font-weight:var(--pt-weight-semibold); text-decoration:none;
         }
         .sbc-opt-bridge-link[hidden] { display:none; }
         #sbc-opt-hybrid-club-stop[hidden] { display:none; }
-        .sbc-opt-bridge-link small { color:var(--pt-fg-muted); font-size:var(--pt-text-xs); font-weight:var(--pt-weight-regular); }
+        .sbc-opt-bridge-link small { color:var(--pt-fg-muted); font-size:var(--pt-type-meta); font-weight:var(--pt-weight-regular); }
         .sbc-opt-bridge-link:active { background:var(--pt-state-press); }
         /* Karte: gruppiert die Eingaben einer Aktion */
         .sbc-opt-card {
             background:var(--pt-bg-surface); border:1px solid var(--pt-border-subtle); border-radius:var(--pt-card-radius);
-            padding:var(--pt-card-pad); margin:0 0 12px;
+            padding:var(--pt-card-pad); margin:0 0 var(--pt-space-3);
         }
         .sbc-opt-card .sbc-opt-btn:last-child { margin-bottom:0; }
         /* Schalter (v5.31.0): Checkbox bleibt das Element, ist nur unsichtbar */
-        .sbc-opt-switch { display:flex; align-items:center; gap:10px; cursor:pointer; margin:2px 0 12px; }
+        .sbc-opt-switch { display:flex; align-items:center; gap:var(--pt-space-2-5); cursor:pointer; margin:var(--pt-space-0-5) 0 var(--pt-space-3); }
         .sbc-opt-switch input { position:absolute; opacity:0; width:0; height:0; margin:0; }
         .sbc-opt-switch .track {
             flex:0 0 40px; width:40px; height:24px; border-radius:var(--pt-radius-full); position:relative;
@@ -6482,42 +6498,42 @@
         .sbc-opt-switch input:checked + .track { background:var(--pt-accent); box-shadow:none; }
         .sbc-opt-switch input:checked + .track::after { transform: translateX(16px); background:var(--pt-fg-on-accent); }
         .sbc-opt-switch input:focus-visible + .track { outline: 2px solid var(--pt-accent); outline-offset: 2px; }
-        .sbc-opt-switch .txt { font-size:13px; color:var(--pt-fg-default); line-height:1.3; }
-        .sbc-opt-switch .txt small { display:block; font-size:11px; color:var(--pt-fg-subtle); }
+        .sbc-opt-switch .txt { font-size:var(--pt-type-body); color:var(--pt-fg-default); line-height:1.3; }
+        .sbc-opt-switch .txt small { display:block; font-size:var(--pt-type-meta); color:var(--pt-fg-subtle); }
         /* Knopf mit Icon */
-        .sbc-opt-btn-icon { display:flex; align-items:center; justify-content:center; gap:8px; }
+        .sbc-opt-btn-icon { display:flex; align-items:center; justify-content:center; gap:var(--pt-space-2); }
         .sbc-opt-btn-icon svg { width:16px; height:16px; flex:0 0 auto; }
         .sbc-opt-btn.primary { box-shadow: var(--pt-glow-accent); }
         /* Beschaeftigt (v5.31.0): Spinner rechts vom Text, kein zweiter Tipp moeglich */
         .sbc-opt-btn.is-busy { pointer-events:none; opacity:.85; }
         .sbc-opt-btn.is-busy::after {
-            content:''; display:inline-block; width:12px; height:12px; margin-left:8px; vertical-align:-2px;
+            content:''; display:inline-block; width:12px; height:12px; margin-left:var(--pt-space-2); vertical-align:-2px;
             border:2px solid currentColor; border-right-color:transparent; border-radius:50%;
             animation: pt-spin .8s linear infinite;
         }
         @keyframes pt-spin { to { transform: rotate(360deg); } }
         /* Fortschrittsbalken fuer Marktabfragen / Kader laden */
-        .sbc-opt-bar { height:4px; background:var(--pt-bg-raised); border-radius:var(--pt-radius-full); overflow:hidden; margin-top:8px; }
+        .sbc-opt-bar { height:4px; background:var(--pt-bg-raised); border-radius:var(--pt-radius-full); overflow:hidden; margin-top:var(--pt-space-2); }
         .sbc-opt-bar-fill { height:100%; width:0; background:var(--pt-accent); border-radius:var(--pt-radius-full); transition: width var(--pt-dur-slow) var(--pt-ease-out); }
         /* Leerzustand */
         .sbc-opt-result.sbc-opt-result-empty {
             background:transparent; border:1px solid var(--pt-border-default); text-align:center;
-            color:var(--pt-fg-subtle); padding:16px 12px; font-size:12px; line-height:1.5;
+            color:var(--pt-fg-subtle); padding:var(--pt-space-4) var(--pt-space-3); font-size:var(--pt-type-label); line-height:1.5;
         }
-        .sbc-opt-result-empty svg { width:28px; height:28px; display:block; margin:0 auto 6px; color:var(--pt-fg-muted); }
+        .sbc-opt-result-empty svg { width:28px; height:28px; display:block; margin:0 auto var(--pt-space-1-5); color:var(--pt-fg-muted); }
         .sbc-opt-tab-btn svg { width:16px; height:16px; flex:0 0 auto; }
-        #sbc-opt-availability { font-size:12px; margin-top:4px; color:var(--pt-fg-muted); }
+        #sbc-opt-availability { font-size:var(--pt-type-label); margin-top:var(--pt-space-1); color:var(--pt-fg-muted); }
         /* Gleiche Warnfarbe wie .sbc-opt-warn/Toast-Warnungen - kein neues
            Farbschema fuer "verfuegbar < gefordert". */
         #sbc-opt-availability .low { color:var(--pt-warning-fg); font-weight:700; }
-        .sbc-opt-debug { color:var(--pt-fg-subtle); font-size:11px; margin-top:4px; }
+        .sbc-opt-debug { color:var(--pt-fg-subtle); font-size:var(--pt-type-meta); margin-top:var(--pt-space-1); }
         /* Seltenheit in der Zieh-Liste: dieselbe gedaempfte Farbe wie die
            uebrigen Nebeninfos, damit Name + Rating fuehrend bleiben. */
         .sbc-opt-dim { color:var(--pt-fg-subtle); }
-        .sbc-opt-bid-summary { font-weight:600; margin:2px 0 6px; font-variant-numeric:tabular-nums; }
-        .sbc-opt-bid-row { display:flex; justify-content:space-between; align-items:center; gap:8px; margin:4px 0; font-variant-numeric:tabular-nums; }
+        .sbc-opt-bid-summary { font-weight:600; margin:var(--pt-space-0-5) 0 var(--pt-space-1-5); font-variant-numeric:tabular-nums; }
+        .sbc-opt-bid-row { display:flex; justify-content:space-between; align-items:center; gap:var(--pt-space-2); margin:var(--pt-space-1) 0; font-variant-numeric:tabular-nums; }
         .sbc-opt-bid-row .sbc-opt-btn { margin:0; width:auto; min-height:var(--pt-tap); }
-        .sbc-opt-bid-set { margin:4px 0 8px; }
+        .sbc-opt-bid-set { margin:var(--pt-space-1) 0 var(--pt-space-2); }
         /* Rollen-Klassen statt Farben im Markup: sonst waeren die Tokens
            nur die halbe Wahrheit - sieben inline-Farben standen weiter im
            HTML, drei davon in dem zu dunklen Grauton. */
@@ -6525,8 +6541,8 @@
         /* ------------------------------------------------------------------
            FELDER
            ------------------------------------------------------------------ */
-        .sbc-opt-row { margin-bottom:12px; }
-        .sbc-opt-row label { display:block; margin-bottom:4px; color:var(--pt-fg-muted); font-size:12px; }
+        .sbc-opt-row { margin-bottom:var(--pt-space-3); }
+        .sbc-opt-row label { display:block; margin-bottom:var(--pt-space-1); color:var(--pt-fg-muted); font-size:var(--pt-type-label); }
         /* Feld-Optik fuer ALLE Felder im Panel. Vorher hing die Regel an
            .sbc-opt-row - das Pack-Dropdown steht in einem .sbc-opt-inline und
            blieb deshalb ein natives weisses Select (Rasmus: "ultra haesslich").
@@ -6535,7 +6551,7 @@
         #sbc-opt-panel select {
             width:100%; background:var(--pt-bg-sunken); color:var(--pt-fg-default);
             border:1px solid var(--pt-border-default); border-radius:var(--pt-field-radius);
-            padding:8px 12px; font-size:var(--pt-text-md); min-height:var(--pt-control-h);
+            padding:var(--pt-space-2) var(--pt-space-3); font-size:var(--pt-type-body); min-height:var(--pt-control-h);
             font-family:inherit; box-sizing:border-box;
             transition: border-color var(--pt-dur-fast) ease, box-shadow var(--pt-dur-fast) ease;
         }
@@ -6572,7 +6588,7 @@
             width:18px; height:18px; flex:0 0 auto; cursor:pointer;
             accent-color: var(--pt-accent);
         }
-        .sbc-opt-inline { display:flex; align-items:center; gap:8px; }
+        .sbc-opt-inline { display:flex; align-items:center; gap:var(--pt-space-2); }
         .sbc-opt-inline input[type=number] { flex:1; }
         /* WARUM min-width:0: ein Flex-Kind hat min-width:auto und kann
            deshalb nicht unter seine INHALTS-Breite schrumpfen. Bei einem
@@ -6587,56 +6603,56 @@
         #sbc-opt-queue-refresh, #sbc-opt-pack-refresh { min-width:44px; }
         /* v6.1.0: geladener Verein = Statuszeile statt grosser Knopf. */
         .sbc-opt-btn.ghost.is-loaded {
-            min-height:34px; padding:6px 12px; font-size:var(--pt-text-sm);
+            min-height:34px; padding:var(--pt-space-1-5) var(--pt-space-3); font-size:var(--pt-type-label);
             font-weight:var(--pt-weight-medium); color:var(--pt-fg-muted); background:transparent;
         }
         /* v6.1.0: Hauptaktion greift (noch) nicht - gedaempft plus Grund. */
         .sbc-opt-btn.primary.is-blocked { background:var(--pt-bg-raised); color:var(--pt-fg-muted); box-shadow:inset 0 0 0 1px var(--pt-border-default); }
-        .sbc-opt-runhint { margin:6px 2px 0; font-size:var(--pt-text-sm); color:var(--pt-fg-subtle); }
+        .sbc-opt-runhint { margin:var(--pt-space-1-5) var(--pt-space-0-5) 0; font-size:var(--pt-type-label); color:var(--pt-fg-subtle); }
         /* v6.1.0: Mehrere erledigen - ein Bereich, der Umschalter blendet um. */
-        .sbc-opt-multi { margin-top:14px; padding-top:12px; border-top:1px solid var(--pt-border-subtle); }
-        .sbc-opt-multi .sbc-opt-batch { margin-top:4px; padding-top:0; border-top:none; }
+        .sbc-opt-multi { margin-top:var(--pt-space-3); padding-top:var(--pt-space-3); border-top:1px solid var(--pt-border-subtle); }
+        .sbc-opt-multi .sbc-opt-batch { margin-top:var(--pt-space-1); padding-top:0; border-top:none; }
         .sbc-opt-multi:not(.has-queue) #sbc-opt-multi-modes .sbc-opt-chip[data-mode="reihe"] { display:none; }
         .sbc-opt-multi:not([data-mode="reihe"]) #sbc-opt-queuesection { display:none; }
         .sbc-opt-multi:not([data-mode="batch"]) #sbc-opt-batchsection { display:none; }
         .sbc-opt-multi:not([data-mode="vorlagen"]) #sbc-opt-vorlagensection { display:none; }
         /* v6.1.0: Pack-Opener im Store als hervorgehobene Karte oben. */
         #sbc-opt-panel[data-store] #sbc-opt-packsection {
-            margin:0 0 14px; padding:12px; border:1px solid var(--pt-accent-border);
+            margin:0 0 var(--pt-space-3); padding:var(--pt-space-3); border:1px solid var(--pt-accent-border);
             border-radius:var(--pt-card-radius); background:var(--pt-bg-surface);
         }
         /* v6.1.0: Naechster Schritt - klebt unten, solange der echte Knopf
            ausser Sicht ist (wireNextBar). */
-        .sbc-opt-nextbar { position:sticky; bottom:12px; z-index:1; margin-top:12px; }
+        .sbc-opt-nextbar { position:sticky; bottom:12px; z-index:1; margin-top:var(--pt-space-3); }
         .sbc-opt-nextbar[hidden] { display:none; }
         .sbc-opt-nextbtn { display:flex; flex-direction:column; align-items:center; gap:1px; line-height:1.2;
             box-shadow: var(--pt-glow-accent), 0 12px 0 0 var(--pt-bg-base); }
-        .sbc-opt-nextbtn small { font-size:var(--pt-text-2xs); font-weight:var(--pt-weight-medium); letter-spacing:var(--pt-tracking-caps); text-transform:uppercase; opacity:.75; }
+        .sbc-opt-nextbtn small { font-size:var(--pt-type-meta); font-weight:var(--pt-weight-medium); letter-spacing:var(--pt-tracking-caps); text-transform:uppercase; opacity:.75; }
         /* v6.1.0: Freigabe im Panel (showBatchConfirm). */
-        .sbc-opt-confirm { margin-top:10px; padding:12px; border-radius:var(--pt-card-radius);
+        .sbc-opt-confirm { margin-top:var(--pt-space-2-5); padding:var(--pt-space-3); border-radius:var(--pt-card-radius);
             background:var(--pt-bg-surface); border:1px solid var(--pt-danger-border); }
         .sbc-opt-confirm[hidden] { display:none; }
-        .sbc-opt-confirm-title { font-size:var(--pt-text-lg); font-weight:var(--pt-weight-semibold); color:var(--pt-fg-default); margin-bottom:6px; }
-        .sbc-opt-confirm-body { font-size:var(--pt-text-sm); color:var(--pt-fg-muted); line-height:1.5; white-space:pre-line; max-height:220px; overflow-y:auto; }
-        .sbc-opt-confirm-actions { display:grid; grid-template-columns:1fr 1.4fr; gap:8px; margin-top:10px; }
+        .sbc-opt-confirm-title { font-size:var(--pt-type-title); font-weight:var(--pt-weight-semibold); color:var(--pt-fg-default); margin-bottom:var(--pt-space-1-5); }
+        .sbc-opt-confirm-body { font-size:var(--pt-type-label); color:var(--pt-fg-muted); line-height:1.5; white-space:pre-line; max-height:220px; overflow-y:auto; }
+        .sbc-opt-confirm-actions { display:grid; grid-template-columns:1fr 1.4fr; gap:var(--pt-space-2); margin-top:var(--pt-space-2-5); }
         .sbc-opt-confirm-actions .sbc-opt-btn { margin-top:0; }
-        .sbc-opt-toggle { display:flex; align-items:center; gap:8px; cursor:pointer; }
+        .sbc-opt-toggle { display:flex; align-items:center; gap:var(--pt-space-2); cursor:pointer; }
         .sbc-opt-toggle input { width:auto; }
         .sbc-opt-group-title {
-            color:var(--pt-fg-default); font-size:var(--pt-text-md); font-weight:var(--pt-weight-semibold);
-            margin:16px 0 8px;
+            color:var(--pt-fg-default); font-size:var(--pt-type-body); font-weight:var(--pt-weight-semibold);
+            margin:var(--pt-space-4) 0 var(--pt-space-2);
         }
         .sbc-opt-group-title:first-of-type { margin-top:0; }
-        .sbc-opt-compact { display:flex; align-items:center; gap:8px; }
+        .sbc-opt-compact { display:flex; align-items:center; gap:var(--pt-space-2); }
         .sbc-opt-compact label { flex:1; margin-bottom:0; }
         .sbc-opt-compact select { width:auto; min-width:110px; }
         /* v6.0.0: Stufen-Zeile mit Segment-Schalter (enhanceSelectSegments):
            Beschriftung auf eigener Zeile, das Quell-<select> versteckt. */
         .sbc-opt-compact.sbc-opt-segrow { display:block; }
-        .sbc-opt-compact.sbc-opt-segrow label { display:block; margin-bottom:6px; }
+        .sbc-opt-compact.sbc-opt-segrow label { display:block; margin-bottom:var(--pt-space-1-5); }
         #sbc-opt-panel select.sbc-opt-segment-src { display:none; }
         .sbc-opt-chips.sbc-opt-chips-sm { margin:0; }
-        .sbc-opt-chips-sm .sbc-opt-chip { min-height:34px; line-height:1.2; font-size:var(--pt-text-sm); }
+        .sbc-opt-chips-sm .sbc-opt-chip { min-height:34px; line-height:1.2; font-size:var(--pt-type-label); }
         /* ------------------------------------------------------------------
            KNOEPFE
            ------------------------------------------------------------------ */
@@ -6644,10 +6660,10 @@
             width:100%; border:none; border-radius:var(--pt-radius-md);
             /* min-height statt nur padding: 40px ist die Groesse, die am Handy
                zuverlaessig zu treffen ist. Vorher waren es ~37px. */
-            min-height:var(--pt-tap); padding:10px 12px;
-            font-weight:var(--pt-weight-semibold); font-size:var(--pt-text-md); font-family:inherit;
+            min-height:var(--pt-tap); padding:var(--pt-space-2-5) var(--pt-space-3);
+            font-weight:var(--pt-weight-semibold); font-size:var(--pt-type-body); font-family:inherit;
             border-radius:var(--pt-btn-radius);
-            cursor:pointer; margin-top:8px;
+            cursor:pointer; margin-top:var(--pt-space-2);
             transition: background var(--pt-dur-fast) ease, box-shadow var(--pt-dur-fast) ease, transform .06s ease;
         }
         /* DRUCK-FEEDBACK. Am Handy gibt es kein :hover - ohne :active hat ein
@@ -6689,8 +6705,8 @@
            SBC-REIHE: eine Zeile pro Challenge des Sets, zum Anhaken
            ------------------------------------------------------------------ */
         .sbc-opt-queuerow {
-            display:flex; align-items:center; gap:10px; cursor:pointer;
-            padding:10px 12px; margin-bottom:6px; border-radius:var(--pt-radius-md);
+            display:flex; align-items:center; gap:var(--pt-space-2-5); cursor:pointer;
+            padding:var(--pt-space-2-5) var(--pt-space-3); margin-bottom:var(--pt-space-1-5); border-radius:var(--pt-radius-md);
             background:var(--pt-bg-sunken); border:1px solid var(--pt-border-subtle);
             transition: background var(--pt-dur-fast) ease, border-color var(--pt-dur-fast) ease;
         }
@@ -6703,14 +6719,14 @@
            deshalb als Plakette vorn, wie im Spiel. */
         .sbc-opt-queuerow .ovr {
             flex:0 0 auto; min-width:32px; text-align:center;
-            background:var(--pt-bg-raised); border-radius:var(--pt-radius-xs); padding:3px 7px;
-            font-family:var(--pt-font-mono); font-weight:var(--pt-weight-semibold); font-size:12px; color:var(--pt-accent);
+            background:var(--pt-bg-raised); border-radius:var(--pt-radius-sm); padding:var(--pt-space-1) var(--pt-space-2);
+            font-family:var(--pt-font-mono); font-weight:var(--pt-weight-semibold); font-size:var(--pt-type-label); color:var(--pt-accent);
         }
         .sbc-opt-queuerow .nm {
             flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
-            white-space:nowrap; font-size:var(--pt-text-md); color:var(--pt-fg-default);
+            white-space:nowrap; font-size:var(--pt-type-body); color:var(--pt-fg-default);
         }
-        .sbc-opt-queuerow .st { flex:0 0 auto; font-size:11px; color:var(--pt-fg-subtle); }
+        .sbc-opt-queuerow .st { flex:0 0 auto; font-size:var(--pt-type-meta); color:var(--pt-fg-subtle); }
         /* Erledigte Challenges bleiben SICHTBAR (sonst waere unklar, warum die
            Liste kuerzer ist als im Spiel), aber gedaempft und nicht angehakt. */
         .sbc-opt-queuerow.done { opacity:.5; cursor:default; }
@@ -6726,35 +6742,35 @@
             position: fixed; inset: 0; z-index: 999999; display: none;
             background: var(--pt-bg-scrim); overflow-y: auto;
             -webkit-overflow-scrolling: touch;
-            font-family: var(--pt-font-sans); font-size: 13px; color: var(--pt-fg-default);
+            font-family: var(--pt-font-sans); font-size: var(--pt-type-body); color: var(--pt-fg-default);
         }
         .sbc-opt-vl-box {
-            margin: 20px auto 40px; width: min(560px, calc(100vw - 20px));
+            margin: var(--pt-space-5) auto var(--pt-space-10); width: min(560px, calc(100vw - 20px));
             /* v6.0.0: ohne border-box ragte der Kasten um Padding + Rand
                (bis 42px) ueber den rechten Rand schmaler Schirme. */
             box-sizing: border-box;
             background: var(--pt-bg-base); border: 1px solid var(--pt-border-subtle);
-            border-radius: var(--pt-radius-xl); box-shadow: var(--pt-shadow-3);
-            padding: 16px 20px 20px;
+            border-radius: var(--pt-panel-radius); box-shadow: var(--pt-shadow-3);
+            padding: var(--pt-space-4) var(--pt-space-5) var(--pt-space-5);
         }
         .sbc-opt-vl-head {
             display: flex; justify-content: space-between; align-items: center;
-            font-size: 17px; font-weight: var(--pt-weight-semibold); color: var(--pt-fg-default);
-            margin-bottom: 12px;
+            font-size: var(--pt-type-title); font-weight: var(--pt-weight-semibold); color: var(--pt-fg-default);
+            margin-bottom: var(--pt-space-3);
         }
         .sbc-opt-vl-x {
             background: none; border: none; color: var(--pt-fg-muted);
-            font-size: 20px; min-width: 44px; min-height: 44px; cursor: pointer;
+            font-size: var(--pt-type-num); min-width: 44px; min-height: 44px; cursor: pointer;
             margin: -6px -10px -6px 0;
         }
         .sbc-opt-vl-x:active { color: var(--pt-fg-default); }
         .sbc-opt-vl-card {
             background: var(--pt-bg-surface); border: 1px solid var(--pt-border-subtle);
-            border-radius: var(--pt-card-radius); padding: 12px; margin-bottom: 10px;
+            border-radius: var(--pt-card-radius); padding: var(--pt-space-3); margin-bottom: var(--pt-space-2-5);
         }
         .sbc-opt-vl-cardkopf {
             display: flex; justify-content: space-between; align-items: center;
-            gap: 8px; font-size: 14px; min-width: 0;
+            gap: var(--pt-space-2); font-size: var(--pt-type-title); min-width: 0;
             /* v6.0.0: bricht erst um, wenn der Name keine 96px mehr haette
                (schmale Schirme) - sonst bleiben Chips und Start in der Zeile. */
             flex-wrap: wrap;
@@ -6764,8 +6780,8 @@
             min-width: 96px; flex: 1 1 auto;
         }
         .sbc-opt-vl-cardkopf .sbc-opt-btn { width: auto; flex: 0 0 auto;
-            margin-top: 0; padding: 8px 16px; }
-        .sbc-opt-vl-sum { color: var(--pt-fg-secondary); margin-top: 6px; }
+            margin-top: 0; padding: var(--pt-space-2) var(--pt-space-4); }
+        .sbc-opt-vl-sum { color: var(--pt-fg-secondary); margin-top: var(--pt-space-1-5); }
         .sbc-opt-vl-card.aus { opacity: .55; }
         /* v6.0.0: Menue der Vorlagen-Karte (oben rechts auf der Karte). */
         .sbc-opt-vl-menu { position: relative; flex: 0 0 auto; margin: -2px -4px -2px 0; }
@@ -6773,7 +6789,7 @@
             list-style: none; cursor: pointer; user-select: none;
             width: 40px; height: 40px; border-radius: var(--pt-radius-sm);
             display: flex; align-items: center; justify-content: center;
-            color: var(--pt-fg-muted); font-size: 18px; line-height: 1;
+            color: var(--pt-fg-muted); font-size: var(--pt-type-title); line-height: 1;
             transition: background var(--pt-dur-fast) ease, color var(--pt-dur-fast) ease;
         }
         .sbc-opt-vl-menu > summary::-webkit-details-marker { display: none; }
@@ -6783,108 +6799,108 @@
         .sbc-opt-vl-menu > summary:active { background: var(--pt-state-press); }
         .sbc-opt-vl-menu-list {
             position: absolute; top: 44px; right: 0; z-index: 3; min-width: 184px;
-            display: flex; flex-direction: column; padding: 4px;
+            display: flex; flex-direction: column; padding: var(--pt-space-1);
             background: var(--pt-bg-raised); border: 1px solid var(--pt-border-default);
             border-radius: var(--pt-radius-md); box-shadow: var(--pt-shadow-3);
         }
         .sbc-opt-vl-menu-item {
-            min-height: 40px; padding: 0 12px; border: none; border-radius: var(--pt-radius-sm);
+            min-height: 40px; padding: 0 var(--pt-space-3); border: none; border-radius: var(--pt-radius-sm);
             background: transparent; color: var(--pt-fg-default); text-align: left;
-            font-family: inherit; font-size: 13px; cursor: pointer;
+            font-family: inherit; font-size: var(--pt-type-body); cursor: pointer;
         }
         .sbc-opt-vl-menu-item:hover { background: var(--pt-state-hover); }
         .sbc-opt-vl-menu-item:active { background: var(--pt-state-press); }
         .sbc-opt-vl-menu-item.danger { color: var(--pt-danger-fg); }
         .sbc-opt-vl-menu-item:focus-visible { outline: 2px solid var(--pt-accent); outline-offset: -2px; }
         .sbc-opt-vl-anzahl {
-            display: flex; gap: 2px; margin-left: auto; margin-right: 8px;
-            flex: 0 0 auto; padding: 2px;
+            display: flex; gap: var(--pt-space-0-5); margin-left: auto; margin-right: var(--pt-space-2);
+            flex: 0 0 auto; padding: var(--pt-space-0-5);
         }
         .sbc-opt-vl-anzahl .sbc-opt-chip {
-            min-height: 24px; padding: 2px 9px; font-size: 11px;
+            min-height: 24px; padding: var(--pt-space-0-5) var(--pt-space-2); font-size: var(--pt-type-meta);
             flex: 0 0 auto; min-width: 0;
         }
-        .sbc-opt-vl-avail { color: var(--pt-warning-fg); font-size: 12px; margin-top: 4px; }
-        .sbc-opt-vl-last { color: var(--pt-fg-muted); margin-top: 4px; font-size: 12px; }
-        .sbc-opt-vl-tools { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+        .sbc-opt-vl-avail { color: var(--pt-warning-fg); font-size: var(--pt-type-label); margin-top: var(--pt-space-1); }
+        .sbc-opt-vl-last { color: var(--pt-fg-muted); margin-top: var(--pt-space-1); font-size: var(--pt-type-label); }
+        .sbc-opt-vl-tools { display: flex; gap: var(--pt-space-2); margin-top: var(--pt-space-1-5); flex-wrap: wrap; }
         .sbc-opt-vl-tools .sbc-opt-btn { width: auto; flex: 1 1 auto; }
         .sbc-opt-vl-leer {
             background: var(--pt-bg-surface); border: 1px solid var(--pt-border-subtle);
-            border-radius: var(--pt-radius-md); padding: 12px; color: var(--pt-fg-secondary);
-            line-height: 1.5; margin-bottom: 10px;
+            border-radius: var(--pt-radius-md); padding: var(--pt-space-3); color: var(--pt-fg-secondary);
+            line-height: 1.5; margin-bottom: var(--pt-space-2-5);
         }
         .sbc-opt-vl-step {
             background: var(--pt-bg-surface); border: 1px solid var(--pt-border-subtle);
-            border-radius: var(--pt-radius-md); padding: 10px 12px; margin: 10px 0;
+            border-radius: var(--pt-radius-md); padding: var(--pt-space-2-5) var(--pt-space-3); margin: var(--pt-space-2-5) 0;
         }
         /* v6.2.0: Editor-Schritte als Kette - Nummer auf einer Linie links. */
-        .sbc-opt-vl-chain { position: relative; padding-left: 40px; margin: 12px 0 4px; }
+        .sbc-opt-vl-chain { position: relative; padding-left: var(--pt-space-10); margin: var(--pt-space-3) 0 var(--pt-space-1); }
         .sbc-opt-vl-chain::before {
             content: ''; position: absolute; left: 13px; top: 14px; bottom: 22px;
             width: 2px; background: var(--pt-border-default);
         }
-        .sbc-opt-vl-chain .sbc-opt-vl-step { position: relative; margin: 0 0 12px; }
+        .sbc-opt-vl-chain .sbc-opt-vl-step { position: relative; margin: 0 0 var(--pt-space-3); }
         .sbc-opt-vl-stepnum {
             position: absolute; left: -40px; top: 10px; width: 28px; height: 28px; border-radius: 50%;
             display: flex; align-items: center; justify-content: center;
             background: var(--pt-bg-raised); color: var(--pt-fg-default);
             box-shadow: inset 0 0 0 1px var(--pt-border-strong), 0 0 0 4px var(--pt-bg-base);
-            font-family: var(--pt-font-mono); font-size: 12px; font-weight: var(--pt-weight-semibold);
+            font-family: var(--pt-font-mono); font-size: var(--pt-type-label); font-weight: var(--pt-weight-semibold);
         }
         .sbc-opt-vl-stepadd {
-            position: relative; display: flex; align-items: center; gap: 10px; min-height: 44px;
+            position: relative; display: flex; align-items: center; gap: var(--pt-space-2-5); min-height: 44px;
             background: transparent; border: none; color: var(--pt-fg-muted); font-family: inherit;
-            font-size: 13px; cursor: pointer; padding: 0; margin-left: -40px;
+            font-size: var(--pt-type-body); cursor: pointer; padding: 0; margin-left: -40px;
         }
         .sbc-opt-vl-stepadd .plus {
             width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
             background: var(--pt-accent-soft); color: var(--pt-accent); box-shadow: inset 0 0 0 1px var(--pt-accent-border);
-            font-size: 16px; line-height: 1; box-shadow: inset 0 0 0 1px var(--pt-accent-border), 0 0 0 4px var(--pt-bg-base);
+            font-size: var(--pt-type-title); line-height: 1; box-shadow: inset 0 0 0 1px var(--pt-accent-border), 0 0 0 4px var(--pt-bg-base);
         }
         .sbc-opt-vl-stepadd:hover { color: var(--pt-fg-default); }
         .sbc-opt-vl-stepadd:active .plus { background: var(--pt-state-press); }
         /* v6.2.0: Rueckgaengig-Leiste nach dem Loeschen einer Vorlage. */
         #sbc-opt-vl-undo {
             position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); z-index: var(--pt-z-overlay);
-            display: none; align-items: center; gap: 14px; padding: 6px 6px 6px 16px;
+            display: none; align-items: center; gap: var(--pt-space-3); padding: var(--pt-space-1-5) var(--pt-space-1-5) var(--pt-space-1-5) var(--pt-space-4);
             background: var(--pt-bg-raised); color: var(--pt-fg-default); border: 1px solid var(--pt-border-default);
             border-radius: var(--pt-radius-full); box-shadow: var(--pt-shadow-2);
-            font-family: var(--pt-font-sans); font-size: 13px; max-width: calc(100vw - 24px);
+            font-family: var(--pt-font-sans); font-size: var(--pt-type-body); max-width: calc(100vw - 24px);
         }
         #sbc-opt-vl-undo .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         #sbc-opt-vl-undo button {
-            flex: 0 0 auto; min-height: 36px; padding: 0 14px; border: none; border-radius: var(--pt-radius-full);
+            flex: 0 0 auto; min-height: 36px; padding: 0 var(--pt-space-3); border: none; border-radius: var(--pt-radius-full);
             background: var(--pt-accent-soft); color: var(--pt-accent); font-family: inherit;
-            font-size: 13px; font-weight: var(--pt-weight-semibold); cursor: pointer;
+            font-size: var(--pt-type-body); font-weight: var(--pt-weight-semibold); cursor: pointer;
         }
         #sbc-opt-vl-undo button:active { background: var(--pt-state-press); }
         .sbc-opt-vl-step label {
-            display: block; margin: 8px 0 4px; color: var(--pt-fg-muted); font-size: 12px;
+            display: block; margin: var(--pt-space-2) 0 var(--pt-space-1); color: var(--pt-fg-muted); font-size: var(--pt-type-label);
         }
-        .sbc-opt-vl-steprow { display: flex; gap: 6px; align-items: center; }
-        .sbc-opt-vl-steprow select { flex: 1 1 auto; min-width: 0; padding-left: 10px; padding-right: 4px; }
+        .sbc-opt-vl-steprow { display: flex; gap: var(--pt-space-1-5); align-items: center; }
+        .sbc-opt-vl-steprow select { flex: 1 1 auto; min-width: 0; padding-left: var(--pt-space-2-5); padding-right: var(--pt-space-1); }
         .sbc-opt-vl-mini { width: 44px !important; flex: 0 0 auto !important;
-            margin-top: 0 !important; padding: 8px 0 !important; }
+            margin-top: 0 !important; padding: var(--pt-space-2) 0 !important; }
         .sbc-opt-vl-input {
             width: 100%; box-sizing: border-box; background: var(--pt-bg-sunken);
             color: var(--pt-fg-default); border: 1px solid var(--pt-border-default);
-            border-radius: var(--pt-field-radius); padding: 9px 12px; font-size: 13px;
+            border-radius: var(--pt-field-radius); padding: var(--pt-space-2) var(--pt-space-3); font-size: var(--pt-type-body);
             font-family: inherit; min-height: var(--pt-tap);
         }
         .sbc-opt-vl-input:focus-visible {
             outline: 2px solid var(--pt-accent); outline-offset: 1px;
         }
         .sbc-opt-vl-zahl { width: 110px; }
-        .sbc-opt-vl-profil { margin-top: 8px; color: var(--pt-fg-secondary); }
-        .sbc-opt-vl-check { display:flex; align-items:center; gap:8px; margin-top:8px; color: var(--pt-fg-secondary); }
+        .sbc-opt-vl-profil { margin-top: var(--pt-space-2); color: var(--pt-fg-secondary); }
+        .sbc-opt-vl-check { display:flex; align-items:center; gap:var(--pt-space-2); margin-top:var(--pt-space-2); color: var(--pt-fg-secondary); }
         .sbc-opt-vl-profil span { color: var(--pt-accent); }
-        .sbc-opt-vl-hint { color: var(--pt-fg-muted); font-size: 12px;
-            line-height: 1.5; margin-top: 10px; }
-        .sbc-opt-vl-quota { color: var(--pt-fg-muted); margin-bottom: 8px; }
+        .sbc-opt-vl-hint { color: var(--pt-fg-muted); font-size: var(--pt-type-label);
+            line-height: 1.5; margin-top: var(--pt-space-2-5); }
+        .sbc-opt-vl-quota { color: var(--pt-fg-muted); margin-bottom: var(--pt-space-2); }
         .sbc-opt-vl-log {
-            padding: 7px 10px; border-radius: var(--pt-radius-sm);
+            padding: var(--pt-space-2) var(--pt-space-2-5); border-radius: var(--pt-radius-sm);
             background: var(--pt-bg-surface); border: 1px solid var(--pt-border-subtle);
-            margin-bottom: 6px; line-height: 1.45; overflow-wrap: break-word;
+            margin-bottom: var(--pt-space-1-5); line-height: 1.45; overflow-wrap: break-word;
         }
         .sbc-opt-vl-log.kopf { border-color: var(--pt-border-default); font-weight: 700; }
         .sbc-opt-vl-log.ok { color: var(--pt-accent); }
@@ -6892,18 +6908,18 @@
         .sbc-opt-vl-log.bad { color: var(--pt-danger-fg); }
         .sbc-opt-vl-pause {
             border: 1px solid var(--pt-warning-fg); border-radius: var(--pt-radius-md);
-            padding: 10px 12px; margin-top: 8px; background: var(--pt-bg-surface);
+            padding: var(--pt-space-2-5) var(--pt-space-3); margin-top: var(--pt-space-2); background: var(--pt-bg-surface);
         }
-        .sbc-opt-vl-pausekopf { font-weight: 700; margin-bottom: 8px;
+        .sbc-opt-vl-pausekopf { font-weight: 700; margin-bottom: var(--pt-space-2);
             color: var(--pt-warning-fg); line-height: 1.4; }
         /* Minimierter Vorlagen-Lauf: schlanke Leiste OBEN, Spiel sichtbar. */
         #sbc-opt-vl-topbar {
             position: fixed; top: 8px; left: 50%; transform: translateX(-50%);
-            z-index: 999999; display: none; align-items: center; gap: 8px;
+            z-index: 999999; display: none; align-items: center; gap: var(--pt-space-2);
             background: var(--pt-bg-base); border: 1px solid var(--pt-border-default);
-            border-radius: var(--pt-radius-full); padding: 6px 6px 6px 14px;
+            border-radius: var(--pt-radius-full); padding: var(--pt-space-1-5) var(--pt-space-1-5) var(--pt-space-1-5) var(--pt-space-3);
             max-width: calc(100vw - 12px); box-shadow: var(--pt-shadow-2);
-            font-family: var(--pt-font-sans); font-size: 12px; color: var(--pt-fg-default);
+            font-family: var(--pt-font-sans); font-size: var(--pt-type-label); color: var(--pt-fg-default);
         }
         #sbc-opt-vl-topbar .t {
             overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -6911,22 +6927,22 @@
         }
         #sbc-opt-vl-topbar .sbc-opt-btn {
             width: auto; flex: 0 0 auto; margin-top: 0;
-            padding: 6px 12px; min-height: 34px; border-radius: var(--pt-radius-full);
+            padding: var(--pt-space-1-5) var(--pt-space-3); min-height: 34px; border-radius: var(--pt-radius-full);
         }
         #sbc-opt-progress {
             position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%);
             z-index: 1000000; display: none; pointer-events: none;
             background: var(--pt-bg-base); color: var(--pt-fg-default);
             border: 1px solid var(--pt-border-default);
-            border-radius: var(--pt-radius-xl); box-shadow: var(--pt-shadow-3);
-            padding: 20px 22px; min-width: 300px; max-width: calc(100vw - 32px);
+            border-radius: var(--pt-panel-radius); box-shadow: var(--pt-shadow-3);
+            padding: var(--pt-space-5) var(--pt-space-5); min-width: 300px; max-width: calc(100vw - 32px);
             text-align: center; font-family: var(--pt-font-sans); font-variant-numeric: tabular-nums;
         }
         #sbc-opt-progress.open { display: block; }
         #sbc-opt-progress .p-title {
-            font-size: 16px; font-weight: var(--pt-weight-semibold); color: var(--pt-fg-default); margin-bottom: 2px;
+            font-size: var(--pt-type-title); font-weight: var(--pt-weight-semibold); color: var(--pt-fg-default); margin-bottom: var(--pt-space-0-5);
         }
-        #sbc-opt-progress .p-step { font-size: 13px; color: var(--pt-fg-muted); margin-bottom: 12px; }
+        #sbc-opt-progress .p-step { font-size: var(--pt-type-body); color: var(--pt-fg-muted); margin-bottom: var(--pt-space-3); }
         #sbc-opt-progress .p-bar {
             height: 6px; background: var(--pt-bg-raised); border-radius: var(--pt-radius-full); overflow: hidden;
         }
@@ -6935,23 +6951,23 @@
             background: var(--pt-accent);
             transition: width var(--pt-dur-slow) var(--pt-ease-out);
         }
-        #sbc-opt-progress .p-done { font-family: var(--pt-font-mono); font-size: 11px; color: var(--pt-fg-subtle); margin-top: 10px; }
+        #sbc-opt-progress .p-done { font-family: var(--pt-font-mono); font-size: var(--pt-type-meta); color: var(--pt-fg-subtle); margin-top: var(--pt-space-2-5); }
         /* ------------------------------------------------------------------
            BATCH / REIHE: Abschnitte, Vorschau, Team-Details
            ------------------------------------------------------------------ */
-        .sbc-opt-batch { margin-top:14px; padding-top:12px; border-top:1px solid var(--pt-border-subtle); }
+        .sbc-opt-batch { margin-top:var(--pt-space-3); padding-top:var(--pt-space-3); border-top:1px solid var(--pt-border-subtle); }
         /* v5.28.0: Reiter Kaufen / Rating / Mehr - dieselbe Leiste wie die
            Segment-Schalter, nur hoeher (Hauptnavigation, Trefferflaeche tap). */
         .sbc-opt-tabs {
-            display:flex; gap:3px; margin:0 0 12px; align-items:stretch;
+            display:flex; gap:var(--pt-space-1); margin:0 0 var(--pt-space-3); align-items:stretch;
             background:var(--pt-bg-sunken); border:1px solid var(--pt-border-subtle);
-            border-radius:var(--pt-radius-md); padding:3px;
+            border-radius:var(--pt-radius-md); padding:var(--pt-space-1);
         }
         .sbc-opt-tab-btn {
             flex:1 1 0; min-width:0; background:transparent; color:var(--pt-fg-muted);
-            border:none; border-radius:10px; padding:0 6px; min-height:var(--pt-tap);
-            display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px;
-            font-size:var(--pt-text-sm); font-weight:var(--pt-weight-semibold); font-family:inherit; cursor:pointer;
+            border:none; border-radius:var(--pt-radius-sm); padding:0 var(--pt-space-1-5); min-height:var(--pt-tap);
+            display:flex; flex-direction:column; align-items:center; justify-content:center; gap:var(--pt-space-1);
+            font-size:var(--pt-type-label); font-weight:var(--pt-weight-semibold); font-family:inherit; cursor:pointer;
             transition:background var(--pt-dur-base) var(--pt-ease-out), color var(--pt-dur-fast) ease;
         }
         .sbc-opt-tab-btn:hover { background:var(--pt-state-hover); color:var(--pt-fg-default); }
@@ -6965,74 +6981,74 @@
         #sbc-opt-panel[data-tab="kaufen"] .sbc-opt-only-rating,
         #sbc-opt-panel[data-tab="mehr"] .sbc-opt-only-rating { display:none; }
         #sbc-opt-panel:not([data-tab="mehr"]) .sbc-opt-tech { display:none; }
-        .sbc-opt-group-title.sbc-opt-secondary { margin-top:16px; }
+        .sbc-opt-group-title.sbc-opt-secondary { margin-top:var(--pt-space-4); }
         .sbc-opt-section { margin-top:0; }
         /* Schritt-Anzeige im Kaufen-Reiter (v5.29.0; v5.31.0: Kreise mit Verbindungslinie) */
-        .sbc-opt-flow { display:flex; align-items:flex-start; margin:2px 0 14px; }
+        .sbc-opt-flow { display:flex; align-items:flex-start; margin:var(--pt-space-0-5) 0 var(--pt-space-3); }
         .sbc-opt-flow .step { flex:1 1 0; min-width:0; position:relative; text-align:center; }
         .sbc-opt-flow .step .dot {
             width:28px; height:28px; border-radius:50%; display:flex; align-items:center; justify-content:center;
-            margin:0 auto 6px; font-family:var(--pt-font-mono); font-size:12px; font-weight:var(--pt-weight-semibold); position:relative; z-index:1;
+            margin:0 auto var(--pt-space-1-5); font-family:var(--pt-font-mono); font-size:var(--pt-type-label); font-weight:var(--pt-weight-semibold); position:relative; z-index:1;
             background:var(--pt-bg-raised); color:var(--pt-fg-subtle); box-shadow: inset 0 0 0 1px var(--pt-border-default);
             transition: background var(--pt-dur-base) ease, box-shadow var(--pt-dur-base) ease;
         }
-        .sbc-opt-flow .step .lbl { display:block; font-size:var(--pt-text-xs); color:var(--pt-fg-subtle); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .sbc-opt-flow .step .lbl { display:block; font-size:var(--pt-type-meta); color:var(--pt-fg-subtle); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
         .sbc-opt-flow .step:not(:last-child)::after {
             content:''; position:absolute; top:13px; left:calc(50% + 18px); right:calc(-50% + 18px); height:2px; background:var(--pt-border-default);
         }
         .sbc-opt-flow .step.on .dot { background:var(--pt-accent); color:var(--pt-fg-on-accent); box-shadow: 0 0 0 4px var(--pt-accent-soft); }
         .sbc-opt-flow .step.on .lbl { color:var(--pt-fg-default); font-weight:var(--pt-weight-semibold); }
         .sbc-opt-flow .step.done .dot { background:var(--pt-accent-soft); color:var(--pt-accent); box-shadow:none; font-size:0; }
-        .sbc-opt-flow .step.done .dot::after { content:'✓'; font-size:12px; }
+        .sbc-opt-flow .step.done .dot::after { content:'✓'; font-size:var(--pt-type-label); }
         .sbc-opt-flow .step.done .lbl { color:var(--pt-fg-muted); }
         .sbc-opt-flow .step.done::after { background:var(--pt-accent-border); }
         /* Loesungs-Karten (v5.29.0): Preis zuerst, Details klein, ab der vierten eingeklappt */
-        .sbc-opt-fb-top { display:flex; justify-content:space-between; align-items:center; gap:8px; }
-        .sbc-opt-fb-price { font-size:18px; font-weight:var(--pt-weight-semibold); color:var(--pt-accent); }
-        .sbc-opt-fb-meta { color:var(--pt-fg-muted); font-size:11px; margin-top:2px; line-height:1.45; }
+        .sbc-opt-fb-top { display:flex; justify-content:space-between; align-items:center; gap:var(--pt-space-2); }
+        .sbc-opt-fb-price { font-size:var(--pt-type-title); font-weight:var(--pt-weight-semibold); color:var(--pt-accent); }
+        .sbc-opt-fb-meta { color:var(--pt-fg-muted); font-size:var(--pt-type-meta); margin-top:var(--pt-space-0-5); line-height:1.45; }
         .sbc-opt-fb-meta b { color:var(--pt-fg-default); font-weight:600; }
         /* v6.21.0: Verbindung ueber das Internet - Adresse zum Kopieren */
-        #sbc-opt-relay-box { margin:6px 0 10px; }
-        .sbc-opt-relay-label { color:var(--pt-fg-muted); font-size:11px; margin-bottom:4px; }
-        .sbc-opt-relay-row { display:flex; gap:6px; align-items:stretch; }
-        .sbc-opt-relay-row input { flex:1; min-width:0; font-family:var(--pt-font-mono); font-size:11px; padding:6px 8px; border-radius:var(--pt-field-radius);
+        #sbc-opt-relay-box { margin:var(--pt-space-1-5) 0 var(--pt-space-2-5); }
+        .sbc-opt-relay-label { color:var(--pt-fg-muted); font-size:var(--pt-type-meta); margin-bottom:var(--pt-space-1); }
+        .sbc-opt-relay-row { display:flex; gap:var(--pt-space-1-5); align-items:stretch; }
+        .sbc-opt-relay-row input { flex:1; min-width:0; font-family:var(--pt-font-mono); font-size:var(--pt-type-meta); padding:var(--pt-space-1-5) var(--pt-space-2); border-radius:var(--pt-field-radius);
             border:1px solid var(--pt-border-default); background:var(--pt-bg-sunken); color:var(--pt-fg-default); }
-        .sbc-opt-relay-row .sbc-opt-btn { margin-top:0; flex:0 0 auto; width:auto; padding:0 12px; }
-        #sbc-opt-relay-new { margin-top:6px; }
+        .sbc-opt-relay-row .sbc-opt-btn { margin-top:0; flex:0 0 auto; width:auto; padding:0 var(--pt-space-3); }
+        #sbc-opt-relay-new { margin-top:var(--pt-space-1-5); }
         .sbc-opt-tag {
-            font-size:var(--pt-text-2xs); font-weight:var(--pt-weight-semibold); text-transform:uppercase; letter-spacing:.06em;
-            padding:3px 8px; border-radius:var(--pt-radius-full); background:transparent; color:var(--pt-fg-muted); white-space:nowrap;
+            font-size:var(--pt-type-meta); font-weight:var(--pt-weight-semibold); text-transform:uppercase; letter-spacing:.06em;
+            padding:var(--pt-space-1) var(--pt-space-2); border-radius:var(--pt-radius-full); background:transparent; color:var(--pt-fg-muted); white-space:nowrap;
             box-shadow: inset 0 0 0 1px var(--pt-border-default);
         }
         .sbc-opt-tag.ok { background:var(--pt-bg-raised); color:var(--pt-fg-secondary); box-shadow:none; }
         .sbc-opt-tag.best { background:var(--pt-accent-soft); color:var(--pt-accent); box-shadow:none; }
-        .sbc-opt-fb-tags { display:flex; gap:4px; flex-wrap:wrap; justify-content:flex-end; }
+        .sbc-opt-fb-tags { display:flex; gap:var(--pt-space-1); flex-wrap:wrap; justify-content:flex-end; }
         /* v6.2.0: Galerie-Zeile - Fortschritt und Kurs je Token. */
-        .sbc-opt-gal-line { display:flex; align-items:center; gap:10px; margin:8px 0 2px; }
+        .sbc-opt-gal-line { display:flex; align-items:center; gap:var(--pt-space-2-5); margin:var(--pt-space-2) 0 var(--pt-space-0-5); }
         /* In der Set-Liste ist .sbc-opt-fb-price ein NAME, kein Preis - neutral und kleiner. */
-        #sbc-opt-gallery-result .sbc-opt-fb-price { font-size:var(--pt-text-lg); color:var(--pt-fg-default); }
+        #sbc-opt-gallery-result .sbc-opt-fb-price { font-size:var(--pt-type-title); color:var(--pt-fg-default); }
         .sbc-opt-gal-line .bar { flex:1 1 auto; height:4px; border-radius:var(--pt-radius-full); background:var(--pt-bg-raised); overflow:hidden; }
         .sbc-opt-gal-line .bar-empty { flex:1 1 auto; }
         .sbc-opt-gal-line .fill { display:block; height:100%; background:var(--pt-accent); border-radius:var(--pt-radius-full); }
-        .sbc-opt-gal-line .v { font-family:var(--pt-font-mono); font-size:11px; color:var(--pt-fg-muted); }
-        .sbc-opt-gal-line .kurs { font-family:var(--pt-font-mono); font-size:12px; color:var(--pt-accent); white-space:nowrap; }
+        .sbc-opt-gal-line .v { font-family:var(--pt-font-mono); font-size:var(--pt-type-meta); color:var(--pt-fg-muted); }
+        .sbc-opt-gal-line .kurs { font-family:var(--pt-font-mono); font-size:var(--pt-type-label); color:var(--pt-accent); white-space:nowrap; }
         /* v6.2.0: Summenzeilen vor dem Listen. */
-        .sbc-opt-receipt { margin:8px 0 10px; padding:4px 12px; border-radius:var(--pt-radius-md); background:var(--pt-bg-sunken); font-size:12px; }
-        .sbc-opt-receipt > div { display:flex; justify-content:space-between; gap:12px; padding:6px 0; }
+        .sbc-opt-receipt { margin:var(--pt-space-2) 0 var(--pt-space-2-5); padding:var(--pt-space-1) var(--pt-space-3); border-radius:var(--pt-radius-md); background:var(--pt-bg-sunken); font-size:var(--pt-type-label); }
+        .sbc-opt-receipt > div { display:flex; justify-content:space-between; gap:var(--pt-space-3); padding:var(--pt-space-1-5) 0; }
         .sbc-opt-receipt > div + div { border-top:1px solid var(--pt-border-subtle); }
         .sbc-opt-receipt span { color:var(--pt-fg-muted); }
         .sbc-opt-receipt b { font-family:var(--pt-font-mono); font-weight:var(--pt-weight-medium); color:var(--pt-fg-default); }
         .sbc-opt-receipt .sum { border-top-color:var(--pt-border-default); }
         .sbc-opt-receipt .sum span { color:var(--pt-fg-default); font-weight:var(--pt-weight-semibold); }
-        .sbc-opt-receipt .sum b { font-size:14px; font-weight:var(--pt-weight-semibold); }
-        .sbc-opt-fb-row { padding:12px; margin:8px 0; border-radius:var(--pt-card-radius); background:var(--pt-bg-sunken); }
+        .sbc-opt-receipt .sum b { font-size:var(--pt-type-title); font-weight:var(--pt-weight-semibold); }
+        .sbc-opt-fb-row { padding:var(--pt-space-3); margin:var(--pt-space-2) 0; border-radius:var(--pt-card-radius); background:var(--pt-bg-sunken); }
         .sbc-opt-fb-row.best { box-shadow: 0 0 0 4px var(--pt-accent-soft); }
-        .sbc-opt-fb-actions { display:flex; gap:6px; align-items:stretch; }
-        .sbc-opt-fb-actions .sbc-opt-btn { margin:6px 0 0; }
-        .sbc-opt-fb-actions .sbc-opt-btn.small { flex:0 0 auto; width:auto; padding:8px 10px; font-size:12px; }
+        .sbc-opt-fb-actions { display:flex; gap:var(--pt-space-1-5); align-items:stretch; }
+        .sbc-opt-fb-actions .sbc-opt-btn { margin:var(--pt-space-1-5) 0 0; }
+        .sbc-opt-fb-actions .sbc-opt-btn.small { flex:0 0 auto; width:auto; padding:var(--pt-space-2) var(--pt-space-2-5); font-size:var(--pt-type-label); }
         .sbc-opt-fb-more { display:none; }
         .sbc-opt-result.fb-all .sbc-opt-fb-more { display:block; }
-        .sbc-opt-result details.sbc-opt-details-toggle { margin-top:8px; }
+        .sbc-opt-result details.sbc-opt-details-toggle { margin-top:var(--pt-space-2); }
         #sbc-opt-batch-preview:empty { display:none; }
         /* Der Vorschau-Kasten ist die ganze Zeit im Markup, aber solange kein
            Plan existiert, waere er nur eine leere Trennlinie. */
@@ -7040,7 +7056,7 @@
         #sbc-opt-batch-preview, #sbc-opt-batch-detail-body {
             background:var(--pt-bg-surface); border:1px solid var(--pt-border-subtle);
             border-radius:var(--pt-radius-md);
-            padding:10px 12px; margin-top:8px; font-size:12px; line-height:1.5;
+            padding:var(--pt-space-2-5) var(--pt-space-3); margin-top:var(--pt-space-2); font-size:var(--pt-type-label); line-height:1.5;
             max-height:340px; overflow-y:auto; overscroll-behavior: contain;
             scrollbar-width: thin; scrollbar-color: var(--pt-border-default) transparent;
         }
@@ -7053,11 +7069,11 @@
         #sbc-opt-batch-detail-body::-webkit-scrollbar-track { background: transparent; }
         #sbc-opt-batch-preview::-webkit-scrollbar-thumb,
         #sbc-opt-batch-detail-body::-webkit-scrollbar-thumb {
-            background: var(--pt-border-default); border-radius: 6px;
+            background: var(--pt-border-default); border-radius: var(--pt-radius-sm);
             border: 3px solid var(--pt-bg-surface);
         }
-        #sbc-opt-batch-details { margin-top:8px; }
-        .sbc-opt-batch-round { padding:4px 0; border-bottom:1px solid var(--pt-border-subtle); }
+        #sbc-opt-batch-details { margin-top:var(--pt-space-2); }
+        .sbc-opt-batch-round { padding:var(--pt-space-1) 0; border-bottom:1px solid var(--pt-border-subtle); }
         .sbc-opt-batch-round:last-child { border-bottom:none; }
         .sbc-opt-batch-round b { color:var(--pt-accent); }
         .sbc-opt-batch-warn { color:var(--pt-warning-fg); }
@@ -7067,8 +7083,8 @@
            verwechselt - er oeffnet ALLE Packs des Typs. */
         /* Zwei Knoepfe in einer Reihe, rechtsbuendig unter EAs Open-Knopf. */
         .sbc-opt-tilebtn-row {
-            display:flex; justify-content:flex-end; gap:6px;
-            margin:10px 0 2px; flex-wrap:wrap;
+            display:flex; justify-content:flex-end; gap:var(--pt-space-1-5);
+            margin:var(--pt-space-2-5) 0 var(--pt-space-0-5); flex-wrap:wrap;
         }
         .sbc-opt-tilebtn {
             /* EIGENE ZEILE unter EAs Open-Knopf, rechtsbuendig (margin-left:auto),
@@ -7080,7 +7096,7 @@
             display:block; margin:0; width:auto;
             background:transparent; color:var(--pt-info-fg);
             border:1px solid var(--pt-info-border); border-radius:var(--pt-radius-sm);
-            padding:5px 10px; font-size:11px; font-weight:var(--pt-weight-semibold);
+            padding:var(--pt-space-1) var(--pt-space-2-5); font-size:var(--pt-type-meta); font-weight:var(--pt-weight-semibold);
             font-family:var(--pt-font-sans); line-height:1.3;
             cursor:pointer; opacity:.75;
             transition: opacity var(--pt-dur-fast) ease, background var(--pt-dur-fast) ease, transform .06s ease;
@@ -7105,17 +7121,17 @@
            40 wie bei den Hauptknoepfen waere hier zu wuchtig, weil drei
            nebeneinander stehen. */
         .sbc-opt-chips {
-            display:flex; gap:3px; margin:0 0 10px; align-items:stretch;
+            display:flex; gap:var(--pt-space-1); margin:0 0 var(--pt-space-2-5); align-items:stretch;
             background:var(--pt-bg-sunken); border:1px solid var(--pt-border-subtle);
-            border-radius:var(--pt-radius-md); padding:3px;
+            border-radius:var(--pt-radius-md); padding:var(--pt-space-1);
         }
         /* Leer (noch nicht gerendert) soll die Leiste nicht als leerer Kasten
            herumstehen. */
         .sbc-opt-chips:empty { display:none; }
         .sbc-opt-chip {
             flex:1 1 0; min-width:0; background:transparent; color:var(--pt-fg-muted);
-            border:none; border-radius:9px; padding:4px 6px; min-height:38px;
-            font-size:var(--pt-text-md); font-weight:var(--pt-weight-semibold); font-family:inherit;
+            border:none; border-radius:var(--pt-radius-sm); padding:var(--pt-space-1) var(--pt-space-1-5); min-height:38px;
+            font-size:var(--pt-type-body); font-weight:var(--pt-weight-semibold); font-family:inherit;
             /* Flex statt line-height:38px - ein zweizeiliger Wert
                ("Konsole (PS/Xbox)") wurde sonst 76px hoch. */
             display:flex; flex-direction:column; align-items:center; justify-content:center;
@@ -7131,26 +7147,26 @@
         .sbc-opt-chip.edit {
             /* .65 statt .5: am Handy gibt es kein Hover, das den Knopf
                aufhellt - mit .5 war der Notausgang kaum zu finden. */
-            flex:0 0 38px; opacity:.65; font-size:12px;
+            flex:0 0 38px; opacity:.65; font-size:var(--pt-type-label);
             border-left:1px solid var(--pt-border-subtle); border-radius:0 var(--pt-radius-sm) var(--pt-radius-sm) 0;
         }
         .sbc-opt-chip.edit:hover { opacity:1; background:var(--pt-state-hover); }
-        .sbc-opt-chipedit { display:none; gap:6px; margin:0 0 10px; }
+        .sbc-opt-chipedit { display:none; gap:var(--pt-space-1-5); margin:0 0 var(--pt-space-2-5); }
         .sbc-opt-chipedit input { flex:1; }
         .sbc-opt-chipedit .sbc-opt-btn {
-            margin:0; width:auto; flex:0 0 auto; padding:8px 14px; min-height:var(--pt-control-h);
+            margin:0; width:auto; flex:0 0 auto; padding:var(--pt-space-2) var(--pt-space-3); min-height:var(--pt-control-h);
         }
         /* Beschriftung ueber dem Schalter: eigene Zeile, damit sie nicht
            neben einem Feld auf zwei Zeilen umbricht. */
         .sbc-opt-chiplabel {
-            display:block; margin:0 0 6px; color:var(--pt-fg-muted); font-size:12px;
+            display:block; margin:0 0 var(--pt-space-1-5); color:var(--pt-fg-muted); font-size:var(--pt-type-label);
         }
         /* ------------------------------------------------------------------
            KARTEN-LISTEN
            ------------------------------------------------------------------ */
-        .sbc-opt-batch-cards { margin:4px 0 2px; }
+        .sbc-opt-batch-cards { margin:var(--pt-space-1) 0 var(--pt-space-0-5); }
         .sbc-opt-batch-card {
-            font-size:11px; color:var(--pt-fg-secondary); padding:2px 0;
+            font-size:var(--pt-type-meta); color:var(--pt-fg-secondary); padding:var(--pt-space-0-5) 0;
             white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
         }
         .sbc-opt-batch-card .r {
@@ -7160,14 +7176,14 @@
         /* v6.2.0: Storage als eigenes Etikett (lesbar ohne Farbsehen). */
         .sbc-opt-batch-card .src.storage {
             color:var(--pt-info-fg); background:var(--pt-info-soft);
-            border-radius:var(--pt-radius-full); padding:1px 7px; font-size:10px; font-weight:var(--pt-weight-semibold);
+            border-radius:var(--pt-radius-full); padding:1px var(--pt-space-2); font-size:var(--pt-type-meta); font-weight:var(--pt-weight-semibold);
         }
         /* v6.15.1: Vereinskarte in Punkte-SBCs - unuebersehbar anders als Storage. */
         .sbc-opt-batch-card .src.club {
             color:var(--pt-warning-fg); background:var(--pt-warning-soft);
-            border-radius:var(--pt-radius-full); padding:1px 7px; font-size:10px; font-weight:var(--pt-weight-semibold);
+            border-radius:var(--pt-radius-full); padding:1px var(--pt-space-2); font-size:var(--pt-type-meta); font-weight:var(--pt-weight-semibold);
         }
-        .sbc-opt-warn-box { margin:8px 0; padding:8px 10px; border-radius:var(--pt-radius-md); background:var(--pt-warning-soft); border:1px solid var(--pt-warning-fg); }
+        .sbc-opt-warn-box { margin:var(--pt-space-2) 0; padding:var(--pt-space-2) var(--pt-space-2-5); border-radius:var(--pt-radius-md); background:var(--pt-warning-soft); border:1px solid var(--pt-warning-fg); }
         .sbc-opt-warn-box .sbc-opt-batch-card { white-space:normal; }
         .sbc-opt-batch-card .rar { color:var(--pt-fg-muted); }
         .sbc-opt-batch-card .untr { color:var(--pt-fg-subtle); font-style:italic; }
@@ -7175,47 +7191,47 @@
         .sbc-opt-result {
             /* surface wie die Batch-Vorschau: gleiche Rolle (Ergebnis-Kasten),
                gleiche Flaeche. sunken ist fuer EINGABEN reserviert. */
-            margin-top:12px; background:var(--pt-bg-surface); border:1px solid var(--pt-border-subtle);
-            border-radius:var(--pt-radius-md); padding:10px; display:none;
+            margin-top:var(--pt-space-3); background:var(--pt-bg-surface); border:1px solid var(--pt-border-subtle);
+            border-radius:var(--pt-radius-md); padding:var(--pt-space-2-5); display:none;
         }
         .sbc-opt-result.show { display:block; }
-        .sbc-opt-spare { margin-left:4px; padding:1px 8px; border-radius:var(--pt-radius-sm); border:1px solid var(--pt-border-default); background:transparent;
-            color:var(--pt-fg-muted); font-size:var(--pt-text-sm); cursor:pointer; min-height:24px; }
+        .sbc-opt-spare { margin-left:var(--pt-space-1); padding:1px var(--pt-space-2); border-radius:var(--pt-radius-sm); border:1px solid var(--pt-border-default); background:transparent;
+            color:var(--pt-fg-muted); font-size:var(--pt-type-label); cursor:pointer; min-height:24px; }
         .sbc-opt-spare:active { background:var(--pt-state-hover); color:var(--pt-fg-default); }
-        .sbc-opt-cv-row { display:grid; grid-template-columns: minmax(70px, 34%) 1fr; gap:2px 8px; align-items:center; margin:6px 0; }
+        .sbc-opt-cv-row { display:grid; grid-template-columns: minmax(70px, 34%) 1fr; gap:var(--pt-space-0-5) var(--pt-space-2); align-items:center; margin:var(--pt-space-1-5) 0; }
         .sbc-opt-cv-row .sbc-opt-bar { margin:0; }
-        .sbc-opt-cv-label { font-size:var(--pt-text-sm); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-        .sbc-opt-cv-num { grid-column: 1 / -1; font-size:var(--pt-text-sm); color:var(--pt-fg-muted); font-variant-numeric: tabular-nums; }
+        .sbc-opt-cv-label { font-size:var(--pt-type-label); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .sbc-opt-cv-num { grid-column: 1 / -1; font-size:var(--pt-type-label); color:var(--pt-fg-muted); font-variant-numeric: tabular-nums; }
         /* Futbin-Kandidaten (v5.16.0): eine Zeile pro Loesung, Empfehlung
            mit Akzent-Rand; Knopf in voller Breite fuer den Daumen. */
         .sbc-opt-fb-row {
             border:1px solid var(--pt-border-subtle); border-radius:var(--pt-card-radius);
-            padding:12px; margin:8px 0; font-size:12px;
+            padding:var(--pt-space-3); margin:var(--pt-space-2) 0; font-size:var(--pt-type-label);
         }
         .sbc-opt-fb-row.best { border-color:var(--pt-accent-border); }
-        .sbc-opt-fb-row .sbc-opt-btn { margin:6px 0 0; }
+        .sbc-opt-fb-row .sbc-opt-btn { margin:var(--pt-space-1-5) 0 0; }
         .sbc-opt-player {
             display:flex; justify-content:space-between; align-items:center;
-            padding:5px 2px; border-bottom:1px solid var(--pt-border-subtle);
+            padding:var(--pt-space-1) var(--pt-space-0-5); border-bottom:1px solid var(--pt-border-subtle);
         }
         .sbc-opt-player:last-child { border-bottom:none; }
-        .sbc-opt-summary { margin:10px 0 4px; font-size:14px; }
+        .sbc-opt-summary { margin:var(--pt-space-2-5) 0 var(--pt-space-1); font-size:var(--pt-type-title); }
         .sbc-opt-summary b { color:var(--pt-accent); }
-        .sbc-opt-warn { color:var(--pt-warning-fg); font-size:12px; margin-top:6px; }
+        .sbc-opt-warn { color:var(--pt-warning-fg); font-size:var(--pt-type-label); margin-top:var(--pt-space-1-5); }
         /* v5.38.0: Gewinn/Verlust nach Steuer in der Verkaufs-Vorschau */
         .sbc-opt-gain { color:var(--pt-accent); font-weight:700; }
         .sbc-opt-loss { color:var(--pt-danger-fg); font-weight:700; }
         /* v5.67.0: das Ergebnis eines Verkaufslaufs muss ins Auge springen. */
-        .sbc-opt-net { display:flex; flex-direction:column; gap:2px; margin:10px 0; padding:10px 12px;
+        .sbc-opt-net { display:flex; flex-direction:column; gap:var(--pt-space-0-5); margin:var(--pt-space-2-5) 0; padding:var(--pt-space-2-5) var(--pt-space-3);
                        border-radius:var(--pt-card-radius); border:1px solid var(--pt-border-subtle); background:var(--pt-bg-surface); }
         .sbc-opt-net.gain { border-color:var(--pt-accent-border); background:var(--pt-accent-soft); }
         .sbc-opt-net.loss { border-color:var(--pt-danger-border); background:var(--pt-danger-soft); }
-        .sbc-opt-net-label { font-size:var(--pt-text-2xs); letter-spacing:var(--pt-tracking-caps); text-transform:uppercase; color:var(--pt-fg-muted); }
+        .sbc-opt-net-label { font-size:var(--pt-type-meta); letter-spacing:var(--pt-tracking-caps); text-transform:uppercase; color:var(--pt-fg-muted); }
         .sbc-opt-net-value { font-family:var(--pt-font-mono); font-size:var(--pt-text-3xl); font-weight:var(--pt-weight-medium); line-height:1.05; color:var(--pt-fg-default); }
         .sbc-opt-net.gain .sbc-opt-net-value { color:var(--pt-accent); }
         .sbc-opt-net.loss .sbc-opt-net-value { color:var(--pt-danger-fg); }
-        .sbc-opt-net-sub { font-size:11px; color:var(--pt-fg-subtle); }
-        .sbc-opt-chip-net { display:block; font-size:10px; font-weight:700; opacity:.9; }
+        .sbc-opt-net-sub { font-size:var(--pt-type-meta); color:var(--pt-fg-subtle); }
+        .sbc-opt-chip-net { display:block; font-size:var(--pt-type-meta); font-weight:700; opacity:.9; }
         .sbc-opt-chip-net.gain { color:var(--pt-accent); }
         .sbc-opt-chip-net.loss { color:var(--pt-danger-fg); }
         /* ------------------------------------------------------------------
@@ -7225,24 +7241,24 @@
             /* Loesch-Spalte 32 statt 26px: dieselbe Klasse Befund wie die
                29px-Nachlade-Knoepfe (v5.3.0), nur hinter "Erweiterte
                Einstellungen" versteckt. */
-            display:grid; grid-template-columns: 16px 1fr 1fr 1fr 32px; gap:4px;
-            align-items:center; margin-bottom:4px;
+            display:grid; grid-template-columns: 16px 1fr 1fr 1fr 32px; gap:var(--pt-space-1);
+            align-items:center; margin-bottom:var(--pt-space-1);
         }
-        .sbc-opt-bandhead span { color:var(--pt-fg-subtle); font-size:11px; }
+        .sbc-opt-bandhead span { color:var(--pt-fg-subtle); font-size:var(--pt-type-meta); }
         .sbc-opt-bandrow input {
             width:100%; background:var(--pt-bg-sunken); color:var(--pt-fg-default);
             border:1px solid var(--pt-border-default); border-radius:var(--pt-radius-sm);
-            padding:6px; font-size:12px;
+            padding:var(--pt-space-1-5); font-size:var(--pt-type-label);
         }
         .sbc-opt-bandrow button {
             background:var(--pt-bg-raised); color:var(--pt-danger-fg); border:none;
             border-radius:var(--pt-radius-sm);
-            cursor:pointer; padding:8px 0; font-size:12px; font-family:inherit;
+            cursor:pointer; padding:var(--pt-space-2) 0; font-size:var(--pt-type-label); font-family:inherit;
         }
         .sbc-opt-bandrow button:hover { background:var(--pt-bg-raised-hover); }
         .sbc-opt-bandrow .sbc-opt-draghandle {
             color:var(--pt-fg-subtle); cursor:grab; user-select:none; text-align:center;
-            font-size:13px; line-height:1;
+            font-size:var(--pt-type-body); line-height:1;
         }
         .sbc-opt-bandrow.sbc-opt-dragover { outline:2px dashed var(--pt-accent); border-radius:var(--pt-radius-sm); }
         .sbc-opt-bandrow.sbc-opt-bandinvalid { outline:2px solid var(--pt-danger-fg); border-radius:var(--pt-radius-sm); }
@@ -7251,7 +7267,7 @@
            ------------------------------------------------------------------ */
         #sbc-opt-toast-wrap {
             position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%);
-            z-index: 1000000; display:flex; flex-direction:column; gap:8px; align-items:center;
+            z-index: 1000000; display:flex; flex-direction:column; gap:var(--pt-space-2); align-items:center;
             /* Durchklickbar: der Streifen liegt vor EAs Oberflaeche, und ein
                Toast darf keinen Tap abfangen. */
             pointer-events: none;
@@ -7260,10 +7276,10 @@
             /* v6.0.0: Typ als Punkt vorn plus getoenter Rand, keine dicke
                Farbkante mehr. Der Punkt ist ein Pseudo-Element - toast()
                setzt textContent und wuerde ein echtes Kind wegwischen. */
-            display:flex; align-items:baseline; gap:10px;
+            display:flex; align-items:baseline; gap:var(--pt-space-2-5);
             background:var(--pt-bg-raised); color:var(--pt-fg-default); border:1px solid var(--pt-border-subtle);
-            padding:12px 16px 12px 14px; border-radius:var(--pt-radius-md);
-            font-family:var(--pt-font-sans); font-size:13px; box-shadow:var(--pt-shadow-2);
+            padding:var(--pt-space-3) var(--pt-space-4) var(--pt-space-3) var(--pt-space-3); border-radius:var(--pt-radius-md);
+            font-family:var(--pt-font-sans); font-size:var(--pt-type-body); box-shadow:var(--pt-shadow-2);
             max-width:min(80vw, 460px); line-height:1.45;
         }
         .sbc-opt-toast::before {
@@ -7280,8 +7296,34 @@
            ------------------------------------------------------------------ */
         /* Sehr schmale Schirme: Reiter nur mit Text. (Steht hier unten, weil der
            :active-Test das CSS nur bis zum ersten @media liest.) */
+
+        /* v6.40.0: Abstands-Hilfsklassen statt style="margin/padding" im
+           Panel-Template. Mit #sbc-opt-panel davor, damit sie (wie vorher das
+           style-Attribut) die Komponenten-Regel schlagen; sie stehen bewusst
+           am Ende. */
+        #sbc-opt-panel .sbc-opt-m0 { margin:0; }
+        #sbc-opt-panel .sbc-opt-mt0 { margin-top:0; }
+        #sbc-opt-panel .sbc-opt-mt1 { margin-top:var(--pt-space-1); }
+        #sbc-opt-panel .sbc-opt-mt15 { margin-top:var(--pt-space-1-5); }
+        #sbc-opt-panel .sbc-opt-mt2 { margin-top:var(--pt-space-2); }
+        #sbc-opt-panel .sbc-opt-mb0 { margin-bottom:0; }
+        #sbc-opt-panel .sbc-opt-mb1 { margin-bottom:var(--pt-space-1); }
+        #sbc-opt-panel .sbc-opt-mb15 { margin-bottom:var(--pt-space-1-5); }
+        #sbc-opt-panel .sbc-opt-mb2 { margin-bottom:var(--pt-space-2); }
+        #sbc-opt-panel .sbc-opt-mb25 { margin-bottom:var(--pt-space-2-5); }
+        #sbc-opt-panel .sbc-opt-mb3 { margin-bottom:var(--pt-space-3); }
+        #sbc-opt-panel .sbc-opt-pull { margin-top:calc(-1 * var(--pt-space-1)); }
+        #sbc-opt-panel .sbc-opt-pad-xs { padding:var(--pt-space-1); }
+        #sbc-opt-panel .sbc-opt-pad-sm { padding:var(--pt-space-1) var(--pt-space-2); }
+        #sbc-opt-panel .sbc-opt-pad-md { padding:var(--pt-space-2) var(--pt-space-2-5); }
+        #sbc-opt-panel .sbc-opt-autow { width:auto; flex:0 0 auto; }
+        #sbc-opt-panel .sbc-opt-flex1 { flex:1; }
+        #sbc-opt-panel .sbc-opt-w72 { width:72px; flex:0 0 auto; }
+        #sbc-opt-panel .sbc-opt-meta { font-size:var(--pt-type-meta); }
+        #sbc-opt-panel textarea.sbc-opt-code { width:100%; box-sizing:border-box; margin:var(--pt-space-2) 0; font-family:var(--pt-font-mono); font-size:var(--pt-type-meta); }
+
         @media (max-width: 359px) { .sbc-opt-tab-btn svg { display:none; } }
-        .sbc-opt-tab-btn { padding:0 4px; }
+        .sbc-opt-tab-btn { padding:0 var(--pt-space-1); }
         @media (prefers-reduced-motion: reduce) {
             :root { --pt-dur-fast: 0ms; --pt-dur-base: 0ms; --pt-dur-slow: 0ms; }
             #sbc-opt-panel.open { animation: none; }
@@ -7641,7 +7683,7 @@
         panel.innerHTML = `
             <div class="sbc-opt-header">
                 <span><img class="sbc-opt-logo" src="` + ICON_URI + `" alt="">PitTools <span class="sbc-opt-ver">` + VERSION + `</span></span>
-                <span id="sbc-opt-close" style="cursor:pointer;">✕</span>
+                <span id="sbc-opt-close">✕</span>
             </div>
             <div class="sbc-opt-body">
                 <!-- v5.28.0: REITER. Rasmus (20.09.): "maximale Uebersichtlichkeit
@@ -7727,14 +7769,14 @@
                         <div class="sbc-opt-result" id="sbc-opt-hybrid-club-result"></div>
                     </div>
                     <div class="sbc-opt-group-title sbc-opt-secondary">Ohne futbin</div>
-                    <button class="sbc-opt-btn ghost" id="sbc-opt-futbin-buyconcepts" style="margin-top:0;">Konzept-Spieler im Kader nachkaufen</button>
-                    <div class="sbc-opt-debug" style="margin-top:-4px;">Für Kader, die schon Konzept-Spieler enthalten (z.B. nach Neuladen oder von Hand eingesetzt).</div>
+                    <button class="sbc-opt-btn ghost sbc-opt-mt0" id="sbc-opt-futbin-buyconcepts">Konzept-Spieler im Kader nachkaufen</button>
+                    <div class="sbc-opt-debug sbc-opt-pull">Für Kader, die schon Konzept-Spieler enthalten (z.B. nach Neuladen oder von Hand eingesetzt).</div>
                 </div>
                 <!-- v6.34.0: GEBOTS-HELFER (Gold bis 600). M0 = Mitlesen: Rasmus bietet
                      von Hand, PitTools liest EAs Antworten und merkt gewonnene Karten. -->
                 <div class="sbc-opt-section" id="sbc-opt-bid">
                     <div class="sbc-opt-card" id="sbc-opt-bid-card">
-                        <div class="sbc-opt-group-title" style="margin-top:0;">Gebots-Helfer (Gold bis 600)</div>
+                        <div class="sbc-opt-group-title sbc-opt-mt0">Gebots-Helfer (Gold bis 600)</div>
                         <div class="sbc-opt-bid-summary" id="sbc-opt-bid-summary">Gewonnen: 0 Karten</div>
                         <div class="sbc-opt-dim" id="sbc-opt-bid-hint">Mitlesen: Biete in der Web App von Hand (höchstens 600). PitTools merkt sich gewonnene Gold-Karten, sobald du die Transferziele öffnest – ohne eigene Anfrage an EA.</div>
                         <div class="sbc-opt-dim" id="sbc-opt-bid-pack" hidden></div>
@@ -7776,9 +7818,9 @@
                             <span class="txt">Erledigte Sets ausblenden<small>Sets, die du hier als erledigt markiert hast</small></span>
                         </label>
                         <!-- v5.35.0: gekaufte Galerie-Karten wieder verkaufen (Preis = guenstigstes aktuelles Angebot). -->
-                        <div class="sbc-opt-inline" style="margin:0 0 8px;">
-                            <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gallery-sell" style="margin:0;"><span>Gekaufte Karten verkaufen (0)</span></button>
-                            <button type="button" class="sbc-opt-btn ghost small" id="sbc-opt-gallery-sell-clear" style="margin:0;width:auto;flex:0 0 auto;padding:8px 10px;" title="Merkliste leeren (z.B. schon von Hand verkauft)">Liste leeren</button>
+                        <div class="sbc-opt-inline sbc-opt-m0 sbc-opt-mb2">
+                            <button type="button" class="sbc-opt-btn ghost sbc-opt-m0" id="sbc-opt-gallery-sell"><span>Gekaufte Karten verkaufen (0)</span></button>
+                            <button type="button" class="sbc-opt-btn ghost small sbc-opt-m0 sbc-opt-autow sbc-opt-pad-md" id="sbc-opt-gallery-sell-clear" title="Merkliste leeren (z.B. schon von Hand verkauft)">Liste leeren</button>
                         </div>
                         <label class="sbc-opt-chiplabel">Reihenfolge der Sets</label>
                         <div class="sbc-opt-chips" id="sbc-opt-gallery-sort">
@@ -7796,10 +7838,10 @@
                     <details class="sbc-opt-details-toggle" id="sbc-opt-gallery-sync">
                         <summary>Stand auf anderes Gerät übertragen</summary>
                         <div class="sbc-opt-dim">Erledigte Sets und Merkliste liegen pro Gerät. Hier Code erzeugen, auf dem anderen Gerät einfügen und übernehmen - zusammengeführt, nichts geht verloren.</div>
-                        <textarea id="sbc-opt-gallery-code" rows="3" placeholder="Code hier einfügen ..." style="width:100%;box-sizing:border-box;margin:8px 0;font-family:monospace;font-size:11px;"></textarea>
-                        <div class="sbc-opt-inline" style="margin:0;">
-                            <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gallery-export" style="margin:0;">Code erzeugen</button>
-                            <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gallery-import" style="margin:0;">Code übernehmen</button>
+                        <textarea class="sbc-opt-code" id="sbc-opt-gallery-code" rows="3" placeholder="Code hier einfügen ..."></textarea>
+                        <div class="sbc-opt-inline sbc-opt-m0">
+                            <button type="button" class="sbc-opt-btn ghost sbc-opt-m0" id="sbc-opt-gallery-export">Code erzeugen</button>
+                            <button type="button" class="sbc-opt-btn ghost sbc-opt-m0" id="sbc-opt-gallery-import">Code übernehmen</button>
                         </div>
                     </details>
                     <div class="sbc-opt-debug">Quelle fut.gg (günstigste Aufstellung je Set). Bewertet wird im Spiel: Galerie → Set → Bewerten. Die Karten zählen, sobald sie im Verein waren, und dürfen danach verkauft werden.</div>
@@ -7812,7 +7854,7 @@
                 <!-- v6.15.0: Punkte-SBC (Streamlined / One-Click) - nur sichtbar, wenn EAs
                      Auswahl-Ansicht offen ist (syncPointsCard). -->
                 <div class="sbc-opt-card" id="sbc-opt-points" style="display:none;">
-                    <div class="sbc-opt-group-title" style="margin-top:0;">Punkte-SBC</div>
+                    <div class="sbc-opt-group-title sbc-opt-mt0">Punkte-SBC</div>
                     <div class="sbc-opt-dim" id="sbc-opt-points-info"></div>
                     <button type="button" class="sbc-opt-btn primary" id="sbc-opt-points-run"><span>Karten auswählen (Storage zuerst)</span></button>
                     <div id="sbc-opt-points-result"></div>
@@ -7824,8 +7866,8 @@
                      erledigen" (unten) - Rasmus, 25.09.: die drei Mehrfach-Wege
                      gehoeren zusammen. "Spieler laden" ist nach dem ersten
                      Laden nur noch eine Statuszeile (syncLoadBtn). -->
-                <button class="sbc-opt-btn ghost" id="sbc-opt-load" style="margin-top:0;">Spieler laden</button>
-                <div class="sbc-opt-row" style="margin-bottom:0;">
+                <button class="sbc-opt-btn ghost sbc-opt-mt0" id="sbc-opt-load">Spieler laden</button>
+                <div class="sbc-opt-row sbc-opt-mb0">
                     <label class="sbc-opt-chiplabel">Min. Rating pro Spieler</label>
                     <div class="sbc-opt-chips" id="sbc-opt-minrating-chips"></div>
                     <div class="sbc-opt-chipedit sbc-opt-inline" id="sbc-opt-minrating-edit">
@@ -7834,8 +7876,7 @@
                     </div>
                     <!-- Das Zahlenfeld steht ZULETZT: es ist der Notausgang und
                          normalerweise versteckt (chipFieldVisible, v4.93.0). -->
-                    <input type="number" id="sbc-opt-minrating" value="75" min="1" max="99"
-                           style="margin-bottom:12px;">
+                    <input class="sbc-opt-mb3" type="number" id="sbc-opt-minrating" value="75" min="1" max="99">
                 </div>
                 <details id="sbc-opt-advanced" class="sbc-opt-details-toggle">
                     <summary>Erweiterte Einstellungen</summary>
@@ -7845,7 +7886,7 @@
                         <input type="checkbox" id="sbc-opt-maxrating-en">
                         Max. Rating pro Spieler begrenzen
                     </label>
-                    <div class="sbc-opt-inline" style="margin-top:6px;">
+                    <div class="sbc-opt-inline sbc-opt-mt15">
                         <input type="number" id="sbc-opt-maxrating" value="85" min="1" max="99" title="Max. Rating">
                         <span class="sbc-opt-muted">OVR</span>
                     </div>
@@ -7878,9 +7919,9 @@
                     <label>Gold-SBCs ohne Ziel-OVR: höchstes Rating für Rare / für Common
                         (Rare darüber bleibt für Rating-SBCs)</label>
                     <div class="sbc-opt-inline">
-                        <span class="sbc-opt-dim" style="font-size:11px;">Rare bis</span>
+                        <span class="sbc-opt-dim sbc-opt-meta">Rare bis</span>
                         <input type="number" id="sbc-opt-maxrare" value="77" min="0" max="99">
-                        <span class="sbc-opt-dim" style="font-size:11px;">Common bis</span>
+                        <span class="sbc-opt-dim sbc-opt-meta">Common bis</span>
                         <input type="number" id="sbc-opt-maxcommon" value="77" min="0" max="99">
                     </div>
                 </div>
@@ -7964,11 +8005,11 @@
                     <label>Rating-Kosten (höher = Karten dieser Stufe mehr schonen)</label>
                     <div class="sbc-opt-bandhead"><span></span><span>von</span><span>bis</span><span>Kosten</span><span></span></div>
                     <div id="sbc-opt-bands"></div>
-                    <div class="sbc-opt-inline" style="margin-top:4px;">
-                        <button class="sbc-opt-btn ghost" id="sbc-opt-band-add" style="margin:0;padding:5px;">+ Stufe</button>
-                        <button class="sbc-opt-btn ghost" id="sbc-opt-band-reset" style="margin:0;padding:5px;">Zurücksetzen</button>
+                    <div class="sbc-opt-inline sbc-opt-mt1">
+                        <button class="sbc-opt-btn ghost sbc-opt-m0 sbc-opt-pad-xs" id="sbc-opt-band-add">+ Stufe</button>
+                        <button class="sbc-opt-btn ghost sbc-opt-m0 sbc-opt-pad-xs" id="sbc-opt-band-reset">Zurücksetzen</button>
                     </div>
-                    <label class="sbc-opt-chiplabel" style="margin-top:8px;">Preset (Saisonphase)</label>
+                    <label class="sbc-opt-chiplabel sbc-opt-mt2">Preset (Saisonphase)</label>
                     <div class="sbc-opt-chips" id="sbc-opt-band-presets"></div>
                     <div class="sbc-opt-chipedit" id="sbc-opt-band-preset-edit">
                         <input type="text" id="sbc-opt-band-preset-name" maxlength="18" placeholder="Name für die aktuelle Tabelle">
@@ -7979,7 +8020,7 @@
                 <div class="sbc-opt-group-title">Vorgabe-Karte übersteuern</div>
                 <div class="sbc-opt-row">
                     <label>Karte für Rarity-Vorgabe (z.B. TOTW/FUTTIES) - übersteuert die Automatik</label>
-                    <input type="text" id="sbc-opt-raritypick-filter" placeholder="Name filtern..." style="margin-bottom:6px;">
+                    <input class="sbc-opt-mb15" type="text" id="sbc-opt-raritypick-filter" placeholder="Name filtern...">
                     <select id="sbc-opt-raritypick"><option value="">– automatisch wählen –</option></select>
                 </div>
                 </details>
@@ -7993,7 +8034,7 @@
                      Abschnitte behalten ihre IDs und Handler; der Umschalter
                      blendet nur um. -->
                 <div class="sbc-opt-multi" id="sbc-opt-multi" data-mode="batch">
-                    <div class="sbc-opt-group-title" style="margin-top:0;">Mehrere erledigen</div>
+                    <div class="sbc-opt-group-title sbc-opt-mt0">Mehrere erledigen</div>
                     <div class="sbc-opt-chips" id="sbc-opt-multi-modes" role="group" aria-label="Art">
                         <button type="button" class="sbc-opt-chip" data-mode="reihe">Dieses Set</button>
                         <button type="button" class="sbc-opt-chip on" data-mode="batch">Diese SBC N&#215;</button>
@@ -8005,14 +8046,13 @@
                      Freigabe sind dieselben wie beim Batch - derselbe Plan,
                      nur mode:'reihe'. -->
                 <div class="sbc-opt-batch sbc-opt-hidden" id="sbc-opt-queuesection">
-                    <div class="sbc-opt-inline" style="margin-bottom:7px;">
+                    <div class="sbc-opt-inline sbc-opt-mb2">
                         <!-- Modul-Titel wie "Pack-Opener (Store)" - vorher stand
                              hier ein graues Feld-Label neben einem
                              Grossbuchstaben-Akzent-Titel derselben Ebene. -->
-                        <div class="sbc-opt-group-title" style="margin:0;flex:1;">SBCs in diesem Set</div>
-                        <button class="sbc-opt-btn ghost" id="sbc-opt-queue-refresh"
-                                title="Liste neu laden"
-                                style="margin:0;padding:4px 9px;width:auto;flex:0 0 auto;">↻</button>
+                        <div class="sbc-opt-group-title sbc-opt-m0 sbc-opt-flex1">SBCs in diesem Set</div>
+                        <button class="sbc-opt-btn ghost sbc-opt-m0 sbc-opt-autow sbc-opt-pad-sm" id="sbc-opt-queue-refresh"
+                                title="Liste neu laden">↻</button>
                     </div>
                     <div id="sbc-opt-queue-list"></div>
                     <button class="sbc-opt-btn plan" id="sbc-opt-queue-plan">Angehakte planen (Vorschau)</button>
@@ -8027,14 +8067,13 @@
                         <button class="sbc-opt-btn ghost" id="sbc-opt-batch-editok">OK</button>
                     </div>
                     <!-- Zahlenfeld zuletzt und normalerweise versteckt, s.o. -->
-                    <input type="number" id="sbc-opt-batch-count" value="5" min="1" max="10"
-                           style="margin-bottom:10px;">
+                    <input class="sbc-opt-mb25" type="number" id="sbc-opt-batch-count" value="5" min="1" max="10">
                     <button class="sbc-opt-btn plan" id="sbc-opt-batch-plan">Teams planen (Vorschau)</button>
                 </div>
                 <!-- VORLAGEN: gespeicherte Auto-Laeufe, eigene Vollbild-
                      Oberflaeche (Rasmus, 28.08.: "einfach 'Vorlagen' reicht"). -->
                 <div class="sbc-opt-batch" id="sbc-opt-vorlagensection">
-                    <div class="sbc-opt-debug" style="margin:0 0 4px;">Gespeicherte Abläufe, die mehrere SBCs nacheinander erledigen - abgegeben wird nur bei 100 % Confidence.</div>
+                    <div class="sbc-opt-debug sbc-opt-m0 sbc-opt-mb1">Gespeicherte Abläufe, die mehrere SBCs nacheinander erledigen - abgegeben wird nur bei 100 % Confidence.</div>
                     <button class="sbc-opt-btn blue" id="sbc-opt-vorlagen-btn">Vorlagen</button>
                 </div>
                 </div>
@@ -8071,7 +8110,7 @@
                      gleiche Verdrahtung) plus Uebersicht: Auftraege, Galerie auf einen Blick. -->
                 <div class="sbc-opt-tab" id="sbc-opt-tab-ki" role="tabpanel">
                     <div class="sbc-opt-card">
-                        <div class="sbc-opt-group-title" style="margin-top:0;">KI-Assistent</div>
+                        <div class="sbc-opt-group-title sbc-opt-mt0">KI-Assistent</div>
                         <!-- v6.21.0 (Rasmus 18.11.: Mike hat nur ein Handy): ueber den PitTools-Vermittler im
                              Internet (relay/, Cloudflare). PitTools baut die Verbindung selbst auf, die KI
                              (ChatGPT, Claude.ai - auch deren Handy-Apps) ruft die Adresse unten auf. -->
@@ -8107,29 +8146,29 @@
                         <div class="sbc-opt-debug">Die KI kann lesen, planen und Galerie-Käufe vorschlagen. Gekauft wird nur mit deiner Freigabe: für die Galerie und – ab v6.29.0 – für eine offene SBC, die die KI dann auch einträgt und abgibt (nur mit Schalter „Käufe im Chat freigeben“). Gelistet wird erst nach deinem Tipp auf „Karten listen“. Anleitung: pittools-mcp/README.md.</div>
                     </div>
                     <div class="sbc-opt-card">
-                        <div class="sbc-opt-group-title" style="margin-top:0;">Nachricht der KI</div>
+                        <div class="sbc-opt-group-title sbc-opt-mt0">Nachricht der KI</div>
                         <div class="sbc-opt-summary" id="sbc-opt-mcp-message" hidden></div>
                         <div class="sbc-opt-dim" id="sbc-opt-ki-nomsg">Noch keine Nachricht.</div>
                     </div>
                     <div class="sbc-opt-card">
-                        <div class="sbc-opt-group-title" style="margin-top:0;">Aufträge</div>
+                        <div class="sbc-opt-group-title sbc-opt-mt0">Aufträge</div>
                         <div id="sbc-opt-ki-jobs" class="sbc-opt-dim">Keine laufenden Aufträge.</div>
                     </div>
                     <div class="sbc-opt-card">
-                        <div class="sbc-opt-group-title" style="margin-top:0;">Galerie auf einen Blick</div>
+                        <div class="sbc-opt-group-title sbc-opt-mt0">Galerie auf einen Blick</div>
                         <div id="sbc-opt-ki-gallery" class="sbc-opt-dim">–</div>
                     </div>
                     <div class="sbc-opt-card">
-                        <div class="sbc-opt-group-title" style="margin-top:0;">Kaufbuch (letzte Käufe)</div>
+                        <div class="sbc-opt-group-title sbc-opt-mt0">Kaufbuch (letzte Käufe)</div>
                         <div id="sbc-opt-ki-ledger" class="sbc-opt-dim">Noch keine Käufe festgehalten.</div>
                     </div>
                     <div class="sbc-opt-card">
-                        <div class="sbc-opt-group-title" style="margin-top:0;">Verlauf</div>
+                        <div class="sbc-opt-group-title sbc-opt-mt0">Verlauf</div>
                         <div class="sbc-opt-dim" id="sbc-opt-mcp-log"></div>
                     </div>
                 </div>
                 <div class="sbc-opt-tab" id="sbc-opt-tab-mehr" role="tabpanel">
-                    <div class="sbc-opt-stats sbc-opt-card" style="margin-bottom:12px;">
+                    <div class="sbc-opt-stats sbc-opt-card sbc-opt-mb3">
                         <div class="sbc-opt-stat"><span class="k">Version</span><b>v` + VERSION + `</b></div>
                         <div class="sbc-opt-stat"><span class="k">Brücke zu futbin</span><b id="sbc-opt-bridge-status">–</b></div>
                     </div>
@@ -8137,45 +8176,43 @@
                          zur Installation steht direkt da (syncBridgeLink). In der App
                          gibt es die Bruecke nativ, dort bleibt der Link verborgen. -->
                     <a class="sbc-opt-bridge-link" id="sbc-opt-bridge-install" href="https://raw.githubusercontent.com/Rasmus33/pittools/main/pittools-bridge.user.js" target="_blank" rel="noopener" hidden>PitTools Bridge in Tampermonkey installieren ↗<small>Ohne sie fehlen futbin-Lösungssuche und Galerie.</small></a>
-                    <div class="sbc-opt-group-title" style="margin-top:0;">Transfermarkt</div>
+                    <div class="sbc-opt-group-title sbc-opt-mt0">Transfermarkt</div>
                     <!-- v5.37.0: alle unverkauften Spieler der Transferliste zum Marktpreis listen. -->
-                    <button type="button" class="sbc-opt-btn primary" id="sbc-opt-tools-sell" style="margin-top:0;"><span>Transferliste zum Marktpreis listen</span></button>
+                    <button type="button" class="sbc-opt-btn primary sbc-opt-mt0" id="sbc-opt-tools-sell"><span>Transferliste zum Marktpreis listen</span></button>
                     <div class="sbc-opt-debug">Liest EAs Transferliste, holt je Karte das günstigste aktuelle Angebot, zeigt eine Vorschau und listet nach Rückfrage nacheinander (1 Stunde). Aktive und verkaufte Karten bleiben unberührt.</div>
                     <div class="sbc-opt-result" id="sbc-opt-tools-result"></div>
                     <div class="sbc-opt-group-title">Verein</div>
                     <!-- v6.6.0: Bestand nach Rating/Seltenheit/Liga/Nation/Verein - nur aus dem geladenen Pool. -->
-                    <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-clubview" style="margin-top:0;">Verein im Überblick</button>
+                    <button type="button" class="sbc-opt-btn ghost sbc-opt-mt0" id="sbc-opt-clubview">Verein im Überblick</button>
                     <div class="sbc-opt-debug">Zählt den geladenen SBC-Pool nach Rating, Seltenheit, Liga, Nation und Verein, mit Item-Score-Summen. Keine Anfrage bei EA.</div>
                     <div class="sbc-opt-result" id="sbc-opt-clubview-result"></div>
                     <div class="sbc-opt-group-title">Gauntlet</div>
                     <!-- v6.5.0: Teams aus dem Verein nach Meta-Rating (fut.gg) und Chemie (EA) - nichts wird gekauft. -->
-                    <button type="button" class="sbc-opt-btn primary" id="sbc-opt-gauntlet-open" style="margin-top:0;"><span>Gauntlet-Teams bauen</span></button>
+                    <button type="button" class="sbc-opt-btn primary sbc-opt-mt0" id="sbc-opt-gauntlet-open"><span>Gauntlet-Teams bauen</span></button>
                     <div class="sbc-opt-debug">Baut aus deinem Verein mehrere Teams ohne gemeinsame Spieler: Chemie plus Ø Meta-Rating je Position (fut.gg). Zeigt die besten 5 Varianten, Anker je Team möglich.</div>
                     <div class="sbc-opt-result" id="sbc-opt-gauntlet-result"></div>
                     <div class="sbc-opt-group-title">Werkzeuge</div>
-                    <button class="sbc-opt-btn ghost" id="sbc-opt-diag" style="margin-top:0;">Diagnose in Konsole schreiben</button>
+                    <button class="sbc-opt-btn ghost sbc-opt-mt0" id="sbc-opt-diag">Diagnose in Konsole schreiben</button>
                     <div class="sbc-opt-debug">Die Diagnose ist ein JSON-Report für die Fehlersuche (Konsole bzw. App-Log).</div>
                 </div>
                 <!-- PACK-OPENER (Store, Ticket #69/#76): nur in der Store-Ansicht
                      sichtbar (syncPackSection()) - Pack-Oeffnen ist unumkehrbar,
                      "Alle oeffnen" stoppt deshalb beim ERSTEN Fehler jeder Art. -->
                 <div class="sbc-opt-batch sbc-opt-hidden" id="sbc-opt-packsection">
-                    <div class="sbc-opt-group-title" style="margin-top:0;">Pack-Opener (Store)</div>
-                    <div class="sbc-opt-inline" style="margin-bottom:8px;">
-                        <select id="sbc-opt-pack-type" style="flex:1;">
+                    <div class="sbc-opt-group-title sbc-opt-mt0">Pack-Opener (Store)</div>
+                    <div class="sbc-opt-inline sbc-opt-mb2">
+                        <select class="sbc-opt-flex1" id="sbc-opt-pack-type">
                             <option value="">– Aktualisieren drücken –</option>
                         </select>
-                        <button class="sbc-opt-btn ghost" id="sbc-opt-pack-refresh"
-                                title="Pack-Liste neu laden"
-                                style="margin:0;padding:6px 10px;width:auto;flex:0 0 auto;">↻</button>
+                        <button class="sbc-opt-btn ghost sbc-opt-m0 sbc-opt-autow sbc-opt-pad-sm" id="sbc-opt-pack-refresh"
+                                title="Pack-Liste neu laden">↻</button>
                     </div>
                     <!-- "Test: 1 Pack oeffnen" ist weg (Rasmus: "brauchen wir auch
                          nicht mehr, 'Alle öffnen' reicht vollkommen"). Wer einen
                          Testlauf will, traegt bei Anzahl eine 1 ein. -->
-                    <div class="sbc-opt-compact" style="margin-top:2px;margin-bottom:8px;">
+                    <div class="sbc-opt-compact sbc-opt-mt0 sbc-opt-mb2">
                         <label>Anzahl (leer = alle)</label>
-                        <input type="number" id="sbc-opt-pack-count" min="1"
-                               style="width:72px;flex:0 0 auto;" placeholder="alle">
+                        <input class="sbc-opt-w72" type="number" id="sbc-opt-pack-count" min="1" placeholder="alle">
                     </div>
                     <!-- Was mit den Karten passiert - als Segment-Schalter, wie
                          die Schnellwahl oben. Sichtbar statt in einem zweiten

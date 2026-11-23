@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.32.1
+// @version      6.32.2
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.32.1';
+    const VERSION = '6.32.2';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -3025,17 +3025,37 @@
     // laufenden GET- und PUT-Retry denselben Zaehler teilen zu lassen.
     // Kandidat fuer eine Folge-Iteration, sobald ein Mock-Testharness fuer
     // apiGet/apiPut existiert (analog zum fetchClubViaHttp-Test).
+    // v6.32.2 (Review F10): Zeitlimit je eigener GET/PUT. NUR ein zusaetzlicher
+    // Abbruch einer haengenden Anfrage (sonst blieb z.B. buyBusy fuer immer an) -
+    // Lade-Takt und 401-Wiederholungen bleiben unveraendert. Ein abgebrochenes
+    // Gebot hat keinen Status und gilt im Kauf-Lauf als 'unknown' (bidOutcome).
+    const API_TIMEOUT_MS = 30000;
+    function apiTimeoutStart() {
+        let ac = null, timer = null;
+        try {
+            if (typeof AbortController === 'function') {
+                ac = new AbortController();
+                timer = setTimeout(function () { try { ac.abort(); } catch (e) {} }, API_TIMEOUT_MS);
+            }
+        } catch (e) { ac = null; }
+        return { signal: ac ? ac.signal : undefined, timedOut: function () { return !!(ac && ac.signal.aborted); }, done: function () { if (timer) clearTimeout(timer); } };
+    }
+    function apiTimeoutError(e, tmo) {
+        return tmo && tmo.timedOut() ? new Error('Zeitlimit ' + Math.round(API_TIMEOUT_MS / 1000) + ' s ohne Antwort von EA') : e;
+    }
     async function apiGet(path, _attempt) {
         const url = STATE.session.apiBase + path.replace(/^\//, '');
         marketGuardRecord('GET', path); // v6.23.0: Markt-Takt zaehlt jede eigene Marktsuche
         let resp;
+        const tmo = apiTimeoutStart();
         try {
-            resp = await _origFetch(url, { method: 'GET', headers: apiHeaders(), credentials: 'omit' });
-        } catch (e) {
+            resp = await _origFetch(url, { method: 'GET', headers: apiHeaders(), credentials: 'omit', signal: tmo.signal });
+        } catch (e0) {
+            const e = apiTimeoutError(e0, tmo);
             noteThrottle('GET ' + path + ' -> ' + (e.message || e));
             diagError('GET ' + path + ' -> ' + (e.message || e));
             throw e;
-        }
+        } finally { tmo.done(); }
         if (!resp.ok) {
             // 401 heisst entweder "Session abgelaufen" ODER "zu schnell"
             // (Rate-Limit). Versuch 1: App-Re-Auth anstossen. Versuch 2:
@@ -3059,16 +3079,18 @@
         headers['Content-Type'] = 'application/json';
         marketGuardRecord('PUT', path); // v6.23.0: Markt-Takt zaehlt jedes eigene Gebot
         let resp;
+        const tmo = apiTimeoutStart();
         try {
             resp = await _origFetch(url, {
                 method: 'PUT', headers: headers, credentials: 'omit',
-                body: JSON.stringify(body)
+                body: JSON.stringify(body), signal: tmo.signal
             });
-        } catch (e) {
+        } catch (e0) {
+            const e = apiTimeoutError(e0, tmo);
             noteThrottle('PUT ' + path + ' -> ' + (e.message || e));
             diagError('PUT ' + path + ' -> ' + (e.message || e));
             throw e;
-        }
+        } finally { tmo.done(); }
         if (!resp.ok) {
             if (resp.status === 401 && (_attempt || 0) < 2) {
                 if ((_attempt || 0) === 0) { await nudgeSession(); }
@@ -13239,6 +13261,19 @@ const HybridSbcEa = (() => {
         } catch (e) { return null; }
     }
     /**
+     * v6.32.2 (Review F2): Handels- und Gebotsstatus eines Trades aus EAs
+     * trade/status - fuer Gebote mit unbekanntem Ausgang (Netzfehler,
+     * Zeitlimit, 5xx). null, wenn EA nichts Lesbares liefert.
+     */
+    async function tradeInfoOf(tradeId) {
+        try {
+            const r = await apiGet('trade/status?tradeIds=' + encodeURIComponent(String(tradeId)));
+            const list = r && Array.isArray(r.auctionInfo) ? r.auctionInfo : [];
+            const a = list.find(x => x && String(x.tradeId) === String(tradeId)) || list[0] || null;
+            return a ? { tradeState: a.tradeState != null ? String(a.tradeState) : null, bidState: a.bidState != null ? String(a.bidState) : null, raw: r } : null;
+        } catch (e) { return null; }
+    }
+    /**
      * v5.49.0: Kauf ueber EAs CLIENT (services.Item.bid) als zweiter Weg, wenn
      * der eigene PUT 461 bekommt. Sucht die Karte ueber den Client, nimmt das
      * Angebot mit derselben tradeId (sonst das guenstigste bis maxBuy, tote
@@ -13270,13 +13305,34 @@ const HybridSbcEa = (() => {
             if (!pick) return { tried: true, ok: false, why: 'kein Angebot im Client-Ergebnis', seen: items.length };
             if (beforeBid && !(await beforeBid({ tradeId: pick.tid, bin: pick.bin, item: pick.it }))) return { tried: true, ok: false, why: 'Kaufwache hat Client-Angebot verworfen' };
             let r = null;
+            // v6.32.2 (Review F2): ohne Antwort (Timeout) oder mit 5xx ist der Ausgang offen - uncertain, damit der Lauf nachfragt statt zu sperren.
             try { r = await obsPromise(window.services.Item.bid(pick.it, pick.bin)); }
-            catch (e) { return { tried: true, ok: false, why: String(e && e.message || e), sameTrade: same }; }
+            catch (e) { return { tried: true, ok: false, why: String(e && e.message || e), sameTrade: same, uncertain: true, bin: pick.bin, item: pick.it, tradeId: pick.tid }; }
             const ok = responseOk(r);
             return { tried: true, ok: ok, status: r && r.status, sameTrade: same, bin: pick.bin, item: pick.it, tradeId: pick.tid,
+                     uncertain: !ok && bidOutcome(r && r.status, null) === 'unknown',
                      resp: (r && (r.response || r.data)) || null, // v6.24.0: fuer das Kaufbuch
                      why: ok ? null : ('Client-Kauf Status ' + (r && r.status) + (r && r.error ? ' ' + (r.error.code != null ? r.error.code : r.error.message) : '')) };
         } catch (e) { return { tried: true, ok: false, why: String(e && e.message || e) }; }
+    }
+    /**
+     * v6.32.2 (Review F2): Ausgang eines Gebots. Ohne Trade-Info entscheidet
+     * der HTTP-Status: keine Antwort (null/0, Netzfehler, Zeitlimit) oder 5xx
+     * (ausser 512 = Drosselung) heisst 'unknown' - EA kann gebucht haben.
+     * Mit Trade-Info (trade/status): closed + buyNow/highest = 'won',
+     * closed/expired/outbid oder noch aktiv ohne eigenes Gebot = 'lost',
+     * alles andere 'unknown'. Pure.
+     */
+    function bidOutcome(status, info) {
+        if (info && typeof info === 'object') {
+            const ts = String(info.tradeState || '').toLowerCase(), bs = String(info.bidState || '').toLowerCase();
+            if (ts === 'closed' && (bs === 'buynow' || bs === 'highest')) return 'won';
+            if (bs === 'outbid' || ts === 'expired' || ts === 'closed' || (ts === 'active' && (bs === 'none' || bs === ''))) return 'lost';
+            return 'unknown';
+        }
+        const n = status == null || status === '' ? null : Number(status);
+        if (n == null || !Number.isFinite(n) || n === 0 || (n >= 500 && n !== 512)) return 'unknown';
+        return 'lost';
     }
     /** Sofortkauf per eigenem PUT auf EAs Bid-Endpunkt. Liefert EAs Antwort (auctionInfo) oder wirft (Status in der Meldung). */
     async function bidHttp(tradeId, bin) {
@@ -14156,6 +14212,14 @@ const HybridSbcEa = (() => {
         let denied461 = 0; // v5.48.0: 461 in Folge ueber alle Spieler
         const bought = [];
         const lines = [];
+        // v6.32.2 (Review F2): Gebot ohne eindeutige Antwort - Betrag gilt als moeglicherweise abgebucht, Lauf stoppt.
+        const stopUncertain = function (p, bin, tradeId, why) {
+            diag.uncertain = (diag.uncertain || []).concat([{ name: p.name, tradeId: tradeId != null ? String(tradeId) : null, bin: bin, why: why || null }]);
+            diag.uncertainCoins = (diag.uncertainCoins || 0) + (Number(bin) || 0);
+            diag.stopped = 'Gebot ohne eindeutige Antwort (' + p.name + ', ' + fmtCoins(bin) + ') - bitte Transferziele prüfen';
+            lines.push('⚠ ' + escapeHtml(p.name) + ': EA hat auf das Gebot über ' + fmtCoins(bin) + ' nicht eindeutig geantwortet' + (why ? ' (' + escapeHtml(why) + ')' : '') +
+                       '. Ob gekauft wurde, ist offen - bitte im Spiel unter Transfers → Transferziele prüfen. Lauf gestoppt.');
+        };
         const render = function (current) {
             // v5.50.0: Plan-Summe der gekauften Karten daneben - so sieht man sofort, ob zu teuer gekauft wurde.
             let h = '<div class="sbc-opt-summary">Kaufen: ' + diag.bought + ' von ' + plan.length + ' · ausgegeben ' + fmtCoins(diag.spent) +
@@ -14277,6 +14341,19 @@ const HybridSbcEa = (() => {
                     if (ok) { denied461 = 0; break; }
                     if (isRateLimit(status)) { step.status = 'Rate-Limit'; diag.stopped = 'Rate-Limit beim Kauf'; lines.push('⚠ EA drosselt - Lauf gestoppt.'); hardStop = true; break; }
                     if (isSessionExpired(status)) { step.status = 'Session abgelaufen'; diag.stopped = 'Session abgelaufen'; lines.push('⚠ ' + escapeHtml(SESSION_LOST_TEXT)); hardStop = true; break; }
+                    // v6.32.2 (Review F2): keine Antwort, Zeitlimit oder 5xx heisst NICHT "abgelehnt" - EA kann gebucht
+                    // haben. Einmal trade/status lesen: gewonnen -> normal buchen, offen -> Lauf stoppen.
+                    if (bidOutcome(status, null) === 'unknown') {
+                        const info = offer.tradeId != null ? await tradeInfoOf(offer.tradeId) : null;
+                        const out = bidOutcome(status, info);
+                        step.bidCheck = { status: status == null ? null : status, why: why, tradeState: info ? info.tradeState : null, bidState: info ? info.bidState : null, outcome: out };
+                        if (out === 'won') {
+                            bidResp = (info && info.raw) || null; bidVia = 'nachgeprüft'; ok = true; denied461 = 0;
+                            lines.push('✓ ' + escapeHtml(p.name) + ': Gebot ohne Antwort, laut EA aber gekauft (nachgeprüft).');
+                            break;
+                        }
+                        if (out === 'unknown') { step.status = 'Ausgang unbekannt'; stopUncertain(p, offer.bin, offer.tradeId, why); hardStop = true; break; }
+                    }
                     if (status === 461 && offer.tradeId != null) {
                         denied461++;
                         if (!diag.ownBidHeaders) { try { diag.ownBidHeaders = Object.keys(apiHeaders()).concat(['Content-Type']); } catch (e) {} }
@@ -14324,6 +14401,26 @@ const HybridSbcEa = (() => {
                                     ok = true; denied461 = 0;
                                     lines.push('✓ ' + escapeHtml(p.name) + ' über EAs Client gekauft (eigener Weg: 461).');
                                     break;
+                                }
+                                // v6.32.2 (Review F2): Client ohne Antwort ist kein Beleg fuer eine Marktsperre - nachfragen, nie sperren.
+                                if (cb.uncertain) {
+                                    const info = cb.tradeId != null ? await tradeInfoOf(cb.tradeId) : null;
+                                    const out = bidOutcome(null, info);
+                                    step.clientBid.check = { tradeState: info ? info.tradeState : null, bidState: info ? info.bidState : null, outcome: out };
+                                    if (out === 'won') {
+                                        offer = { tradeId: cb.tradeId, bin: cb.bin, item: cb.item, itemId: cb.item && cb.item.id, raw: null };
+                                        step.found = cb.bin; step.via = 'client'; bidResp = (info && info.raw) || null; bidVia = 'nachgeprüft';
+                                        ok = true; denied461 = 0;
+                                        lines.push('✓ ' + escapeHtml(p.name) + ' über EAs Client gekauft (ohne Antwort, nachgeprüft).');
+                                        break;
+                                    }
+                                    if (out === 'unknown') { step.status = 'Ausgang unbekannt'; stopUncertain(p, cb.bin, cb.tradeId, cb.why); }
+                                    else {
+                                        step.status = 'Client-Kauf ohne Erfolg (' + (cb.why || '?') + ')';
+                                        diag.stopped = 'Client-Kauf nach 461 ohne Erfolg - keine Marktsperre gesetzt';
+                                        lines.push('⚠ ' + escapeHtml(p.name) + ': EA verweigert den Kauf (461), der Client-Weg kam ohne Erfolg zurück. Lauf gestoppt.');
+                                    }
+                                    hardStop = true; break;
                                 }
                             }
                             marketGuardSetLock('461 bei aktivem Angebot: ' + p.name); // v6.23.0: KI-Wege pausieren den Markt 60 min
@@ -18552,6 +18649,11 @@ const HybridSbcEa = (() => {
         if (v == null || !isFinite(n)) return MCP_JOB_WAIT_DEFAULT_S;
         return Math.max(0, Math.min(MCP_JOB_WAIT_MAX_S, Math.round(n)));
     }
+    /** v6.32.2 (Review F10): gleicher KI-SBC-Auftrag? (planId und SBC-Name; fehlende Angaben = null). Pure. */
+    function mcpSameSolveArgs(x, y) {
+        const n = v => (v == null || v === '' ? null : String(v));
+        return !!x && !!y && n(x.planId) === n(y.planId) && n(x.sbc) === n(y.sbc);
+    }
     function mcpRunningJob(tool) {
         for (const j of mcpJobs.values()) if (j.tool === tool && j.state === 'running') return j;
         return null;
@@ -18852,9 +18954,15 @@ const HybridSbcEa = (() => {
             return v.state === 'done' ? v.result : v;
         }
         if (tool === 'pittools_sbc_solve') {
+            const solveArgs = { planId: typeof a.planId === 'string' ? a.planId : null, sbc: typeof a.sbc === 'string' && a.sbc.trim() ? a.sbc.trim().slice(0, 80) : null };
             const running = mcpRunningJob(tool);
+            // v6.32.2 (Review F10): nur derselbe Auftrag (gleiche planId/SBC) haengt sich an den laufenden Job.
+            if (running && !mcpSameSolveArgs(running.args, solveArgs))
+                throw new Error('Es läuft schon ein KI-SBC-Lauf (' + running.id + ', ' + (running.args && running.args.planId ? 'Ausführen' : 'Vorschau') +
+                                ') - erst mit pittools_job_status abwarten, dann erneut. Dieser Aufruf wurde nicht gestartet.');
             if (running) return await mcpAwaitJob(running, a.wait);
-            const job = mcpStartJob(tool, () => sbcClaudeSolve({ planId: typeof a.planId === 'string' ? a.planId : null, sbc: typeof a.sbc === 'string' && a.sbc.trim() ? a.sbc.trim().slice(0, 80) : null }), () => sbcSolveState.progress);
+            const job = mcpStartJob(tool, () => sbcClaudeSolve(solveArgs), () => sbcSolveState.progress);
+            job.args = solveArgs;
             const v = await mcpAwaitJob(job, a.wait);
             return v.state === 'done' ? v.result : v;
         }

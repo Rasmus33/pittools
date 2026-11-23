@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.31.1
+// @version      6.31.2
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.31.1';
+    const VERSION = '6.31.2';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -16384,6 +16384,13 @@ const HybridSbcEa = (() => {
      * Version, isCollected, Preis), Freigabe-Tipp im Panel, erst dann
      * buyPlannedPlayers mit festen Obergrenzen = Marktminimum je Karte.
      */
+    /** v6.31.2: Sammelstand vor dem Vorschlag frisch holen? Auf Wunsch oder bei Karten ab 50.000 und Scan aelter als 10 min. Pure. */
+    const GALLERY_RESCAN_MIN_AGE_MS = 10 * 60 * 1000;
+    function galleryWantRescan(entry, option, forced, now) {
+        if (forced) return true;
+        if (!option || !Array.isArray(option.cards) || !option.cards.some(c => c.priceFutgg >= 50000)) return false;
+        return !(entry && Number.isFinite(entry.at)) || now - entry.at > GALLERY_RESCAN_MIN_AGE_MS;
+    }
     async function galleryClaudeBuy(setName, grade, opts) {
         const exclude = new Set(((opts && opts.exclude) || []).map(Number)); // v6.18.4: beim Ersatzkauf ausgefallene Karten
         if (galleryBusy || buyBusy || sellBusy || futbinBusy || STATE.loading || (vorlagenRun && !vorlagenRun.fertig)) throw new Error('Es läuft gerade ein anderer Lauf - kurz warten.');
@@ -16402,7 +16409,7 @@ const HybridSbcEa = (() => {
             if (!row) throw new Error('Kein Set „' + setName + '“ im Katalog.');
             const cache = (await galleryScanCacheLoad(persona)) || { v: 1, persona: persona, at: null, sets: {} };
             // v6.29.4: ein Vorschlag rechnet nie mit einem Sammelstand, der aelter als GALLERY_BUY_SCAN_MAX_AGE_MS ist (eine EA-Anfrage, keine Marktsuche).
-            const entry = await galleryEnsureScanEntry(row, cache, persona, opts && opts.preview && !opts.planId ? GALLERY_BUY_SCAN_MAX_AGE_MS : 0);
+            let entry = await galleryEnsureScanEntry(row, cache, persona, opts && opts.preview && !opts.planId ? GALLERY_BUY_SCAN_MAX_AGE_MS : 0);
             galleryExcludeDefs((opts && opts.exclude) || [], entry.names).forEach(d => exclude.add(d)); // v6.24.2: auch per Spielername
             if (exclude.size) diag.exclude = Array.from(exclude);
             const rules = await galleryRulesLoad(row);
@@ -16419,6 +16426,18 @@ const HybridSbcEa = (() => {
             if (knownApplied.length) { diag.knownApplied = knownApplied; try { await galleryScanCacheSave(persona, cache); } catch (e) { /* nur Cache */ } }
             const livePrices = galleryLivePrices(rules);
             exclude.forEach(d => { delete livePrices[d]; });
+            // v6.31.2: vor einem Vorschlag mit Karten ab 50.000 (oder auf Wunsch: rescan) den Sammelstand
+            // dieses Sets einmal frisch holen - fängt Käufe an Konsole/Companion/anderem Gerät ab.
+            // Kostet 1-2 Konzeptsuchen, keine Marktsuche.
+            if (o2.preview && !o2.planId) {
+                const fo0 = galleryFirstOwnedDefs();
+                const pre = (galleryChanceForSet(row, entry, Object.assign({}, rules, { prices: livePrices }), fo0, galleryKnownGrade(row.id)).options || []).find(o => o.grade === grade);
+                if (galleryWantRescan(entry, pre, o2.rescan === true, Date.now())) {
+                    diag.rescan = true;
+                    entry = await galleryEnsureScanEntry(row, cache, persona, 1);
+                    galleryMarkKnownCollected(entry, galleryKnownDefIds(STATE.pool, collectedLoad()));
+                }
+            }
             const res = galleryChanceForSet(row, entry, Object.assign({}, rules, { prices: livePrices }), galleryFirstOwnedDefs(), galleryKnownGrade(row.id));
             const option = (res.options || []).find(o => o.grade === grade);
             if (!option && !(saved && saved.prepared) && res.gradeNow && GALLERY_GRADE_ORDER.indexOf(res.gradeNow) >= GALLERY_GRADE_ORDER.indexOf(grade)) {
@@ -18769,7 +18788,7 @@ const HybridSbcEa = (() => {
             if (running) return await mcpAwaitJob(running, a.wait);
             if (!a.set || !a.grade) throw new Error('set und grade angeben.');
             const job = mcpStartJob(tool, async () => {
-                const r = await galleryClaudeBuy(String(a.set), String(a.grade).toUpperCase(), { preview: a.preview === true, planId: typeof a.planId === 'string' ? a.planId : null,
+                const r = await galleryClaudeBuy(String(a.set), String(a.grade).toUpperCase(), { preview: a.preview === true, rescan: a.rescan === true, planId: typeof a.planId === 'string' ? a.planId : null,
                     exclude: Array.isArray(a.exclude) && a.exclude.length ? a.exclude : undefined }); // v6.24.2: Karten nicht planen (defId/Name)
                 if (r && r.preview) return r;
                 // v6.18.4: ist das Set nach dem Kauf unvollstaendig, EINMAL ohne die ausgefallenen Karten neu planen.

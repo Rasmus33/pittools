@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.37.0
+// @version      6.38.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.37.0';
+    const VERSION = '6.38.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -3115,6 +3115,8 @@
         return resp.json();
     }
     async function apiPut(path, body, _attempt) {
+        // v6.38.0: zweiter Gurt der 600-Grenze - waehrend der Gebots-Helfer laeuft, geht kein Gebot ueber 600 raus.
+        if (typeof bidHelperIsBusy === 'function' && bidHelperIsBusy() && marketGuardKind('PUT', path) === 'bid') bidCapAssert(body && body.bid);
         const url = STATE.session.apiBase + path.replace(/^\//, '');
         const headers = apiHeaders();
         headers['Content-Type'] = 'application/json';
@@ -6513,6 +6515,9 @@
            uebrigen Nebeninfos, damit Name + Rating fuehrend bleiben. */
         .sbc-opt-dim { color:var(--pt-fg-subtle); }
         .sbc-opt-bid-summary { font-weight:600; margin:2px 0 6px; font-variant-numeric:tabular-nums; }
+        .sbc-opt-bid-row { display:flex; justify-content:space-between; align-items:center; gap:8px; margin:4px 0; font-variant-numeric:tabular-nums; }
+        .sbc-opt-bid-row .sbc-opt-btn { margin:0; width:auto; min-height:var(--pt-tap); }
+        .sbc-opt-bid-set { margin:4px 0 8px; }
         /* Rollen-Klassen statt Farben im Markup: sonst waeren die Tokens
            nur die halbe Wahrheit - sieben inline-Farben standen weiter im
            HTML, drei davon in dem zu dunklen Grauton. */
@@ -7733,6 +7738,13 @@
                         <div class="sbc-opt-bid-summary" id="sbc-opt-bid-summary">Gewonnen: 0 Karten</div>
                         <div class="sbc-opt-dim" id="sbc-opt-bid-hint">Mitlesen: Biete in der Web App von Hand (höchstens 600). PitTools merkt sich gewonnene Gold-Karten, sobald du die Transferziele öffnest – ohne eigene Anfrage an EA.</div>
                         <div class="sbc-opt-dim" id="sbc-opt-bid-pack" hidden></div>
+                        <details class="sbc-opt-bid-set" id="sbc-opt-bid-set"><summary>Einstellungen</summary>
+                            <div class="sbc-opt-inline"><label>Rating von <input type="number" id="sbc-opt-bid-rmin" min="75" max="99" placeholder="Ziel−1"></label>
+                            <label>bis <input type="number" id="sbc-opt-bid-rmax" min="75" max="99" value="99"></label></div>
+                            <div class="sbc-opt-inline"><label>Höchstgebot (nur senken) <input type="number" id="sbc-opt-bid-cap" min="150" max="600" step="50" value="600"></label></div>
+                            <label class="sbc-opt-switch"><input type="checkbox" id="sbc-opt-bid-fest" checked><span class="track" aria-hidden="true"></span><span class="txt">Immer das Höchstgebot bieten<small>sonst das Mindestgebot</small></span></label>
+                        </details>
+                        <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-bid-search">Kandidaten suchen (je Gebot ein Tipp)</button>
                         <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-bid-collect">Gewonnene abholen</button>
                         <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-bid-plan">Mit Gebots-Karten planen</button>
                         <div class="sbc-opt-result" id="sbc-opt-bid-result"></div>
@@ -13638,14 +13650,53 @@ const HybridSbcEa = (() => {
     function bidLimitClean(state, persona, now) {
         const s = state && typeof state === 'object' ? state : {};
         const p = persona != null ? String(persona) : (s.persona != null ? String(s.persona) : null);
-        if (s.persona != null && p != null && String(s.persona) !== p) return { persona: p, bids: [], runs: [] };
+        if (s.persona != null && p != null && String(s.persona) !== p) return { persona: p, bids: [], runs: [], searches: [] };
         const keep = t => Number.isFinite(t) && t <= now && now - t < BID_LIMITS.keepMs;
-        return { persona: p, bids: (Array.isArray(s.bids) ? s.bids : []).filter(keep), runs: (Array.isArray(s.runs) ? s.runs : []).filter(keep) };
+        return { persona: p, bids: (Array.isArray(s.bids) ? s.bids : []).filter(keep), runs: (Array.isArray(s.runs) ? s.runs : []).filter(keep),
+                 searches: (Array.isArray(s.searches) ? s.searches : []).filter(t => keep(t) && now - t < BID_SEARCH.windowMs) };
     }
     function bidLimitNote(state, persona, kind, now) {
         const s = bidLimitClean(state, persona, now);
-        if (kind === 'bid') s.bids.push(now); else if (kind === 'run') s.runs.push(now);
+        if (kind === 'bid') s.bids.push(now); else if (kind === 'run') s.runs.push(now); else if (kind === 'search') s.searches.push(now);
         return s;
+    }
+    /*
+     * v6.38.0: Teilbudget fuer die Suchen des Helfers (unter den 40 je 10 min
+     * des Markt-Takts): hoechstens 12 je 10 min und mindestens 20 s Abstand
+     * (der Lauf selbst wartet zufaellig 20-40 s). Die Suche ist das groesste
+     * Sperr-Risiko (Befund 19.11.).
+     */
+    const BID_SEARCH = { max: 12, windowMs: 10 * 60 * 1000, gapMinMs: 20 * 1000, gapMaxMs: 40 * 1000 };
+    function bidSearchCheck(state, persona, now) {
+        const s = bidLimitClean(state, persona, now);
+        const recent = s.searches.slice().sort((a, b) => a - b);
+        if (recent.length) {
+            const since = now - recent[recent.length - 1];
+            if (since < BID_SEARCH.gapMinMs) return { ok: false, waitMs: BID_SEARCH.gapMinMs - since, reason: 'Abstand zwischen zwei Suchen (mind. 20 s)' };
+        }
+        if (recent.length >= BID_SEARCH.max) return { ok: false, waitMs: recent[recent.length - BID_SEARCH.max] + BID_SEARCH.windowMs - now, reason: 'Such-Budget des Helfers (12 je 10 min)' };
+        return { ok: true, waitMs: 0, reason: null };
+    }
+    /**
+     * Suchanfrage fuer Gold-Auktionen. Die Parameter sind fuer FC 27 nicht im
+     * Code belegt - Kandidaten aus alten Clients: lev=gold, macr = hoechstes
+     * aktuelles Gebot. Hat der Mitschnitt EAs eigene Suche mit lev/macr gesehen,
+     * gilt das als belegt (basis 'mitschnitt'). Der Filter ist NUR Komfort: jede
+     * Auktion geht danach durch bidEligible und bidAmountFor (<= 600).
+     */
+    function bidSearchQuery(start, cap, learnedNames) {
+        const names = Array.isArray(learnedNames) ? learnedNames : [];
+        const macr = Math.max(0, Math.min(BID_HARD_CAP, bidCapOf(cap)) - 50);
+        const q = 'transfermarket?num=21&start=' + (start > 0 ? Math.floor(start) : 0) + '&type=player&lev=gold&macr=' + macr;
+        return { path: q, basis: names.indexOf('lev') >= 0 && names.indexOf('macr') >= 0 ? 'mitschnitt' : 'kandidaten', macr: macr };
+    }
+    /** Hat EA den Filter beachtet? (Diagnose; Schutz bleibt der Einzel-Filter.) */
+    function bidSearchHonored(parsed, macr) {
+        const list = Array.isArray(parsed) ? parsed : [];
+        const items = list.filter(a => a && a.item);
+        return { n: list.length, gold: items.length ? items.every(a => a.item.rating != null && a.item.rating >= BID_GOLD_MIN_RATING) : null,
+                 macr: list.length ? list.every(a => a.currentBid != null && a.currentBid <= macr) : null,
+                 readable: list.filter(a => a.readable).length };
     }
     function bidLimitCounts(state, persona, now) {
         const s = bidLimitClean(state, persona, now);
@@ -13958,7 +14009,8 @@ const HybridSbcEa = (() => {
         const sets = bidTradeSets();
         const won = bidWonFromAuctions(ev.won, { trades: sets.all, helperTrades: sets.helper, now: Date.now() });
         const added = bidWonStore(won);
-        bidWatchState = { at: Date.now(), source: source, total: ev.total, won: ev.won.length, wonGold: won.length, added: added, open: ev.open.length,
+        const persons = Array.from(new Set(parseBidAuctions(auctionInfo).map(a => bidPersonOf(a.item)).filter(Boolean)));
+        bidWatchState = { at: Date.now(), source: source, total: ev.total, persons: persons, won: ev.won.length, wonGold: won.length, added: added, open: ev.open.length,
                           outbid: ev.outbid.length, expired: ev.expired.length, unknown: ev.unknown.length,
                           unknownSample: ev.unknown.slice(0, 3).map(a => ({ tradeState: a.tradeState, bidState: a.bidState })) };
         return { ev: ev, won: won, added: added };
@@ -14058,11 +14110,37 @@ const HybridSbcEa = (() => {
             if (pk.hidden !== !pt) pk.hidden = !pt;
         }
     }
+    /** Einstellungen der Karte <-> sbcOptBidHelper (Hoechstgebot kann nur senken: bidCapOf). */
+    function bidSettingsWire() {
+        const s = bidSettingsLoad();
+        const rmin = document.getElementById('sbc-opt-bid-rmin'), rmax = document.getElementById('sbc-opt-bid-rmax');
+        const cap = document.getElementById('sbc-opt-bid-cap'), fest = document.getElementById('sbc-opt-bid-fest');
+        if (rmin && s.ratingMin) rmin.value = s.ratingMin;
+        if (rmax) rmax.value = s.ratingMax || 99;
+        if (cap) cap.value = s.cap;
+        if (fest) fest.checked = s.fest600 !== false;
+        const save = () => {
+            const n = el => { const v = parseInt(el && el.value, 10); return Number.isFinite(v) ? v : null; };
+            bidSettingsSave({ ratingMin: n(rmin), ratingMax: n(rmax) || 99, cap: bidCapOf(n(cap)), fest600: !fest || fest.checked });
+            if (cap) cap.value = bidSettingsLoad().cap;
+        };
+        [rmin, rmax, cap, fest].forEach(el => { if (el) el.addEventListener('change', save); });
+    }
     function initBidHelperUi() {
         const pb = document.getElementById('sbc-opt-bid-plan');
         if (pb) pb.addEventListener('click', onBidPlanClick);
         const cb = document.getElementById('sbc-opt-bid-collect');
         if (cb) cb.addEventListener('click', onBidCollectClick);
+        const sb = document.getElementById('sbc-opt-bid-search');
+        if (sb) sb.addEventListener('click', () => onBidSearchClick(false));
+        const res = document.getElementById('sbc-opt-bid-result');
+        if (res) res.addEventListener('click', ev => {
+            const t = ev.target && ev.target.closest ? ev.target.closest('button') : null;
+            if (!t) return;
+            if (t.id === 'sbc-opt-bid-more') onBidSearchClick(true);
+            else if (t.classList.contains('sbc-opt-bid-one')) onBidOneClick(t.getAttribute('data-trade'));
+        });
+        bidSettingsWire();
         renderBidCard();
         setInterval(function () { if (tabCurrent === 'kaufen') { try { renderBidCard(); } catch (e) {} } }, 4000);
     }
@@ -14350,6 +14428,207 @@ const HybridSbcEa = (() => {
             bidHelperBusy = false;
             renderBidCardSoon();
         }
+    }
+    /*
+     * v6.38.0: der EINZIGE Gebots-PUT des Helfers. Davor bidCapAssert (ganzzahlig,
+     * > 0, <= 600). Je tradeId hoechstens ein PUT je Lauf (ctx.bidden wird VOR
+     * dem Senden gesetzt). Kein Retry: apiPut mit _attempt 2 wiederholt auch
+     * einen 401 nicht. Liefert { ok, status, resp, error } - wirft nur bei
+     * Sperr-Verletzung (Betrag/tradeId/schon geboten).
+     */
+    async function bidPutCapped(tradeId, amount, ctx) {
+        bidCapAssert(amount);
+        const id = String(tradeId == null ? '' : tradeId);
+        if (!/^\d+$/.test(id)) throw new Error('Gebots-Sperre: ungültige tradeId.');
+        if (!ctx || !ctx.bidden || ctx.bidden.has(id)) throw new Error('Gebots-Sperre: auf diesen Trade wurde in diesem Lauf schon geboten.');
+        ctx.bidden.add(id);
+        const persona = ownPersonaId();
+        bidJsonSave(bidPersonaKey(BID_LOG_KEY), bidLimitNote(bidJsonLoad(bidPersonaKey(BID_LOG_KEY), {}), persona, 'bid', Date.now()));
+        bidTradesNote(id, 'helfer', amount);
+        try {
+            const resp = await apiPut('trade/' + id + '/bid', { bid: amount }, 2);
+            return { ok: true, status: 200, resp: resp, error: null };
+        } catch (e) {
+            if (e && e.bidCap) throw e;
+            return { ok: false, status: httpStatusOf(e), resp: null, error: String(e && e.message || e) };
+        }
+    }
+    /** Stopp-Codes: 461 (verweigert), 429/512 (Drossel), 401 (Sitzung), 458 (Captcha/Pruefung). */
+    function bidStopCode(status) { return [401, 429, 458, 461, 512].indexOf(Number(status)) >= 0; }
+    /** Kontext fuer Duplikate: Spieler aus Verein/Storage, gewonnenen Gebots-Karten und den Transferzielen. */
+    function bidOwnedPersons() {
+        const out = new Set();
+        (STATE.pool || []).forEach(p => { const k = bidPersonOf({ assetId: Number(p.assetId) || null, resourceId: Number(p.resourceId || (p.raw && p.raw.resourceId)) || null }); if (k) out.add(k); });
+        (bidWatchState && Array.isArray(bidWatchState.persons) ? bidWatchState.persons : []).forEach(k => out.add(String(k)));
+        return out;
+    }
+    /** Rating-Spanne: Einstellung, sonst aus der offenen SBC (Ziel - 1 bis 99), sonst 79-99. */
+    function bidRatingRange(settings) {
+        const s = settings || bidSettingsLoad();
+        const t = Number(STATE.sbc && STATE.sbc.targetOVR) || 0;
+        const lo = Number.isFinite(Number(s.ratingMin)) && Number(s.ratingMin) > 0 ? Number(s.ratingMin) : (t ? t - 1 : 79);
+        const hi = Number.isFinite(Number(s.ratingMax)) && Number(s.ratingMax) > 0 ? Number(s.ratingMax) : 99;
+        return { min: Math.max(BID_GOLD_MIN_RATING, lo), max: Math.min(99, Math.max(lo, hi)) };
+    }
+    /** Vor jeder Runde/Suche: harte Wachen (Pool vollstaendig, keine Sperre, kein Kauf-Lauf, Sitzung). Liefert Klartext oder null. */
+    function bidStartBlock() {
+        if (bidHelperBusy) return 'Der Gebots-Helfer arbeitet schon.';
+        if (buyBusy || sbcSolveBusy) return 'Gerade läuft ein Kauf-Lauf - bitte danach erneut.';
+        if (!sessionReady()) return 'Keine EA-Sitzung erkannt - einmal in der Web App klicken, dann erneut.';
+        if (!STATE.poolFullLoadDone || STATE.loadIncomplete) return 'Erst „Spieler laden“ (vollständig, mit Storage) - sonst erkennt der Helfer Duplikate nicht.';
+        const mg = marketGuardCheck(marketGuardLoad(), { searches: 1 }, Date.now());
+        if (mg.locked) return marketGuardWaitText(mg);
+        if (!ownPersonaId()) return 'EA-Persona unbekannt - einmal in der Web App klicken.';
+        return null;
+    }
+    /** Eine Seite Gold-Auktionen (ein Such-Request, Markt-Takt + Teilbudget vorher). */
+    async function bidSearchPage(start, settings, run) {
+        const persona = ownPersonaId();
+        const sc = bidSearchCheck(bidJsonLoad(bidPersonaKey(BID_LOG_KEY), {}), persona, Date.now());
+        if (!sc.ok) { const e = new Error('Suche noch nicht erlaubt: ' + sc.reason + ' - in ' + Math.ceil(sc.waitMs / 1000) + ' s erneut.'); e.waitMs = sc.waitMs; throw e; }
+        await marketGuardGate({ searches: 1 }, 'Gebots-Suche');
+        const learned = (STATE.diag.bidCapture && STATE.diag.bidCapture.paramNames) || [];
+        const q = bidSearchQuery(start, settings.cap, learned);
+        bidJsonSave(bidPersonaKey(BID_LOG_KEY), bidLimitNote(bidJsonLoad(bidPersonaKey(BID_LOG_KEY), {}), persona, 'search', Date.now()));
+        let json;
+        try { json = await apiGet(q.path); }
+        catch (e) { const err = new Error('Gebots-Suche: ' + (e && e.message || e)); err.status = httpStatusOf(e); throw err; }
+        const parsed = parseBidAuctions(json && json.auctionInfo);
+        const honored = bidSearchHonored(parsed, q.macr);
+        run.pages = (run.pages || 0) + 1;
+        run.search = { basis: q.basis, query: q.path.replace(/start=\d+/, 'start=…'), honored: honored };
+        return parsed;
+    }
+    /** Auktionen bewerten: Filter + Betrag; zaehlt Gruende in run.skipped. */
+    function bidCandidatesFrom(parsed, settings, run, bidden) {
+        const range = bidRatingRange(settings);
+        const ctx = { ownId: ownPersonaId(), ratingMin: range.min, ratingMax: range.max, bidden: bidden, owned: bidOwnedPersons() };
+        const tiers = eaPriceTiers();
+        const out = [];
+        run.skipped = run.skipped || { overCap: 0, special: 0, dupe: 0, rating: 0, own: 0, done: 0, unreadable: 0 };
+        const seenPersons = new Set();
+        parsed.forEach(a => {
+            run.seen = (run.seen || 0) + 1;
+            const el = bidEligible(a, ctx);
+            if (!el.ok) { run.skipped[el.reason] = (run.skipped[el.reason] || 0) + 1; return; }
+            const person = bidPersonOf(a.item);
+            if (seenPersons.has(person)) { run.skipped.dupe++; return; }
+            const amount = bidAmountFor(a, settings.cap, tiers, { ownId: ctx.ownId, fest600: settings.fest600 });
+            if (amount == null) { run.skipped.overCap++; return; }
+            seenPersons.add(person);
+            run.eligible = (run.eligible || 0) + 1;
+            out.push({ a: a, amount: amount, person: person });
+        });
+        return out;
+    }
+    /** Ein Gebot mit allen Wachen (Coins, Grenzen, Transferziele), Ergebnis in run. */
+    async function bidPlaceOne(cand, settings, run, ctx) {
+        const persona = ownPersonaId();
+        if (persona !== ctx.persona) { run.stopped = 'Account gewechselt'; return { stop: true }; }
+        const st = bidJsonLoad(bidPersonaKey(BID_LOG_KEY), {});
+        const open = (bidWatchState ? bidWatchState.open : 0) + ctx.placed;
+        if (bidLimitRoom(st, persona, Date.now(), open) <= 0) { run.stopped = 'Grenze erreicht (40/h, 150/Tag oder ' + BID_LIMITS.maxOpen + ' offene Gebote)'; return { stop: true }; }
+        if (bidWatchState && bidWatchState.total + ctx.placed + 1 > BID_LIMITS.hardOpen) { run.stopped = 'Transferziele fast voll (' + BID_LIMITS.hardOpen + ') - erst „Gewonnene abholen“'; return { stop: true }; }
+        const coins = userCoins();
+        if (coins == null || coins < cand.amount) { run.stopped = coins == null ? 'Kontostand nicht lesbar' : 'Nicht genug Coins'; return { stop: true }; }
+        let r;
+        try { r = await bidPutCapped(cand.a.tradeId, cand.amount, ctx); }
+        catch (e) { run.capBlocked = (run.capBlocked || 0) + 1; run.stopped = String(e && e.message || e); return { stop: true }; }
+        if (r.ok) {
+            run.bids = (run.bids || 0) + 1; ctx.placed++;
+            run.maxBid = Math.max(run.maxBid || 0, cand.amount);
+            run.spent = (run.spent || 0) + cand.amount;
+            const mine = parseBidAuctions(r.resp && r.resp.auctionInfo).find(x => x.tradeId === String(cand.a.tradeId));
+            if (mine && String(mine.tradeState).toLowerCase() === 'closed' && String(mine.bidState).toLowerCase() === 'buynow') run.won = (run.won || 0) + 1;
+            return { ok: true, resp: r.resp };
+        }
+        run.errors = (run.errors || 0) + 1;
+        if (Number(r.status) === 461) {
+            const ts = await tradeStateOf(cand.a.tradeId);
+            if (ts == null || ts === 'active') marketGuardSetLock('461 beim Gebot (Gebots-Helfer)');
+            run.stopped = '461: EA verweigert das Gebot' + (ts === 'active' ? ' bei aktivem Angebot - Marktpause 60 min' : '');
+            return { stop: true, status: 461 };
+        }
+        if (bidStopCode(r.status)) { run.stopped = 'EA antwortet ' + r.status + ' - Stopp'; return { stop: true, status: r.status }; }
+        run.stopped = 'Gebot abgelehnt (' + (r.status || r.error) + ') - Stopp';
+        return { stop: true, status: r.status };
+    }
+    // ---- M1: Vorschlagen (je Gebot ein Tipp) ----
+    let bidM1 = null; // { persona, bidden:Set, placed, run, cands: Map, start, lastBidAt }
+    const BID_M1_GAP_MS = 8000;
+    function bidM1Html() {
+        const s = bidM1;
+        if (!s) return '';
+        let h = '<div class="sbc-opt-dim">' + escapeHtml(s.note || '') + '</div>';
+        const rows = Array.from(s.cands.values());
+        if (!rows.length) h += '<div class="sbc-opt-dim">Keine passenden Auktionen auf dieser Seite.</div>';
+        rows.forEach(c => {
+            const it = c.a.item || {};
+            const mins = c.a.expires != null ? Math.max(0, Math.round(c.a.expires / 60)) : '?';
+            h += '<div class="sbc-opt-bid-row"><span>' + escapeHtml(it.rating + 'er Gold' + (it.assetId ? ' #' + it.assetId : '') + ' · aktuell ' + (c.a.currentBid || c.a.startingBid) + ' · ' + mins + ' min') + '</span>' +
+                 (c.state ? '<span class="sbc-opt-dim">' + escapeHtml(c.state) + '</span>'
+                          : '<button type="button" class="sbc-opt-btn ghost sbc-opt-bid-one" data-trade="' + escapeHtml(c.a.tradeId) + '">Bieten ' + c.amount + '</button>') + '</div>';
+        });
+        if (!s.stopped) h += '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-bid-more">Nächste Seite suchen</button>';
+        return h;
+    }
+    function bidM1Render() { const el = document.getElementById('sbc-opt-bid-result'); if (!el) return; el.className = 'sbc-opt-result show'; el.innerHTML = bidM1Html(); }
+    async function onBidSearchClick(next) {
+        const block = bidStartBlock();
+        if (block) { toast(block, 'error'); return; }
+        const settings = bidSettingsLoad();
+        const persona = ownPersonaId();
+        if (!next || !bidM1 || bidM1.persona !== persona) {
+            bidM1 = { persona: persona, bidden: new Set(bidTradesLoad().map(x => String(x.t))), placed: 0, cands: new Map(), start: 0, lastBidAt: 0, stopped: null,
+                      run: bidRunRecord({ at: Date.now(), mode: 'vorschlagen', pages: 0, seen: 0, eligible: 0, skipped: null, bids: 0, maxBid: 0, won: 0, outbid: null, expired: null, spent: 0, stopped: null, capBlocked: 0 }) };
+        }
+        const s = bidM1;
+        bidHelperBusy = true;
+        const btn = document.getElementById(next ? 'sbc-opt-bid-more' : 'sbc-opt-bid-search');
+        setBtnBusy(btn, true, 'suche');
+        try {
+            if (!bidWatchState || Date.now() - bidWatchState.at > 5 * 60 * 1000) {
+                const wl = await apiGet('watchlist');
+                bidNoteWatchlist(wl && wl.auctionInfo, 'helfer');
+            }
+            const parsed = await bidSearchPage(s.start, settings, s.run);
+            s.start += 21;
+            if (parsed.length && !parsed.some(a => a.readable)) {
+                s.stopped = s.run.stopped = 'EAs Antwort enthält kein lesbares startingBid/currentBid - es wird nicht geboten. Bitte die Live-Prüfung „gebote_mitschnitt“ ausführen.';
+                s.cands = new Map();
+            } else {
+                s.cands = new Map(bidCandidatesFrom(parsed, settings, s.run, s.bidden).map(c => [String(c.a.tradeId), c]));
+            }
+            s.note = s.stopped || (parsed.length + ' Auktionen gesehen, ' + s.cands.size + ' passen (Rating ' + bidRatingRange(settings).min + '–' + bidRatingRange(settings).max + ', höchstens ' + settings.cap + ').' +
+                     (s.run.search && s.run.search.basis === 'kandidaten' ? ' Suchparameter noch nicht live belegt.' : ''));
+        } catch (e) {
+            s.note = String(e && e.message || e);
+            if (bidStopCode(e && e.status)) { s.stopped = s.run.stopped = 'EA antwortet ' + e.status + ' - Stopp'; if (Number(e.status) === 461) marketGuardSetLock('461 bei der Gebots-Suche'); }
+        } finally {
+            bidHelperBusy = false;
+            setBtnBusy(btn, false);
+            bidM1Render();
+            renderBidCardSoon();
+        }
+    }
+    async function onBidOneClick(tradeId) {
+        const s = bidM1;
+        const c = s && s.cands.get(String(tradeId));
+        if (!c || c.state || s.stopped) return;
+        const block = bidStartBlock();
+        if (block) { toast(block, 'error'); return; }
+        const wait = BID_M1_GAP_MS - (Date.now() - s.lastBidAt);
+        if (wait > 0) { toast('Bitte noch ' + Math.ceil(wait / 1000) + ' s warten (Takt zwischen Geboten).', 'warn'); return; }
+        const settings = bidSettingsLoad();
+        const amount = bidAmountFor(c.a, settings.cap, eaPriceTiers(), { ownId: ownPersonaId(), fest600: settings.fest600 });
+        if (amount == null || amount !== c.amount) { c.state = 'nicht mehr möglich'; bidM1Render(); return; }
+        bidHelperBusy = true;
+        try {
+            const r = await bidPlaceOne(c, settings, s.run, s);
+            s.lastBidAt = Date.now();
+            c.state = r.ok ? 'geboten: ' + amount : 'Stopp';
+            if (r.stop) { s.stopped = s.run.stopped; s.note = s.run.stopped; }
+        } finally { bidHelperBusy = false; bidM1Render(); renderBidCardSoon(); }
     }
     async function onBidCollectClick() {
         const btn = document.getElementById('sbc-opt-bid-collect');

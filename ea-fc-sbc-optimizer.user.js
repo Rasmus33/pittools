@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.35.0
+// @version      6.36.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.35.0';
+    const VERSION = '6.36.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -6870,6 +6870,7 @@
         }
         .sbc-opt-vl-zahl { width: 110px; }
         .sbc-opt-vl-profil { margin-top: 8px; color: var(--pt-fg-secondary); }
+        .sbc-opt-vl-check { display:flex; align-items:center; gap:8px; margin-top:8px; color: var(--pt-fg-secondary); }
         .sbc-opt-vl-profil span { color: var(--pt-accent); }
         .sbc-opt-vl-hint { color: var(--pt-fg-muted); font-size: 12px;
             line-height: 1.5; margin-top: 10px; }
@@ -14118,13 +14119,17 @@ const HybridSbcEa = (() => {
                (res.exact ? '' : ' (Schätzung)');
     }
     let bidPlanStamp = 0;
-    async function planBidRounds(cfgIn, sparedIds) {
+    // Laeuft gerade eine Gebots-Runde/ein Abholen? (ab v6.37.0 echte Laeufe)
+    let bidHelperBusy = false;
+    function bidHelperIsBusy() { return !!bidHelperBusy; }
+    async function planBidRounds(cfgIn, sparedIds, maxWant) {
         const cfg = Object.assign({}, cfgIn, { minRating: 1, maxRatingEnabled: false, maxRating: 0 });
         const inp = bidPlanInput(cfg);
         const spared = sparedIds && sparedIds.size ? sparedIds : null;
         const pool = spared ? inp.pool.filter(p => !spared.has(String(p.id))) : inp.pool;
         const packed = BidPackCore.pack(pool.map(p => p.rating), inp.slots, inp.target);
-        const want = Math.max(1, Math.min(20, packed.count || Math.floor(pool.length / inp.slots) || 1));
+        const cap = Number(maxWant) > 0 ? Math.floor(Number(maxWant)) : 20;
+        const want = Math.max(1, Math.min(20, cap, packed.count || Math.floor(pool.length / inp.slots) || 1));
         const st = SolverCore.beginBatch(pool, cfg, want);
         let solverRejected = 0;
         for (let i = 0; i < packed.teams.length && st.rounds.length < st.n; i++) {
@@ -14178,6 +14183,57 @@ const HybridSbcEa = (() => {
             toast('Planen mit Gebots-Karten fehlgeschlagen: ' + e.message, 'error');
             reportError('Gebots-Karten planen', e);
         } finally { bidPlanBusy = false; setBtnBusy(btn, false); }
+    }
+    // ===================== v6.36.0 KI: Gebots-Karten (nur lesen bzw. SBC mit einer Freigabe) =====================
+    // pittools_bid_status liest nur. pittools_bid_sbc plant die OFFENE SBC aus den
+    // Gebots-Karten (preview -> planId, nichts eingetragen) und gibt sie nach EINEM
+    // Ja im Chat ab - ueber denselben executePlan wie die Freigabe im Panel.
+    // KEIN KI-Werkzeug startet eine Gebots-Runde (Test).
+    const BID_SBC_PLAN_TTL_MS = 10 * 60 * 1000;
+    const bidSbcPlans = new Map();
+    function bidStatusForKi() {
+        const s = bidSettingsLoad();
+        const sum = bidCardSummary();
+        const persona = ownPersonaId();
+        let pack = null;
+        try { pack = bidPackPreviewText(); } catch (e) { pack = null; }
+        return { mode: s.on ? 'automatisch erlaubt (Runde nur per Tipp im Panel)' : 'Mitlesen', cap: s.cap, won: sum.won, byRating: sum.byRating, summary: sum.text,
+                 limits: bidLimitCounts(bidJsonLoad(bidPersonaKey(BID_LOG_KEY), {}), persona, Date.now()), watchlist: bidWatchState, openSbc: pack,
+                 hint: 'Gebots-Runden startet nur der Nutzer im PitTools-Panel. SBCs aus diesen Karten: pittools_bid_sbc (preview, Nutzer fragen, bei Ja planId).' };
+    }
+    async function bidClaudeSbc(o) {
+        if (o && o.planId) return await bidSbcExecute(String(o.planId));
+        syncSbcWithOpenChallenge();
+        const sb = STATE.sbc;
+        if (!sb.targetOVR && !(sb.playerLevelConstraints || []).length && !(sb.rarityConstraints || []).length && !(sb.qualityConstraints || []).length)
+            throw new Error('Keine SBC offen - der Nutzer soll die SBC (Kader-Ansicht der Challenge) in der Web App öffnen.');
+        if (!(STATE.pool || []).length) throw new Error('Verein nicht geladen - erst pittools_pool_load.');
+        const plan = await planBidRounds(readConfig(), null);
+        try { hideProgress(); } catch (e) {}
+        if (!plan.planned) return { planned: 0, cards: plan.bidPack.cards, why: plan.stoppedReason || 'mit den Gebots-Karten nicht lösbar' };
+        const id = 'bid' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+        bidSbcPlans.set(id, { at: Date.now(), plan: plan, persona: ownPersonaId(), setId: sb.setId, challengeId: sb.challengeId });
+        return { preview: true, planId: id, sbc: plan.setName || null, targetOVR: plan.targetOVR, slots: plan.slots, cards: plan.bidPack.cards, planned: plan.planned,
+                 upperBound: plan.bidPack.upperBound, leftover: plan.bidPack.cards - plan.planned * (plan.slots || 0),
+                 rounds: plan.rounds.map(r => ({ ovr: r.ovrExact != null ? Number(r.ovrExact.toFixed(2)) : null, ratings: r.players.map(p => p.rating) })),
+                 hint: 'Nichts eingetragen, nichts abgegeben. Nutzer fragen („' + plan.planned + '× abgeben?“); bei Ja pittools_bid_sbc mit planId (10 min gültig). Die verbauten Karten sind danach weg.' };
+    }
+    async function bidSbcExecute(planId) {
+        const saved = bidSbcPlans.get(planId);
+        if (!saved || Date.now() - saved.at > BID_SBC_PLAN_TTL_MS) throw new Error('Plan unbekannt oder abgelaufen - bitte neu vorschlagen (preview).');
+        if (!galleryChatOkEnabled()) throw new Error('Im Reiter „KI“ ist „Käufe im Chat freigeben“ aus - ohne den Schalter gibt die KI keine SBC ab.');
+        if (ownPersonaId() !== saved.persona) throw new Error('Anderer EA-Account als beim Planen - bitte neu vorschlagen.');
+        if (buyBusy || sbcSolveBusy || bidHelperIsBusy()) throw new Error('Gerade läuft ein Kauf- oder Gebots-Lauf - bitte danach erneut.');
+        bidSbcPlans.delete(planId); // eine Freigabe = ein Lauf
+        syncSbcWithOpenChallenge();
+        if (String(STATE.sbc.setId) !== String(saved.setId)) throw new Error('In der Web App ist eine andere SBC offen als beim Planen - nichts abgegeben.');
+        const won = new Set(bidWonLoad(null).map(x => String(x.id)));
+        const ids = [].concat(...saved.plan.rounds.map(r => r.players.map(p => String(p.id))));
+        const gone = ids.filter(id => !won.has(id) || !(STATE.pool || []).some(p => String(p.id) === id));
+        if (gone.length) throw new Error(gone.length + ' Karte(n) des Plans sind nicht mehr da - bitte neu vorschlagen. Nichts abgegeben.');
+        STATE.batch = saved.plan;
+        const r = await executePlan(saved.plan);
+        return { done: r ? r.done : null, planned: r ? r.planned : saved.plan.planned, stopped: r ? r.stopped || null : null };
     }
     /** Report-Feld bidHelper (Einstellungen, Grenzen, Bestand, Transferziele, Mitschnitt). */
     function bidHelperReport(capture) {
@@ -19183,7 +19239,9 @@ const HybridSbcEa = (() => {
                        // v6.28.0: Was-waere-wenn wie PaleTools' Galerie-Rechner (nur lesen)
                        'pittools_gallery_whatif',
                        // v6.29.0: SBC loesen (Plan, dann nach Ja im Chat kaufen/eintragen/abgeben) - NUR ueber sbcClaudeSolve
-                       'pittools_sbc_solve'];
+                       'pittools_sbc_solve',
+                       // v6.36.0: Gebots-Karten - Stand lesen; SBC daraus nur mit planId nach einem Ja (keine Gebots-Runde!)
+                       'pittools_bid_status', 'pittools_bid_sbc'];
     const mcpState = { on: false, status: 'aus', log: [] };
     function mcpEnabledSaved() { try { return localStorage.getItem(MCP_KEY) === '1'; } catch (e) { return false; } }
     function mcpSetEnabled(on) {
@@ -19838,6 +19896,18 @@ const HybridSbcEa = (() => {
             if (running) return await mcpAwaitJob(running, a.wait);
             const job = mcpStartJob(tool, () => sbcClaudeSolve(solveArgs), () => sbcSolveState.progress);
             job.args = solveArgs;
+            const v = await mcpAwaitJob(job, a.wait);
+            return v.state === 'done' ? v.result : v;
+        }
+        if (tool === 'pittools_bid_status') return bidStatusForKi();
+        if (tool === 'pittools_bid_sbc') {
+            const bArgs = { planId: typeof a.planId === 'string' ? a.planId : null };
+            const running = mcpRunningJob(tool);
+            if (running && String((running.args || {}).planId || '') !== String(bArgs.planId || ''))
+                throw new Error('Es läuft schon ein Gebots-SBC-Lauf (' + running.id + ') - erst mit pittools_job_status abwarten. Dieser Aufruf wurde nicht gestartet.');
+            if (running) return await mcpAwaitJob(running, a.wait);
+            const job = mcpStartJob(tool, () => bidClaudeSbc(bArgs), () => bArgs.planId ? 'Gebots-Karten: abgeben' : 'Gebots-Karten: planen');
+            job.args = bArgs;
             const v = await mcpAwaitJob(job, a.wait);
             return v.state === 'done' ? v.result : v;
         }
@@ -23592,6 +23662,7 @@ const HybridSbcEa = (() => {
         if (!f) return;
         const st = vorlagenView.draft.steps[parseInt(t.dataset.i, 10)];
         if (!st) return;
+        if (f === 'nurGebotsKarten') { if (t.checked) st.nurGebotsKarten = true; else delete st.nurGebotsKarten; return; } // v6.36.0
         if (f === 'count') st.count = parseInt(t.value, 10) || 1;
         else if (f === 'type' || f === 'setName') st[f] = t.value;
     }
@@ -24158,7 +24229,8 @@ const HybridSbcEa = (() => {
                 // EAs Rest-Wiederholungen (v5.11.11).
                 want = zielAnzahl - doneTotal;
                 if (want <= 0) break;
-                plan = await planBatchRounds(want, readConfig(st.profil));
+                if (st.nurGebotsKarten) plan = await planBidRounds(readConfig(st.profil), null, want); // v6.36.0: nur Gebots-Karten
+                else plan = await planBatchRounds(want, readConfig(st.profil));
                 hideProgress();
             } else {
                 // Cache ZUERST: EA hat die Liste beim Oeffnen des Sets gerade
@@ -24418,8 +24490,11 @@ const HybridSbcEa = (() => {
                         if (st.profil[k] !== undefined) profil[k] = st.profil[k];
                     }
                 }
-                steps.push({ type: st.type === 'reihe' ? 'reihe' : 'batch',
-                             setName: setName, count: count, profil: profil });
+                const step = { type: st.type === 'reihe' ? 'reihe' : 'batch',
+                             setName: setName, count: count, profil: profil };
+                // v6.36.0: nur Gebots-Karten (nur fuer "Mehrfach"); ohne Flag bleibt der Schritt wie vorher.
+                if (st.nurGebotsKarten === true && step.type === 'batch') step.nurGebotsKarten = true;
+                steps.push(step);
             }
             // Schnellwahl-Anzahlen (v5.11.14): kleine Liste ganzer Zahlen,
             // pro Vorlage konfigurierbar; anzahl = die aktive Wahl (null =
@@ -24731,6 +24806,8 @@ const HybridSbcEa = (() => {
                 '<label>Anzahl' + (st.type === 'reihe' ? ' (Set-Durchl\u00e4ufe)' : ' (Wiederholungen)') + '</label>' +
                 '<input type="number" class="sbc-opt-vl-input sbc-opt-vl-zahl" min="1" max="' + VORLAGEN_MAX_COUNT +
                 '" data-f="count" data-i="' + i + '" value="' + st.count + '">' +
+                (st.type !== 'reihe' ? '<label class="sbc-opt-vl-check"><input type="checkbox" data-f="nurGebotsKarten" data-i="' + i + '"' +
+                    (st.nurGebotsKarten ? ' checked' : '') + '> Nur Gebots-Karten (gewonnene Gold-Karten bis 600)</label>' : '') +
                 '<div class="sbc-opt-vl-profil">Profil: <span>' +
                 escapeHtml(profilSummary(st.profil)) + '</span></div>' +
                 '<button class="sbc-opt-btn ghost" data-act="vl-step-profil:' + i +

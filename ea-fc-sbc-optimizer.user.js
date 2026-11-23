@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.40.0
+// @version      6.41.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.40.0';
+    const VERSION = '6.41.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7297,30 +7297,61 @@
         /* Sehr schmale Schirme: Reiter nur mit Text. (Steht hier unten, weil der
            :active-Test das CSS nur bis zum ersten @media liest.) */
 
+        /* v6.41.0: Info-Tooltip. Trefferflaeche 32px, sichtbar ein 16px-Kreis;
+           der Zustand haengt nur an aria-expanded. */
+        .sbc-opt-withtip { display:flex; align-items:center; gap:var(--pt-space-1); }
+        .sbc-opt-withtip > :first-child { flex:1 1 auto; min-width:0; }
+        .sbc-opt-tip {
+            flex:0 0 auto; width:32px; height:32px; padding:0; margin:0; border:none; background:transparent;
+            display:inline-flex; align-items:center; justify-content:center; cursor:pointer;
+            font-size:0; border-radius:var(--pt-radius-full); vertical-align:middle;
+        }
+        .sbc-opt-tip::before {
+            content:'i'; width:16px; height:16px; border-radius:50%; box-sizing:border-box;
+            font-family:var(--pt-font-mono); font-size:var(--pt-type-meta); font-weight:var(--pt-weight-semibold);
+            line-height:16px; text-align:center; color:var(--pt-fg-muted);
+            box-shadow: inset 0 0 0 1px var(--pt-border-strong);
+            transition: background var(--pt-dur-fast) ease, color var(--pt-dur-fast) ease;
+        }
+        .sbc-opt-tip:hover::before, .sbc-opt-tip[aria-expanded="true"]::before {
+            color:var(--pt-accent); background:var(--pt-accent-soft); box-shadow: inset 0 0 0 1px var(--pt-accent-border);
+        }
+        .sbc-opt-tip:active::before { background:var(--pt-state-press); }
+        #sbc-opt-tipbox {
+            position:absolute; z-index:var(--pt-z-tip); width:var(--pt-tip-w); max-width:calc(100% - 16px);
+            box-sizing:border-box; padding:var(--pt-space-2) var(--pt-space-3);
+            background:var(--pt-bg-raised); border:1px solid var(--pt-border-strong);
+            border-radius:var(--pt-radius-sm); box-shadow:var(--pt-shadow-2);
+            color:var(--pt-fg-secondary); font-size:var(--pt-type-label); font-weight:var(--pt-weight-regular);
+            line-height:var(--pt-leading-normal);
+        }
+        #sbc-opt-tipbox[hidden] { display:none; }
+
         /* v6.40.0: Abstands-Hilfsklassen statt style="margin/padding" im
-           Panel-Template. Mit #sbc-opt-panel davor, damit sie (wie vorher das
+           Panel-Template. Mit #sbc-opt-panel .sbc-opt-body davor (schlaegt auch
+           #sbc-opt-panel input[type=number]), damit sie (wie vorher das
            style-Attribut) die Komponenten-Regel schlagen; sie stehen bewusst
            am Ende. */
-        #sbc-opt-panel .sbc-opt-m0 { margin:0; }
-        #sbc-opt-panel .sbc-opt-mt0 { margin-top:0; }
-        #sbc-opt-panel .sbc-opt-mt1 { margin-top:var(--pt-space-1); }
-        #sbc-opt-panel .sbc-opt-mt15 { margin-top:var(--pt-space-1-5); }
-        #sbc-opt-panel .sbc-opt-mt2 { margin-top:var(--pt-space-2); }
-        #sbc-opt-panel .sbc-opt-mb0 { margin-bottom:0; }
-        #sbc-opt-panel .sbc-opt-mb1 { margin-bottom:var(--pt-space-1); }
-        #sbc-opt-panel .sbc-opt-mb15 { margin-bottom:var(--pt-space-1-5); }
-        #sbc-opt-panel .sbc-opt-mb2 { margin-bottom:var(--pt-space-2); }
-        #sbc-opt-panel .sbc-opt-mb25 { margin-bottom:var(--pt-space-2-5); }
-        #sbc-opt-panel .sbc-opt-mb3 { margin-bottom:var(--pt-space-3); }
-        #sbc-opt-panel .sbc-opt-pull { margin-top:calc(-1 * var(--pt-space-1)); }
-        #sbc-opt-panel .sbc-opt-pad-xs { padding:var(--pt-space-1); }
-        #sbc-opt-panel .sbc-opt-pad-sm { padding:var(--pt-space-1) var(--pt-space-2); }
-        #sbc-opt-panel .sbc-opt-pad-md { padding:var(--pt-space-2) var(--pt-space-2-5); }
-        #sbc-opt-panel .sbc-opt-autow { width:auto; flex:0 0 auto; }
-        #sbc-opt-panel .sbc-opt-flex1 { flex:1; }
-        #sbc-opt-panel .sbc-opt-w72 { width:72px; flex:0 0 auto; }
-        #sbc-opt-panel .sbc-opt-meta { font-size:var(--pt-type-meta); }
-        #sbc-opt-panel textarea.sbc-opt-code { width:100%; box-sizing:border-box; margin:var(--pt-space-2) 0; font-family:var(--pt-font-mono); font-size:var(--pt-type-meta); }
+        #sbc-opt-panel .sbc-opt-body .sbc-opt-m0 { margin:0; }
+        #sbc-opt-panel .sbc-opt-body .sbc-opt-mt0 { margin-top:0; }
+        #sbc-opt-panel .sbc-opt-body .sbc-opt-mt1 { margin-top:var(--pt-space-1); }
+        #sbc-opt-panel .sbc-opt-body .sbc-opt-mt15 { margin-top:var(--pt-space-1-5); }
+        #sbc-opt-panel .sbc-opt-body .sbc-opt-mt2 { margin-top:var(--pt-space-2); }
+        #sbc-opt-panel .sbc-opt-body .sbc-opt-mb0 { margin-bottom:0; }
+        #sbc-opt-panel .sbc-opt-body .sbc-opt-mb1 { margin-bottom:var(--pt-space-1); }
+        #sbc-opt-panel .sbc-opt-body .sbc-opt-mb15 { margin-bottom:var(--pt-space-1-5); }
+        #sbc-opt-panel .sbc-opt-body .sbc-opt-mb2 { margin-bottom:var(--pt-space-2); }
+        #sbc-opt-panel .sbc-opt-body .sbc-opt-mb25 { margin-bottom:var(--pt-space-2-5); }
+        #sbc-opt-panel .sbc-opt-body .sbc-opt-mb3 { margin-bottom:var(--pt-space-3); }
+        #sbc-opt-panel .sbc-opt-body .sbc-opt-pull { margin-top:calc(-1 * var(--pt-space-1)); }
+        #sbc-opt-panel .sbc-opt-body .sbc-opt-pad-xs { padding:var(--pt-space-1); }
+        #sbc-opt-panel .sbc-opt-body .sbc-opt-pad-sm { padding:var(--pt-space-1) var(--pt-space-2); }
+        #sbc-opt-panel .sbc-opt-body .sbc-opt-pad-md { padding:var(--pt-space-2) var(--pt-space-2-5); }
+        #sbc-opt-panel .sbc-opt-body .sbc-opt-autow { width:auto; flex:0 0 auto; }
+        #sbc-opt-panel .sbc-opt-body .sbc-opt-flex1 { flex:1; }
+        #sbc-opt-panel .sbc-opt-body .sbc-opt-w72 { width:72px; flex:0 0 auto; }
+        #sbc-opt-panel .sbc-opt-body .sbc-opt-meta { font-size:var(--pt-type-meta); }
+        #sbc-opt-panel .sbc-opt-body textarea.sbc-opt-code { width:100%; box-sizing:border-box; margin:var(--pt-space-2) 0; font-family:var(--pt-font-mono); font-size:var(--pt-type-meta); }
 
         @media (max-width: 359px) { .sbc-opt-tab-btn svg { display:none; } }
         .sbc-opt-tab-btn { padding:0 var(--pt-space-1); }
@@ -7332,7 +7363,7 @@
             #sbc-opt-panel input, #sbc-opt-panel select,
             .sbc-opt-details-toggle summary, #sbc-opt-close,
             .sbc-opt-switch .track, .sbc-opt-switch .track::after,
-            .sbc-opt-flow .step .dot, .sbc-opt-bar-fill {
+            .sbc-opt-flow .step .dot, .sbc-opt-bar-fill, .sbc-opt-tip::before {
                 transition: none;
             }
             .sbc-opt-btn.is-busy::after { animation: none; border-right-color: currentColor; opacity:.5; }
@@ -7563,6 +7594,119 @@
         const none = !bridgeKind();
         if (a.hidden === none) a.hidden = !none;
     }
+    // [TIPS-BEGIN]
+    // v6.41.0: Info-Tooltip (ⓘ). Erklaerungen stehen nicht mehr als Absatz im
+    // Fluss, sondern hinter einem kleinen Knopf - am Handy per Tipp (dort gibt
+    // es kein Hover), am PC zusaetzlich per Maus und Tastatur-Fokus.
+    // Regeln (Spezifikation 4): EINE gemeinsame Box #sbc-opt-tipbox als Kind
+    // des Panels neben dem Rumpf (nie ueber EA-Elementen, weg bei
+    // geschlossenem Panel, nicht in beobachteten Ergebnis-Containern);
+    // Zustand NUR ueber aria-expanded (wireNextBar beobachtet class/disabled/
+    // style); Text per textContent. Der Knopf steht immer als GESCHWISTER,
+    // nie in <label> (schaltet die Checkbox), <summary> (klappt) oder
+    // .sbc-opt-btn (setBtnBusy/Nextbar lesen dessen Inhalt).
+    function tipHtml(text, label) {
+        const esc = function (x) {
+            return String(x == null ? '' : x).replace(/[&<>"']/g, function (c) {
+                return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+            });
+        };
+        return '<button type="button" class="sbc-opt-tip" aria-label="Info: ' + esc(label || '') +
+            '" aria-expanded="false" data-tip="' + esc(text) + '">i</button>';
+    }
+    // Position der Box relativ zum Panel: unter dem Ausloeser, ueber ihm, wenn
+    // unten im sichtbaren Bereich kein Platz ist; waagerecht auf die
+    // Panelbreite geklemmt. Rein, damit testbar.
+    function tipPlace(trig, panel, box, scrollTop) {
+        const pad = 8, gap = 6;
+        const w = Math.min(box.width, Math.max(0, panel.width - 2 * pad));
+        let left = (trig.left - panel.left) + trig.width / 2 - w / 2;
+        left = Math.max(pad, Math.min(left, panel.width - w - pad));
+        const below = (trig.bottom - panel.top) + gap;
+        const above = (trig.top - panel.top) - gap - box.height;
+        const fitsBelow = below + box.height <= panel.height - pad;
+        const useAbove = !fitsBelow && above >= pad;
+        return { left: Math.round(left), top: Math.round((useAbove ? above : below) + (scrollTop || 0)), above: useAbove, width: Math.round(w) };
+    }
+    function initTips(panel, doc) {
+        doc = doc || document;
+        const box = doc.createElement('div');
+        box.id = 'sbc-opt-tipbox';
+        box.setAttribute('role', 'tooltip');
+        box.hidden = true;
+        panel.appendChild(box);
+        let cur = null, byHover = false, hoverT = null, watchT = null;
+        function close(refocus) {
+            if (hoverT) { clearTimeout(hoverT); hoverT = null; }
+            if (watchT) { clearInterval(watchT); watchT = null; }
+            if (!cur) return;
+            const t = cur; cur = null; byHover = false;
+            box.hidden = true;
+            try { t.setAttribute('aria-expanded', 'false'); t.removeAttribute('aria-describedby'); } catch (e) {}
+            if (refocus && t.isConnected !== false && typeof t.focus === 'function') { try { t.focus(); } catch (e) {} }
+        }
+        function open(t, hover) {
+            if (cur === t) return;
+            close(false);
+            cur = t; byHover = !!hover;
+            box.textContent = t.getAttribute('data-tip') || '';
+            box.hidden = false;
+            t.setAttribute('aria-expanded', 'true');
+            t.setAttribute('aria-describedby', 'sbc-opt-tipbox');
+            try {
+                const pos = tipPlace(t.getBoundingClientRect(), panel.getBoundingClientRect(),
+                    box.getBoundingClientRect(), panel.scrollTop);
+                box.style.left = pos.left + 'px';
+                box.style.top = pos.top + 'px';
+            } catch (e) {}
+            // Takt-Renderer (renderKiTab alle 2 s) schreiben ihren Bereich neu:
+            // haengt der Ausloeser nicht mehr im Dokument, geht die Box zu.
+            watchT = setInterval(function () { if (cur && cur.isConnected === false) close(false); }, 500);
+        }
+        const tipOf = function (ev) {
+            const el = ev && ev.target;
+            return el && typeof el.closest === 'function' ? el.closest('.sbc-opt-tip') : null;
+        };
+        panel.addEventListener('click', function (ev) {
+            const t = tipOf(ev);
+            if (!t) return;
+            ev.preventDefault();
+            if (cur === t && !byHover) close(false); else { if (cur === t) byHover = false; else open(t, false); }
+        });
+        panel.addEventListener('pointerover', function (ev) {
+            const t = tipOf(ev);
+            if (!t || ev.pointerType !== 'mouse' || cur === t) return;
+            if (hoverT) clearTimeout(hoverT);
+            hoverT = setTimeout(function () { hoverT = null; open(t, true); }, 300);
+        });
+        panel.addEventListener('pointerout', function (ev) {
+            if (!tipOf(ev)) return;
+            if (hoverT) { clearTimeout(hoverT); hoverT = null; }
+            if (cur && byHover) close(false);
+        });
+        panel.addEventListener('focusin', function (ev) {
+            const t = tipOf(ev);
+            let kb = false;
+            try { kb = !!(t && t.matches && t.matches(':focus-visible')); } catch (e) {}
+            if (t && kb && cur !== t) open(t, true);
+        });
+        panel.addEventListener('focusout', function (ev) { if (tipOf(ev) && cur && byHover) close(false); });
+        panel.addEventListener('scroll', function () { close(false); }, { passive: true });
+        doc.addEventListener('keydown', function (ev) { if (cur && ev.key === 'Escape') close(true); });
+        doc.addEventListener('pointerdown', function (ev) {
+            if (!cur) return;
+            const el = ev.target;
+            if (el && typeof el.closest === 'function' && el.closest('.sbc-opt-tip') === cur) return;
+            close(false);
+        }, true);
+        try {
+            new MutationObserver(function () { close(false); })
+                .observe(panel, { attributes: true, attributeFilter: ['data-tab', 'class'] });
+        } catch (e) {}
+        return { open: open, close: close, current: function () { return cur; }, box: box };
+    }
+    // [TIPS-END]
+
     function initUxHelpers(panel) {
         const bar = panel.querySelector('#sbc-opt-infobar');
         if (bar) {
@@ -7743,11 +7887,14 @@
                         <div class="sbc-opt-chips" id="sbc-opt-futbin-platform"></div>
                         <!-- v5.31.0: Schalter statt Haekchen - die Checkbox bleibt
                              das Element (ID, .checked), nur die Optik ist neu. -->
+                        <div class="sbc-opt-withtip">
                         <label class="sbc-opt-switch">
                             <input type="checkbox" id="sbc-opt-futbin-market" checked>
                             <span class="track" aria-hidden="true"></span>
-                            <span class="txt">Live-Preise am EA-Markt prüfen<small>empfohlen · dauert ein paar Sekunden pro Karte</small></span>
+                            <span class="txt">Live-Preise prüfen</span>
                         </label>
+                        <button type="button" class="sbc-opt-tip" aria-label="Info: Live-Preise prüfen" aria-expanded="false" data-tip="Empfohlen: prüft die besten Lösungen am EA-Markt. Dauert ein paar Sekunden pro Karte.">i</button>
+                        </div>
                         <button class="sbc-opt-btn primary sbc-opt-btn-icon" id="sbc-opt-futbin-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><span>Futbin-Lösungen suchen</span></button>
                     </div>
                     <!-- v5.30.0: das Ergebnis steht DIREKT unter der Hauptaktion;
@@ -8183,8 +8330,10 @@
                     <div class="sbc-opt-result" id="sbc-opt-tools-result"></div>
                     <div class="sbc-opt-group-title">Verein</div>
                     <!-- v6.6.0: Bestand nach Rating/Seltenheit/Liga/Nation/Verein - nur aus dem geladenen Pool. -->
+                    <div class="sbc-opt-withtip">
                     <button type="button" class="sbc-opt-btn ghost sbc-opt-mt0" id="sbc-opt-clubview">Verein im Überblick</button>
-                    <div class="sbc-opt-debug">Zählt den geladenen SBC-Pool nach Rating, Seltenheit, Liga, Nation und Verein, mit Item-Score-Summen. Keine Anfrage bei EA.</div>
+                    <button type="button" class="sbc-opt-tip" aria-label="Info: Verein im Überblick" aria-expanded="false" data-tip="Zählt den geladenen Verein nach Rating, Seltenheit, Liga, Nation und Verein, mit Item-Score-Summen. Keine Anfrage bei EA.">i</button>
+                    </div>
                     <div class="sbc-opt-result" id="sbc-opt-clubview-result"></div>
                     <div class="sbc-opt-group-title">Gauntlet</div>
                     <!-- v6.5.0: Teams aus dem Verein nach Meta-Rating (fut.gg) und Chemie (EA) - nichts wird gekauft. -->
@@ -8192,8 +8341,10 @@
                     <div class="sbc-opt-debug">Baut aus deinem Verein mehrere Teams ohne gemeinsame Spieler: Chemie plus Ø Meta-Rating je Position (fut.gg). Zeigt die besten 5 Varianten, Anker je Team möglich.</div>
                     <div class="sbc-opt-result" id="sbc-opt-gauntlet-result"></div>
                     <div class="sbc-opt-group-title">Werkzeuge</div>
+                    <div class="sbc-opt-withtip">
                     <button class="sbc-opt-btn ghost sbc-opt-mt0" id="sbc-opt-diag">Diagnose in Konsole schreiben</button>
-                    <div class="sbc-opt-debug">Die Diagnose ist ein JSON-Report für die Fehlersuche (Konsole bzw. App-Log).</div>
+                    <button type="button" class="sbc-opt-tip" aria-label="Info: Diagnose" aria-expanded="false" data-tip="JSON-Report für die Fehlersuche. Landet in der Konsole bzw. im App-Log.">i</button>
+                    </div>
                 </div>
                 <!-- PACK-OPENER (Store, Ticket #69/#76): nur in der Store-Ansicht
                      sichtbar (syncPackSection()) - Pack-Oeffnen ist unumkehrbar,
@@ -8228,6 +8379,7 @@
         document.body.appendChild(panel);
         enhanceSelectSegments(panel);
         initUxHelpers(panel);
+        initTips(panel);
         // Fortschritts-Overlay: bewusst ausserhalb des Panels, damit es auch
         // sichtbar ist, wenn das Panel zu ist.
         const prog = document.createElement('div');

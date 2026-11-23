@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.29.7
+// @version      6.29.8
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.29.7';
+    const VERSION = '6.29.8';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -16304,6 +16304,12 @@ const HybridSbcEa = (() => {
         if (!(v > 0) && def > 0) v = def & 0xFFFFFF;
         return v > 0 ? v : null;
     }
+    /** v6.29.7: Evo am Such-Item erkennen - volle Pruefung plus Abgleich mit den beim Vereinsladen gemerkten Evo-Item-IDs. */
+    function pointsIsEvoItem(it) {
+        try { if (isEvolution(it)) return true; } catch (e) {}
+        try { if (it && it.id != null && STATE.evoRaws && STATE.evoRaws.has(String(it.id))) return true; } catch (e) {}
+        return false;
+    }
     /** Basis-IDs aller Evos im Verein (aus dem Laden des Vereins). */
     function pointsEvoPersons() {
         const out = new Set();
@@ -16314,9 +16320,17 @@ const HybridSbcEa = (() => {
         return out;
     }
     /** Pure-nah: EA-Items -> Kandidaten fuer PointsCore (Storage alles mit Score, Verein nur Bronze/Silber normal). */
-    function pointsCandidates(storageItems, clubItems, locks, evoPersons, boughtIds) {
+    // v6.29.7: isEvo (optional) = vollstaendige Evo-Pruefung des Aufrufers. Live
+    // 23.11.: die Evo-Version von Cherki trug an EAs Such-Item weder
+    // academyAttributes noch isAcademyItem(), behielt die normale rareflag und
+    // wurde - weil ihr Spieler als Evo bekannt ist - selbst als "Duplikat"
+    // gewaehlt, zusammen mit der normalen Version. Evos NIE verbauen.
+    function pointsCandidates(storageItems, clubItems, locks, evoPersons, boughtIds, isEvo) {
         const sc = it => Number(it && (it.sbsScore != null ? it.sbsScore : it.gradingScore)) || 0;
-        const evo = it => { try { return (Array.isArray(it.academyAttributes) && it.academyAttributes.length > 0) || (typeof it.isAcademyItem === 'function' && it.isAcademyItem()); } catch (e) { return false; } };
+        const evo = it => {
+            try { if (typeof isEvo === 'function' && isEvo(it)) return true; } catch (e) {}
+            try { return (Array.isArray(it.academyAttributes) && it.academyAttributes.length > 0) || (typeof it.isAcademyItem === 'function' && it.isAcademyItem()); } catch (e) { return false; }
+        };
         const out = [], skipped = { locked: 0, clubSpecial: 0, noScore: 0, evo: 0 };
         (storageItems || []).forEach(it => {
             if (!(sc(it) > 0)) { skipped.noScore++; return; }
@@ -16327,8 +16341,8 @@ const HybridSbcEa = (() => {
             if (!(sc(it) > 0)) { skipped.noScore++; return; }
             if (pointsIsLocked(it, locks)) { skipped.locked++; return; }
             // v6.22.0: fuer diese Punkte gekaufte Karten zaehlen wie Storage (zuerst verbauen), liegen aber im Verein.
-            if (boughtIds && boughtIds.has(String(it.id))) { out.push({ id: it.id, score: sc(it), storage: true, bought: true, filler: false, kind: 'bought', rating: Number(it.rating) || 0, ent: it }); return; }
             if (evo(it)) { skipped.evo++; return; }
+            if (boughtIds && boughtIds.has(String(it.id))) { out.push({ id: it.id, score: sc(it), storage: true, bought: true, filler: false, kind: 'bought', rating: Number(it.rating) || 0, ent: it }); return; }
             const rf = parseInt(it.rareflag, 10);
             if (!isNormalCard(rf)) { skipped.clubSpecial++; return; }
             const rating = Number(it.rating) || 0;
@@ -16411,7 +16425,7 @@ const HybridSbcEa = (() => {
             if (box) box.innerHTML = '<div class="sbc-opt-dim">Storage wird gelesen …</div>';
             const storage = await pointsFetchPile(info.id, P.STORAGE, n => { if (box) box.innerHTML = '<div class="sbc-opt-dim">Storage: ' + n + ' Karten …</div>'; });
             const club = await pointsFetchPile(info.id, P.CLUB, n => { if (box) box.innerHTML = '<div class="sbc-opt-dim">Verein: ' + n + ' Karten …</div>'; });
-            const c = pointsCandidates(storage, club, pointsLockedSet(), pointsEvoPersons(), pointsBoughtIds());
+            const c = pointsCandidates(storage, club, pointsLockedSet(), pointsEvoPersons(), pointsBoughtIds(), pointsIsEvoItem);
             diag.storage = storage.length; diag.club = club.length; diag.skipped = c.skipped;
             const gr = { storage: c.cands.filter(x => x.storage), filler: c.cands.filter(x => x.kind === 'filler'), dup: c.cands.filter(x => x.kind === 'dup'), gold: c.cands.filter(x => x.kind === 'gold') };
             diag.groups = { storage: gr.storage.length, filler: gr.filler.length, dup: gr.dup.length, gold: gr.gold.length, evoKnown: STATE.evoRaws ? STATE.evoRaws.size : 0 };

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.33.0
+// @version      6.34.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.33.0';
+    const VERSION = '6.34.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -217,6 +217,7 @@
             points: null,            // v6.15.0/6.18.1: Punkte-SBC - Gruppen, Auswahl, Vereins-Vorschau
             tradepileSell: null,     // v5.37.0: Transferliste zum Marktpreis listen
             handBuys: null, // v6.30.0: mitgelesene Handkaeufe (Sofortkauf in der EA-Oberflaeche)
+            bidCapture: null, // v6.34.0: Gebots-Helfer - Mitschnitt der EA-Oberflaeche (Suchparameter, Antwortform, Transferziele)
             clientTradeSamples: null, // v5.49.0: Handels-Requests der EA-Oberflaeche (Header-Namen, Body, Status)
             futbinBuyPlan: null,     // v5.22.0: Kaufplan aus den Konzept-Spielern des Kaders (Anzahl, uebersprungen, Suchfehler)
             marketUrls: [],          // v5.20.0: letzte 6 Marktsuch-URLs mit Query (unsere UND EAs eigene) - Parameter-Vergleich
@@ -738,6 +739,10 @@
                         const fst = resp && resp.status;
                         resp.clone().text().then(function (txt) { onBidWon(galleryBidWonRecords(fm, url, fst, txt), bidWonKeys(txt)); }).catch(function () {});
                     }
+                    if (url && bidTrafficKind(fm, url)) { // v6.34.0: Gebots-Helfer liest mit
+                        const bst = resp && resp.status, bbody = init && init.body;
+                        resp.clone().text().then(function (txt) { onBidTraffic(fm, url, bst, bbody, txt); }).catch(function () {});
+                    }
                     if (url && classifyUrl(url)) {
                         resp.clone().text().then(function (txt) {
                             handleResponseBody(url, txt);
@@ -809,6 +814,16 @@
                             const rt = this.responseType;
                             const data = (!rt || rt === 'text') ? this.responseText : (rt === 'json' ? this.response : null);
                             onBidWon(galleryBidWonRecords(bm, url, this.status, data), bidWonKeys(data));
+                        } catch (e) {}
+                    });
+                }
+                // v6.34.0: Gebots-Helfer liest mit (Marktsuche, Gebot, Transferziele der EA-Oberflaeche).
+                if (url && bidTrafficKind(this.__sbcMethod, url)) {
+                    const bm2 = this.__sbcMethod, bb2 = body;
+                    this.addEventListener('loadend', function () {
+                        try {
+                            const rt = this.responseType;
+                            onBidTraffic(bm2, url, this.status, bb2, (!rt || rt === 'text') ? this.responseText : (rt === 'json' ? this.response : null));
                         } catch (e) {}
                     });
                 }
@@ -3349,6 +3364,7 @@
         if (!STATE.cancelLoad) STATE.poolFullLoadDone = true;
         rememberCollected(STATE.pool); // v5.61.0
         try { galleryFirstOwnedDefs(); } catch (e) {} // v6.27.0: Erstbesitz-Beleg merken, bevor Karten verkauft werden
+        try { bidWonCleanAgainstPool(); } catch (e) {} // v6.34.0: verbaute/verkaufte Gebots-Karten vergessen
         log('Pool geladen:', STATE.pool.length, 'Spieler (Storage:', storage.length,
             ', Unassigned:', unassigned.length, ')' + (STATE.cancelLoad ? ' [abgebrochen]' : ''));
         if (STATE.loadIncomplete || (!storage.length && !STATE.cancelLoad)) {
@@ -6494,6 +6510,7 @@
         /* Seltenheit in der Zieh-Liste: dieselbe gedaempfte Farbe wie die
            uebrigen Nebeninfos, damit Name + Rating fuehrend bleiben. */
         .sbc-opt-dim { color:var(--pt-fg-subtle); }
+        .sbc-opt-bid-summary { font-weight:600; margin:2px 0 6px; font-variant-numeric:tabular-nums; }
         /* Rollen-Klassen statt Farben im Markup: sonst waeren die Tokens
            nur die halbe Wahrheit - sieben inline-Farben standen weiter im
            HTML, drei davon in dem zu dunklen Grauton. */
@@ -7705,6 +7722,16 @@
                     <button class="sbc-opt-btn ghost" id="sbc-opt-futbin-buyconcepts" style="margin-top:0;">Konzept-Spieler im Kader nachkaufen</button>
                     <div class="sbc-opt-debug" style="margin-top:-4px;">Für Kader, die schon Konzept-Spieler enthalten (z.B. nach Neuladen oder von Hand eingesetzt).</div>
                 </div>
+                <!-- v6.34.0: GEBOTS-HELFER (Gold bis 600). M0 = Mitlesen: Rasmus bietet
+                     von Hand, PitTools liest EAs Antworten und merkt gewonnene Karten. -->
+                <div class="sbc-opt-section" id="sbc-opt-bid">
+                    <div class="sbc-opt-card" id="sbc-opt-bid-card">
+                        <div class="sbc-opt-group-title" style="margin-top:0;">Gebots-Helfer (Gold bis 600)</div>
+                        <div class="sbc-opt-bid-summary" id="sbc-opt-bid-summary">Gewonnen: 0 Karten</div>
+                        <div class="sbc-opt-dim" id="sbc-opt-bid-hint">Mitlesen: Biete in der Web App von Hand (höchstens 600). PitTools merkt sich gewonnene Gold-Karten, sobald du die Transferziele öffnest – ohne eigene Anfrage an EA.</div>
+                        <div class="sbc-opt-result" id="sbc-opt-bid-result"></div>
+                    </div>
+                </div>
                 <!-- v6.1.0: Naechster Schritt (wireNextBar) - loest den Hauptknopf im
                      Ergebnis aus, sobald der aus dem Blick gescrollt ist. -->
                 <div class="sbc-opt-nextbar" id="sbc-opt-futbin-next" hidden>
@@ -8302,6 +8329,7 @@
         initHybridClubUi();
         initPointsUi();
         initGalleryTokens();
+        initBidHelperUi();
         ui.diagBtn.addEventListener('click', onDiagClick);
         // Schnellwahl aufbauen und mit den Feldern verbinden. Tippt Rasmus von
         // Hand einen Wert, aktualisiert sich nur die Hervorhebung - der Wert
@@ -13651,6 +13679,104 @@ const HybridSbcEa = (() => {
         const ids = new Set(add.map(r => r.id));
         return bidWonPrune((Array.isArray(list) ? list : []).filter(x => !(x && ids.has(String(x.id)))).concat(add), now, null);
     }
+    /*
+     * v6.34.0: Mitlesen (M0). Welche Anfrage der EA-Oberflaeche betrifft den
+     * Gebots-Helfer? search = Marktsuche, bid = Gebot/Sofortkauf, watchlist =
+     * Transferziele lesen, watchlistOp = jede andere Methode auf watchlist
+     * (daraus lernen wir den Endpunkt zum Entfernen - nicht im Code belegt).
+     */
+    function bidTrafficKind(method, url) {
+        const u = String(url || ''), m = String(method || 'GET').toUpperCase();
+        const mm = u.match(/\/ut\/game\/[^/]+\/(.*)$/i);
+        if (!mm) return null;
+        const p = mm[1];
+        if (m === 'GET' && /^transfermarket\?/i.test(p)) return 'search';
+        if (m === 'PUT' && /^trade\/\d+\/bid(\?|$)/i.test(p)) return 'bid';
+        if (/^watchlist(\?|\/|$)/i.test(p)) return m === 'GET' ? 'watchlist' : 'watchlistOp';
+        return null;
+    }
+    /** Pfad ohne Host/Spiel, Zahlen maskiert, und die Namen/Werte der Query (nur Filter, keine Tokens). */
+    function bidQueryInfo(url) {
+        const u = String(url || '');
+        const mm = u.match(/\/ut\/game\/[^/]+\/([^?#]*)(\?[^#]*)?/i);
+        const path = mm ? mm[1].replace(/\/\d+(?=\/|$)/g, '/{id}') : null;
+        const q = mm && mm[2] ? mm[2].slice(1) : '';
+        const params = {};
+        q.split('&').filter(Boolean).forEach(kv => {
+            const i = kv.indexOf('=');
+            const k = decodeURIComponent(i < 0 ? kv : kv.slice(0, i));
+            if (!/^[a-z0-9_]{1,20}$/i.test(k)) return;
+            const v = i < 0 ? '' : decodeURIComponent(kv.slice(i + 1));
+            params[k] = /^[\w.,-]{0,24}$/.test(v) ? v : '<' + v.length + '>';
+        });
+        return { path: path, params: params, names: Object.keys(params).sort() };
+    }
+    /** Form einer auctionInfo-Liste: Feldnamen, Histogramme der Zustaende, Lesbarkeit der Gebotsfelder. */
+    function bidShapeOf(auctionInfo) {
+        const list = Array.isArray(auctionInfo) ? auctionInfo.filter(a => a && typeof a === 'object') : [];
+        const keys = new Set(), itemKeys = new Set(), bidStates = {}, tradeStates = {};
+        let startingBid = 0, currentBid = 0, rareflags = {};
+        list.forEach(a => {
+            Object.keys(a).forEach(k => { if (keys.size < 40) keys.add(k); });
+            if (a.itemData && typeof a.itemData === 'object') Object.keys(a.itemData).forEach(k => { if (itemKeys.size < 60) itemKeys.add(k); });
+            const bs = String(a.bidState), ts = String(a.tradeState);
+            bidStates[bs] = (bidStates[bs] || 0) + 1;
+            tradeStates[ts] = (tradeStates[ts] || 0) + 1;
+            if (typeof a.startingBid === 'number') startingBid++;
+            if (typeof a.currentBid === 'number') currentBid++;
+            const rf = a.itemData ? String(a.itemData.rareflag) : 'x';
+            rareflags[rf] = (rareflags[rf] || 0) + 1;
+        });
+        return { n: list.length, keys: Array.from(keys).sort(), itemKeys: Array.from(itemKeys).sort(), bidStates: bidStates, tradeStates: tradeStates,
+                 startingBid: startingBid, currentBid: currentBid, rareflags: rareflags };
+    }
+    /**
+     * Gewonnene Gebots-Karten aus geparsten Auktionen: nur Spieler, rareflag
+     * streng 0/1, Gold (>= 75), bezahlt <= 600. closed+highest zaehlt immer,
+     * closed+buyNow nur bei einem Trade, auf den nachweislich geboten wurde
+     * (opts.trades) - sonst kaemen Galerie-Sofortkaeufe aus den Transferzielen
+     * in die Gebots-Karten.
+     */
+    function bidWonFromAuctions(parsed, opts) {
+        const o = opts || {}, out = [];
+        (Array.isArray(parsed) ? parsed : []).forEach(a => {
+            const it = a && a.item;
+            if (!it || !it.id || !/^\d+$/.test(it.id)) return;
+            const ts = String(a.tradeState || '').toLowerCase(), bs = String(a.bidState || '').toLowerCase();
+            if (ts !== 'closed') return;
+            if (bs !== 'highest' && !(bs === 'buynow' && o.trades && o.trades.has(String(a.tradeId)))) return;
+            if (it.itemType != null && it.itemType !== 'player') return;
+            if (!(it.rareflag === 0 || it.rareflag === 1)) return;
+            if (it.rating == null || it.rating < BID_GOLD_MIN_RATING) return;
+            const paid = a.currentBid != null && a.currentBid > 0 ? a.currentBid : null;
+            if (paid != null && paid > BID_HARD_CAP) return;
+            out.push({ id: it.id, defId: it.resourceId || it.definitionId || null, rating: it.rating, rf: it.rareflag, tradeId: a.tradeId, paid: paid,
+                       at: Number.isFinite(o.now) ? o.now : 0, src: o.helperTrades && o.helperTrades.has(String(a.tradeId)) ? 'helfer' : 'hand' });
+        });
+        return out;
+    }
+    /**
+     * Abgleich mit einem VOLL geladenen Pool: eine Karte, die schon einmal im
+     * Pool war (inPool) und jetzt fehlt, ist verbaut/verkauft -> raus. Karten,
+     * die noch nie im Pool waren (liegen gewonnen in den Transferzielen),
+     * bleiben.
+     */
+    function bidWonSyncPool(list, poolIds) {
+        const out = [];
+        (Array.isArray(list) ? list : []).forEach(x => {
+            if (!x || x.id == null) return;
+            const here = poolIds.has(String(x.id));
+            if (here) out.push(Object.assign({}, x, { inPool: true }));
+            else if (!x.inPool) out.push(x);
+        });
+        return out;
+    }
+    /** Bestand je Rating fuer die Anzeige ("80: 9 · 81: 8"). */
+    function bidByRating(list) {
+        const m = {};
+        (Array.isArray(list) ? list : []).forEach(x => { const r = Number(x && x.rating); if (r > 0) m[r] = (m[r] || 0) + 1; });
+        return m;
+    }
     // [BIDCAP-END]
     // [BIDPACK-BEGIN]
     /*
@@ -13727,6 +13853,187 @@ const HybridSbcEa = (() => {
         return { pack: pack, maxRounds: maxRounds, squadRating: squadRating };
     })();
     // [BIDPACK-END]
+    // ===================== v6.34.0 Gebots-Helfer: Speicher + Mitlesen (M0) =====================
+    // M0 stellt KEINE eigene Anfrage: es liest nur, was die EA-Oberflaeche ohnehin
+    // schickt (Marktsuche, Gebot, Transferziele). Daraus lernt PitTools die
+    // Suchparameter und die Antwortform (Live-Pruefung gebote_mitschnitt) und
+    // merkt sich gewonnene Gold-Karten fuer "Mit Gebots-Karten planen".
+    const BID_SETTINGS_KEY = 'sbcOptBidHelper';
+    const BID_LOG_KEY = 'sbcOptBidLog';       // + ':' + Persona - Gebote/Runden der letzten 24 h
+    const BID_WON_KEY = 'sbcOptBidWon';       // + ':' + Persona - gewonnene Karten, 14 Tage
+    const BID_TRADES_KEY = 'sbcOptBidTrades'; // + ':' + Persona - Trades mit eigenem Gebot (Hand/Helfer), 24 h
+    const BID_SETTINGS_DEFAULT = { on: false, riskOk: false, cap: BID_HARD_CAP, ratingMin: null, ratingMax: 99, maxOpen: BID_LIMITS.maxOpen, mode: 'm0', fest600: true, maxBids: 20 };
+    function bidSettingsLoad() {
+        let s = null;
+        try { s = JSON.parse(localStorage.getItem(BID_SETTINGS_KEY) || 'null'); } catch (e) { s = null; }
+        const out = Object.assign({}, BID_SETTINGS_DEFAULT, s && typeof s === 'object' ? s : {});
+        out.cap = bidCapOf(out.cap);
+        out.on = out.on === true && out.riskOk === true;
+        out.fest600 = out.fest600 !== false;
+        out.maxOpen = Math.max(1, Math.min(BID_LIMITS.maxOpen, Math.floor(Number(out.maxOpen) || BID_LIMITS.maxOpen)));
+        out.maxBids = Math.max(1, Math.min(BID_LIMITS.maxOpen, Math.floor(Number(out.maxBids) || 20)));
+        return out;
+    }
+    function bidSettingsSave(s) { try { localStorage.setItem(BID_SETTINGS_KEY, JSON.stringify(Object.assign({}, bidSettingsLoad(), s || {}))); } catch (e) {} }
+    function bidPersonaKey(base) { const p = ownPersonaId(); return p ? base + ':' + p : null; }
+    function bidJsonLoad(key, fallback) {
+        if (!key) return fallback;
+        try { const v = JSON.parse(localStorage.getItem(key) || 'null'); return v == null ? fallback : v; } catch (e) { return fallback; }
+    }
+    function bidJsonSave(key, v) { if (!key) return; try { localStorage.setItem(key, JSON.stringify(v)); } catch (e) {} }
+    /** Gewonnene Karten der eigenen Persona; mit poolIds (voll geladener Pool) werden verbaute/verkaufte bereinigt. */
+    function bidWonLoad(poolIds) {
+        const key = bidPersonaKey(BID_WON_KEY);
+        const list = bidWonPrune(bidJsonLoad(key, []), Date.now(), poolIds || null);
+        return list;
+    }
+    function bidWonStore(recs) {
+        const key = bidPersonaKey(BID_WON_KEY);
+        if (!key || !recs || !recs.length) return 0;
+        const before = bidWonPrune(bidJsonLoad(key, []), Date.now(), null);
+        const after = bidWonAdd(before, recs, Date.now());
+        bidJsonSave(key, after);
+        return after.length - before.length;
+    }
+    /** Bereinigung gegen den Pool - nur nach VOLLSTAENDIGEM Laden (sonst fehlt der Storage). */
+    function bidWonCleanAgainstPool() {
+        try {
+            if (!STATE.poolFullLoadDone || STATE.loadIncomplete) return;
+            const key = bidPersonaKey(BID_WON_KEY);
+            if (!key) return;
+            const ids = new Set((STATE.pool || []).map(p => String(p.id)));
+            bidJsonSave(key, bidWonSyncPool(bidWonPrune(bidJsonLoad(key, []), Date.now(), null), ids));
+        } catch (e) {}
+    }
+    /** Trades mit eigenem Gebot (24 h), getrennt nach Quelle. */
+    function bidTradesLoad() {
+        const raw = bidJsonLoad(bidPersonaKey(BID_TRADES_KEY), []);
+        const now = Date.now();
+        return (Array.isArray(raw) ? raw : []).filter(x => x && x.t != null && Number.isFinite(x.at) && now - x.at < 24 * 60 * 60 * 1000);
+    }
+    function bidTradesNote(tradeId, src, amount) {
+        const key = bidPersonaKey(BID_TRADES_KEY);
+        if (!key || tradeId == null) return;
+        const list = bidTradesLoad().filter(x => String(x.t) !== String(tradeId));
+        list.push({ t: String(tradeId), src: src === 'helfer' ? 'helfer' : 'hand', amount: Number.isFinite(amount) ? amount : null, at: Date.now() });
+        bidJsonSave(key, list.slice(-200));
+    }
+    function bidTradeSets() {
+        const all = new Set(), helper = new Set();
+        bidTradesLoad().forEach(x => { all.add(String(x.t)); if (x.src === 'helfer') helper.add(String(x.t)); });
+        return { all: all, helper: helper };
+    }
+    // Letzter Stand der Transferziele (aus EAs eigener Antwort oder unserem Abholen).
+    let bidWatchState = null;
+    function bidNoteWatchlist(auctionInfo, source) {
+        const ev = bidWatchlistEval(auctionInfo);
+        const sets = bidTradeSets();
+        const won = bidWonFromAuctions(ev.won, { trades: sets.all, helperTrades: sets.helper, now: Date.now() });
+        const added = bidWonStore(won);
+        bidWatchState = { at: Date.now(), source: source, total: ev.total, won: ev.won.length, wonGold: won.length, added: added, open: ev.open.length,
+                          outbid: ev.outbid.length, expired: ev.expired.length, unknown: ev.unknown.length,
+                          unknownSample: ev.unknown.slice(0, 3).map(a => ({ tradeState: a.tradeState, bidState: a.bidState })) };
+        return { ev: ev, won: won, added: added };
+    }
+    /** Mitschnitt fuer die Live-Pruefung: was schickt und bekommt die EA-Oberflaeche? */
+    function bidCaptureGet() {
+        return STATE.diag.bidCapture || (STATE.diag.bidCapture = { searches: [], bids: [], watchlist: null, watchlistOps: [], paramNames: [], bidStates: {}, tradeStates: {} });
+    }
+    function bidCaptureRing(name, entry, max) {
+        const c = bidCaptureGet();
+        if (!Array.isArray(c[name])) c[name] = [];
+        c[name].push(entry);
+        if (c[name].length > (max || 8)) c[name].shift();
+        return c;
+    }
+    function bidCaptureMerge(c, shape) {
+        Object.keys(shape.bidStates || {}).forEach(k => { c.bidStates[k] = (c.bidStates[k] || 0) + shape.bidStates[k]; });
+        Object.keys(shape.tradeStates || {}).forEach(k => { c.tradeStates[k] = (c.tradeStates[k] || 0) + shape.tradeStates[k]; });
+    }
+    function bidJsonOf(data) { try { return typeof data === 'string' ? JSON.parse(data) : (data && typeof data === 'object' ? data : null); } catch (e) { return null; } }
+    /** Einstieg aus dem XHR-/fetch-Mitschnitt (nur Anfragen der EA-Oberflaeche). Wirft nie. */
+    function onBidTraffic(method, url, status, reqBody, respData) {
+        try {
+            const kind = bidTrafficKind(method, url);
+            if (!kind) return;
+            const st = parseInt(status, 10);
+            const qi = bidQueryInfo(url);
+            const json = bidJsonOf(respData);
+            const ai = json && Array.isArray(json.auctionInfo) ? json.auctionInfo : null;
+            if (kind === 'search') {
+                const shape = bidShapeOf(ai);
+                const c = bidCaptureRing('searches', { at: Date.now(), status: isNaN(st) ? null : st, params: qi.params, shape: shape });
+                const names = new Set(c.paramNames); qi.names.forEach(n => names.add(n)); c.paramNames = Array.from(names).sort();
+                bidCaptureMerge(c, shape);
+                return;
+            }
+            if (kind === 'bid') {
+                const body = bidJsonOf(reqBody);
+                const amount = body && typeof body.bid === 'number' ? body.bid : null;
+                const parsed = parseBidAuctions(ai);
+                const tradeId = (String(url).match(/\/trade\/(\d+)\/bid/) || [])[1] || null;
+                const mine = parsed.find(a => a.tradeId === tradeId) || parsed[0] || null;
+                const c = bidCaptureRing('bids', { at: Date.now(), status: isNaN(st) ? null : st, amount: amount, shape: bidShapeOf(ai),
+                    tradeState: mine ? mine.tradeState : null, bidState: mine ? mine.bidState : null, currentBid: mine ? mine.currentBid : null, readable: mine ? mine.readable : null,
+                    credits: json && typeof json.credits === 'number' ? json.credits : null });
+                bidCaptureMerge(c, bidShapeOf(ai));
+                if (st >= 200 && st < 300 && tradeId) {
+                    bidTradesNote(tradeId, 'hand', amount);
+                    const sets = bidTradeSets();
+                    bidWonStore(bidWonFromAuctions(parsed, { trades: sets.all, helperTrades: sets.helper, now: Date.now() }));
+                }
+                renderBidCardSoon();
+                return;
+            }
+            if (kind === 'watchlist') {
+                if (!(st >= 200 && st < 300) || !ai) return;
+                const shape = bidShapeOf(ai);
+                const c = bidCaptureGet();
+                c.watchlist = { at: Date.now(), status: st, params: qi.params, shape: shape };
+                bidCaptureMerge(c, shape);
+                bidNoteWatchlist(ai, 'ea');
+                renderBidCardSoon();
+                return;
+            }
+            if (kind === 'watchlistOp') {
+                bidCaptureRing('watchlistOps', { at: Date.now(), m: String(method || '').toUpperCase(), path: qi.path, params: qi.params, status: isNaN(st) ? null : st,
+                    body: reqBody ? String(reqBody).slice(0, 160) : null });
+            }
+        } catch (e) {}
+    }
+    /** Anzeige-Werte der Karte (pure bis auf Speicher/Pool). */
+    function bidCardSummary() {
+        const won = bidWonLoad(null);
+        const poolIds = new Set((STATE.pool || []).map(p => String(p.id)));
+        const inPool = (STATE.pool || []).length ? won.filter(x => poolIds.has(String(x.id))) : won;
+        const by = bidByRating(inPool);
+        const parts = Object.keys(by).map(Number).sort((a, b) => a - b).map(r => r + ': ' + by[r]);
+        const w = bidWatchState;
+        return { won: inPool.length, stored: won.length, byRating: by,
+                 text: 'Gewonnen: ' + inPool.length + ' Karten' + (parts.length ? ' (' + parts.join(' · ') + ')' : '') +
+                       (w ? ' · offen: ' + w.open + ' Gebote · Transferziele ' + w.total + '/50' : ' · Transferziele: noch nicht gelesen') };
+    }
+    let bidCardTimer = null;
+    function renderBidCardSoon() { if (bidCardTimer) return; bidCardTimer = setTimeout(function () { bidCardTimer = null; try { renderBidCard(); } catch (e) {} }, 300); }
+    function renderBidCard() {
+        const el = document.getElementById('sbc-opt-bid-summary');
+        if (!el) return;
+        const t = bidCardSummary().text;
+        if (el.textContent !== t) el.textContent = t;
+    }
+    function initBidHelperUi() {
+        renderBidCard();
+        setInterval(function () { if (tabCurrent === 'kaufen') { try { renderBidCard(); } catch (e) {} } }, 4000);
+    }
+    /** Report-Feld bidHelper (Einstellungen, Grenzen, Bestand, Transferziele, Mitschnitt). */
+    function bidHelperReport(capture) {
+        const persona = ownPersonaId();
+        const s = bidSettingsLoad();
+        const lg = bidJsonLoad(bidPersonaKey(BID_LOG_KEY), {});
+        const won = bidWonLoad(null);
+        return { settings: s, limits: bidLimitCounts(lg, persona, Date.now()), won: won.length, byRating: bidByRating(won),
+                 trades: bidTradesLoad().length, watchlist: bidWatchState, capture: capture || null };
+    }
     function buyLedgerKey() { let p = null; try { p = ownPersonaId(); } catch (e) {} return 'sbcOptBuyLedger:' + (p || 'unbekannt'); }
     function buyLedgerLoad() { try { const a = JSON.parse(localStorage.getItem(buyLedgerKey()) || '[]'); return buyLedgerPrune(a, Date.now()); } catch (e) { return []; } }
     /** Einen Kauf festhalten; Fehler hier duerfen nie einen Kauf-Lauf stoeren. Liefert den Eintrag. */
@@ -18822,7 +19129,8 @@ const HybridSbcEa = (() => {
         { id: 'formationen', title: 'EAs Formationen', purpose: 'Welche Formationen und Slot-Positionen EA liefert (Gauntlet, Kader speichern).', requests: 0 },
         { id: 'streamlined_spuren', title: 'Streamlined-SBC-Spuren', purpose: 'EA-Klassen, SBC-Dienstmethoden, Schema und Netzverkehr rund um Streamlined/One-Click-SBCs (für den Punkte-Löser).', requests: 0 },
         { id: 'sbc_vorschau', title: 'Offene SBC planen (Zeit und Ergebnis)', purpose: 'Löst die geöffnete SBC mit den aktuellen Einstellungen, misst die Zeit, nennt Warnungen. Trägt nichts ein.', requests: 0 },
-        { id: 'tokens_holo', title: 'Event-Tokens und Holo-Format', purpose: 'Welche Event-Token-Währungen EA führt (Galerie-Tokens darunter? dann verrät der Kontostand eine Bewertung) und wie hyperCosmetics an Holo-Karten aussieht. Nur Speicher, keine Anfrage.', requests: 0 }
+        { id: 'tokens_holo', title: 'Event-Tokens und Holo-Format', purpose: 'Welche Event-Token-Währungen EA führt (Galerie-Tokens darunter? dann verrät der Kontostand eine Bewertung) und wie hyperCosmetics an Holo-Karten aussieht. Nur Speicher, keine Anfrage.', requests: 0 },
+        { id: 'gebote_mitschnitt', title: 'Gebots-Helfer: Mitschnitt der Handgebote', purpose: 'Welche Parameter schickt EAs Gold-Suche, welche bidState-/tradeState-Werte kommen zurück, wie sehen Transferziele aus und mit welchem Endpunkt entfernt EA einen Eintrag? Nur Speicher, keine Anfrage.', requests: 0 }
     ];
     function liveChecksLoad() { try { const a = JSON.parse(localStorage.getItem(LIVE_CHECKS_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
     function liveChecksStore(rec) {
@@ -19012,6 +19320,24 @@ const HybridSbcEa = (() => {
             if (!et) return liveNeeds('EAs EventToken-Dienst fehlt - einmal im Spiel ins Hauptmenü, dann erneut.', data);
             return { status: (loaded || defs.length) ? 'ok' : 'needs', needs: (loaded || defs.length) ? undefined : 'Token-Definitionen noch nicht geladen - einmal den Store oder die Startseite öffnen, dann erneut.',
                      summary: parts.join(', '), data: data };
+        }
+        if (id === 'gebote_mitschnitt') {
+            // v6.34.0: nur der Mitschnitt der EA-Oberflaeche (onBidTraffic) - keine Anfrage.
+            const c = STATE.diag.bidCapture || null;
+            const searches = c ? c.searches.filter(x => x && x.shape && x.shape.n > 0) : [];
+            const readable = searches.some(x => x.shape.startingBid > 0 && x.shape.currentBid > 0);
+            const bids = c ? c.bids.filter(x => x && x.status >= 200 && x.status < 300) : [];
+            const ops = c ? c.watchlistOps : [];
+            const todo = [];
+            if (!searches.length) todo.push('in der Web App eine Transfermarkt-Suche nach Gold-Spielern (Qualität Gold, Max. Gebot gesetzt) ausführen');
+            else if (!readable) todo.push('die Suchantwort trug kein startingBid/currentBid - bitte eine Suche mit gesetztem Gebots-Filter ausführen');
+            if (!bids.length) todo.push('einmal von Hand auf eine Auktion bieten (höchstens 600)');
+            if (!c || !c.watchlist) todo.push('die Transferziele öffnen');
+            if (!ops.length) todo.push('in den Transferzielen ein überbotenes oder abgelaufenes Gebot entfernen');
+            const data = { paramNames: c ? c.paramNames : [], searches: searches.slice(-4), bids: bids.slice(-4), watchlist: c ? c.watchlist : null, watchlistOps: ops, bidStates: c ? c.bidStates : {}, tradeStates: c ? c.tradeStates : {} };
+            const summary = searches.length + ' Suchen (Parameter: ' + (data.paramNames.join(', ') || '–') + '), ' + bids.length + ' Gebote, Transferziele ' + (data.watchlist ? 'gesehen' : 'nicht gesehen') + ', ' + ops.length + ' Aktionen auf den Transferzielen';
+            if (todo.length) return { status: 'needs', needs: 'Für den Mitschnitt bitte: ' + todo.join('; ') + '. Danach diese Prüfung erneut.', summary: summary, data: data };
+            return { status: 'ok', summary: summary, data: data };
         }
         if (id === 'sbc_vorschau') {
             const sb = STATE.sbc;
@@ -20940,7 +21266,7 @@ const HybridSbcEa = (() => {
             // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten mit
             // Kosten, Marktabfragen, Fehler, eingefuegte Loesung.
             hybridSbc: STATE.diag.hybridSbc || null,
-            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, batchSpare: STATE.diag.batchSpare || null, mcp: STATE.diag.mcp || null, relay: STATE.diag.relay || null, liveChecks: liveChecksLoad(), buyLedger: (function () { try { return buyLedgerLoad().slice(-50); } catch (e) { return null; } })(), marketBudget: (function () { try { return marketGuardSnapshot(marketGuardLoad(), Date.now()); } catch (e) { return null; } })(), points: STATE.diag.points || null, pointsBuy: STATE.diag.pointsBuy || null, galleryTokens: (function () { try { const p = ownPersonaId(); return p ? galleryTokenBookLoad(p) : null; } catch (e) { return null; } })(), galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null, handBuys: STATE.diag.handBuys || null,
+            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, batchSpare: STATE.diag.batchSpare || null, mcp: STATE.diag.mcp || null, relay: STATE.diag.relay || null, liveChecks: liveChecksLoad(), buyLedger: (function () { try { return buyLedgerLoad().slice(-50); } catch (e) { return null; } })(), marketBudget: (function () { try { return marketGuardSnapshot(marketGuardLoad(), Date.now()); } catch (e) { return null; } })(), points: STATE.diag.points || null, pointsBuy: STATE.diag.pointsBuy || null, galleryTokens: (function () { try { const p = ownPersonaId(); return p ? galleryTokenBookLoad(p) : null; } catch (e) { return null; } })(), galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null, handBuys: STATE.diag.handBuys || null, bidHelper: (function () { try { return bidHelperReport(STATE.diag.bidCapture); } catch (e) { return null; } })(),
             futbinBuy: STATE.diag.futbinBuy || null,
             futbinBuyPlan: STATE.diag.futbinBuyPlan || null,
             marketUrls: STATE.diag.marketUrls,

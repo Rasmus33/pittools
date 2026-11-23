@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.44.0
+// @version      6.45.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.44.0';
+    const VERSION = '6.45.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7350,7 +7350,7 @@
             font-size:var(--pt-type-label); color:var(--pt-fg-muted); line-height:var(--pt-leading-normal);
         }
         .sbc-opt-line b { font-family:var(--pt-font-mono); font-weight:var(--pt-weight-medium); color:var(--pt-fg-default); }
-        .sbc-opt-line .grow { flex:1 1 auto; min-width:0; }
+        .sbc-opt-line .grow { flex:1 1 0; min-width:0; }
         .sbc-opt-line .sbc-opt-btn { width:auto; flex:0 0 auto; margin:0; }
         .sbc-opt-dot { flex:0 0 auto; width:8px; height:8px; border-radius:50%; background:transparent; box-shadow: inset 0 0 0 1px var(--pt-border-strong); }
         .sbc-opt-dot.on { background:var(--pt-accent); box-shadow:0 0 0 3px var(--pt-accent-soft); }
@@ -7431,6 +7431,16 @@
         .sbc-opt-item-meta b { color:var(--pt-fg-default); font-weight:var(--pt-weight-medium); }
         .sbc-opt-btn.link { text-align:left; }
         #sbc-opt-panel .sbc-opt-body textarea.sbc-opt-code { background:var(--pt-bg-sunken); color:var(--pt-fg-default); border:1px solid var(--pt-border-default); border-radius:var(--pt-field-radius); padding:var(--pt-space-2); }
+
+        /* v6.45.0: Zeilen in aufgeklappten Details und die Feld-Zeile (Label + Feld + ⓘ). */
+        .sbc-opt-listline { padding:var(--pt-space-1) 0; font-size:var(--pt-type-label); line-height:var(--pt-leading-normal); color:var(--pt-fg-secondary); }
+        .sbc-opt-details-toggle summary > span { flex:1 1 auto; min-width:0; font-weight:var(--pt-weight-regular); }
+        .sbc-opt-details-toggle summary > span b { font-weight:var(--pt-weight-semibold); color:var(--pt-fg-default); }
+        .sbc-opt-fieldrow { margin:0 0 var(--pt-stack-tight); gap:var(--pt-space-2); }
+        .sbc-opt-fieldrow > label { flex:1 1 auto; min-width:0; font-size:var(--pt-type-label); color:var(--pt-fg-muted); }
+        #sbc-opt-panel .sbc-opt-body .sbc-opt-fieldrow > select, #sbc-opt-panel .sbc-opt-body .sbc-opt-fieldrow > input { flex:0 0 auto; width:auto; min-width:120px; }
+        .sbc-opt-withtip > .sbc-opt-confirm-warn { margin:var(--pt-space-1) 0; }
+        .sbc-opt-head .sbc-opt-tag { margin-left:var(--pt-space-1); }
 
         /* v6.40.0: Abstands-Hilfsklassen statt style="margin/padding" im
            Panel-Template. Mit #sbc-opt-panel .sbc-opt-body davor (schlaegt auch
@@ -17014,71 +17024,78 @@ const HybridSbcEa = (() => {
         const ownGrade = gradeForScore(set.grades, own.score);
         const comp = galleryCompletionPlan(set.requires || set.players.length, own.count, set.players, owned);
         if (galleryLast.chosen) { galleryLast.chosen.own = own; galleryLast.chosen.comp = comp; galleryLast.chosen.buyIdx = null; }
-        let h = '<div class="sbc-opt-summary"><b>' + escapeHtml(set.name || x.name) + '</b> · Note ' + escapeHtml(set.bestGrade || x.bestGrade || '?') +
-                ' · ' + (set.tokens != null ? set.tokens : x.tokens) + ' Tokens</div>' +
-                (x.eaKind ? '<div class="sbc-opt-fb-meta">Gesammelt: <b>' + own.count + '</b>' + (set.requires ? ' von ' + set.requires : '') + ' passende Karten' +
+        // v6.45.0: Set-Ansicht im gemeinsamen Muster - Kopf, zwei Kennzahlzeilen,
+        // Warnungen als eine Zeile mit Zahl, EINE Hauptaktion, Details flach
+        // (keine Details in Details), Werkzeuge zugeklappt. Erklaerungen
+        // stehen hinter ⓘ. IDs, data-* und Handler unveraendert.
+        const nC = function (v) { return fmtCoins(v).replace(/ Coins$/, ''); };
+        const tokensN = set.tokens != null ? set.tokens : x.tokens;
+        let h = '<div class="sbc-opt-head"><span>' + escapeHtml(set.name || x.name) + '</span><span class="count">Note <b>' +
+                escapeHtml(set.bestGrade || x.bestGrade || '?') + '</b> · <b>' + tokensN + '</b> Tokens</span></div>' +
+                (x.eaKind ? '<div class="sbc-opt-line"><span class="grow">Gesammelt <b>' + own.count + (set.requires ? '/' + set.requires : '') + '</b>' +
                     (own.earlier ? ' <span class="sbc-opt-muted">(' + own.inClub + ' im Verein, ' + own.earlier + ' früher)</span>' : '') + ' · Basis-Score <b>' +
-                    own.score.toLocaleString('de-DE') + '</b>' + (personal ? ' (Summe der Sammlung; gewertete Auswahl unten)' : (ownGrade ? ' → mindestens Note <b>' + ownGrade.grade + '</b>' + (ownGrade.tokens ? ' (' + ownGrade.tokens + ' Tokens)' : '') : (set.grades.length ? ' → noch unter Note D' : ''))) +
-                    (!STATE.pool.length ? ' <span class="sbc-opt-warn">(Verein nicht geladen)</span>' : '') + '</div>' : '') +
-                '<div class="sbc-opt-fb-meta">' + set.players.length + ' Spieler in der günstigsten Aufstellung' + (set.requires ? ' (Set braucht ' + set.requires + ')' : '') +
-                ' · <b>' + (ownedN - earlierN) + '</b> im Verein' + (earlierN ? ' · <b>' + earlierN + '</b> früher gesammelt' : '') + ' · <b>' + missing.length + '</b> zu kaufen' +
-                (set.score != null ? ' · Score ' + set.score.toLocaleString('de-DE') : '') + '</div>' +
-                '<div class="sbc-opt-fb-meta">fut.gg-Preise der fehlenden Karten zusammen <b>' + fmtCoins(sumMissing) + '</b>' +
-                (set.tax != null ? ' · beim Wiederverkauf gehen ~' + fmtCoins(set.tax) + ' Steuer weg' : '') + '</div>';
+                    own.score.toLocaleString('de-DE') + '</b>' + (personal ? '' : (ownGrade ? ' → mindestens Note <b>' + ownGrade.grade + '</b>' + (ownGrade.tokens ? ' (' + ownGrade.tokens + ' T)' : '') : (set.grades.length ? ' → unter Note D' : ''))) +
+                    (!STATE.pool.length ? ' <span class="sbc-opt-warn">· Verein nicht geladen</span>' : '') + '</span></div>' : '') +
+                '<div class="sbc-opt-line"><span class="grow">Aufstellung <b>' + set.players.length + '</b>' + (set.requires ? ' (braucht ' + set.requires + ')' : '') +
+                ' · im Verein <b>' + (ownedN - earlierN) + '</b>' + (earlierN ? ' · früher <b>' + earlierN + '</b>' : '') + ' · fehlen <b>' + missing.length + '</b>' +
+                (missing.length ? ' · ~<b>' + nC(sumMissing) + '</b>' : '') + '</span>' +
+                tipHtml('Preise von fut.gg für die fehlenden Karten der günstigsten Aufstellung.' +
+                    (set.score != null ? ' Score der Aufstellung: ' + set.score.toLocaleString('de-DE') + '.' : '') +
+                    (set.tax != null ? ' Beim Wiederverkauf gehen etwa ' + fmtCoins(set.tax) + ' Steuer weg.' : ''), 'Aufstellung') + '</div>';
         const confirmed = galleryKnownGrade(x.id);
-        h += '<label class="sbc-opt-fb-meta">Erreichte Note im Spiel <select id="sbc-opt-gal-current-grade">' +
+        h += '<div class="sbc-opt-withtip sbc-opt-fieldrow"><label for="sbc-opt-gal-current-grade">Erreichte Note</label>' +
+            '<select id="sbc-opt-gal-current-grade">' +
             '<option value="">Bitte auswählen</option>' + ['N','D','C','B','A','S'].map(g => '<option value="'+g+'"'+
                 (confirmed === g ? ' selected' : '')+'>'+(g === 'N' ? 'Noch keine Note' : g)+'</option>').join('') +
-            '</select></label><div class="sbc-opt-dim">Bereits erreichte Noten werden nicht nochmals gekauft. Der Wert gilt nur für dieses Set und diesen Account auf diesem Gerät.</div>';
+            '</select>' + tipHtml('Die Note, die du im Spiel schon eingelöst hast. Erreichte Noten werden nicht noch einmal gekauft. Gilt für dieses Set und diesen Account auf diesem Gerät.', 'Erreichte Note') + '</div>';
         // v5.63.0: was kostet ein Token hier wirklich - und welche Karten treiben den Preis?
-        const spend = gallerySpendProfile(set.players, owned, set.tokens != null ? set.tokens : x.tokens);
+        const spend = gallerySpendProfile(set.players, owned, tokensN);
         const bestOther = bestPerTokenOf(galleryLast.ranked, x.id);
         if (spend.perToken != null && spend.count) {
-            h += '<div class="sbc-opt-fb-meta">Kurs dieses Kaufs: <b>' + fmtCoins(spend.perToken) + '</b> je Token' +
+            h += '<div class="sbc-opt-line"><span class="grow">Kurs dieses Kaufs <b>' + nC(spend.perToken) + '</b> / Token</span></div>' +
                  (bestOther && bestOther.perToken < spend.perToken
-                    ? ' <span class="sbc-opt-warn">· "' + escapeHtml(bestOther.name) + '" liegt bei ' + fmtCoins(bestOther.perToken) + '</span>'
-                    : '') + '</div>';
+                    ? '<div class="sbc-opt-confirm-warn">⚠ ' + escapeHtml(bestOther.name) + ': ' + nC(bestOther.perToken) + ' / Token</div>'
+                    : '');
         }
         if (spend.dominant.length) {
-            h += warnHtml(spend.dominant.length + ' Karte(n) machen ' + Math.round(spend.dominantShare * 100) + ' % der Kosten aus: ' +
-                 spend.dominant.map(d => escapeHtml(d.name) + ' ' + fmtCoins(d.price) + ' (' + Math.round(d.share * 100) + ' %)').join(', ') +
-                 '. Ohne sie fehlen dem Set Karten - die Frage ist, ob dir das Set diesen Preis wert ist.');
+            h += '<div class="sbc-opt-confirm-warn">⚠ ' + spend.dominant.length + (spend.dominant.length === 1 ? ' Karte = ' : ' Karten = ') + Math.round(spend.dominantShare * 100) + ' %: ' +
+                 spend.dominant.map(d => escapeHtml(d.name) + ' ' + nC(d.price)).join(', ') + '</div>';
         }
         if (spend.duplicates.length) {
-            h += '<div class="sbc-opt-fb-meta sbc-opt-warn">Mehrfach in der Aufstellung: ' +
-                 spend.duplicates.map(d => escapeHtml(d.name) + ' ' + d.count + '\u00d7 (zusammen ' + fmtCoins(d.total) + ')').join(', ') +
-                 ' - verschiedene Kartenversionen desselben Spielers. fut.gg füllt damit auf, wenn der Verein zu wenige günstige Karten hat.</div>';
+            h += '<div class="sbc-opt-withtip"><div class="sbc-opt-confirm-warn">⚠ Mehrfach im Set: ' +
+                 spend.duplicates.map(d => escapeHtml(d.name) + ' ' + d.count + '\u00d7 (' + nC(d.total) + ')').join(', ') + '</div>' +
+                 tipHtml('Verschiedene Kartenversionen desselben Spielers. fut.gg füllt damit auf, wenn der Verein zu wenige günstige Karten hat.', 'Mehrfach im Set') + '</div>';
         }
         if (x.eaKind && set.requires && own.count >= set.requires) {
-            h += '<div class="sbc-opt-summary">Genug Karten bekannt; Auswahl und Boni im Spiel prüfen. Nachkäufe nur für eine höhere als die bereits erreichte Note.</div>';
+            h += '<div class="sbc-opt-line"><span class="sbc-opt-dot on"></span><span class="grow">Genug Karten bekannt – im Spiel bewerten.</span>' +
+                 tipHtml('Auswahl und Boni im Spiel prüfen. Nachkäufe lohnen nur für eine höhere als die schon erreichte Note.', 'Genug Karten') + '</div>';
         }
         if (missing.length) {
             // v5.36.0: zwei Wege - vervollstaendigen (nur die fehlenden, guenstigsten) oder die komplette Aufstellung.
             const completionTarget = galleryPersonalTargets(personal)[0];
             const completeIsCheaper = !!completionTarget && completionTarget.missing.length < missing.length;
+            const buyTip = tipHtml('Live-Preis, dann Rückfrage. Ein Kauf alle 4–8 s, höchstens Plan + ' + Math.round(BUY_TOLERANCE * 100) + ' %. Die Karten gehen direkt in den Verein.', 'Kaufen');
             if (completeIsCheaper) {
-                h += '<button type="button" class="sbc-opt-btn primary" id="sbc-opt-gal-buy-complete">'+completionTarget.grade+' erreichen: ' + completionTarget.missing.length + ' kaufen (~' + fmtCoins(completionTarget.coins) + ')</button>' +
-                     '<div class="sbc-opt-dim">Geprüfte Mischung aus gesammelten Karten und Nachkäufen; nicht nur die Kartenanzahl.</div>';
+                h += '<div class="sbc-opt-withtip"><button type="button" class="sbc-opt-btn primary" id="sbc-opt-gal-buy-complete">'+completionTarget.grade+' erreichen: ' + completionTarget.missing.length + ' kaufen (~' + fmtCoins(completionTarget.coins) + ')</button>' +
+                     tipHtml('Geprüfte Mischung aus gesammelten Karten und Nachkäufen – nicht nur die Kartenanzahl.', 'Note erreichen') + '</div>';
             }
-            h += '<button type="button" class="sbc-opt-btn ' + (completeIsCheaper ? 'ghost' : 'primary') + '" id="sbc-opt-gal-buy">' +
-                 (completeIsCheaper ? 'Komplette fut.gg-Aufstellung: ' : '') + missing.length + ' Spieler kaufen</button>' +
-                 '<div class="sbc-opt-dim">Erst werden die Live-Preise am EA-Markt geholt, dann kommt eine Rückfrage. Ein Kauf alle 4-8 Sekunden, nie über der Obergrenze (Plan + ' +
-                 Math.round(BUY_TOLERANCE * 100) + ' %). Die Karten gehen direkt in den Verein.</div>';
+            h += '<div class="sbc-opt-withtip"><button type="button" class="sbc-opt-btn ' + (completeIsCheaper ? 'ghost' : 'primary') + '" id="sbc-opt-gal-buy">' +
+                 (completeIsCheaper ? 'Ganze Aufstellung: ' : '') + missing.length + (missing.length === 1 ? ' Karte kaufen' : ' Karten kaufen') + '</button>' + buyTip + '</div>';
         } else if (!(x.eaKind && set.requires && own.count >= set.requires)) {
-            h += '<div class="sbc-opt-summary">Alle Spieler der Aufstellung sind schon im Verein - nichts zu kaufen. Im Spiel bewerten.</div>';
+            h += '<div class="sbc-opt-line"><span class="sbc-opt-dot on"></span><span class="grow">Alles im Verein – im Spiel bewerten.</span></div>';
         }
         h += '<details class="sbc-opt-details-toggle"><summary>Aufstellung (' + set.players.length + ')</summary>';
         const dupNames = {}; spend.duplicates.forEach(d => { dupNames[String(d.name).toLowerCase()] = d.count; });
         set.players.forEach(function (p, i) {
             const dup = dupNames[String(p.name || '').toLowerCase()];
-            h += '<div>' + (owned[i] ? '✓ ' : '') + escapeHtml(p.name) + (dup ? ' <span class="sbc-opt-warn">(' + dup + '\u00d7 im Set)</span>' : '') + ' <span class="sbc-opt-muted">(' + (p.rating || '?') + (p.version ? ', ' + escapeHtml(p.version) : '') + ')</span> ' +
+            h += '<div class="sbc-opt-listline">' + (owned[i] ? '✓ ' : '') + escapeHtml(p.name) + (dup ? ' <span class="sbc-opt-warn">(' + dup + '\u00d7 im Set)</span>' : '') + ' <span class="sbc-opt-muted">(' + (p.rating || '?') + (p.version ? ', ' + escapeHtml(p.version) : '') + ')</span> ' +
                  (owned[i] ? '<span class="sbc-opt-muted">im Verein</span>' : fmtCoins(p.price)) +
                  (p.score != null ? ' <span class="sbc-opt-muted">· Score ' + p.score.toLocaleString('de-DE') + '</span>' : '') + '</div>';
         });
         h += '</details>';
         if (set.grades.length) {
             h += '<details class="sbc-opt-details-toggle"><summary>Noten und Tokens</summary>';
-            set.grades.forEach(g => { h += '<div>' + g.grade + ': ab ' + (g.score != null ? g.score.toLocaleString('de-DE') : '?') + ' Score → ' + (g.tokens ? g.tokens + ' Tokens' : escapeHtml(g.reward || '–')) + '</div>'; });
+            set.grades.forEach(g => { h += '<div class="sbc-opt-listline">' + g.grade + ': ab ' + (g.score != null ? g.score.toLocaleString('de-DE') : '?') + ' Score → ' + (g.tokens ? g.tokens + ' Tokens' : escapeHtml(g.reward || '–')) + '</div>'; });
             h += '</details>';
         }
         // v6.3.7: eigene Auswahl und Nachkauf-Mischungen samt belegter Tag-Regeln.
@@ -17088,69 +17105,70 @@ const HybridSbcEa = (() => {
                 known: personal.known, checks: personal.checks, limited: personal.limited,
                 pale: personal.pale, current: a, plans: personal.plans.map(p => ({ grade: p.grade, score: p.assessment.score,
                     coins: p.coins, missing: p.missing.map(c => c.id) })) };
-            h += '<details class="sbc-opt-details-toggle" open><summary>Deine Sammlung und gezielte Nachkäufe</summary>' +
-                '<div class="sbc-opt-fb-meta">Mit bekannten gesammelten Karten: <b>' + (a.grade ? 'Note ' + escapeHtml(a.grade) : 'noch keine vollständige Auswahl') +
-                '</b> · ' + a.score.toLocaleString('de-DE') + ' Punkte (' + a.base + ' Basis + ' + a.bonus + ' Boni) · ' +
-                personal.currentCards.length + '/' + set.upgradeData.set.requiredCards + ' Karten</div>' +
-                '<div class="sbc-opt-dim">Berechnete Vorschau, keine eingelöste Note. ' + personal.known + ' gesammelte Versionen in ' + personal.catalogue +
-                ' bekannten Karten' + (personal.pale ? ' · PaleTools-Galerie mitgelesen' : ' · Für mehr Sammeldaten das passende Set einmal in der PaleTools-Galerie öffnen') +
-                '. Begrenzte Suche nach Mischungen; weitere Karten können bessere Lösungen ermöglichen. Unbekannte Bonusdetails werden ohne Bonus gerechnet. Preise von fut.gg; Sammelstand und Live-Preise vor einem Kauf prüfen.</div>';
+            h += '<div class="sbc-opt-head"><span>Deine Sammlung <span class="sbc-opt-tag">Vorschau</span>' +
+                tipHtml('Berechnete Vorschau, keine eingelöste Note: ' + personal.known + ' gesammelte Versionen in ' + personal.catalogue + ' bekannten Karten' +
+                    (personal.pale ? ', PaleTools-Galerie mitgelesen' : '; für mehr Sammeldaten das Set einmal in der PaleTools-Galerie öffnen') +
+                    '. Unbekannte Bonusdetails zählen ohne Bonus, weitere Karten können bessere Mischungen ermöglichen. Preise von fut.gg – vor einem Kauf prüft PitTools live.', 'Deine Sammlung') +
+                '</span><span class="count">' + personal.currentCards.length + '/' + set.upgradeData.set.requiredCards + '</span></div>' +
+                '<div class="sbc-opt-line"><span class="grow"><b>' + (a.grade ? 'Note ' + escapeHtml(a.grade) : 'noch keine vollständige Auswahl') +
+                '</b> · ' + a.score.toLocaleString('de-DE') + ' Punkte (' + a.base + ' Basis + ' + a.bonus + ' Boni)</span></div>';
             h += '<details class="sbc-opt-details-toggle"><summary>Eigene Auswahl und Boni</summary>';
-            personal.currentCards.forEach(c => { h += '<div>✓ ' + escapeHtml(c.name) + ' · ID ' + c.id + ' · ' + c.score + ' Basis-Punkte</div>'; });
-            a.breakdown.forEach(b => { h += '<div>' + escapeHtml(b.name || 'Bonus') + ': +' + b.points + '</div>'; });
-            if (a.unknown.length) h += '<div class="sbc-opt-dim">Ohne Bonus wegen fehlender Details: ' + escapeHtml(a.unknown.join(', ')) + '</div>';
+            personal.currentCards.forEach(c => { h += '<div class="sbc-opt-listline">✓ ' + escapeHtml(c.name) + ' · ID ' + c.id + ' · ' + c.score + ' Basis-Punkte</div>'; });
+            a.breakdown.forEach(b => { h += '<div class="sbc-opt-listline">' + escapeHtml(b.name || 'Bonus') + ': +' + b.points + '</div>'; });
+            if (a.unknown.length) h += '<div class="sbc-opt-listline sbc-opt-dim">Ohne Bonus wegen fehlender Details: ' + escapeHtml(a.unknown.join(', ')) + '</div>';
             h += '</details>';
             galleryPersonalTargets(personal).forEach(p => {
-                h += '<details class="sbc-opt-details-toggle"><summary><b>' + escapeHtml(p.grade) + '</b> mit ' + p.missing.length +
-                    ' Nachkäufen · ~' + fmtCoins(p.coins) + '</summary><div>' + p.assessment.score.toLocaleString('de-DE') +
+                h += '<details class="sbc-opt-details-toggle"><summary><span><b>' + escapeHtml(p.grade) + '</b> mit ' + p.missing.length +
+                    ' Nachkäufen · ~' + fmtCoins(p.coins) + '</span></summary><div class="sbc-opt-listline">' + p.assessment.score.toLocaleString('de-DE') +
                     ' Punkte (' + p.assessment.base + ' Basis + ' + p.assessment.bonus + ' Boni)</div>';
-                p.missing.forEach(c => { h += '<div>' + escapeHtml(c.name) + ' · ID ' + c.id + ' · ' + fmtCoins(c.price) + '</div>'; });
+                p.missing.forEach(c => { h += '<div class="sbc-opt-listline">' + escapeHtml(c.name) + ' · ID ' + c.id + ' · ' + fmtCoins(c.price) + '</div>'; });
                 h += '<button type="button" class="sbc-opt-btn primary" data-gal-target-grade="'+p.grade+'">'+p.grade+' erreichen: fehlende Karten prüfen und kaufen</button></details>';
             });
-            h += '</details>';
         }
         // Quellenplaene bleiben als Vergleich; gekauft wird die persoenliche Mischung oben.
         const upgrades = galleryUpgradeOptions(set.upgradeData, STATE.pool, collectedLoad());
         if (upgrades.length) {
-            h += '<details class="sbc-opt-details-toggle" open><summary>Aufwertung: Pläne je Zielnote</summary>' +
-                 '<div class="sbc-opt-dim">fut.gg-Aufstellungen mit Boni. Bereits gesammelte Kartenversionen werden abgezogen. Preise sind Schätzungen; unbekannter Sammelstand kann die Kosten senken. ' +
-                 'Deine aktuelle bewertete Note ist hier noch nicht bekannt. Tokens gelten insgesamt bis zur Zielnote. Ein günstigerer Mix mit deinen Karten kann möglich sein. Die Pläne sind eine Vorschau.</div>';
             const computed = set.upgradeData.solution.computedAt;
-            if (typeof computed === 'string' && Number.isFinite(Date.parse(computed))) {
-                h += '<div class="sbc-opt-dim">Quellenplan vom ' + escapeHtml(new Date(computed).toLocaleString('de-DE')) + '</div>';
-            }
+            const stamp = (typeof computed === 'string' && Number.isFinite(Date.parse(computed)))
+                ? 'Quellenplan vom ' + new Date(computed).toLocaleString('de-DE') : '';
+            h += '<div class="sbc-opt-head"><span>Aufwertung: Pläne je Zielnote' +
+                 tipHtml('fut.gg-Aufstellungen mit Boni als Vorschau; schon gesammelte Kartenversionen sind abgezogen. Preise sind Schätzungen, Tokens gelten insgesamt bis zur Zielnote. Ein günstigerer Mix mit deinen Karten kann möglich sein.', 'Pläne je Zielnote') +
+                 '</span>' + (stamp ? '<span class="count">' + escapeHtml(stamp) + '</span>' : '') + '</div>';
             const cards = new Map((Array.isArray(set.upgradeData.lineupCards) ? set.upgradeData.lineupCards : []).filter(c => c && c.eaId > 0).map(c => [c.eaId, c]));
             upgrades.forEach(o => {
-                h += '<details class="sbc-opt-details-toggle"><summary><b>' + o.grade + '</b> · ' + o.known + '/' + o.total + ' gesammelt · ' +
-                     o.missing.length + ' zu prüfen · ' + (o.coins == null ? 'Preis offen' : '~' + fmtCoins(o.coins)) + '</summary>' +
+                h += '<details class="sbc-opt-details-toggle"><summary><span><b>' + o.grade + '</b> · ' + o.known + '/' + o.total + ' gesammelt · ' +
+                     o.missing.length + ' zu prüfen · ' + (o.coins == null ? 'Preis offen' : '~' + fmtCoins(o.coins)) + '</span></summary>' +
                      '<div class="sbc-opt-fb-meta">Score ' + o.score.toLocaleString('de-DE') + ' = ' + o.baseScore.toLocaleString('de-DE') +
                      ' Basis + ' + (o.score - o.baseScore).toLocaleString('de-DE') + ' Boni · Ziel ' + o.threshold.toLocaleString('de-DE') +
                      ' · ' + (o.tokens || 0) + ' Tokens insgesamt</div>';
                 o.missing.forEach(p => {
                     const c = cards.get(p.eaId);
-                    h += '<div>' + escapeHtml(c && (c.commonName || c.cardName) || ('#' + p.eaId)) +
+                    h += '<div class="sbc-opt-listline">' + escapeHtml(c && (c.commonName || c.cardName) || ('#' + p.eaId)) +
                          ' <span class="sbc-opt-muted">(' + p.overall + ', ID ' + p.eaId + ') · Score ' + p.score + '</span> · ' +
                          (p.price > 0 ? fmtCoins(p.price) : 'Preis offen') + '</div>';
                 });
                 h += '</details>';
             });
+        }
+        // v5.65.0 / v6.4.0: Sammelstand nachfragen - selten gebraucht, deshalb zugeklappt.
+        const checkIdx = galleryCheckTargets(set.players, owned, collectedIdSet(collectedLoad()));
+        const eaTool = x.eaKind && x.eaId > 0;
+        if (checkIdx.length || eaTool) {
+            h += '<details class="sbc-opt-details-toggle"><summary>Werkzeuge</summary>';
+            if (checkIdx.length) {
+                h += '<div class="sbc-opt-withtip"><button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-check">Sammelstand prüfen · ' + checkIdx.length + ' Abfragen · ~' + Math.ceil(checkIdx.length * 2) + ' s</button>' +
+                     tipHtml('Fragt für jeden noch unbekannten Spieler den Markt – EAs Antwort verrät, ob du die Karte schon gesammelt hast. Ist das Set damit voll, wird es als erledigt markiert.', 'Sammelstand prüfen') + '</div>';
+            }
+            if (eaTool) {
+                h += '<div class="sbc-opt-withtip"><button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-eacollect">EA-Konzeptsuche lesen (Test)</button>' +
+                     tipHtml('Höchstens vier Anfragen, keine Marktsuche. Prüft, ob EA den Sammelstand aller Karten dieses ' +
+                     (x.eaKind === 'club' ? 'Vereins' : x.eaKind === 'league' ? 'Liga' : 'Kriteriums') + ' direkt mitliefert. Übernimmt nichts ohne deinen Tipp.', 'EA-Konzeptsuche') + '</div>';
+            }
             h += '</details>';
         }
-        // v5.65.0: Sammelstand bei EA nachfragen (eine Marktabfrage je unbekanntem Spieler).
-        const checkIdx = galleryCheckTargets(set.players, owned, collectedIdSet(collectedLoad()));
-        if (checkIdx.length) {
-            h += '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-check">Sammelstand bei EA prüfen (' + checkIdx.length + ' Abfragen)</button>' +
-                 '<div class="sbc-opt-dim">Fragt für jeden noch unbekannten Spieler den Markt - EAs Antwort verrät, ob du die Karte schon einmal gesammelt hast. Ist das Set damit voll, wird es als erledigt markiert. Dauert rund ' + Math.ceil(checkIdx.length * 2) + ' Sekunden.</div>';
-        }
-        // v6.4.0: Messung FUTGenie-Weg - Sammelstand direkt aus EAs Konzept-Suche.
-        if (x.eaKind && x.eaId > 0) {
-            h += '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-eacollect">Sammelstand über EA-Konzeptsuche lesen (Test)</button>' +
-                 '<div class="sbc-opt-dim">Höchstens vier Anfragen, keine Marktsuche. Prüft, ob EA den Sammelstand aller Karten dieses ' +
-                 (x.eaKind === 'club' ? 'Vereins' : x.eaKind === 'league' ? 'Liga' : 'Kriteriums') + ' direkt mitliefert. Übernimmt nichts ohne deinen Tipp.</div>';
-        }
-        h += '<div class="sbc-opt-inline" style="margin-top:8px;">' +
-             '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-back" style="margin:0;">Zurück</button>' +
-             '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-done" style="margin:0;">Als erledigt markieren</button></div>';
+        h += '<div class="sbc-opt-inline sbc-opt-mt2">' +
+             '<button type="button" class="sbc-opt-btn ghost sbc-opt-m0" id="sbc-opt-gal-back">Zurück</button>' +
+             '<button type="button" class="sbc-opt-btn ghost sbc-opt-m0" id="sbc-opt-gal-done">Erledigt ✓</button></div>';
         setGalleryResult(h);
         const buy = ui.galleryResult.querySelector('#sbc-opt-gal-buy');
         if (buy) buy.addEventListener('click', function () { if (galleryLast.chosen) galleryLast.chosen.buyIdx = null; onGalleryBuyClick(); });
@@ -21871,7 +21889,7 @@ const HybridSbcEa = (() => {
                     : '<div class="sbc-opt-net neutral"><span class="sbc-opt-net-label">Erlös nach 5 % Steuer</span>' +
                       '<span class="sbc-opt-net-value">' + fmtCoins(Math.floor(gross * 0.95)) + '</span>' +
                       '<span class="sbc-opt-net-sub">kein Einkaufspreis bekannt - kein Gewinn/Verlust berechenbar</span></div>') +
-                '<label class="sbc-opt-chiplabel" style="margin-top:8px;">Preis gegenüber dem günstigsten Angebot' +
+                '<label class="sbc-opt-chiplabel sbc-opt-mt2">Preis gegenüber dem günstigsten Angebot' +
                 (byMode && withPaid.length ? ' <span class="sbc-opt-muted">(Zahl = Ergebnis nach Steuer)</span>' : '') + '</label>' +
                 '<div class="sbc-opt-chips" id="sbc-opt-sell-markup">' +
                 SELL_MARKUP_CHIPS.map(function (o) {
@@ -21883,13 +21901,16 @@ const HybridSbcEa = (() => {
                         : (t ? '<span class="sbc-opt-chip-net">' + fmtCoins(t.net) + '</span>' : '');
                     return '<button type="button" class="sbc-opt-chip' + (mode === o[0] ? ' on' : '') + '" data-markup="' + o[0] + '">' + o[1] + extra + '</button>';
                 }).join('') + '</div>' +
-                (isGallery ? '<div class="sbc-opt-dim">Die Karten bleiben in der Galerie, auch verkauft - bewerten geht später im Spiel. Gelistet wird für 1 Stunde.</div>'
-                           : '<div class="sbc-opt-dim">Gelistet wird für 1 Stunde. Die Karten liegen schon auf der Transferliste, verschoben wird nichts.</div>');
+                // v6.45.0: die Hauptaktion steht direkt unter der Preiswahl (vorher ganz
+                // unten unter allen Karten); der Erklaersatz steht im ⓘ daneben.
+                (sellable.length ? '<div class="sbc-opt-withtip"><button type="button" class="sbc-opt-btn primary" id="sbc-opt-gal-sell-go">' + sellable.length + (sellable.length === 1 ? ' Karte listen' : ' Karten listen') + '</button>' +
+                    tipHtml(isGallery ? 'Gelistet wird für 1 Stunde, mit Rückfrage. Die Karten bleiben in der Galerie, auch verkauft – bewerten geht später im Spiel.'
+                                      : 'Gelistet wird für 1 Stunde, mit Rückfrage. Die Karten liegen schon auf der Transferliste, verschoben wird nichts.', 'Karten listen') + '</div>' : '');
         Object.keys(bySet).forEach(function (setName) {
-            h += '<details class="sbc-opt-details-toggle" open><summary>' + escapeHtml(setName) + ' (' + bySet[setName].length + ')</summary>';
+            h += '<details class="sbc-opt-details-toggle"><summary>' + escapeHtml(setName) + ' (' + bySet[setName].length + ')</summary>';
             bySet[setName].forEach(function (x) {
                 const r = x.rec, p = x.price;
-                h += '<div>' + escapeHtml(r.name) + ' <span class="sbc-opt-muted">(' + (r.rating || '?') + ')</span>' +
+                h += '<div class="sbc-opt-listline">' + escapeHtml(r.name) + ' <span class="sbc-opt-muted">(' + (r.rating || '?') + ')</span>' +
                      (r.paid ? ' <span class="sbc-opt-muted">gekauft ' + fmtCoins(r.paid) + '</span>' : '') +
                      (p ? ' → <b>' + fmtCoins(p.buyNow) + '</b> <span class="sbc-opt-muted">(Start ' + fmtCoins(p.start) + ', ' + p.count + ' Angebote ab ' + fmtCoins(p.lowest) + ')</span>' +
                           (p.profit != null ? ' <span class="' + (p.profit >= 0 ? 'sbc-opt-gain' : 'sbc-opt-loss') + '">' + signed(p.profit) + '</span>' : '') +
@@ -21899,9 +21920,8 @@ const HybridSbcEa = (() => {
             });
             h += '</details>';
         });
-        if (sellable.length) h += '<button type="button" class="sbc-opt-btn primary" id="sbc-opt-gal-sell-go">' + sellable.length + ' Karten listen</button>';
-        h += '<div class="sbc-opt-inline" style="margin-top:8px;">' +
-             '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-sell-back" style="margin:0;">Abbrechen</button></div>';
+        h += '<div class="sbc-opt-inline sbc-opt-mt2">' +
+             '<button type="button" class="sbc-opt-btn ghost sbc-opt-m0" id="sbc-opt-gal-sell-back">Abbrechen</button></div>';
         setSellResult(h);
         const el = sellTargetEl || ui.galleryResult;
         const go = el.querySelector('#sbc-opt-gal-sell-go');

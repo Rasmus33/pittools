@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.31.0
+// @version      6.31.1
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.31.0';
+    const VERSION = '6.31.1';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -15565,6 +15565,99 @@ const HybridSbcEa = (() => {
         out.sort((a, b) => a.key[0] - b.key[0] || a.key[1] - b.key[1] || a.key[2] - b.key[2] || (b.tokensLeft || 0) - (a.tokensLeft || 0) || String(a.name).localeCompare(String(b.name)));
         return out.slice(0, Math.max(1, max || 8)).map(x => { const o = Object.assign({}, x); delete o.key; return o; });
     }
+    /**
+     * v6.31.1: Vorauswahl auch fuer UNVOLLSTAENDIGE Sets (live 23.11.: alle lohnenden
+     * Chancen hatten 6-14 fehlende Karten und fielen aus galleryChanceShortlist). Nur
+     * Scan-Daten, keine Anfrage, keine erfundenen Preise: ungesammelte Versionen sind
+     * Fueller (rareflag 0/1, Rating <= 82, billig) oder stark. Schaetzung =
+     * Grundpunkte x 1,15 (gekaufte Aufstellungen lagen bei 1,16-1,27) plus Erstbesitz-
+     * Bonus nur mit Beleg. Nur ein Sortierkriterium - gerechnet wird weiter mit
+     * galleryChanceForSet. Pure.
+     */
+    function galleryChanceProspects(rows, sets, knownOf, firstOwned, max) {
+        const rank = g => 'NDCBAS'.indexOf(g || 'N');
+        const out = [];
+        (rows || []).forEach(row => {
+            if (!row || !(row.eaKind === 'club' || row.eaKind === 'league') || !(row.eaId > 0)) return;
+            const entry = sets && (sets[row.id] || sets[String(row.id)]);
+            if (!entry || !Array.isArray(entry.defs)) return;
+            const cat = row.catalog || {};
+            const req = Number(cat.requiredCards || row.items) || 0;
+            const grades = (Array.isArray(cat.grades) ? cat.grades : []).filter(g => g && Number.isFinite(g.threshold)).slice().sort((a, b) => a.threshold - b.threshold);
+            if (!(req > 0) || !grades.length) return;
+            const known = knownOf ? knownOf(row.id) : null;
+            if (known === 'S') return;
+            const tok = { N: 0 };
+            grades.forEach(g => { tok[g.name] = g.tokens; });
+            const base = known ? tok[known] : 0;
+            const tokensLeft = Number.isFinite(tok.S) && Number.isFinite(base) ? tok.S - base : null;
+            if (tokensLeft === 0) return;
+            const attrs = entry.attrs || {};
+            const byId = new Map();
+            entry.defs.forEach(d => {
+                if (!Array.isArray(d) || d[1] == null) return;
+                const k = Number(d[0]), old = byId.get(k);
+                if (!old || d[1] > old.own || (d[1] === old.own && d[2] > old.score)) {
+                    const rf = (attrs[d[0]] || [])[3];
+                    byId.set(k, { id: k, own: d[1], score: Number(d[2]) || 0, rating: Number(d[3]) || 0,
+                                  filler: d[1] === 0 && (rf === 0 || rf === 1) && (Number(d[3]) || 0) <= 82,
+                                  fo: d[1] === 1 && !!(firstOwned && firstOwned.has(String(k))) });
+                }
+            });
+            const all = Array.from(byId.values());
+            const pickTop = list => list.slice().sort((a, b) => b.score - a.score).slice(0, req);
+            const est = sel => {
+                if (sel.length < req) return null;
+                const sum = sel.reduce((a, c) => a + c.score, 0);
+                const fo = sel.filter(c => c.fo), foN = fo.length;
+                const f = foN >= 20 ? 5 : foN >= 10 ? 3 : foN >= 5 ? 1.5 : 0;
+                return Math.floor(sum * 1.15 + f * fo.reduce((a, c) => a + c.score, 0));
+            };
+            const gradeOf = v => v == null ? null : (grades.filter(g => v >= g.threshold).pop() || null);
+            const floor = rank(known);
+            const selCheap = pickTop(all.filter(c => c.own === 1 || c.filler));
+            const selBest = pickTop(all);
+            const eC = est(selCheap), eB = est(selBest);
+            const gC = gradeOf(eC), gB = gradeOf(eB);
+            let tier, sel, g, e;
+            if (gC && rank(gC.name) > floor) { tier = 1; sel = selCheap; g = gC; e = eC; }
+            else if (gB && rank(gB.name) > floor) { tier = 2; sel = selBest; g = gB; e = eB; }
+            else return;
+            const gain = Number.isFinite(tok[g.name]) ? tok[g.name] - (base || 0) : null;
+            if (gain != null && gain <= 0) return;
+            const buys = sel.filter(c => c.own !== 1).length;
+            out.push({ id: row.id, name: row.name, known: known, target: g.name, bestTarget: gB ? gB.name : null, tier: tier,
+                       missing: Math.max(0, req - all.filter(c => c.own === 1).length), buys: buys, strongBuys: sel.filter(c => c.own !== 1 && !c.filler).length,
+                       estScore: e, threshold: g.threshold, tokensGain: gain, tokensLeft: tokensLeft, firstOwned: sel.filter(c => c.fo).length,
+                       key: [tier, gain > 0 ? buys / gain : buys, -(e / g.threshold)] });
+        });
+        out.sort((a, b) => a.key[0] - b.key[0] || a.key[1] - b.key[1] || a.key[2] - b.key[2] || String(a.name).localeCompare(String(b.name)));
+        return out.slice(0, Math.max(1, max || 40)).map(x => { const o = Object.assign({}, x); delete o.key; return o; });
+    }
+    /**
+     * v6.31.1: welche Sets der Chancen-Lauf rechnet. Reihenfolge: alte Auswahl mit
+     * "ohne Kauf bewertbar" -> Prospects -> Rest der alten Auswahl, je Set einmal.
+     * Ein Set ohne Regeln im Cache kostet eine fut.gg-Seite (~17 s ueber die Bruecke,
+     * hoechstens maxLoads), Sets mit Regeln im Cache sind frei bis maxEval. Pure.
+     */
+    function galleryChancePickMerge(old, prospects, o) {
+        const opt = o || {};
+        const maxLoads = Math.max(0, opt.maxLoads == null ? 8 : opt.maxLoads), maxEval = Math.max(1, opt.maxEval || 24);
+        const cached = opt.cachedIds || new Set();
+        const order = [], seen = new Set();
+        const add = x => { if (x && x.id != null && !seen.has(String(x.id))) { seen.add(String(x.id)); order.push(x); } };
+        (old || []).filter(x => x.free).forEach(add);
+        (prospects || []).forEach(add);
+        (old || []).forEach(add);
+        const pick = [], next = [];
+        let loads = 0;
+        order.forEach(x => {
+            const isCached = cached.has(String(x.id));
+            if (pick.length < maxEval && (isCached || loads < maxLoads)) { pick.push(x); if (!isCached) loads++; }
+            else next.push(x);
+        });
+        return { pick: pick, next: next, loads: loads, fromCache: pick.length - loads, considered: order.length };
+    }
     function galleryRulesFromSsr(data) {
         if (!data || !data.set || !Number.isInteger(data.set.requiredCards) || !Array.isArray(data.set.grades) || !Array.isArray(data.tags)) return null;
         const prices = {};
@@ -16004,6 +16097,10 @@ const HybridSbcEa = (() => {
         if (!t) return row;
         return Object.assign({}, row, { catalog: Object.assign({}, row.catalog, { grades: galleryGradesWithTokens(row.catalog.grades, t) }) });
     }
+    /** v6.31.1: nur nachsehen, ob die Regeln eines Sets im Cache liegen (keine Anfrage). */
+    async function galleryRulesPeek(row) {
+        try { const c = await idbRun('readonly', st => st.get('galleryRules:' + row.id)); return c && c.v === 3 && c.rules && Date.now() - c.at < GALLERY_RULES_TTL_MS ? c.rules : null; } catch (e) { return null; }
+    }
     async function galleryRulesLoad(row, force) {
         const key = 'galleryRules:' + row.id;
         if (!force) { try { const c = await idbRun('readonly', st => st.get(key)); if (c && c.v === 3 && c.rules && Date.now() - c.at < GALLERY_RULES_TTL_MS) { galleryTokenTableNote(row.id, c.rules.grades); return c.rules; } } catch (e) {} }
@@ -16061,14 +16158,29 @@ const HybridSbcEa = (() => {
             let knownN = 0;
             Object.keys(cache.sets || {}).forEach(k => { knownN += galleryMarkKnownCollected(cache.sets[k], knownIds).length; });
             if (knownN) { try { await galleryScanCacheSave(persona, cache); } catch (e) { /* nur Cache */ } }
-            let rows;
+            let rows, preselection = null;
             if (Array.isArray(o.sets) && o.sets.length) {
                 const f = o.sets.map(String);
                 rows = cat.sets.filter(x => f.some(q => galleryNameHit(x.name, q) > 0));
             } else {
                 // v6.18.0: Vorauswahl nach eingeloester Note und offenen Tokens (galleryChanceShortlist).
                 const pick = galleryChanceShortlist(cat.sets.map(galleryRowWithTokens), cache.sets, galleryKnownGrade, Math.max(1, Math.min(20, Number(o.maxSets) || 8)));
-                const ids = new Set(pick.map(x => x.id));
+                let ids = new Set(pick.map(x => x.id));
+                if (o.scope !== 'complete') {
+                    // v6.31.1: auch unvollstaendige Sets (Scan-Schaetzung), Seitenladungen begrenzt, Gecachtes frei.
+                    const withTok = cat.sets.map(galleryRowWithTokens);
+                    const prospects = galleryChanceProspects(withTok, cache.sets, galleryKnownGrade, galleryFirstOwnedDefs(), 60);
+                    const cachedIds = new Set();
+                    const pIds = new Set(prospects.map(x => String(x.id)).concat(pick.map(x => String(x.id))));
+                    for (const r of withTok) { if (pIds.has(String(r.id)) && await galleryRulesPeek(r)) cachedIds.add(String(r.id)); }
+                    const merged = galleryChancePickMerge(pick, prospects, { maxLoads: Math.max(1, Math.min(20, Number(o.maxSets) || 8)),
+                        maxEval: Math.max(1, Math.min(40, Number(o.maxEval) || 24)), cachedIds: cachedIds });
+                    ids = new Set(merged.pick.map(x => x.id));
+                    const pById = new Map(prospects.map(x => [String(x.id), x]));
+                    preselection = { considered: merged.considered, evaluated: merged.pick.length, loaded: merged.loads, fromCache: merged.fromCache, prospects: pById,
+                                     next: merged.next.slice(0, 10).map(x => ({ name: x.name, target: x.target || null, buys: x.buys != null ? x.buys : null, estScore: x.estScore || null })),
+                                     hint: merged.next.length ? 'Ein zweiter Aufruf rechnet die nächsten Sets (die ersten liegen dann im Cache).' : null };
+                }
                 rows = cat.sets.filter(x => ids.has(x.id));
             }
             rows = rows.filter(x => (x.eaKind === 'club' || x.eaKind === 'league') && x.eaId > 0).map(galleryRowWithTokens);
@@ -16093,6 +16205,7 @@ const HybridSbcEa = (() => {
                 // v6.30.1: gemerkte Live-Preise (30 min) gehen vor fut.gg; Karten ohne Preis werden benannt.
                 const cRules = Object.assign({}, rules, { prices: galleryLivePrices(rules) });
                 const res = galleryChanceForSet(row, entry, cRules, firstOwned, galleryKnownGrade(row.id));
+                if (res && preselection && preselection.prospects.has(String(row.id))) res.prospect = preselection.prospects.get(String(row.id)); // v6.31.1
                 if (res && !res.error) {
                     res.noPrice = galleryNoPriceCards(entry, cRules, { noOffer: galleryNoOfferSet() });
                     if (res.noPrice.length) res.unlock = galleryNoPriceUnlock(row, entry, cRules, firstOwned, galleryKnownGrade(row.id), res, res.noPrice);
@@ -16107,7 +16220,8 @@ const HybridSbcEa = (() => {
             // v6.20.0: fuer den Reiter KI merken (nur Anzeige, ueberlebt kein Neuladen)
             galleryLastChances = { at: Date.now(), top: ranked.slice(0, 4).map(c => ({ set: c.set, grade: c.grade, coins: c.coins, gain: c.tokensGain, perToken: c.perToken })),
                                    free: results.filter(x => !x.error && x.gradeable).map(x => ({ set: x.name, grade: x.gradeable })) };
-            return { results: results, ranked: ranked };
+            if (preselection) delete preselection.prospects;
+            return { results: results, ranked: ranked, preselection: preselection };
         } finally {
             galleryBusy = false; galleryChancesState.running = false;
         }
@@ -18607,13 +18721,14 @@ const HybridSbcEa = (() => {
             const sets = Array.isArray(a.sets) ? a.sets.map(String).filter(Boolean) : null;
             const grade = typeof a.grade === 'string' && /^[DCBAS]$/.test(a.grade) ? a.grade : null;
             const job = mcpStartJob(tool, async () => {
-                const r = await galleryChancesRun({ sets: sets, maxSets: a.maxSets, maxCoins: a.maxCoins, grade: grade, sort: a.sort === 'grade' ? 'grade' : a.sort === 'perToken' ? 'perToken' : 'netPerToken', refreshRules: a.refreshRules === true });
+                const r = await galleryChancesRun({ sets: sets, maxSets: a.maxSets, maxEval: a.maxEval, scope: a.scope === 'complete' ? 'complete' : 'auto', maxCoins: a.maxCoins, grade: grade, sort: a.sort === 'grade' ? 'grade' : a.sort === 'perToken' ? 'perToken' : 'netPerToken', refreshRules: a.refreshRules === true });
                 const top = Math.max(1, Math.min(50, Number(a.top) || 15));
                 return { note: 'Sortiert nach netPerToken = Coins je Token NACH Wiederverkauf (Karten ab 5.000 werden wieder verkauft, 5 % Steuer). selfBuy = Karte ab 50.000, die der Nutzer selbst kauft (buyer: ki / nutzer+ki / nutzer); type/holo je Karte. Punkte MIT Bonusregeln (Holo wird berücksichtigt; Erstbesitz früherer Karten zählt nur mit Beleg). Preise = fut.gg-Schätzung, vor einem Kauf wird live bei EA geprüft. Tokens-Gewinn nur, wenn die eingelöste Note bekannt ist (pittools_gallery_grade). Vorauswahl ohne sets: eingelöste Note und offene Tokens (v6.18.0).',
                          // v6.18.0: was Rasmus im Spiel OHNE Kauf bewerten kann - erst das, dann kaufen
                          gradeWithoutBuying: r.results.filter(x => !x.error && x.gradeable).map(x => ({ set: x.name, grade: x.gradeable, redeemed: x.redeemed, tokens: x.gradeableTokens, score: x.scoreNow })),
+                         preselection: r.preselection || undefined,
                          chances: r.ranked.slice(0, top).map(c => { const o = Object.assign({}, c); delete o.selection; return o; }),
-                         sets: r.results.map(x => x.error ? { name: x.name, error: x.error } : { name: x.name, gradeNow: x.gradeNow, scoreNow: x.scoreNow, bonusNow: x.bonusNow, redeemed: x.redeemed, freeUpgrade: x.freeUpgrade, gradeable: x.gradeable, options: x.options.length, unknownBonus: x.unknownBonus,
+                         sets: r.results.map(x => x.error ? { name: x.name, error: x.error } : { name: x.name, gradeNow: x.gradeNow, scoreNow: x.scoreNow, bonusNow: x.bonusNow, redeemed: x.redeemed, freeUpgrade: x.freeUpgrade, gradeable: x.gradeable, options: x.options.length, unknownBonus: x.unknownBonus, prospect: x.prospect || undefined,
                              noPrice: x.noPrice && x.noPrice.length ? x.noPrice : undefined, unlock: x.unlock && x.unlock.length ? x.unlock : undefined,
                              whyNoOptions: !x.options.length && x.noPrice && x.noPrice.length ? 'Starke Karten ohne Preis - siehe noPrice/unlock' : undefined,
                              hint: x.noPrice && x.noPrice.length ? 'Live-Preis: pittools_gallery_quote set:"' + x.name + '" cards:' + JSON.stringify(x.noPrice.map(c => c.defId)) : undefined }) };

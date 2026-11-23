@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.34.0
+// @version      6.35.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.34.0';
+    const VERSION = '6.35.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -217,6 +217,7 @@
             points: null,            // v6.15.0/6.18.1: Punkte-SBC - Gruppen, Auswahl, Vereins-Vorschau
             tradepileSell: null,     // v5.37.0: Transferliste zum Marktpreis listen
             handBuys: null, // v6.30.0: mitgelesene Handkaeufe (Sofortkauf in der EA-Oberflaeche)
+            bidSbc: null,     // v6.35.0: Mit Gebots-Karten planen (Bestand je Rating, Obergrenze, gepackt, geplant)
             bidCapture: null, // v6.34.0: Gebots-Helfer - Mitschnitt der EA-Oberflaeche (Suchparameter, Antwortform, Transferziele)
             clientTradeSamples: null, // v5.49.0: Handels-Requests der EA-Oberflaeche (Header-Namen, Body, Status)
             futbinBuyPlan: null,     // v5.22.0: Kaufplan aus den Konzept-Spielern des Kaders (Anzahl, uebersprungen, Suchfehler)
@@ -7729,6 +7730,8 @@
                         <div class="sbc-opt-group-title" style="margin-top:0;">Gebots-Helfer (Gold bis 600)</div>
                         <div class="sbc-opt-bid-summary" id="sbc-opt-bid-summary">Gewonnen: 0 Karten</div>
                         <div class="sbc-opt-dim" id="sbc-opt-bid-hint">Mitlesen: Biete in der Web App von Hand (höchstens 600). PitTools merkt sich gewonnene Gold-Karten, sobald du die Transferziele öffnest – ohne eigene Anfrage an EA.</div>
+                        <div class="sbc-opt-dim" id="sbc-opt-bid-pack" hidden></div>
+                        <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-bid-plan">Mit Gebots-Karten planen</button>
                         <div class="sbc-opt-result" id="sbc-opt-bid-result"></div>
                     </div>
                 </div>
@@ -13850,7 +13853,29 @@ const HybridSbcEa = (() => {
             return { count: res.k, teams: res.teams, upperBound: upperBound, exact: exact, cards: total };
         }
         function maxRounds(ratings, slots, target) { return pack(ratings, slots, target).count; }
-        return { pack: pack, maxRounds: maxRounds, squadRating: squadRating };
+        /**
+         * v6.35.0: Pool fuer "Mit Gebots-Karten planen": nur Karten aus der
+         * ID-Menge, rareflag streng 0/1, keine Evos, ohne PaleTools-Sperren
+         * (dieselben Schluessel wie SolverCore.isLockedOut).
+         */
+        function planPool(pool, wonIds, lockedIds) {
+            const locked = new Set((lockedIds || []).map(String));
+            const isLocked = p => locked.has(String(p.id)) || (p.assetId != null && locked.has(String(p.assetId))) ||
+                (p.raw && p.raw.resourceId != null && locked.has(String(p.raw.resourceId))) || (p.resourceId != null && locked.has(String(p.resourceId)));
+            return (Array.isArray(pool) ? pool : []).filter(p => p && wonIds && wonIds.has(String(p.id)) &&
+                typeof p.rareflag === 'number' && (p.rareflag === 0 || p.rareflag === 1) && !p.isEvo && !p.isAcademy && !isLocked(p));
+        }
+        /** Konkrete Karten zu einer Rating-Zusammensetzung (ungenutzte, je Rating die erste). */
+        function pickCards(pool, teamRatings, usedIds) {
+            const used = new Set(usedIds || []), out = [];
+            for (const r of (teamRatings || [])) {
+                const c = (pool || []).find(p => p && Number(p.rating) === Number(r) && !used.has(String(p.id)));
+                if (!c) return null;
+                used.add(String(c.id)); out.push(c);
+            }
+            return out;
+        }
+        return { pack: pack, maxRounds: maxRounds, squadRating: squadRating, planPool: planPool, pickCards: pickCards };
     })();
     // [BIDPACK-END]
     // ===================== v6.34.0 Gebots-Helfer: Speicher + Mitlesen (M0) =====================
@@ -14020,10 +14045,139 @@ const HybridSbcEa = (() => {
         if (!el) return;
         const t = bidCardSummary().text;
         if (el.textContent !== t) el.textContent = t;
+        const pk = document.getElementById('sbc-opt-bid-pack');
+        if (pk) {
+            let pt = null;
+            try { pt = bidPackPreviewText(); } catch (e) { pt = null; }
+            if ((pk.textContent || '') !== (pt || '')) pk.textContent = pt || '';
+            if (pk.hidden !== !pt) pk.hidden = !pt;
+        }
     }
     function initBidHelperUi() {
+        const pb = document.getElementById('sbc-opt-bid-plan');
+        if (pb) pb.addEventListener('click', onBidPlanClick);
         renderBidCard();
         setInterval(function () { if (tabCurrent === 'kaufen') { try { renderBidCard(); } catch (e) {} } }, 4000);
+    }
+    // ===================== v6.35.0 Mit Gebots-Karten planen =====================
+    /**
+     * v6.35.0: dieselben Plan-Metadaten wie am Ende von planBatchRounds
+     * (bewusst kopiert statt herausgezogen - planBatchRounds bleibt Zeile fuer
+     * Zeile wie vorher, Tests extrahieren ihn einzeln; ein Test haelt beide gleich).
+     */
+    function bidPlanMeta(plan, cfg) {
+        // Fuer den Plan-Check (Ticket #73) am Plan festgehalten: derselbe
+        // Stand, mit dem geplant wurde - eine spaetere UI-Aenderung darf
+        // die Auswertung des schon fertigen Plans nicht verfaelschen.
+        plan.cfg = cfg;
+        // Anker ist das SET plus die Vorgaben - die challengeId aendert
+        // sich pro Wiederholung und taugt nicht als Vergleich.
+        plan.setId = STATE.sbc.setId;
+        // Fuer die Vorschau festgehalten (renderBatchPreview): der Toast
+        // oben ist nach ein paar Sekunden weg, die Freigabe kommt aber oft
+        // erst deutlich spaeter - der Zustand muss in der Vorschau stehen
+        // bleiben.
+        plan.poolLoadIncomplete = STATE.loadIncomplete;
+        plan.targetOVR = STATE.sbc.targetOVR;
+        plan.slots = STATE.sbc.formationSlots;
+        plan.usedChallengeIds = [];
+        // Set-NAME: damit die richtige Kachel im Hub wiedergefunden wird
+        // (der Controller haelt das Set als UTSBCSetEntity).
+        plan.setEntity = (function () {
+            try {
+                const c = findSbcController();
+                return (c && (c._set || c.set)) || null;
+            } catch (e) { return null; }
+        })();
+        plan.setName = (plan.setEntity &&
+            (plan.setEntity.name || plan.setEntity.setName)) || null;
+        return plan;
+    }
+    // Die offene SBC (z.B. "80+ 1 von 3 Player Pick", "81x2 Pack") aus GENAU
+    // den gewonnenen Gebots-Karten, so oft wie moeglich. Wie viele, rechnet
+    // BidPackCore (nicht gierig); jede gepackte Runde geht durch SolverCore.solve
+    // und wird ein normaler plan.rounds-Eintrag. Lehnt der Solver eine Runde ab
+    // (andere Vorgaben), plant der gewohnte Batch-Weg mit dem uebrigen
+    // Gebots-Pool weiter. Abgegeben wird unveraendert ueber die Freigabe im
+    // Panel (showBatchConfirm -> executePlan, alle Wachen).
+    function bidPlanInput(cfg) {
+        const wonIds = new Set(bidWonLoad(null).map(x => String(x.id)));
+        const pool = BidPackCore.planPool(STATE.pool, wonIds, cfg && cfg.lockedIds);
+        const slots = Math.max(1, Number(STATE.sbc.formationSlots) || Number(cfg && cfg.slots) || 11);
+        const target = Number(STATE.sbc.targetOVR) || 0;
+        return { pool: pool, slots: slots, target: target, wonCount: wonIds.size };
+    }
+    /** "Aus 23 Karten: 4x diese SBC moeglich, 3 Karten bleiben uebrig." - ohne Anfrage. */
+    function bidPackPreviewText() {
+        const sb = STATE.sbc;
+        if (!sb || (!sb.targetOVR && !(sb.formationSlots > 0))) return null;
+        const inp = bidPlanInput(null);
+        if (!inp.pool.length) return null;
+        const res = BidPackCore.pack(inp.pool.map(p => p.rating), inp.slots, inp.target);
+        return 'Aus ' + inp.pool.length + ' Karten: ' + res.count + '× diese SBC möglich, ' + (inp.pool.length - res.count * inp.slots) + ' Karten bleiben übrig.' +
+               (res.exact ? '' : ' (Schätzung)');
+    }
+    let bidPlanStamp = 0;
+    async function planBidRounds(cfgIn, sparedIds) {
+        const cfg = Object.assign({}, cfgIn, { minRating: 1, maxRatingEnabled: false, maxRating: 0 });
+        const inp = bidPlanInput(cfg);
+        const spared = sparedIds && sparedIds.size ? sparedIds : null;
+        const pool = spared ? inp.pool.filter(p => !spared.has(String(p.id))) : inp.pool;
+        const packed = BidPackCore.pack(pool.map(p => p.rating), inp.slots, inp.target);
+        const want = Math.max(1, Math.min(20, packed.count || Math.floor(pool.length / inp.slots) || 1));
+        const st = SolverCore.beginBatch(pool, cfg, want);
+        let solverRejected = 0;
+        for (let i = 0; i < packed.teams.length && st.rounds.length < st.n; i++) {
+            showProgress(i + 1, packed.teams.length, 'plane Team ' + (i + 1) + ' von ' + packed.teams.length + ' (Gebots-Karten)...', '');
+            await sleep(0);
+            const cards = BidPackCore.pickCards(pool, packed.teams[i], st.usedIds);
+            const res = cards ? SolverCore.solve(cards, cfg) : null;
+            if (!res || !res.ok || res.players.length !== cards.length) { solverRejected++; break; }
+            res.players.forEach(p => st.usedIds.add(String(p.id)));
+            st.rounds.push(res);
+        }
+        // Rest (oder alles, wenn der Solver eine gepackte Runde ablehnt): gewohnter Batch-Weg im Gebots-Pool.
+        while (st.rounds.length < st.n) {
+            await sleep(0);
+            if (!SolverCore.batchRound(st)) break;
+        }
+        const plan = bidPlanMeta(SolverCore.finishBatch(st), cfg);
+        plan.bidOnly = true;
+        plan.bidStamp = ++bidPlanStamp;
+        plan.bidPack = { cards: pool.length, upperBound: packed.upperBound, packed: packed.count, exact: packed.exact, solverRejected: solverRejected };
+        STATE.diag.bidSbc = { at: Date.now(), stamp: plan.bidStamp, byRating: bidByRating(pool), cards: pool.length, won: inp.wonCount, slots: inp.slots,
+                              target: inp.target, upperBound: packed.upperBound, packed: packed.count, exact: packed.exact, planned: plan.planned, solverRejected: solverRejected };
+        return plan;
+    }
+    let bidPlanBusy = false;
+    async function onBidPlanClick() {
+        if (bidPlanBusy) return;
+        syncSbcWithOpenChallenge();
+        const sb = STATE.sbc;
+        if (!sb.targetOVR && !(sb.playerLevelConstraints || []).length && !(sb.rarityConstraints || []).length && !(sb.qualityConstraints || []).length) {
+            toast('Keine SBC-Vorgaben erkannt. Bitte die Challenge im Spiel öffnen.', 'error'); return;
+        }
+        if (!(STATE.pool || []).length) { toast('Erst „Spieler laden“ tippen.', 'error'); return; }
+        bidPlanBusy = true;
+        const btn = document.getElementById('sbc-opt-bid-plan');
+        setBtnBusy(btn, true, 'plane');
+        try {
+            const plan = await planBidRounds(readConfig(), null);
+            if (!plan.planned) {
+                hideProgress();
+                toast('Mit den Gebots-Karten ist diese SBC nicht lösbar (' + plan.bidPack.cards + ' Karten' + (plan.stoppedReason ? ': ' + plan.stoppedReason : '') + ').', 'warn');
+                return;
+            }
+            STATE.batchSpare = new Set();
+            STATE.batch = plan;
+            setTab('rating', false);
+            renderBatchPreview(plan);
+            finishProgress(plan.planned + '× aus Gebots-Karten geplant', true);
+            setStatus(plan.planned + ' Teams aus Gebots-Karten geplant');
+        } catch (e) {
+            toast('Planen mit Gebots-Karten fehlgeschlagen: ' + e.message, 'error');
+            reportError('Gebots-Karten planen', e);
+        } finally { bidPlanBusy = false; setBtnBusy(btn, false); }
     }
     /** Report-Feld bidHelper (Einstellungen, Grenzen, Bestand, Transferziele, Mitschnitt). */
     function bidHelperReport(capture) {
@@ -21266,7 +21420,7 @@ const HybridSbcEa = (() => {
             // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten mit
             // Kosten, Marktabfragen, Fehler, eingefuegte Loesung.
             hybridSbc: STATE.diag.hybridSbc || null,
-            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, batchSpare: STATE.diag.batchSpare || null, mcp: STATE.diag.mcp || null, relay: STATE.diag.relay || null, liveChecks: liveChecksLoad(), buyLedger: (function () { try { return buyLedgerLoad().slice(-50); } catch (e) { return null; } })(), marketBudget: (function () { try { return marketGuardSnapshot(marketGuardLoad(), Date.now()); } catch (e) { return null; } })(), points: STATE.diag.points || null, pointsBuy: STATE.diag.pointsBuy || null, galleryTokens: (function () { try { const p = ownPersonaId(); return p ? galleryTokenBookLoad(p) : null; } catch (e) { return null; } })(), galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null, handBuys: STATE.diag.handBuys || null, bidHelper: (function () { try { return bidHelperReport(STATE.diag.bidCapture); } catch (e) { return null; } })(),
+            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, batchSpare: STATE.diag.batchSpare || null, mcp: STATE.diag.mcp || null, relay: STATE.diag.relay || null, liveChecks: liveChecksLoad(), buyLedger: (function () { try { return buyLedgerLoad().slice(-50); } catch (e) { return null; } })(), marketBudget: (function () { try { return marketGuardSnapshot(marketGuardLoad(), Date.now()); } catch (e) { return null; } })(), points: STATE.diag.points || null, pointsBuy: STATE.diag.pointsBuy || null, galleryTokens: (function () { try { const p = ownPersonaId(); return p ? galleryTokenBookLoad(p) : null; } catch (e) { return null; } })(), galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null, handBuys: STATE.diag.handBuys || null, bidHelper: (function () { try { return bidHelperReport(STATE.diag.bidCapture); } catch (e) { return null; } })(), bidSbc: (function () { try { const b = STATE.diag.bidSbc; if (!b) return null; const pl = STATE.batch; return Object.assign({}, b, { done: pl && pl.bidOnly && pl.bidStamp === b.stamp ? (pl.usedChallengeIds || []).length : null }); } catch (e) { return null; } })(),
             futbinBuy: STATE.diag.futbinBuy || null,
             futbinBuyPlan: STATE.diag.futbinBuyPlan || null,
             marketUrls: STATE.diag.marketUrls,
@@ -24778,6 +24932,7 @@ const HybridSbcEa = (() => {
             const pool = poolWithoutSpared(STATE.pool, STATE.batchSpare);
             const np = plan.mode === 'reihe'
                 ? await planQueueRounds(plan.chosen, cfg, null, pool)
+                : plan.bidOnly ? await planBidRounds(cfg, STATE.batchSpare) // v6.35.0: Gebots-Plan bleibt Gebots-Plan
                 : await planBatchRounds(plan.requested || plan.planned || 1, cfg, null, pool);
             if (plan.mode === 'reihe') np.chosen = plan.chosen;
             np.spared = Array.from(STATE.batchSpare).map(sid => {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.38.0
+// @version      6.39.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.38.0';
+    const VERSION = '6.39.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7741,10 +7741,15 @@
                         <details class="sbc-opt-bid-set" id="sbc-opt-bid-set"><summary>Einstellungen</summary>
                             <div class="sbc-opt-inline"><label>Rating von <input type="number" id="sbc-opt-bid-rmin" min="75" max="99" placeholder="Ziel−1"></label>
                             <label>bis <input type="number" id="sbc-opt-bid-rmax" min="75" max="99" value="99"></label></div>
-                            <div class="sbc-opt-inline"><label>Höchstgebot (nur senken) <input type="number" id="sbc-opt-bid-cap" min="150" max="600" step="50" value="600"></label></div>
+                            <div class="sbc-opt-inline"><label>Höchstgebot (nur senken) <input type="number" id="sbc-opt-bid-cap" min="150" max="600" step="50" value="600"></label>
+                            <label>Gebote je Runde <input type="number" id="sbc-opt-bid-max" min="1" max="35" value="20"></label></div>
                             <label class="sbc-opt-switch"><input type="checkbox" id="sbc-opt-bid-fest" checked><span class="track" aria-hidden="true"></span><span class="txt">Immer das Höchstgebot bieten<small>sonst das Mindestgebot</small></span></label>
                         </details>
                         <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-bid-search">Kandidaten suchen (je Gebot ein Tipp)</button>
+                        <label class="sbc-opt-switch"><input type="checkbox" id="sbc-opt-bid-auto"><span class="track" aria-hidden="true"></span><span class="txt">Automatisches Bieten erlauben<small>eine Runde je Freigabe · verstößt gegen EAs Regeln</small></span></label>
+                        <div class="sbc-opt-bid-confirm" id="sbc-opt-bid-confirm" hidden></div>
+                        <button type="button" class="sbc-opt-btn danger" id="sbc-opt-bid-round" hidden>Gebots-Runde starten</button>
+                        <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-bid-stop" hidden>Stopp nach diesem Gebot</button>
                         <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-bid-collect">Gewonnene abholen</button>
                         <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-bid-plan">Mit Gebots-Karten planen</button>
                         <div class="sbc-opt-result" id="sbc-opt-bid-result"></div>
@@ -14114,17 +14119,19 @@ const HybridSbcEa = (() => {
     function bidSettingsWire() {
         const s = bidSettingsLoad();
         const rmin = document.getElementById('sbc-opt-bid-rmin'), rmax = document.getElementById('sbc-opt-bid-rmax');
-        const cap = document.getElementById('sbc-opt-bid-cap'), fest = document.getElementById('sbc-opt-bid-fest');
+        const cap = document.getElementById('sbc-opt-bid-cap'), fest = document.getElementById('sbc-opt-bid-fest'), mx = document.getElementById('sbc-opt-bid-max');
+        if (mx) mx.value = s.maxBids;
         if (rmin && s.ratingMin) rmin.value = s.ratingMin;
         if (rmax) rmax.value = s.ratingMax || 99;
         if (cap) cap.value = s.cap;
         if (fest) fest.checked = s.fest600 !== false;
         const save = () => {
             const n = el => { const v = parseInt(el && el.value, 10); return Number.isFinite(v) ? v : null; };
-            bidSettingsSave({ ratingMin: n(rmin), ratingMax: n(rmax) || 99, cap: bidCapOf(n(cap)), fest600: !fest || fest.checked });
+            bidSettingsSave({ ratingMin: n(rmin), ratingMax: n(rmax) || 99, cap: bidCapOf(n(cap)), fest600: !fest || fest.checked, maxBids: n(mx) || 20 });
             if (cap) cap.value = bidSettingsLoad().cap;
+            if (mx) mx.value = bidSettingsLoad().maxBids;
         };
-        [rmin, rmax, cap, fest].forEach(el => { if (el) el.addEventListener('change', save); });
+        [rmin, rmax, cap, fest, mx].forEach(el => { if (el) el.addEventListener('change', save); });
     }
     function initBidHelperUi() {
         const pb = document.getElementById('sbc-opt-bid-plan');
@@ -14141,6 +14148,15 @@ const HybridSbcEa = (() => {
             else if (t.classList.contains('sbc-opt-bid-one')) onBidOneClick(t.getAttribute('data-trade'));
         });
         bidSettingsWire();
+        const au = document.getElementById('sbc-opt-bid-auto');
+        if (au) au.addEventListener('change', onBidAutoChange);
+        const rb = document.getElementById('sbc-opt-bid-round');
+        if (rb) rb.addEventListener('click', onBidRoundClick);
+        const stp = document.getElementById('sbc-opt-bid-stop');
+        if (stp) stp.addEventListener('click', () => { bidRoundStop = true; stp.disabled = true; setTimeout(() => { stp.disabled = false; }, 1500); });
+        const bx = document.getElementById('sbc-opt-bid-confirm');
+        if (bx) bx.addEventListener('click', onBidBoxClick);
+        bidAutoSync();
         renderBidCard();
         setInterval(function () { if (tabCurrent === 'kaufen') { try { renderBidCard(); } catch (e) {} } }, 4000);
     }
@@ -14496,6 +14512,7 @@ const HybridSbcEa = (() => {
         const parsed = parseBidAuctions(json && json.auctionInfo);
         const honored = bidSearchHonored(parsed, q.macr);
         run.pages = (run.pages || 0) + 1;
+        run.lastSearchAt = Date.now();
         run.search = { basis: q.basis, query: q.path.replace(/start=\d+/, 'start=…'), honored: honored };
         return parsed;
     }
@@ -14629,6 +14646,184 @@ const HybridSbcEa = (() => {
             c.state = r.ok ? 'geboten: ' + amount : 'Stopp';
             if (r.stop) { s.stopped = s.run.stopped; s.note = s.run.stopped; }
         } finally { bidHelperBusy = false; bidM1Render(); renderBidCardSoon(); }
+    }
+    // ---- M2: Runde mit EINER Freigabe (Standard AUS) ----
+    // Genau eine Runde je Freigabe, kein Selbst-Neustart, kein Dauerlaeufer.
+    const BID_ROUND_MAX_MS = 45 * 60 * 1000;
+    const BID_GAP_MIN_MS = 8000, BID_GAP_MAX_MS = 20000;          // zwischen zwei Geboten
+    const BID_PAUSE_EVERY_MIN = 5, BID_PAUSE_EVERY_MAX = 8;        // alle 5-8 Gebote ...
+    const BID_PAUSE_MIN_MS = 60000, BID_PAUSE_MAX_MS = 180000;     // ... 60-180 s Pause
+    const BID_ROUND_MAX_PAGES = 40;
+    const BID_RISK_TEXT = 'Automatisches Bieten verstößt gegen EAs Regeln. Mögliche Folgen: Marktsperre, Coin-Abzug, Account-Sperre. Trotzdem einschalten?';
+    let bidRoundStop = false;
+    let bidRoundPending = null; // { stamp, n, range, cap, persona, at }
+    /** Andere Laeufe, mit denen der Helfer nie parallel laeuft (Kauf, Listen, Galerie, SBC-Abgabe/Planung, Vorlagen). */
+    function bidOtherRunBusy() {
+        try {
+            if (buyBusy || sbcSolveBusy || sellBusy || galleryBusy || pointsBuyBusy) return 'Gerade läuft ein Kauf-, Verkaufs- oder Galerie-Lauf.';
+            if (vorlagenRun && !vorlagenRun.fertig) return 'Gerade läuft eine Vorlage.';
+            if (ui.batchRun && ui.batchRun.disabled && ui.batchPlan && ui.batchPlan.disabled) return 'Gerade wird eine SBC geplant oder abgegeben.';
+        } catch (e) {}
+        return null;
+    }
+    /** Was die Freigabe erlaubt (pure bis auf Speicher): Anzahl, Spanne, Grenze - oder ein Grund, warum nicht. */
+    function bidRoundProposal() {
+        const s = bidSettingsLoad();
+        if (!s.on) return { why: 'Automatisches Bieten ist aus.' };
+        const block = bidStartBlock() || bidOtherRunBusy();
+        if (block) return { why: block };
+        if (document.visibilityState && document.visibilityState !== 'visible') return { why: 'Start nur im sichtbaren Tab.' };
+        const persona = ownPersonaId();
+        const lg = bidJsonLoad(bidPersonaKey(BID_LOG_KEY), {});
+        const cnt = bidLimitCounts(lg, persona, Date.now());
+        if (cnt.runsDay >= BID_LIMITS.runsDay) return { why: 'Heute schon ' + cnt.runsDay + ' Runden (höchstens ' + BID_LIMITS.runsDay + ').' };
+        const room = bidLimitRoom(lg, persona, Date.now(), bidWatchState ? bidWatchState.open : 0);
+        const n = Math.min(s.maxBids, room);
+        if (n <= 0) return { why: 'Grenze erreicht (40 Gebote/h, 150/Tag oder ' + BID_LIMITS.maxOpen + ' offene Gebote).' };
+        return { n: n, range: bidRatingRange(s), cap: s.cap, persona: persona };
+    }
+    function bidRoundConfirmText(p) {
+        return 'Bis zu ' + p.n + ' Gebote à höchstens ' + p.cap + ' Coins, zusammen höchstens ' + (p.n * p.cap) + ' Coins, Rating ' + p.range.min + '–' + p.range.max +
+               ', Dauer höchstens ' + Math.round(BID_ROUND_MAX_MS / 60000) + ' min. Genau eine Runde, danach Schluss.';
+    }
+    function bidBox(html) { const el = document.getElementById('sbc-opt-bid-confirm'); if (!el) return; el.innerHTML = html || ''; el.hidden = !html; }
+    function onBidRoundClick() {
+        const p = bidRoundProposal();
+        if (p.why) { toast(p.why, 'error'); return; }
+        bidRoundPending = Object.assign({ stamp: Date.now() + ':' + Math.random(), at: Date.now() }, p);
+        bidBox('<div class="sbc-opt-group-title" style="margin-top:0;">Gebots-Runde starten?</div><div class="sbc-opt-dim">' + escapeHtml(bidRoundConfirmText(p)) + '</div>' +
+               '<div class="sbc-opt-inline"><button type="button" class="sbc-opt-btn danger" data-bid-act="round-yes" data-stamp="' + escapeHtml(bidRoundPending.stamp) + '">Ja, Runde starten</button>' +
+               '<button type="button" class="sbc-opt-btn ghost" data-bid-act="no">Abbrechen</button></div>');
+    }
+    async function onBidRoundYes(stamp) {
+        const p = bidRoundPending;
+        bidRoundPending = null;
+        bidBox('');
+        if (!p || p.stamp !== stamp || Date.now() - p.at > 2 * 60 * 1000) { toast('Die Freigabe ist veraltet - bitte neu starten.', 'warn'); return; }
+        const fresh = bidRoundProposal();
+        if (fresh.why) { toast(fresh.why, 'error'); return; }
+        if (fresh.persona !== p.persona) { toast('Anderer Account als bei der Freigabe.', 'error'); return; }
+        // Die Freigabe gilt hoechstens fuer das Freigegebene: nie mehr Gebote, nie hoehere Grenze, nie breitere Spanne.
+        const appr = { n: Math.min(p.n, fresh.n), cap: Math.min(p.cap, fresh.cap), range: { min: Math.max(p.range.min, fresh.range.min), max: Math.min(p.range.max, fresh.range.max) }, persona: p.persona };
+        try { await bidRoundRun(appr); }
+        catch (e) { toast('Gebots-Runde: ' + (e && e.message || e), 'error'); }
+    }
+    function bidRoundSettings(appr) { return Object.assign({}, bidSettingsLoad(), { cap: bidCapOf(appr.cap), ratingMin: appr.range.min, ratingMax: appr.range.max }); }
+    /** Die Runde selbst. appr = { n, cap, range, persona } aus der Freigabe. */
+    async function bidRoundRun(appr) {
+        if (bidHelperBusy) throw new Error('Der Gebots-Helfer arbeitet schon.');
+        const block = bidStartBlock() || bidOtherRunBusy();
+        if (block) throw new Error(block);
+        const settings = bidRoundSettings(appr);
+        const t0 = Date.now(), deadline = t0 + BID_ROUND_MAX_MS;
+        const run = bidRunRecord({ at: t0, mode: 'runde', approved: { n: appr.n, cap: settings.cap, range: appr.range }, pages: 0, seen: 0, eligible: 0, skipped: null,
+                                   bids: 0, maxBid: 0, won: 0, outbid: null, expired: null, spent: 0, stopped: null, capBlocked: 0 });
+        const ctx = { persona: appr.persona, bidden: new Set(bidTradesLoad().map(x => String(x.t))), placed: 0 };
+        bidRoundStop = false;
+        bidHelperBusy = true;
+        bidJsonSave(bidPersonaKey(BID_LOG_KEY), bidLimitNote(bidJsonLoad(bidPersonaKey(BID_LOG_KEY), {}), appr.persona, 'run', t0));
+        bidRoundUi(true);
+        let n = appr.n, start = 0, sinceBreak = 0, breakAt = BID_PAUSE_EVERY_MIN + Math.floor(Math.random() * (BID_PAUSE_EVERY_MAX - BID_PAUSE_EVERY_MIN + 1));
+        const stopNow = () => {
+            if (bidRoundStop) return 'auf Wunsch gestoppt';
+            if (ownPersonaId() !== appr.persona) return 'Account gewechselt';
+            if (Date.now() >= deadline) return 'Zeitlimit (45 min)';
+            return bidOtherRunBusy();
+        };
+        try {
+            const wl = await apiGet('watchlist');
+            bidNoteWatchlist(wl && wl.auctionInfo, 'runde');
+            if (bidWatchState.total + n > BID_LIMITS.hardOpen) n = Math.max(0, BID_LIMITS.hardOpen - bidWatchState.total);
+            if (n <= 0) { run.stopped = 'Transferziele fast voll (' + bidWatchState.total + ') - erst „Gewonnene abholen“.'; return run; }
+            run.target = n;
+            let firstSearch = true;
+            outer:
+            while (ctx.placed < n) {
+                const why = stopNow(); if (why) { run.stopped = why; break; }
+                if (run.pages >= BID_ROUND_MAX_PAGES) { run.stopped = 'Seitenlimit der Runde'; break; }
+                if (!firstSearch) await bidSleep(BID_SEARCH.gapMinMs, BID_SEARCH.gapMaxMs);
+                firstSearch = false;
+                const why2 = stopNow(); if (why2) { run.stopped = why2; break; }
+                let parsed;
+                try { parsed = await bidSearchPage(start, settings, run); }
+                catch (e) {
+                    if (e && e.waitMs > 0 && Date.now() + e.waitMs < deadline) { await BgTimer.wait(e.waitMs + 500); continue; }
+                    run.stopped = String(e && e.message || e);
+                    if (Number(e && e.status) === 461) marketGuardSetLock('461 bei der Gebots-Suche');
+                    break;
+                }
+                if (parsed.length && !parsed.some(a => a.readable)) { run.stopped = 'EAs Antwort enthält kein lesbares startingBid/currentBid - Abbruch ohne Gebot.'; break; }
+                const cands = bidCandidatesFrom(parsed, settings, run, ctx.bidden);
+                start = parsed.length >= 21 && !cands.length ? start + 21 : 0;
+                for (const c of cands) {
+                    if (ctx.placed >= n) break outer;
+                    const why3 = stopNow(); if (why3) { run.stopped = why3; break outer; }
+                    if (c.a.expires != null && c.a.expires * 1000 - (Date.now() - (run.lastSearchAt || Date.now())) < BID_MIN_SECONDS_LEFT * 1000) { run.skipped.done++; continue; } // Restzeit seit der Suche geschrumpft
+                    const r = await bidPlaceOne(c, settings, run, ctx);
+                    if (r.stop) break outer;
+                    if (r.ok) {
+                        try { buyLedgerRecord({ mode: 'gebot', via: 'helfer', name: null, defId: c.a.item.resourceId || c.a.item.definitionId, rating: c.a.item.rating,
+                            tradeId: c.a.tradeId, itemId: c.a.item.id, bid: c.amount, planned: c.amount, max: settings.cap, coinsBefore: userCoins(), ea: buyLedgerFromResponse(r.resp, c.a.tradeId) }); } catch (e) {}
+                        bidRoundUi(true);
+                        sinceBreak++;
+                        if (ctx.placed >= n) break outer;
+                        if (sinceBreak >= breakAt) {
+                            sinceBreak = 0; breakAt = BID_PAUSE_EVERY_MIN + Math.floor(Math.random() * (BID_PAUSE_EVERY_MAX - BID_PAUSE_EVERY_MIN + 1));
+                            await bidSleep(BID_PAUSE_MIN_MS, BID_PAUSE_MAX_MS);
+                        } else await bidSleep(BID_GAP_MIN_MS, BID_GAP_MAX_MS);
+                    }
+                }
+            }
+            if (!run.stopped) run.stopped = ctx.placed >= n ? 'fertig (' + ctx.placed + ' Gebote)' : 'beendet';
+            return run;
+        } catch (e) {
+            run.stopped = run.stopped || String(e && e.message || e);
+            throw e;
+        } finally {
+            run.ms = Date.now() - t0;
+            bidHelperBusy = false;
+            bidRoundStop = false;
+            bidRoundUi(false);
+            renderBidCardSoon();
+            try { toast('Gebots-Runde: ' + run.bids + ' Gebote (höchstens ' + (run.maxBid || 0) + ') - ' + run.stopped, run.bids ? 'success' : 'warn'); } catch (e) {}
+        }
+    }
+    function bidRoundUi(active) {
+        const st = document.getElementById('sbc-opt-bid-stop'), rb = document.getElementById('sbc-opt-bid-round');
+        if (st) st.hidden = !active;
+        if (rb) rb.disabled = !!active;
+        const runs = STATE.diag.bidRuns || [];
+        const r = runs[runs.length - 1];
+        const el = document.getElementById('sbc-opt-bid-result');
+        if (el && r && r.mode === 'runde') {
+            el.className = 'sbc-opt-result show';
+            el.textContent = (active ? 'Runde läuft: ' : 'Runde: ') + r.bids + ' von ' + (r.target || r.approved.n) + ' Geboten, Seiten ' + r.pages + (r.stopped ? ' – ' + r.stopped : '');
+        }
+    }
+    /** Schalter "Automatisches Bieten": an nur nach EINMALIGER Bestaetigung des Risikotexts im Panel. */
+    function bidAutoSync() {
+        const s = bidSettingsLoad();
+        const sw = document.getElementById('sbc-opt-bid-auto'), rb = document.getElementById('sbc-opt-bid-round');
+        if (sw && sw.checked !== s.on) sw.checked = s.on;
+        if (rb) rb.hidden = !s.on;
+    }
+    function onBidAutoChange(ev) {
+        const sw = ev && ev.target;
+        if (!sw) return;
+        if (!sw.checked) { bidSettingsSave({ on: false }); bidBox(''); bidAutoSync(); return; }
+        sw.checked = false;
+        if (bidSettingsLoad().riskOk) { bidSettingsSave({ on: true, riskOk: true }); bidAutoSync(); return; }
+        bidBox('<div class="sbc-opt-warn">⚠ ' + escapeHtml(BID_RISK_TEXT) + '</div>' +
+               '<div class="sbc-opt-inline"><button type="button" class="sbc-opt-btn danger" data-bid-act="risk-yes">Ja, einschalten</button>' +
+               '<button type="button" class="sbc-opt-btn ghost" data-bid-act="no">Abbrechen</button></div>');
+    }
+    function onBidBoxClick(ev) {
+        const t = ev.target && ev.target.closest ? ev.target.closest('button[data-bid-act]') : null;
+        if (!t) return;
+        const act = t.getAttribute('data-bid-act');
+        if (act === 'no') { bidRoundPending = null; bidBox(''); return; }
+        if (act === 'risk-yes') { bidSettingsSave({ on: true, riskOk: true }); bidBox(''); bidAutoSync(); return; }
+        if (act === 'round-yes') onBidRoundYes(t.getAttribute('data-stamp'));
     }
     async function onBidCollectClick() {
         const btn = document.getElementById('sbc-opt-bid-collect');

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.29.9
+// @version      6.30.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.29.9';
+    const VERSION = '6.30.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -216,6 +216,7 @@
             gallerySell: null,       // v5.35.0: Verkauf gekaufter Galerie-Karten (Preise, Schritte)
             points: null,            // v6.15.0/6.18.1: Punkte-SBC - Gruppen, Auswahl, Vereins-Vorschau
             tradepileSell: null,     // v5.37.0: Transferliste zum Marktpreis listen
+            handBuys: null, // v6.30.0: mitgelesene Handkaeufe (Sofortkauf in der EA-Oberflaeche)
             clientTradeSamples: null, // v5.49.0: Handels-Requests der EA-Oberflaeche (Header-Namen, Body, Status)
             futbinBuyPlan: null,     // v5.22.0: Kaufplan aus den Konzept-Spielern des Kaders (Anzahl, uebersprungen, Suchfehler)
             marketUrls: [],          // v5.20.0: letzte 6 Marktsuch-URLs mit Query (unsere UND EAs eigene) - Parameter-Vergleich
@@ -620,6 +621,45 @@
             if (gone.length) removeFromPool(gone);
         } catch (e) {}
     }
+    // v6.30.0: Handkaeufe der EA-Oberflaeche mitlesen. Ein Sofortkauf von Hand
+    // landet in den Transferzielen - nicht im Pool - und PitTools plante die
+    // Karte danach erneut (live 23.11.: Scott 86, Bournemouth). Pure: aus EAs
+    // Antwort auf PUT trade/<id>/bid die gewonnenen Spieler als Merklisten-
+    // Saetze ({d,t,l,n,s,r}); leer, wenn es kein gewonnener Sofortkauf ist.
+    function galleryBidWonRecords(method, url, status, body) {
+        try {
+            if (String(method || '').toUpperCase() !== 'PUT') return [];
+            if (!/\/trade\/\d+\/bid(\?|$)/.test(String(url || ''))) return [];
+            const st = parseInt(status, 10);
+            if (!(st >= 200 && st < 300)) return [];
+            const data = typeof body === 'string' ? JSON.parse(body) : body;
+            const list = data && Array.isArray(data.auctionInfo) ? data.auctionInfo : [];
+            const out = [];
+            list.forEach(a => {
+                const it = a && a.itemData;
+                if (!it || String(a.tradeState) !== 'closed' || String(a.bidState) !== 'buyNow') return;
+                if (it.itemType != null && String(it.itemType) !== 'player') return;
+                const d = Number(it.resourceId || it.definitionId || 0);
+                if (!(d > 0)) return;
+                out.push({ d: d, t: Number(it.teamid) || 0, l: Number(it.leagueId) || 0, n: Number(it.nation) || 0,
+                           s: Number(it.gradingScore) || 0, r: Number(it.rating) || 0 });
+            });
+            return out;
+        } catch (e) { return []; }
+    }
+    // Gewonnene Handkaeufe in die Merkliste (zaehlt ab da als gesammelt).
+    function onBidWon(recs, keys) {
+        try {
+            if (!recs || !recs.length) return;
+            collectedSave(mergeCollectedRecords(collectedLoad(), recs).list);
+            const ring = STATE.diag.handBuys || (STATE.diag.handBuys = []);
+            ring.push({ at: Date.now(), defs: recs.map(x => x.d), keys: keys || null });
+            if (ring.length > 5) ring.shift();
+        } catch (e) {}
+    }
+    function bidWonKeys(body) {
+        try { const d = typeof body === 'string' ? JSON.parse(body) : body; const it = d && d.auctionInfo && d.auctionInfo[0] && d.auctionInfo[0].itemData; return it ? Object.keys(it).slice(0, 40) : null; } catch (e) { return null; }
+    }
     // v5.15.0: Feld-Union der SBC-Objekte, die EA liefert. Ein neues Feld an
     // Set oder Challenge (Score-Ziel, Challenge-Typ, ...) faellt damit im
     // Report auf, ohne dass jemand die Antwort von Hand lesen muss. Felder,
@@ -693,6 +733,11 @@
                         const ocIds = oneClickSubmittedIds((init && init.method) || (input && input.method) || 'GET', url, init && init.body);
                         if (ocIds) onOneClickSubmitted(ocIds, resp && resp.status);
                     }
+                    const fm = String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+                    if (url && fm === 'PUT' && /\/trade\/\d+\/bid(\?|$)/.test(String(url))) { // v6.30.0: Handkauf mitlesen
+                        const fst = resp && resp.status;
+                        resp.clone().text().then(function (txt) { onBidWon(galleryBidWonRecords(fm, url, fst, txt), bidWonKeys(txt)); }).catch(function () {});
+                    }
                     if (url && classifyUrl(url)) {
                         resp.clone().text().then(function (txt) {
                             handleResponseBody(url, txt);
@@ -755,6 +800,17 @@
                         ring.push(sample); if (ring.length > 5) ring.shift();
                         this.addEventListener('loadend', function () { sample.status = this.status; });
                     } catch (e) {}
+                }
+                // v6.30.0: gewonnener Sofortkauf von Hand -> Merkliste (Galerie plant ihn nicht erneut).
+                if (url && this.__sbcMethod === 'PUT' && /\/trade\/\d+\/bid(\?|$)/.test(String(url))) {
+                    const bm = this.__sbcMethod;
+                    this.addEventListener('loadend', function () {
+                        try {
+                            const rt = this.responseType;
+                            const data = (!rt || rt === 'text') ? this.responseText : (rt === 'json' ? this.response : null);
+                            onBidWon(galleryBidWonRecords(bm, url, this.status, data), bidWonKeys(data));
+                        } catch (e) {}
+                    });
                 }
                 // v5.15.0: sbs|sbc-Traffic auch fuer UNKLASSIFIZIERTE Pfade
                 // mitschreiben - genau die sind beim Freischalten interessant.
@@ -15667,6 +15723,34 @@ const HybridSbcEa = (() => {
         };
     }
     /** Pure: alle Chancen ueber Sets sortiert - Kurs je Token (bekannte eingeloeste Note) oder Zielnote. */
+    /**
+     * v6.30.0: Definitions-IDs, die sicher gesammelt sind - fuer den Abgleich mit dem Scan.
+     * Streng: aus dem Pool nur echte Versions-IDs (definitionId/resourceId), NICHT assetId
+     * (= Spieler, nicht Version; LEARNINGS v6.29.6), dazu die Merkliste.
+     */
+    function galleryKnownDefIds(pool, collected) {
+        const out = new Set();
+        (pool || []).forEach(p => {
+            const r = (p && p.raw) || {};
+            const d = Number(r.definitionId || r.resourceId || 0);
+            if (d > 0) out.add(String(d));
+        });
+        (collected || []).forEach(x => { if (x && x.d > 0) out.add(String(x.d)); });
+        return out;
+    }
+    /**
+     * v6.30.0: im Scan-Eintrag als gesammelt markieren, was PitTools sicher weiss
+     * (Pool, Merkliste, mitgeschnittene Kaeufe). Aendert entry.defs in-place,
+     * liefert die geaenderten defIds. Der naechste Scan ueberschreibt den Eintrag ohnehin.
+     */
+    function galleryMarkKnownCollected(entry, known) {
+        const changed = [];
+        if (!entry || !Array.isArray(entry.defs) || !known || !known.size) return changed;
+        entry.defs.forEach(d => {
+            if (Array.isArray(d) && d[1] !== 1 && known.has(String(d[0]))) { d[1] = 1; changed.push(Number(d[0])); }
+        });
+        return changed;
+    }
     function galleryChancesRank(results, opts) {
         const o = opts || {};
         const all = [];
@@ -15890,6 +15974,11 @@ const HybridSbcEa = (() => {
         try {
             const cat = await galleryCatalogLoad(false, t => { galleryChancesState.progress = t; });
             const cache = (await galleryScanCacheLoad(persona)) || { v: 1, persona: persona, at: null, sets: {} };
+            // v6.30.0: sicher gesammelte Karten (Pool, Merkliste, Handkauf) in alle Scan-Eintraege uebernehmen.
+            const knownIds = galleryKnownDefIds(STATE.pool, collectedLoad());
+            let knownN = 0;
+            Object.keys(cache.sets || {}).forEach(k => { knownN += galleryMarkKnownCollected(cache.sets[k], knownIds).length; });
+            if (knownN) { try { await galleryScanCacheSave(persona, cache); } catch (e) { /* nur Cache */ } }
             let rows;
             if (Array.isArray(o.sets) && o.sets.length) {
                 const f = o.sets.map(String);
@@ -15913,6 +16002,7 @@ const HybridSbcEa = (() => {
                     galleryChancesState.progress = 'Sammelstand ' + i + ' von ' + rows.length + ': ' + row.name;
                     entry = await galleryEnsureScanEntry(row, cache, persona);
                     await futbinSleep(randomBetween(MARKET_STEP_GAP_MIN_MS, MARKET_STEP_GAP_MAX_MS));
+                    galleryMarkKnownCollected(entry, knownIds); // v6.30.0
                 }
                 galleryChancesState.progress = 'Regeln ' + i + ' von ' + rows.length + ': ' + row.name;
                 let rules;
@@ -16006,9 +16096,10 @@ const HybridSbcEa = (() => {
             galleryClaudeState.progress = 'Regeln: ' + row.name;
             const rules = await galleryRulesLoad(row);
             const k = Math.max(1, Math.min(20, Number(maxCards) || 10));
+            let changed = galleryMarkKnownCollected(entry, galleryKnownDefIds(STATE.pool, collectedLoad())).length > 0; // v6.30.0: keine Suche fuer Bekanntes
             const cands = entry.defs.filter(d => d[1] === 0).sort((a, b) => b[2] - a[2]).slice(0, k);
             const quoted = [];
-            let stopped = null, changed = false;
+            let stopped = null;
             for (let i = 0; i < cands.length; i++) {
                 const d = cands[i];
                 galleryClaudeState.progress = 'Live-Preis ' + (i + 1) + ' von ' + cands.length + ': ' + ((entry.names || {})[d[0]] || d[0]);
@@ -16109,10 +16200,18 @@ const HybridSbcEa = (() => {
                 if (!saved || Date.now() - saved.at > GALLERY_CHAT_PLAN_TTL_MS || saved.persona !== persona || saved.setId !== row.id || saved.grade !== grade)
                     throw new Error('Freigegebener Plan unbekannt oder abgelaufen - bitte neu vorschlagen (preview).');
             }
+            // v6.30.0: Karten, die PitTools schon sicher als gesammelt kennt (Pool, Merkliste, Handkauf), vor dem Planen anwenden.
+            const knownApplied = galleryMarkKnownCollected(entry, galleryKnownDefIds(STATE.pool, collectedLoad()));
+            if (knownApplied.length) { diag.knownApplied = knownApplied; try { await galleryScanCacheSave(persona, cache); } catch (e) { /* nur Cache */ } }
             const livePrices = galleryLivePrices(rules);
             exclude.forEach(d => { delete livePrices[d]; });
             const res = galleryChanceForSet(row, entry, Object.assign({}, rules, { prices: livePrices }), galleryFirstOwnedDefs(), galleryKnownGrade(row.id));
             const option = (res.options || []).find(o => o.grade === grade);
+            if (!option && !(saved && saved.prepared) && res.gradeNow && GALLERY_GRADE_ORDER.indexOf(res.gradeNow) >= GALLERY_GRADE_ORDER.indexOf(grade)) {
+                diag.phase = 'schon erreichbar';
+                return { set: row.name, grade: grade, bought: 0, knownApplied: knownApplied, score: res.scoreNow,
+                         note: 'Note ' + res.gradeNow + ' ist mit den gesammelten Karten schon erreichbar - im Spiel bewerten.' };
+            }
             if (!option && !(saved && saved.prepared)) throw new Error('Für ' + row.name + ' gibt es keinen Kaufplan auf Note ' + grade + ' (erst pittools_gallery_quote, oder die Note ist schon erreicht).');
             const data = { set: { requiredCards: rules.requiredCards, grades: rules.grades }, tags: rules.tags };
             const threshold = option ? option.threshold : saved.prepared.threshold;
@@ -20054,7 +20153,7 @@ const HybridSbcEa = (() => {
             // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten mit
             // Kosten, Marktabfragen, Fehler, eingefuegte Loesung.
             hybridSbc: STATE.diag.hybridSbc || null,
-            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, batchSpare: STATE.diag.batchSpare || null, mcp: STATE.diag.mcp || null, relay: STATE.diag.relay || null, liveChecks: liveChecksLoad(), buyLedger: (function () { try { return buyLedgerLoad().slice(-50); } catch (e) { return null; } })(), marketBudget: (function () { try { return marketGuardSnapshot(marketGuardLoad(), Date.now()); } catch (e) { return null; } })(), points: STATE.diag.points || null, pointsBuy: STATE.diag.pointsBuy || null, galleryTokens: (function () { try { const p = ownPersonaId(); return p ? galleryTokenBookLoad(p) : null; } catch (e) { return null; } })(), galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null,
+            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, batchSpare: STATE.diag.batchSpare || null, mcp: STATE.diag.mcp || null, relay: STATE.diag.relay || null, liveChecks: liveChecksLoad(), buyLedger: (function () { try { return buyLedgerLoad().slice(-50); } catch (e) { return null; } })(), marketBudget: (function () { try { return marketGuardSnapshot(marketGuardLoad(), Date.now()); } catch (e) { return null; } })(), points: STATE.diag.points || null, pointsBuy: STATE.diag.pointsBuy || null, galleryTokens: (function () { try { const p = ownPersonaId(); return p ? galleryTokenBookLoad(p) : null; } catch (e) { return null; } })(), galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null, handBuys: STATE.diag.handBuys || null,
             futbinBuy: STATE.diag.futbinBuy || null,
             futbinBuyPlan: STATE.diag.futbinBuyPlan || null,
             marketUrls: STATE.diag.marketUrls,

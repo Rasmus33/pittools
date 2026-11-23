@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.32.3
+// @version      6.32.4
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.32.3';
+    const VERSION = '6.32.4';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -2915,7 +2915,31 @@
                  events: (Array.isArray(s.events) ? s.events : []).filter(e => e && (e.k === 'search' || e.k === 'bid') && Number.isFinite(e.t) && e.t <= now && now - e.t < win).slice(-MARKET_GUARD.keep),
                  lastSearchAt: num(s.lastSearchAt), lastBidAt: num(s.lastBidAt),
                  lockUntil: num(s.lockUntil) && s.lockUntil > now ? s.lockUntil : null, lockAt: num(s.lockUntil) && s.lockUntil > now ? num(s.lockAt) : null,
-                 lockReason: num(s.lockUntil) && s.lockUntil > now && s.lockReason ? String(s.lockReason) : null };
+                 lockReason: num(s.lockUntil) && s.lockUntil > now && s.lockReason ? String(s.lockReason) : null,
+                 // v6.32.4 (Review F12): laufende Sperren ANDERER Personas, damit ein Account-Wechsel sie nicht loescht.
+                 locks: (function (locks) {
+                     const out = {};
+                     if (locks && typeof locks === 'object') Object.keys(locks).forEach(k => {
+                         const l = locks[k];
+                         if (l && Number.isFinite(l.until) && l.until > now) out[k] = { until: l.until, at: Number.isFinite(l.at) ? l.at : null, reason: l.reason ? String(l.reason) : null };
+                     });
+                     return out;
+                 })(s.locks) };
+    }
+    /**
+     * v6.32.4 (Review F12): Persona-Wechsel. Zaehler beginnen wie bisher neu,
+     * eine laufende Marktsperre bleibt aber bei IHRER Persona und kommt beim
+     * Zurueckwechseln wieder (vorher leerte der Wechsel den ganzen Stand).
+     */
+    function marketGuardSwitch(state, persona, now) {
+        const s = marketGuardClean(state, now), p = persona != null ? String(persona) : null;
+        if (!p) return s;
+        if (!s.persona || s.persona === p) { s.persona = p; return s; }
+        const locks = Object.assign({}, s.locks);
+        if (s.lockUntil) locks[s.persona] = { until: s.lockUntil, at: s.lockAt, reason: s.lockReason };
+        const mine = locks[p];
+        delete locks[p];
+        return marketGuardClean({ persona: p, locks: locks, lockUntil: mine ? mine.until : null, lockAt: mine ? mine.at : null, lockReason: mine ? mine.reason : null }, now);
     }
     function marketGuardNote(state, kind, now) {
         const s = marketGuardClean(state, now);
@@ -2974,7 +2998,7 @@
         }
         let persona = null;
         try { persona = typeof ownPersonaId === 'function' ? ownPersonaId() : null; } catch (e) { persona = null; }
-        if (persona && marketGuardState.persona && String(marketGuardState.persona) !== persona) marketGuardState = {};
+        if (persona && marketGuardState.persona && String(marketGuardState.persona) !== persona) marketGuardState = marketGuardSwitch(marketGuardState, persona, Date.now()); // v6.32.4: Sperre je Persona halten
         if (persona) marketGuardState.persona = persona;
         return marketGuardState;
     }
@@ -14196,6 +14220,24 @@ const HybridSbcEa = (() => {
         return !offer || !!player && Number.isInteger(offer.bin) && offer.bin > 0 &&
             offer.bin <= player.maxPrice && spent+offer.bin <= opts.hardBudget;
     }
+    /**
+     * v6.32.4 (Review F8): Basis-ID-Abgleich (rid < 2^24) trifft JEDE normale
+     * Version desselben Spielers (Namaso 239631 = 73er, 50571279 = 80er, gleiche
+     * databaseId). Ohne opts.offerMatches: sind Plan- und Angebots-Rating bekannt
+     * und verschieden, ist es eine andere Kartenversion. Mit voller
+     * Definitions-ID ist die Version eindeutig - dort keine Pruefung. Pure.
+     */
+    function buyNeedsRatingCheck(p) {
+        const rid = Number(p && p.resourceId), want = Number(p && p.rating);
+        return rid > 0 && rid < 0x1000000 && want > 0;
+    }
+    function buyOfferRatingFits(p, offer) {
+        if (!buyNeedsRatingCheck(p)) return true;
+        const want = Number(p.rating);
+        const src = offer && (offer.raw || offer.item);
+        const got = src ? Number(src.rating) : NaN;
+        return !(got > 0) || got === want;
+    }
     async function buyPlannedPlayers(c, plan, opts) {
         // v5.32.0: Optionen fuer den Galerie-Kauf - kein Kader (noSquad), eigenes
         // Ergebnisfeld, mehr Kaeufe je Lauf, laengere Pausen. Ohne opts: exakt
@@ -14306,6 +14348,11 @@ const HybridSbcEa = (() => {
                 for (let t = 0; t < offers.length && t < BUY_OFFER_TRIES && !ok; t++) {
                     offer = offers[t];
                     step.found = offer.bin;
+                    if (!opts.offerMatches && !buyOfferRatingFits(p, offer)) { // v6.32.4 (Review F8)
+                        step.ratingRejected = (step.ratingRejected || 0) + 1;
+                        if (!step.ratingSample) { try { const it = offer.raw || offer.item; step.ratingSample = { def: it.resourceId != null ? it.resourceId : it.definitionId, rating: it.rating, want: p.rating }; } catch (e) {} }
+                        continue;
+                    }
                     if (opts.offerMatches && !opts.offerMatches(p,offer)) {
                         step.variantRejected = (step.variantRejected || 0) + 1;
                         // v6.29.4: Galerie-Kaeufe lehnen schon gesammelte Karten ab - das ist kein Versionsproblem.
@@ -14397,8 +14444,8 @@ const HybridSbcEa = (() => {
                             // aktivem Angebot (Report 21.09.: bei "closed" war die Karte wirklich
                             // weg, der Client-Versuch brachte nur 429/512 obendrauf).
                             if (!step.clientBid) {
-                                const clientGuard = opts.offerMatches || opts.hardBudget != null || opts.beforeBid || opts.cancelled ? async o => {
-                                    if ((opts.cancelled && opts.cancelled()) || !buyBudgetAllows(plan,p,o,diag.spent,opts) || (opts.offerMatches && !opts.offerMatches(p,o))) return false;
+                                const clientGuard = opts.offerMatches || opts.hardBudget != null || opts.beforeBid || opts.cancelled || buyNeedsRatingCheck(p) ? async o => {
+                                    if ((opts.cancelled && opts.cancelled()) || !buyBudgetAllows(plan,p,o,diag.spent,opts) || (opts.offerMatches ? !opts.offerMatches(p,o) : !buyOfferRatingFits(p,o))) return false;
                                     if (opts.beforeBid && !await opts.beforeBid(p,o,diag)) return false;
                                     return !(opts.cancelled && opts.cancelled()) && buyBudgetAllows(plan,p,o,diag.spent,opts);
                                 } : undefined;
@@ -14447,7 +14494,7 @@ const HybridSbcEa = (() => {
                 }
                 if (hardStop) break;
                 if (!ok) {
-                    step.status = step.variantRejected && !why ? (step.alreadyCollected === step.variantRejected ? 'Laut EA schon gesammelt - nicht gekauft' : 'Kein Angebot mit der verlangten Kartenversion/Holografie nachweisbar') : 'Kauf abgelehnt (' + (why || '?') + ')';
+                    step.status = step.ratingRejected && !why ? 'Angebote hatten ein anderes Rating (' + (step.ratingSample ? step.ratingSample.rating : '?') + ' statt ' + p.rating + ') - andere Kartenversion, nicht gekauft' : step.variantRejected && !why ? (step.alreadyCollected === step.variantRejected ? 'Laut EA schon gesammelt - nicht gekauft' : 'Kein Angebot mit der verlangten Kartenversion/Holografie nachweisbar') : 'Kauf abgelehnt (' + (why || '?') + ')';
                     fails++;
                     lines.push('⚠ ' + escapeHtml(p.name) + ': ' + escapeHtml(step.status) + (step.deadTried ? ' - ' + step.deadTried + ' Angebot(e) waren schon weg.' : ' - vermutlich schon weg.'));
                     if (fails >= BUY_MAX_CONSECUTIVE_FAILS) { diag.stopped = 'zwei Fehler hintereinander'; break; }
@@ -18005,12 +18052,38 @@ const HybridSbcEa = (() => {
         return out;
     }
     function sbcSolveNotSubmitted(msg) { const e = new Error(msg); e.notSubmitted = true; return e; }
+    /** v6.32.4 (Review F11): Kader vor dem Eintragen merken (EAs getPlayers liefert die Slot-Items, die setPlayers nimmt). */
+    function sbcSolveSquadSnapshot(squad) {
+        try { const a = squad && typeof squad.getPlayers === 'function' ? squad.getPlayers() : null; return Array.isArray(a) && a.length ? a.slice() : null; } catch (e) { return null; }
+    }
+    /** Nur wenn NICHTS gekauft wurde: lokalen Kader zuruecksetzen. Liefert den Zusatz fuer die Meldung. */
+    function sbcSolveRestoreSquad(squad, snap) {
+        if (!snap) return '';
+        try { squad.setPlayers(snap, true); } catch (e) { return ''; }
+        try { refreshOpenSbcView(); } catch (e) {}
+        return ' Der vorige Kader steht wieder in der Ansicht.';
+    }
+    const SBC_SOLVE_LATE_AWARD_S = 60;
+    /** v6.32.4 (Review F11): spaete Belohnungs-Antwort abwarten; nur sie macht aus "unbestaetigt" ein "abgegeben". */
+    async function sbcSolveLateAward(cid, result, seconds) {
+        sbcSolveState.progress = 'warte auf EAs Belohnungs-Antwort';
+        for (let i = 0; i <= seconds; i++) {
+            if (awardConfirms(STATE.lastAward, cid, result.submitAt)) {
+                result.submitted = true; result.awardConfirmed = true; result.lateAward = true; result.award = STATE.lastAward || null;
+                result.notes = (result.notes || []).filter(n => !/Belohnungs-Antwort kam nicht/.test(n)).concat(['EAs Belohnungs-Antwort kam verspätet - abgegeben.']);
+                return true;
+            }
+            if (i < seconds) await BgTimer.wait(1000);
+        }
+        return false;
+    }
     async function sbcSolveSubmit(cid, result, expectLive) {
         sbcSolveState.progress = 'prüfe Vorgaben bei EA';
         const chk = sbcSolveEaCheck(false, expectLive);
         result.eaCheck = chk;
         if (!chk.ok) throw sbcSolveNotSubmitted('EA: ' + chk.why + ' - NICHT abgegeben.');
         const t = Date.now();
+        result.submitAt = t; // v6.32.4: fuer die spaete Belohnungs-Antwort (sbcSolveLateAward)
         sbcSolveState.progress = 'gebe ab';
         try { await submitChallengeToEa(); }
         catch (e) { throw sbcSolveNotSubmitted('Abgabe abgelehnt: ' + String(e && e.message || e)); }
@@ -18153,6 +18226,12 @@ const HybridSbcEa = (() => {
         } catch (e) { diag.rateError = String(e && e.message || e); }
         return { rate: SBC_SOLVE_RATE_FALLBACK, from: 'Schätzwert 1 Coin je Punkt (fut.gg nicht lesbar)' };
     }
+    /** v6.32.4 (Review F13): Name der Challenge (EA-Entity, sonst DTO) fuer Vorschau und Ergebnis. */
+    function sbcSolveLiveName(live, dto) {
+        let n = null;
+        try { n = (live && live.name) || (dto && dto.name) || null; } catch (e) { n = null; }
+        return n ? String(n).slice(0, 80) : null;
+    }
     async function sbcSolvePreview(cid, persona, diag) {
         const live = hybridOpenChallenge();
         if (!live || !live.squad || String(live.id) !== String(cid)) throw new Error('Bitte die Team-SBC mit geöffnetem Kader öffnen.');
@@ -18228,7 +18307,7 @@ const HybridSbcEa = (() => {
             items: buys.map(c => ({ id: c.defId, max: c.coins })) });
         diag.planId = id; diag.pick = { total: best.total, coins: best.coins, own: own.length, buys: buys.length, rating: check.rating, chemistry: check.chemistry };
         const nm = c => c.name || (c.raw && c.raw.lastName) || ('#' + c.defId);
-        return { preview: true, planId: id, challengeId: cid, chatApproval: galleryChatOkEnabled(),
+        return { preview: true, planId: id, challengeId: cid, name: sbcSolveLiveName(live, dto), chatApproval: galleryChatOkEnabled(), // v6.32.4 (Review F13): welche SBC
             rating: check.rating, chemistry: check.chemistry,
             coinsPerPoint: Math.round(rate.rate * 100) / 100, rateSource: rate.from,
             maxCoins: best.coins, ownValueCoins: best.total - best.coins,
@@ -18244,7 +18323,7 @@ const HybridSbcEa = (() => {
         if (saved.persona !== persona || String(saved.challengeId) !== String(cid)) throw new Error('Gerade ist eine andere SBC oder ein anderer Account offen als im Plan - neu vorschlagen.');
         if (!galleryChatOkEnabled()) throw new Error('Im Reiter „KI“ ist „Käufe im Chat freigeben“ aus - ohne den Schalter löst die KI keine SBC.');
         sbcSolvePlans.delete(planId); // eine Freigabe = ein Lauf
-        const result = { challengeId: cid, via: null, submitted: false, notes: [] };
+        const result = { challengeId: cid, name: sbcSolveLiveName(saved.live, saved.dto), via: null, submitted: false, notes: [] };
         const live = saved.live;
         // v6.32.0: der Plan traegt als score den Coin-Gegenwert (sbcSolveValueCards), die Schutzpruefung
         // vergleicht mit EAs Item Score - fuer sie den Original-Score (pts) einsetzen (Review 23.11. F9).
@@ -18271,16 +18350,18 @@ const HybridSbcEa = (() => {
             running();
         }
         sbcSolveState.progress = 'trage das Team ein';
+        const squadBefore = sbcSolveSquadSnapshot(live.squad); // v6.32.4 (Review F11): lehnt EA das Speichern ab, alten Kader zuruecksetzen
         live.squad.setPlayers(entities, true);
         const response = await obsPromise(window.services.SBC.saveChallenge(live));
-        if (!responseOk(response)) throw new Error('EA konnte den Kader nicht speichern - nichts gekauft, nicht abgegeben.');
+        if (!responseOk(response)) throw new Error('EA konnte den Kader nicht speichern - nichts gekauft, nicht abgegeben.' + sbcSolveRestoreSquad(live.squad, squadBefore));
         running();
-        if (!hybridPitchMatches(last)) throw new Error('Gespeicherter Kader entspricht nicht dem Plan - nichts gekauft, nicht abgegeben.');
+        const savedNote = ' Das Team' + (market.length ? ' (mit Konzept-Spielern)' : '') + ' ist bei EA gespeichert - im Spiel prüfen oder ersetzen.';
+        if (!hybridPitchMatches(last)) throw new Error('Gespeicherter Kader entspricht nicht dem Plan - nichts gekauft, nicht abgegeben.' + savedNote);
         try { refreshOpenSbcView(); } catch (e) {}
         const pre = sbcSolveEaCheck(true);
         result.preBuyCheck = pre;
-        if (!pre.ok) throw new Error('EA: ' + pre.why + ' mit dem eingetragenen Team - nichts gekauft, nicht abgegeben.');
-        let bought = 0, spent = 0;
+        if (!pre.ok) throw new Error('EA: ' + pre.why + ' mit dem eingetragenen Team - nichts gekauft, nicht abgegeben.' + savedNote);
+        let bought = 0, spent = 0, boughtText = '';
         if (market.length) {
             const plan = market.map(c => ({ resourceId: c.defId, name: c.name || ('#' + c.defId), rating: c.rating, planned: c.estimatedCoins, maxPrice: c.coins, source: 'live',
                 variant: { defId: c.defId, rating: c.rating, score: c.pts } }));
@@ -18297,14 +18378,18 @@ const HybridSbcEa = (() => {
             result.bought = bought; result.spent = spent;
             result.buySteps = (d.steps || []).map(st => ({ name: st.name, paid: st.paid, max: st.max, status: st.status }));
             const got = (d.steps || []).filter(st => st.paid > 0).map(st => st.name + ' ' + st.paid).join(', ');
+            boughtText = bought ? ' Gekauft für ' + spent + ' Coins: ' + got + '.' : ''; // v6.32.4 (Review F11): jede Meldung danach nennt den Kauf
             if (bought < capped.plan.length) throw new Error('Nur ' + bought + ' von ' + capped.plan.length + ' Karten bekommen (' + (d.stopped || 'kein Angebot bis zur Obergrenze') + ') - NICHT abgegeben.' +
                 (bought ? ' Gekauft für ' + spent + ' Coins: ' + got + '. Sie stehen im SBC-Kader und sind in PitTools als Verein bekannt; den Rest über „Konzept-Spieler kaufen“.' : ''));
-            if (!d.saved) throw new Error('Kader nach dem Kauf nicht gespeichert - NICHT abgegeben.');
+            if (!d.saved) throw new Error('Kader nach dem Kauf nicht gespeichert - NICHT abgegeben.' + boughtText);
             // v6.32.0: nach dem Kauf noch dieselbe SBC, derselbe Account, genau der geplante Kader ohne Konzepte (Review F3)
             running();
-            if (!sbcSolveFinalMatches(live.squad.getFieldPlayers(), last.selected.players)) throw new Error('Kader nach dem Kauf entspricht nicht dem Plan - NICHT abgegeben.');
+            if (!sbcSolveFinalMatches(live.squad.getFieldPlayers(), last.selected.players)) throw new Error('Kader nach dem Kauf entspricht nicht dem Plan - NICHT abgegeben.' + boughtText);
         }
-        await sbcSolveSubmit(cid, result, live);
+        try { await sbcSolveSubmit(cid, result, live); }
+        catch (e) { if (boughtText && e && typeof e.message === 'string') e.message += boughtText; throw e; }
+        // v6.32.4 (Review F11): kam EAs Belohnungs-Antwort nicht rechtzeitig, bis 60 s auf eine spaete warten.
+        if (result.submitted === 'unbestätigt') await sbcSolveLateAward(cid, result, SBC_SOLVE_LATE_AWARD_S);
         if (result.submitted === true) removeFromPool(STATE.pool.filter(p => saved.players.some(c => c.source !== 'market' && String(c.id) === String(p.id))));
         result.via = market.length ? 'verein+kauf' : 'verein'; result.coins = spent;
         result.players = saved.players.map(c => (c.name || ('#' + c.defId)) + ' ' + c.rating + (c.source === 'market' ? ' (gekauft)' : c.source === 'storage' ? ' (Storage)' : ''));

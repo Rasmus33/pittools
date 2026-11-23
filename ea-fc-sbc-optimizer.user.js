@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.32.0
+// @version      6.32.1
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.32.0';
+    const VERSION = '6.32.1';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -14026,6 +14026,7 @@ const HybridSbcEa = (() => {
     const BUY_REPLAN_MAX_FACTOR = 2;    // v5.43.0: Neubewertung darf den Plan hoechstens verdoppeln
     const deadTrades = new Set();       // v5.43.0: Trades, die EA als weg gemeldet hat (461/closed)
     let buyBusy = false;
+    let sbcSolveBusy = false; // v6.32.1: KI-SBC-Lauf (Vorschau/Ausfuehren) - kein zweiter Kauf-Lauf dazwischen
     function eaPriceTiers() {
         try {
             const t = window.UTCurrencyInputControl && window.UTCurrencyInputControl.PRICE_TIERS;
@@ -14147,6 +14148,8 @@ const HybridSbcEa = (() => {
         const gapMin = opts.gapMin || BUY_GAP_MIN_MS, gapMax = opts.gapMax || BUY_GAP_MAX_MS;
         const diag = { at: Date.now(), mode: opts.mode || (opts.noSquad ? 'gallery' : 'sbc'), planned: plan.length, bought: 0, spent: 0, plannedSpent: 0, steps: [], stopped: null };
         if (opts.leanSearch) diag.leanSearch = true;
+        // v6.32.1: nie zwei Kauf-Laeufe gleichzeitig (Review F7) - die Aufrufer setzen buyBusy vorher zurueck.
+        if (buyBusy) { diag.stopped = 'Es läuft schon ein Kauf-Lauf'; return diag; }
         STATE.diag.futbinBuy = diag;
         buyBusy = true;
         let fails = 0;
@@ -14241,7 +14244,16 @@ const HybridSbcEa = (() => {
                     if ((opts.cancelled && opts.cancelled()) || !buyBudgetAllows(plan,p,offer,diag.spent,opts)) {
                         diag.stopped = 'Kaufwache: Lauf gestoppt oder Budget überschritten'; hardStop = true; break;
                     }
-                    if (opts.beforeBid && !await opts.beforeBid(p,offer,diag)) throw Error('Kaufwache verweigert den Kauf.');
+                    if (opts.beforeBid) {
+                        // v6.32.1: nach einem Kauf stoppt eine Ablehnung/Ausnahme der Kaufwache sauber, damit Uebernahme
+                        // und onFinish fuer die schon gekauften Karten laufen (Review F4). Ohne Kauf wie bisher: Ausnahme.
+                        let allowed = false, guardErr = null;
+                        try { allowed = !!(await opts.beforeBid(p,offer,diag)); } catch (e) { guardErr = e; }
+                        if (!allowed) {
+                            if (!bought.length) throw (guardErr || Error('Kaufwache verweigert den Kauf.'));
+                            diag.stopped = 'Kaufwache: ' + (guardErr ? String(guardErr.message || guardErr) : 'Kauf verweigert'); hardStop = true; break;
+                        }
+                    }
                     if ((opts.cancelled && opts.cancelled()) || !buyBudgetAllows(plan,p,offer,diag.spent,opts)) {
                         diag.stopped = 'Kaufwache: Lauf gestoppt oder Budget überschritten'; hardStop = true; break;
                     }
@@ -14396,6 +14408,7 @@ const HybridSbcEa = (() => {
         } finally {
             buyBusy = false;
         }
+        return diag; // v6.32.1: eigener Stand statt globalem STATE.diag.futbinBuy
     }
     // ---- FUT Gallery (v5.32.0) ------------------------------------------------
     // Rasmus: "eine oberflaeche wo steht 'naechstes set kaufen', dann stehen
@@ -16394,6 +16407,7 @@ const HybridSbcEa = (() => {
     }
     async function galleryClaudeBuy(setName, grade, opts) {
         const exclude = new Set(((opts && opts.exclude) || []).map(Number)); // v6.18.4: beim Ersatzkauf ausgefallene Karten
+        if (sbcSolveBusy) throw new Error('Es läuft gerade ein KI-SBC-Lauf - kurz warten.'); // v6.32.1
         if (galleryBusy || buyBusy || sellBusy || futbinBusy || STATE.loading || (vorlagenRun && !vorlagenRun.fertig)) throw new Error('Es läuft gerade ein anderer Lauf - kurz warten.');
         if (!sessionReady()) throw new Error('EA-Sitzung noch nicht erfasst - einmal im Spiel klicken.');
         if (!STATE.poolFullLoadDone || STATE.loadIncomplete) throw new Error('Verein nicht vollständig geladen - erst pittools_pool_load.');
@@ -17958,10 +17972,12 @@ const HybridSbcEa = (() => {
         const cid = STATE.sbc.challengeId;
         if (cid == null || !findSbcController()) throw new Error('Keine SBC geöffnet - Namen mitgeben (sbc: "Black Friday Flash 2"), dann öffnet PitTools sie selbst, oder die Challenge in der Web App öffnen.');
         const diag = STATE.diag.sbcSolve = { at: Date.now(), challengeId: cid, setId: STATE.sbc.setId, phase: o.planId ? 'ausführen' : 'planen' };
+        if (sbcSolveBusy) throw new Error('Es läuft schon ein KI-SBC-Lauf - kurz warten.');
+        sbcSolveBusy = true;
         try {
             return o.planId ? await sbcSolveExecute(String(o.planId), cid, persona, diag) : await sbcSolvePreview(cid, persona, diag);
         } catch (e) { diag.error = String(e && e.message || e); throw e; }
-        finally { sbcSolveState.progress = null; }
+        finally { sbcSolveState.progress = null; sbcSolveBusy = false; }
     }
     // v6.29.2 (Rasmus 20.11.): Loesen ueber den Hybrid-Loeser - EA prueft ALLE Vorgaben (Chemie,
     // Ligen ...), eigene Karten und Zukaeufe in EINEM Vergleich. Wert einer eigenen Karte = ihre
@@ -18164,12 +18180,12 @@ const HybridSbcEa = (() => {
             const capped = sbcSolveCapPlan(saved, plan);
             if (!capped.ok) throw new Error('Kaufplan passt nicht zur Freigabe (' + capped.why + ') - nichts gekauft.');
             sbcSolveState.progress = 'kaufe ' + capped.plan.length + ' Karten';
-            await buyPlannedPlayers(null, capped.plan, { fixedCaps: true, hardBudget: saved.maxTotal, leanSearch: true, mode: 'sbc-claude',
+            const buyDiag = await buyPlannedPlayers(null, capped.plan, { fixedCaps: true, hardBudget: saved.maxTotal, leanSearch: true, mode: 'sbc-claude',
                 offerMatches: (p, o) => galleryOfferMatches(p.variant, o, window),
                 // v6.32.0: gekaufte Karten sofort in den Pool - sonst plant die naechste Vorschau sie erneut als Kauf (Review F1).
                 onFinish: (dd, boughtList) => { try { mergeIntoPool((boughtList || []).map(b => b.raw ? normalizePlayer(b.raw, false) : null).filter(Boolean)); } catch (e) {} },
                 cancelled: () => { try { running(); return false; } catch (e) { return true; } } });
-            const d = STATE.diag.futbinBuy || {};
+            const d = buyDiag || {};
             bought = d.bought || 0; spent = d.spent || 0;
             result.bought = bought; result.spent = spent;
             result.buySteps = (d.steps || []).map(st => ({ name: st.name, paid: st.paid, max: st.max, status: st.status }));

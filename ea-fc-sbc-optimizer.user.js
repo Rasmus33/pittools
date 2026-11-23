@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.32.4
+// @version      6.33.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.32.4';
+    const VERSION = '6.33.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -13427,6 +13427,306 @@ const HybridSbcEa = (() => {
         return null;
     }
     // [BUYLEDGER-END]
+    // [BIDCAP-BEGIN]
+    /*
+     * v6.33.0: Gebots-Helfer (Gold bis 600) - reiner Kern. Rasmus' Handweg
+     * (23.11.): 600 Coins auf 30-40 normale Goldspieler bieten und damit
+     * "80+ 1 von 3 Player Pick" (5 Gold) und "81x2 Pack" (6 Gold) loesen.
+     * OBERSTE PRAEMISSE: kein Gebot ueber 600 - auf keinem Codepfad. Dieser
+     * Block ist die erste von drei Sperren (BID_HARD_CAP/bidAmountFor/
+     * bidCapAssert); die zweite ist der einzige PUT-Weg bidPutCapped im Block
+     * [BIDHELPER], die dritte der apiPut-Gurt waehrend eines Helfer-Laufs.
+     * EAs Regeln verbieten Bots/Automatisierung (Marktsperre, Coin-Abzug,
+     * Account-Sperre moeglich) - siehe docs/LEARNINGS.md v6.33.0.
+     * Alles in diesem Block ist pure (keine Anfrage, kein STATE).
+     */
+    const BID_HARD_CAP = 600;
+    // Eigene Kopie der EA-Preisstufen (gleich PRICE_TIERS_FALLBACK, ein Test haelt
+    // beide gleich): der Block muss ohne den Rest des Scripts laufen.
+    const BID_TIERS_FALLBACK = [
+        { min: 100000, inc: 1000 }, { min: 50000, inc: 500 }, { min: 10000, inc: 250 },
+        { min: 1000, inc: 100 }, { min: 0, inc: 50 }
+    ];
+    const BID_MIN_SECONDS_LEFT = 60;   // kuerzer laufende Auktionen nicht anfassen
+    const BID_GOLD_MIN_RATING = 75;
+    /** Einstellung kann die Grenze nur SENKEN: min(600, Einstellung); ungueltig -> 600. */
+    function bidCapOf(setting) {
+        const n = typeof setting === 'number' ? setting : (typeof setting === 'string' && /^\s*\d+\s*$/.test(setting) ? Number(setting) : NaN);
+        if (!Number.isFinite(n) || n <= 0) return BID_HARD_CAP;
+        return Math.min(BID_HARD_CAP, Math.floor(n));
+    }
+    /** EAs Stufen nur, wenn sie heil sind (sortiert absteigend, mit Stufe ab 0), sonst die Kopie. */
+    function bidTiersSane(tiers) {
+        const ok = Array.isArray(tiers) && tiers.length > 0 &&
+            tiers.every(x => x && Number.isFinite(x.min) && x.min >= 0 && Number.isInteger(x.inc) && x.inc > 0) &&
+            tiers.some(x => x.min === 0);
+        return (ok ? tiers.slice() : BID_TIERS_FALLBACK.slice()).sort((a, b) => b.min - a.min);
+    }
+    function bidTierInc(v, tiers) {
+        const t = bidTiersSane(tiers);
+        const hit = t.find(x => v >= x.min) || t[t.length - 1];
+        return hit.inc;
+    }
+    function bidOnGrid(v, tiers) { return Number.isInteger(v) && v > 0 && v % bidTierInc(v, tiers) === 0; }
+    function bidRoundDown(v, tiers) {
+        v = Math.max(0, Math.floor(Number(v) || 0));
+        const inc = bidTierInc(v, tiers);
+        return Math.floor(v / inc) * inc;
+    }
+    /** Lesbare Zahl aus EAs Antwort (nur echte Zahlen, keine Strings). */
+    function bidNum(v) { return typeof v === 'number' && Number.isFinite(v) ? v : null; }
+    /**
+     * Mindestgebot einer Auktion: currentBid > 0 ? currentBid + Stufe : startingBid.
+     * null, wenn EAs Antwort nicht lesbar ist (startingBid/currentBid fehlen).
+     */
+    function bidMinFor(auction, tiers) {
+        const a = auction || {};
+        const sb = bidNum(a.startingBid), cb = bidNum(a.currentBid);
+        if (sb == null || cb == null || !(sb > 0) || cb < 0) return null;
+        return cb > 0 ? cb + bidTierInc(cb, tiers) : sb;
+    }
+    /**
+     * Betrag fuer EIN Gebot oder null. opts: { ownId, fest600 (Default true) }.
+     * - Eigenes Angebot oder bidState 'highest' -> null.
+     * - Sofortkauf <= Grenze -> Betrag = Sofortkauf (wenn auf einer Stufe).
+     * - Mindestgebot > Grenze -> null.
+     * - Betrag = Grenze (fest600) oder Mindestgebot; immer abgerundet, nie aufgerundet.
+     * Jeder Rueckgabewert ist eine ganze Zahl <= 600 auf einer gueltigen Stufe,
+     * >= Mindestgebot und (falls vorhanden) <= Sofortkauf.
+     */
+    function bidAmountFor(auction, cap, tiers, opts) {
+        try {
+            const a = auction || {}, o = opts || {};
+            const c = bidCapOf(cap);
+            if (o.ownId != null && a.sellerId != null && String(a.sellerId) === String(o.ownId)) return null;
+            if (String(a.bidState || '').toLowerCase() === 'highest') return null;
+            let min = bidMinFor(a, tiers);
+            if (min == null) return null;
+            const bin = bidNum(a.buyNowPrice);
+            if (bin != null && bin > 0) min = Math.min(min, bin);
+            let amt = null;
+            if (bin != null && bin > 0 && bin <= c) amt = bin;
+            else if (min > c) return null;
+            else amt = o.fest600 === false ? min : bidRoundDown(c, tiers);
+            const t = bidTiersSane(tiers);
+            if (!bidOnGrid(amt, t) || amt > c || amt > BID_HARD_CAP || amt < min) return null;
+            if (bin != null && bin > 0 && amt > bin) return null;
+            return amt;
+        } catch (e) { return null; }
+    }
+    /** Letzte Sperre vor dem PUT: ganze Zahl (Typ number), > 0, <= 600 - sonst Fehler. */
+    function bidCapAssert(amount) {
+        if (typeof amount !== 'number' || !Number.isInteger(amount) || amount <= 0 || amount > BID_HARD_CAP) {
+            const err = new Error('Gebots-Sperre: Betrag ' + String(amount) + ' ist nicht erlaubt (höchstens ' + BID_HARD_CAP + ' Coins).');
+            err.bidCap = true;
+            throw err;
+        }
+        return amount;
+    }
+    /**
+     * EAs auctionInfo als reine Auktionen (Gebote, nicht nur Sofortkauf).
+     * readable = startingBid UND currentBid sind Zahlen (sonst wird nie geboten).
+     */
+    function parseBidAuctions(auctionInfo) {
+        const out = [];
+        for (const a of (Array.isArray(auctionInfo) ? auctionInfo : [])) {
+            if (!a || typeof a !== 'object') continue;
+            const it = a.itemData && typeof a.itemData === 'object' ? a.itemData : {};
+            const sb = bidNum(a.startingBid), cb = bidNum(a.currentBid);
+            out.push({
+                tradeId: a.tradeId != null ? String(a.tradeId) : null,
+                startingBid: sb, currentBid: cb, buyNowPrice: bidNum(a.buyNowPrice),
+                expires: bidNum(a.expires), bidState: a.bidState != null ? String(a.bidState) : null,
+                tradeState: a.tradeState != null ? String(a.tradeState) : null,
+                sellerId: a.sellerId != null ? String(a.sellerId) : null,
+                readable: sb != null && cb != null && sb > 0 && cb >= 0,
+                item: { id: it.id != null ? String(it.id) : null, resourceId: bidNum(it.resourceId), definitionId: bidNum(it.definitionId),
+                        assetId: bidNum(it.assetId), rating: bidNum(it.rating), rareflag: bidNum(it.rareflag),
+                        itemType: it.itemType != null ? String(it.itemType) : null, untradeable: it.untradeable === true }
+            });
+        }
+        return out;
+    }
+    /** Spieler-Kennung fuer den Duplikat-Abgleich (Basis-ID, wie in EAs Verein eindeutig). */
+    function bidPersonOf(item) {
+        const it = item || {};
+        if (it.assetId > 0) return String(it.assetId);
+        const d = it.resourceId > 0 ? it.resourceId : (it.definitionId > 0 ? it.definitionId : 0);
+        return d > 0 ? String(d & 0xFFFFFF) : null;
+    }
+    /**
+     * Darf auf diese Auktion geboten werden? Liefert { ok, reason } mit reason
+     * aus: own, done, special, rating, dupe, unreadable. ctx: { ownId,
+     * ratingMin, ratingMax, bidden (Set tradeIds), owned (Set Spieler-Kennungen
+     * aus Verein/Storage/offenen Geboten) }.
+     */
+    function bidEligible(auction, ctx) {
+        const a = auction || {}, c = ctx || {}, it = a.item || {};
+        if (c.ownId != null && a.sellerId != null && String(a.sellerId) === String(c.ownId)) return { ok: false, reason: 'own' };
+        if (!a.tradeId || (c.bidden && c.bidden.has(String(a.tradeId)))) return { ok: false, reason: 'done' };
+        const ts = String(a.tradeState || '').toLowerCase();
+        if (ts && ts !== 'active') return { ok: false, reason: 'done' };
+        if (String(a.bidState || '').toLowerCase() === 'highest') return { ok: false, reason: 'done' };
+        if (a.expires == null || a.expires < BID_MIN_SECONDS_LEFT) return { ok: false, reason: 'done' };
+        if (!a.readable) return { ok: false, reason: 'unreadable' };
+        if (it.itemType != null && it.itemType !== 'player') return { ok: false, reason: 'special' };
+        if (!(it.rareflag === 0 || it.rareflag === 1)) return { ok: false, reason: 'special' };
+        const lo = Math.max(BID_GOLD_MIN_RATING, Number.isFinite(c.ratingMin) ? c.ratingMin : BID_GOLD_MIN_RATING);
+        const hi = Number.isFinite(c.ratingMax) ? c.ratingMax : 99;
+        if (it.rating == null || it.rating < lo || it.rating > hi) return { ok: false, reason: 'rating' };
+        const person = bidPersonOf(it);
+        if (!person || (c.owned && c.owned.has(person))) return { ok: false, reason: 'dupe' };
+        return { ok: true, reason: null };
+    }
+    /**
+     * Transferziele (GET watchlist) auswerten. Bekannte Werte: tradeState
+     * active/closed/expired, bidState highest/outbid/buyNow/none. Alles andere
+     * landet in unknown - damit passiert NICHTS, es steht nur im Report.
+     */
+    function bidWatchlistEval(auctionInfo) {
+        const r = { won: [], outbid: [], expired: [], open: [], unknown: [], total: 0 };
+        for (const a of parseBidAuctions(auctionInfo)) {
+            r.total++;
+            const ts = String(a.tradeState || '').toLowerCase(), bs = String(a.bidState || '').toLowerCase();
+            if (ts === 'closed' && (bs === 'highest' || bs === 'buynow')) r.won.push(a);
+            else if (bs === 'outbid' && (ts === 'active' || ts === 'closed' || ts === 'expired')) r.outbid.push(a);
+            else if ((ts === 'expired' || ts === 'closed') && (bs === 'none' || bs === '')) r.expired.push(a);
+            else if (ts === 'active' && bs === 'highest') r.open.push(a);
+            else r.unknown.push(a);
+        }
+        return r;
+    }
+    /*
+     * Grenzen je Persona: Gebote je Stunde/Tag und Runden je Tag. state =
+     * { persona, bids: [t], runs: [t] }; Persona-Wechsel leert den Stand.
+     */
+    const BID_LIMITS = { hour: 40, day: 150, runsDay: 3, maxOpen: 35, hardOpen: 45, keepMs: 24 * 60 * 60 * 1000 };
+    function bidLimitClean(state, persona, now) {
+        const s = state && typeof state === 'object' ? state : {};
+        const p = persona != null ? String(persona) : (s.persona != null ? String(s.persona) : null);
+        if (s.persona != null && p != null && String(s.persona) !== p) return { persona: p, bids: [], runs: [] };
+        const keep = t => Number.isFinite(t) && t <= now && now - t < BID_LIMITS.keepMs;
+        return { persona: p, bids: (Array.isArray(s.bids) ? s.bids : []).filter(keep), runs: (Array.isArray(s.runs) ? s.runs : []).filter(keep) };
+    }
+    function bidLimitNote(state, persona, kind, now) {
+        const s = bidLimitClean(state, persona, now);
+        if (kind === 'bid') s.bids.push(now); else if (kind === 'run') s.runs.push(now);
+        return s;
+    }
+    function bidLimitCounts(state, persona, now) {
+        const s = bidLimitClean(state, persona, now);
+        return { hour: s.bids.filter(t => now - t < 60 * 60 * 1000).length, day: s.bids.length, runsDay: s.runs.length };
+    }
+    /** Wie viele Gebote darf die naechste Runde hoechstens abgeben? 0 = keine. */
+    function bidLimitRoom(state, persona, now, openBids) {
+        const c = bidLimitCounts(state, persona, now);
+        const open = Math.max(0, Math.floor(Number(openBids) || 0));
+        return Math.max(0, Math.min(BID_LIMITS.hour - c.hour, BID_LIMITS.day - c.day, BID_LIMITS.maxOpen - open));
+    }
+    /*
+     * Gewonnene Gebots-Karten (sbcOptBidWon:<persona>): [{id, defId, rating,
+     * rf, tradeId, paid, at, src}], 14 Tage, hoechstens 300, je id einmal.
+     */
+    const BID_WON_DAYS = 14, BID_WON_MAX = 300;
+    function bidWonPrune(list, now, poolIds) {
+        const seen = new Set(), out = [];
+        const arr = Array.isArray(list) ? list : [];
+        for (let i = arr.length - 1; i >= 0; i--) {
+            const x = arr[i];
+            if (!x || x.id == null || !/^\d+$/.test(String(x.id))) continue;
+            const id = String(x.id);
+            if (seen.has(id)) continue;
+            if (!Number.isFinite(x.at) || x.at > now || now - x.at > BID_WON_DAYS * 24 * 60 * 60 * 1000) continue;
+            if (poolIds && !poolIds.has(id)) continue;
+            seen.add(id);
+            out.unshift(Object.assign({}, x, { id: id }));
+        }
+        return out.slice(-BID_WON_MAX);
+    }
+    function bidWonAdd(list, recs, now) {
+        const add = (Array.isArray(recs) ? recs : []).filter(r => r && r.id != null).map(r => ({
+            id: String(r.id), defId: Number(r.defId) || null, rating: Number(r.rating) || null,
+            rf: Number.isFinite(r.rf) ? r.rf : null, tradeId: r.tradeId != null ? String(r.tradeId) : null,
+            paid: Number.isFinite(r.paid) ? r.paid : null, at: Number.isFinite(r.at) ? r.at : now, src: r.src === 'helfer' ? 'helfer' : 'hand' }));
+        const ids = new Set(add.map(r => r.id));
+        return bidWonPrune((Array.isArray(list) ? list : []).filter(x => !(x && ids.has(String(x.id)))).concat(add), now, null);
+    }
+    // [BIDCAP-END]
+    // [BIDPACK-BEGIN]
+    /*
+     * v6.33.0: Wie viele SBCs gehen aus GENAU diesen Karten? Reine Suche ueber
+     * die Rating-Anzahlen (Memo), Schranke floor(n/slots). Teams mit squadRating
+     * (dieselbe Formel wie SolverCore, ein Test haelt beide gleich) >= Ziel.
+     * Zerlegung: die niedrigste uebrige Karte bleibt liegen ODER steckt in einem
+     * Team - das deckt jede Packung ab. Ein gieriges "bestes Team je Runde"
+     * schafft manchmal weniger (Test). Bei sehr vielen Karten bricht die Suche
+     * nach einem Arbeitsbudget ab und meldet exact:false.
+     */
+    const BidPackCore = (function () {
+        function squadRating(ratings) {
+            const n = ratings.length;
+            if (!n) return 0;
+            let sum = 0;
+            for (const r of ratings) sum += r;
+            const avg = sum / n;
+            let excess = 0;
+            for (const r of ratings) if (r > avg) excess += r - avg;
+            return Math.floor(Math.round(sum + excess) / n);
+        }
+        function pack(ratings, slots, target, budget) {
+            const S = Math.max(1, Math.floor(Number(slots) || 0));
+            const T = Number(target) || 0;
+            const vals = Array.from(new Set((ratings || []).map(Number).filter(r => Number.isFinite(r) && r > 0))).sort((a, b) => a - b);
+            const counts = vals.map(v => (ratings || []).filter(r => Number(r) === v).length);
+            const total = counts.reduce((s, c) => s + c, 0);
+            const upperBound = Math.floor(total / S);
+            const memo = new Map();
+            let work = 0, exact = true;
+            const maxWork = Number(budget) > 0 ? Number(budget) : 400000;
+            function rec(cnt) {
+                const n = cnt.reduce((s, c) => s + c, 0);
+                if (n < S) return { k: 0, teams: [] };
+                const key = cnt.join(',');
+                if (memo.has(key)) return memo.get(key);
+                if (++work > maxWork) { exact = false; return { k: 0, teams: [] }; }
+                const bound = Math.floor(n / S);
+                let lo = 0;
+                while (cnt[lo] === 0) lo++;
+                // a) niedrigste Karte bleibt liegen
+                cnt[lo]--;
+                let best = rec(cnt);
+                cnt[lo]++;
+                // b) niedrigste Karte steckt in einem Team: die uebrigen S-1 Karten aufsteigend waehlen
+                const pick = [vals[lo]];
+                cnt[lo]--;
+                const go = (from, need) => {
+                    if (best.k >= bound) return;
+                    if (need === 0) {
+                        if (squadRating(pick) < T) return;
+                        const sub = rec(cnt);
+                        if (sub.k + 1 > best.k) best = { k: sub.k + 1, teams: [pick.slice()].concat(sub.teams) };
+                        return;
+                    }
+                    for (let i = from; i < vals.length; i++) {
+                        if (!cnt[i]) continue;
+                        cnt[i]--; pick.push(vals[i]);
+                        go(i, need - 1);
+                        pick.pop(); cnt[i]++;
+                        if (best.k >= bound) return;
+                    }
+                };
+                go(lo, S - 1);
+                cnt[lo]++;
+                memo.set(key, best);
+                return best;
+            }
+            const res = total >= S ? rec(counts.slice()) : { k: 0, teams: [] };
+            return { count: res.k, teams: res.teams, upperBound: upperBound, exact: exact, cards: total };
+        }
+        function maxRounds(ratings, slots, target) { return pack(ratings, slots, target).count; }
+        return { pack: pack, maxRounds: maxRounds, squadRating: squadRating };
+    })();
+    // [BIDPACK-END]
     function buyLedgerKey() { let p = null; try { p = ownPersonaId(); } catch (e) {} return 'sbcOptBuyLedger:' + (p || 'unbekannt'); }
     function buyLedgerLoad() { try { const a = JSON.parse(localStorage.getItem(buyLedgerKey()) || '[]'); return buyLedgerPrune(a, Date.now()); } catch (e) { return []; } }
     /** Einen Kauf festhalten; Fehler hier duerfen nie einen Kauf-Lauf stoeren. Liefert den Eintrag. */

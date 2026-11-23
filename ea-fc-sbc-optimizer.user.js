@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.29.8
+// @version      6.29.9
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.29.8';
+    const VERSION = '6.29.9';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -16604,7 +16604,9 @@ const HybridSbcEa = (() => {
             const club = await pointsFetchPile(info.id, P.CLUB);
             const locks = pointsLockedSet(), boughtIds = pointsBoughtIds();
             const sc = it => Number(it && (it.sbsScore != null ? it.sbsScore : it.gradingScore)) || 0;
-            const evo = it => { try { return (Array.isArray(it.academyAttributes) && it.academyAttributes.length > 0) || (typeof it.isAcademyItem === 'function' && it.isAcademyItem()); } catch (e) { return false; } };
+            // v6.29.9: volle Evo-Pruefung wie bei "Karten auswaehlen" (v6.29.8) - die verkuerzte
+            // liess Evos durch, ihr abweichender Punktwert konnte ein Rating aus der Tabelle werfen.
+            const evo = it => { try { return pointsIsEvoItem(it) || (Array.isArray(it.academyAttributes) && it.academyAttributes.length > 0) || (typeof it.isAcademyItem === 'function' && it.isAcademyItem()); } catch (e) { return false; } };
             // Punktwert je Rating: EAs Werte dieser Challenge an normalen Karten (kein Evo, keine Specials).
             const normal = storage.concat(club).filter(it => isNormalCard(parseInt(it.rareflag, 10)) && !evo(it)).map(it => ({ rating: Number(it.rating) || 0, score: sc(it) }));
             const table = PointsBuyCore.scoreTable(normal);

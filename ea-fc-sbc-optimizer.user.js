@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.42.0
+// @version      6.42.1
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.42.0';
+    const VERSION = '6.42.1';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -6263,7 +6263,8 @@
             --pt-tap: 44px;                           /* Hauptaktion, Reiter */
             --pt-control-h: 40px;                     /* Feld, Segment */
             --pt-control-h-sm: 32px;                  /* kleine Knoepfe in Zeilen */
-            --pt-panel-w: 360px;
+            --pt-panel-w: 340px;
+            --pt-header-h: 53px;
             --pt-panel-radius: var(--pt-radius-xl);
             --pt-panel-pad: var(--pt-space-4);
             --pt-card-radius: var(--pt-radius-md);
@@ -6330,7 +6331,7 @@
         #sbc-opt-panel {
             position: fixed; right: 22px; bottom: 90px; z-index: 999999;
             /* Feste 340px liefen auf schmalen Schirmen aus dem Bild. */
-            width: min(340px, calc(100vw - 24px));
+            width: min(var(--pt-panel-w), calc(100vw - 24px));
             max-height: 78vh; overflow-y: auto; overscroll-behavior: contain;
             /* v5.31.0: Glas statt Vollton - das Spielfeld scheint leicht durch,
                das Panel wirkt als Ebene darueber, nicht als Block. Ohne
@@ -6370,6 +6371,7 @@
             /* Klebt beim Scrollen oben - der Zuklapp-Knopf und der Ziehgriff
                bleiben erreichbar, auch wenn das Panel lang geworden ist. */
             position: sticky; top: 0; z-index: 2;
+            box-sizing: border-box; height: var(--pt-header-h);
         }
         .sbc-opt-header img.sbc-opt-logo {
             width:28px; height:28px; border-radius:50%;
@@ -7363,6 +7365,36 @@
         .sbc-opt-item-meta { display:flex; align-items:center; gap:var(--pt-space-2); margin-top:var(--pt-space-0-5); font-size:var(--pt-type-meta); color:var(--pt-fg-muted); }
         .sbc-opt-item-meta .grow { flex:1 1 auto; min-width:0; }
 
+        /* v6.42.1: Panelgroesse. Der Griff liegt im (fixierten) Kopf und ist per
+           JS so hoch wie der sichtbare Panelbereich - so begleitet er den
+           linken Rand, ohne die Scrollhoehe zu vergroessern. */
+        #sbc-opt-size {
+            margin-left:auto; min-width:var(--pt-control-h-sm); height:var(--pt-control-h-sm); padding:0 var(--pt-space-2);
+            border:none; border-radius:var(--pt-radius-full); background:var(--pt-bg-raised); color:var(--pt-fg-muted);
+            font-family:var(--pt-font-mono); font-size:var(--pt-type-meta); font-weight:var(--pt-weight-medium); cursor:pointer;
+        }
+        #sbc-opt-size:hover { color:var(--pt-fg-default); background:var(--pt-bg-raised-hover); }
+        #sbc-opt-size:active { background:var(--pt-state-press); }
+        #sbc-opt-resize {
+            position:absolute; left:0; top:0; width:8px; min-height:100%; cursor:ew-resize; touch-action:none;
+        }
+        #sbc-opt-resize::after {
+            content:''; position:absolute; left:2px; top:50%; width:3px; height:36px; margin-top:-18px;
+            border-radius:var(--pt-radius-full); background:var(--pt-border-strong); opacity:0;
+            transition: opacity var(--pt-dur-fast) ease;
+        }
+        #sbc-opt-panel:hover #sbc-opt-resize::after { opacity:.7; }
+        #sbc-opt-resize:hover::after, #sbc-opt-resize:active::after { opacity:1; background:var(--pt-accent); }
+        #sbc-opt-panel[data-size-mode="hoehe"] #sbc-opt-resize { display:none; }
+        #sbc-opt-panel[data-size-mode="hoehe"][data-h="halb"] { max-height:46vh; }
+
+        /* v6.42.1: die Reiterleiste bleibt beim Scrollen direkt unter dem Kopf
+           erreichbar (Rasmus: "alles gut erreichbar"). Sie bleibt direktes
+           Kind des Rumpfs (placePackSection). */
+        .sbc-opt-tabs { position:sticky; top:var(--pt-header-h); z-index:1; }
+        /* Deckt beim Kleben die Rumpfraender links/rechts ab (sonst scheint der Inhalt neben der Leiste durch). */
+        .sbc-opt-tabs { box-shadow: 0 0 0 var(--pt-space-1-5) var(--pt-bg-base), calc(-1 * var(--pt-gutter)) 0 0 var(--pt-space-1-5) var(--pt-bg-base), var(--pt-gutter) 0 0 var(--pt-space-1-5) var(--pt-bg-base); }
+
         /* v6.40.0: Abstands-Hilfsklassen statt style="margin/padding" im
            Panel-Template. Mit #sbc-opt-panel .sbc-opt-body davor (schlaegt auch
            #sbc-opt-panel input[type=number]), damit sie (wie vorher das
@@ -7630,6 +7662,145 @@
         const none = !bridgeKind();
         if (a.hidden === none) a.hidden = !none;
     }
+    // [PANELSIZE-BEGIN]
+    // v6.42.1: Panelgroesse (Rasmus 24.11.: "die Groesse vom PitTools-Dialog
+    // auch aendern koennen"). PC (feiner Zeiger, Fenster >= 700 px): Breite
+    // 340-720 px per Ziehgriff am linken Rand (Doppelklick = Standard) oder
+    // per Knopf im Kopf (S 340 / M 460 / L 600). Handy: Breite wie bisher,
+    // der Knopf schaltet die Hoehe halb/voll. Je Geraet in localStorage
+    // (sbcOptPanelW / sbcOptPanelH). Die Breite wird IMMER auf das Fenster
+    // geklemmt - im CSS noch einmal (min(var(--pt-panel-w), 100vw - 24px)).
+    const PANEL_W_MIN = 340, PANEL_W_MAX = 720, PANEL_W_STD = 340;
+    const PANEL_W_STEPS = [['S', 340], ['M', 460], ['L', 600]];
+    function panelWidthClamp(w, vw) {
+        let n = Number(w);
+        if (w === null || w === '' || typeof w === 'boolean' || !isFinite(n) || n <= 0) n = PANEL_W_STD;
+        n = Math.round(Math.min(PANEL_W_MAX, Math.max(PANEL_W_MIN, n)));
+        const room = Number(vw) - 24;
+        if (isFinite(room) && room > 0) n = Math.min(n, Math.round(room));
+        return n;
+    }
+    function panelWidthLoad(storage) {
+        try {
+            const raw = storage.getItem('sbcOptPanelW');
+            if (raw === null || raw === undefined || raw === '') return PANEL_W_STD;
+            const n = Number(raw);
+            return (isFinite(n) && n >= PANEL_W_MIN && n <= PANEL_W_MAX) ? Math.round(n) : PANEL_W_STD;
+        } catch (e) { return PANEL_W_STD; }
+    }
+    function panelWidthSave(storage, w) {
+        const n = panelWidthClamp(w, NaN);
+        try { storage.setItem('sbcOptPanelW', String(n)); } catch (e) {}
+        return n;
+    }
+    function panelHeightLoad(storage) {
+        try { return storage.getItem('sbcOptPanelH') === 'halb' ? 'halb' : 'voll'; } catch (e) { return 'voll'; }
+    }
+    function panelHeightSave(storage, h) {
+        const v = h === 'halb' ? 'halb' : 'voll';
+        try { storage.setItem('sbcOptPanelH', v); } catch (e) {}
+        return v;
+    }
+    function panelSizeMode(finePointer, vw) {
+        return (finePointer && Number(vw) >= 700) ? 'breite' : 'hoehe';
+    }
+    function panelStepOf(w) {
+        const hit = PANEL_W_STEPS.filter(function (s) { return s[1] === w; })[0];
+        return hit ? hit[0] : '↔';
+    }
+    function panelStepNext(w) {
+        const up = PANEL_W_STEPS.filter(function (s) { return s[1] > w; })[0];
+        return up ? up[1] : PANEL_W_STEPS[0][1];
+    }
+    function initPanelSize(panel, win, storage) {
+        win = win || window;
+        storage = storage || win.localStorage;
+        const doc = win.document;
+        const header = panel.querySelector('.sbc-opt-header');
+        const closeBtn = panel.querySelector('#sbc-opt-close');
+        if (!header || !closeBtn) return null;
+        const btn = doc.createElement('button');
+        btn.type = 'button'; btn.id = 'sbc-opt-size'; btn.className = 'sbc-opt-nodrag';
+        header.insertBefore(btn, closeBtn);
+        const grip = doc.createElement('div');
+        grip.id = 'sbc-opt-resize'; grip.className = 'sbc-opt-nodrag';
+        grip.setAttribute('role', 'separator');
+        grip.setAttribute('aria-orientation', 'vertical');
+        grip.setAttribute('aria-label', 'Panelbreite ziehen (Doppelklick: Standard)');
+        header.appendChild(grip);
+        function mode() {
+            let fine = false;
+            try { fine = !!win.matchMedia('(pointer: fine)').matches; } catch (e) {}
+            return panelSizeMode(fine, win.innerWidth);
+        }
+        function setW(w) {
+            const n = panelWidthClamp(w, win.innerWidth);
+            panel.style.setProperty('--pt-panel-w', n + 'px');
+            return n;
+        }
+        function apply() {
+            const m = mode();
+            if (panel.getAttribute('data-size-mode') !== m) panel.setAttribute('data-size-mode', m);
+            if (m === 'breite') {
+                const stored = panelWidthLoad(storage);
+                setW(stored);
+                panel.removeAttribute('data-h');
+                btn.textContent = panelStepOf(stored);
+                btn.setAttribute('aria-label', 'Panelbreite: ' + stored + ' px – tippen für die nächste Stufe (S/M/L)');
+            } else {
+                setW(PANEL_W_STD);
+                const h = panelHeightLoad(storage);
+                panel.setAttribute('data-h', h);
+                btn.textContent = h === 'halb' ? 'Halb' : 'Voll';
+                btn.setAttribute('aria-label', 'Panelhöhe: ' + (h === 'halb' ? 'halb' : 'voll') + ' – tippen zum Umschalten');
+            }
+            try { grip.style.height = panel.clientHeight + 'px'; } catch (e) {}
+        }
+        btn.addEventListener('click', function () {
+            if (mode() === 'breite') panelWidthSave(storage, panelStepNext(panelWidthLoad(storage)));
+            else panelHeightSave(storage, panelHeightLoad(storage) === 'halb' ? 'voll' : 'halb');
+            apply();
+        });
+        let drag = null;
+        grip.addEventListener('pointerdown', function (ev) {
+            if (mode() !== 'breite') return;
+            const r = panel.getBoundingClientRect();
+            drag = { x: ev.clientX, w: r.width, left: r.left, anchoredLeft: !!panel.style.left && panel.style.left !== 'auto', cur: r.width };
+            try { grip.setPointerCapture(ev.pointerId); } catch (e) {}
+            ev.preventDefault(); ev.stopPropagation();
+        });
+        grip.addEventListener('pointermove', function (ev) {
+            if (!drag) return;
+            drag.cur = setW(drag.w + (drag.x - ev.clientX));
+            // Wurde das Panel verschoben, haengt es an left/top: die rechte Kante
+            // bleibt stehen, also wandert left mit.
+            if (drag.anchoredLeft) panel.style.left = Math.max(0, drag.left - (drag.cur - drag.w)) + 'px';
+        });
+        function endDrag() {
+            if (!drag) return;
+            const d = drag; drag = null;
+            panelWidthSave(storage, d.cur);
+            if (d.anchoredLeft) {
+                try {
+                    const pos = JSON.parse(storage.getItem('sbcOptPanelPos') || 'null');
+                    if (pos && typeof pos.left === 'number') {
+                        pos.left = Math.max(0, d.left - (d.cur - d.w));
+                        storage.setItem('sbcOptPanelPos', JSON.stringify(pos));
+                    }
+                } catch (e) {}
+            }
+            apply();
+        }
+        grip.addEventListener('pointerup', endDrag);
+        grip.addEventListener('pointercancel', endDrag);
+        grip.addEventListener('dblclick', function () { panelWidthSave(storage, PANEL_W_STD); apply(); });
+        win.addEventListener('resize', apply);
+        try { new win.ResizeObserver(function () { try { grip.style.height = panel.clientHeight + 'px'; } catch (e) {} }).observe(panel); } catch (e) {}
+        apply();
+        return { apply: apply, btn: btn, grip: grip };
+    }
+    // [PANELSIZE-END]
+
     // [TIPS-BEGIN]
     // v6.41.0: Info-Tooltip (ⓘ). Erklaerungen stehen nicht mehr als Absatz im
     // Fluss, sondern hinter einem kleinen Knopf - am Handy per Tipp (dort gibt
@@ -8416,6 +8587,7 @@
         enhanceSelectSegments(panel);
         initUxHelpers(panel);
         initTips(panel);
+        initPanelSize(panel);
         // Fortschritts-Overlay: bewusst ausserhalb des Panels, damit es auch
         // sichtbar ist, wenn das Panel zu ist.
         const prog = document.createElement('div');
@@ -8562,7 +8734,8 @@
         panel.querySelector('#sbc-opt-close').addEventListener('click', () => panel.classList.remove('open'));
         makeDraggable(panel, panel.querySelector('.sbc-opt-header'), 'sbcOptPanelPos', {
             minVisible: 60, // Header muss greifbar bleiben
-            ignore: (ev) => ev.target && ev.target.id === 'sbc-opt-close'
+            ignore: (ev) => ev.target && (ev.target.id === 'sbc-opt-close' ||
+                (typeof ev.target.closest === 'function' && !!ev.target.closest('.sbc-opt-nodrag')))
         });
         // Tippen (ohne Ziehen) oeffnet das Panel - siehe onTap in makeDraggable.
         // Bewusst KEIN zusaetzlicher click-Listener: der wuerde doppelt

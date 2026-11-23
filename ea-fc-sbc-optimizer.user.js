@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.32.2
+// @version      6.32.3
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.32.2';
+    const VERSION = '6.32.3';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -14080,6 +14080,8 @@ const HybridSbcEa = (() => {
     const BUY_OFFER_TRIES = 5;          // v5.43.0 (v5.48.0: 3 -> 5): so viele Angebote je Schritt, wenn eines tot ist
     const BUY_461_LOCK_LIMIT = 6;       // v5.48.0: so viele 461 in Folge (ueber Spieler hinweg) = Marktsperre, Lauf stoppt
     const BUY_REPLAN_MAX_FACTOR = 2;    // v5.43.0: Neubewertung darf den Plan hoechstens verdoppeln
+    // v6.32.3 (Review F5): ehrliche Zusage im Dialog statt "nie mehr als die Obergrenze".
+    const BUY_REPLAN_NOTE = 'Findet sich bis zur Obergrenze kein Angebot, wird der Preis einmal neu bewertet - je Karte höchstens das Doppelte des Plans, die Summe oben wird aber nie überschritten.';
     const deadTrades = new Set();       // v5.43.0: Trades, die EA als weg gemeldet hat (461/closed)
     let buyBusy = false;
     let sbcSolveBusy = false; // v6.32.1: KI-SBC-Lauf (Vorschau/Ausfuehren) - kein zweiter Kauf-Lauf dazwischen
@@ -14179,12 +14181,12 @@ const HybridSbcEa = (() => {
         const frage = plan.length + ' Spieler nach und nach kaufen?\n\n' + lines + '\n\nZusammen höchstens ' + fmtCoins(total) +
                       (coins != null ? ' (Kontostand ' + fmtCoins(coins) + ')' : '') +
                       (noLive ? '\n' + noLive + ' Preis(e) stammen von futbin, weil der Markt gerade kein Angebot zeigt.' : '') +
-                      '.\nEin Kauf alle 3-6 Sekunden, Abbruch bei Fehlern. Es wird nie mehr als die Obergrenze gezahlt.';
+                      '.\nEin Kauf alle 3-6 Sekunden, Abbruch bei Fehlern. ' + BUY_REPLAN_NOTE;
         if (!window.confirm(frage)) return;
         if (coins != null && coins < total) {
             if (!window.confirm('Der Kontostand reicht nicht für die Obergrenze aller Spieler. Trotzdem starten (kauft, so weit die Coins reichen)?')) return;
         }
-        await buyPlannedPlayers(c, plan);
+        await buyPlannedPlayers(c, plan, { confirmedTotal: total }); // v6.32.3: Neubewertung bleibt in der bestaetigten Summe
     }
     function buyBudgetAllows(plan, player, offer, spent, opts) {
         if (opts.hardBudget == null) return true;
@@ -14255,12 +14257,19 @@ const HybridSbcEa = (() => {
                     // werden, anstatt es so oft zu versuchen"): echtes Marktminimum frisch
                     // holen; liegt es hoechstens beim Doppelten des Plans, Plan anheben und
                     // einmal neu suchen. Darueber bleibt es beim Nutzer.
+                    // v6.32.3 (Review F5): mit opts.confirmedTotal nur, solange ausgegeben + restliche
+                    // Obergrenzen + neue Obergrenze die im Dialog bestaetigte Summe nicht ueberschreiten.
+                    const room = opts.confirmedTotal != null
+                        ? opts.confirmedTotal - diag.spent - plan.slice(k + 1, maxPerRun).reduce((a, q) => a + (Number(q.maxPrice) || 0), 0) : Infinity;
                     let est = null;
-                    try { est = await marketMinBin(p.resourceId, { fresh: true }); } catch (e) { est = null; }
+                    if (room > p.maxPrice) { try { est = await marketMinBin(p.resourceId, { fresh: true }); } catch (e) { est = null; } }
+                    else step.replanSkipped = 'bestätigte Gesamtsumme';
                     const neu = est && est.robust != null ? est.robust : null;
-                    if (neu && neu > p.planned && neu <= p.planned * BUY_REPLAN_MAX_FACTOR) {
+                    const neuMax = neu ? planMaxPrice(neu, BUY_TOLERANCE, eaPriceTiers()) : null;
+                    if (neu && neu > p.planned && neu <= p.planned * BUY_REPLAN_MAX_FACTOR && neuMax > room) step.replanSkipped = 'bestätigte Gesamtsumme';
+                    if (neu && neu > p.planned && neu <= p.planned * BUY_REPLAN_MAX_FACTOR && neuMax <= room) {
                         step.replannedFrom = p.planned; step.replanned = neu;
-                        p.planned = neu; p.maxPrice = planMaxPrice(neu, BUY_TOLERANCE, eaPriceTiers()); step.max = p.maxPrice;
+                        p.planned = neu; p.maxPrice = neuMax; step.max = p.maxPrice;
                         lines.push('↻ ' + escapeHtml(p.name) + ': kein Angebot bis ' + fmtCoins(step.max === p.maxPrice ? step.replannedFrom : p.maxPrice) + ' - Markt liegt bei ' + fmtCoins(neu) + ', neue Obergrenze ' + fmtCoins(p.maxPrice) + '.');
                         render('Suche ' + p.name + ' erneut (bis ' + fmtCoins(p.maxPrice) + ') ...');
                         await futbinSleep(randomBetween(1500, 2500));
@@ -17553,13 +17562,14 @@ const HybridSbcEa = (() => {
                       (noLive ? '\n' + noLive + ' Preis(e) stammen von fut.gg, weil der Markt gerade kein Angebot zeigt.' : '') +
                       // v5.56.0: was NICHT gekauft wird, steht mit Grund in der Rueckfrage.
                       (built.skipped.length ? '\n\nNicht dabei (selbst entscheiden):\n' + built.skipped.map(s => '- ' + s.name + ': ' + s.reason).join('\n') : '') +
-                      '.\nEin Kauf alle 4-8 Sekunden, Abbruch bei Fehlern. Die Karten gehen in den Verein und zählen für die Galerie.';
+                      '.\nEin Kauf alle 4-8 Sekunden, Abbruch bei Fehlern. Die Karten gehen in den Verein und zählen für die Galerie. ' + BUY_REPLAN_NOTE;
         if (!window.confirm(frage)) { renderGallerySet(ch.meta, ch.set, ch.owned); return; }
         if (coins != null && coins < total) {
             if (!window.confirm('Der Kontostand reicht nicht für die Obergrenze aller Spieler. Trotzdem starten (kauft, so weit die Coins reichen)?')) { renderGallerySet(ch.meta, ch.set, ch.owned); return; }
         }
         await buyPlannedPlayers(null, built.plan, {
             noSquad: true, setResult: setGalleryResult, maxPerRun: GALLERY_BUY_MAX_PER_RUN,
+            confirmedTotal: total, // v6.32.3 (Review F5): Neubewertung bleibt in der bestaetigten Summe
             offerMatches: (p,o) => galleryOfferMatches(p.variant,o,window),
             beforeBid:async () => {
                 if (ownPersonaId() !== gradePersona || !galleryLast || galleryLast.chosen !== ch) throw Error('Account oder Galerie-Set gewechselt.');
@@ -19979,10 +19989,10 @@ const HybridSbcEa = (() => {
             const lines = built.plan.map(p => p.name + ' (' + (p.rating || '?') + '): bis ' + fmtCoins(p.maxPrice)).join('\n');
             const frage = built.plan.length + ' Konzept-Spieler nach und nach kaufen?\n\n' + lines + '\n\nZusammen höchstens ' + fmtCoins(total) +
                           (coins != null ? ' (Kontostand ' + fmtCoins(coins) + ')' : '') +
-                          '.\nEin Kauf alle 3-6 Sekunden, Abbruch bei Fehlern. Es wird nie mehr als die Obergrenze gezahlt.';
+                          '.\nEin Kauf alle 3-6 Sekunden, Abbruch bei Fehlern. ' + BUY_REPLAN_NOTE;
             if (!window.confirm(frage)) return;
             buyBusy = false; // buyPlannedPlayers setzt es selbst
-            await buyPlannedPlayers(null, built.plan);
+            await buyPlannedPlayers(null, built.plan, { confirmedTotal: total }); // v6.32.3
         } catch (e) {
             reportError('Konzept-Spieler kaufen', e);
             setFutbinResult(warnHtml('Kaufen fehlgeschlagen: ' + (e && e.message || e)));

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.36.0
+// @version      6.37.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.36.0';
+    const VERSION = '6.37.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -217,6 +217,7 @@
             points: null,            // v6.15.0/6.18.1: Punkte-SBC - Gruppen, Auswahl, Vereins-Vorschau
             tradepileSell: null,     // v5.37.0: Transferliste zum Marktpreis listen
             handBuys: null, // v6.30.0: mitgelesene Handkaeufe (Sofortkauf in der EA-Oberflaeche)
+            bidRuns: null,    // v6.37.0: letzte 5 Laeufe des Gebots-Helfers (Abholen, Vorschlagen, Runde)
             bidSbc: null,     // v6.35.0: Mit Gebots-Karten planen (Bestand je Rating, Obergrenze, gepackt, geplant)
             bidCapture: null, // v6.34.0: Gebots-Helfer - Mitschnitt der EA-Oberflaeche (Suchparameter, Antwortform, Transferziele)
             clientTradeSamples: null, // v5.49.0: Handels-Requests der EA-Oberflaeche (Header-Namen, Body, Status)
@@ -7732,6 +7733,7 @@
                         <div class="sbc-opt-bid-summary" id="sbc-opt-bid-summary">Gewonnen: 0 Karten</div>
                         <div class="sbc-opt-dim" id="sbc-opt-bid-hint">Mitlesen: Biete in der Web App von Hand (höchstens 600). PitTools merkt sich gewonnene Gold-Karten, sobald du die Transferziele öffnest – ohne eigene Anfrage an EA.</div>
                         <div class="sbc-opt-dim" id="sbc-opt-bid-pack" hidden></div>
+                        <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-bid-collect">Gewonnene abholen</button>
                         <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-bid-plan">Mit Gebots-Karten planen</button>
                         <div class="sbc-opt-result" id="sbc-opt-bid-result"></div>
                     </div>
@@ -14022,8 +14024,10 @@ const HybridSbcEa = (() => {
                 return;
             }
             if (kind === 'watchlistOp') {
-                bidCaptureRing('watchlistOps', { at: Date.now(), m: String(method || '').toUpperCase(), path: qi.path, params: qi.params, status: isNaN(st) ? null : st,
-                    body: reqBody ? String(reqBody).slice(0, 160) : null });
+                const op = { at: Date.now(), m: String(method || '').toUpperCase(), path: qi.path, params: qi.params, status: isNaN(st) ? null : st,
+                    body: reqBody ? String(reqBody).slice(0, 160) : null };
+                bidCaptureRing('watchlistOps', op);
+                bidWatchDelLearn(op); // v6.37.0: Endpunkt zum Entfernen aus EAs eigener Oberflaeche lernen
             }
         } catch (e) {}
     }
@@ -14057,6 +14061,8 @@ const HybridSbcEa = (() => {
     function initBidHelperUi() {
         const pb = document.getElementById('sbc-opt-bid-plan');
         if (pb) pb.addEventListener('click', onBidPlanClick);
+        const cb = document.getElementById('sbc-opt-bid-collect');
+        if (cb) cb.addEventListener('click', onBidCollectClick);
         renderBidCard();
         setInterval(function () { if (tabCurrent === 'kaufen') { try { renderBidCard(); } catch (e) {} } }, 4000);
     }
@@ -14235,14 +14241,137 @@ const HybridSbcEa = (() => {
         const r = await executePlan(saved.plan);
         return { done: r ? r.done : null, planned: r ? r.planned : saved.plan.planned, stopped: r ? r.stopped || null : null };
     }
+    // [BIDHELPER-BEGIN]
+    /*
+     * v6.37.0+: eigene Anfragen des Gebots-Helfers. Regeln, die Tests pruefen:
+     * - In diesem Block gibt es hoechstens EINEN eigenen PUT-Aufruf: in
+     *   bidPutCapped (ab v6.38.0). Weder der Sofortkauf-PUT des Kauf-Laufs noch
+     *   EAs Client-Gebot noch dessen Notweg noch der Kauf-Lauf selbst werden hier
+     *   benutzt (Quelltext-Test).
+     * - Abholen (bidCollect): GET watchlist, gewonnene Gebots-Karten in den Verein
+     *   (adoptBoughtIntoClient - derselbe Weg wie nach einem Kauf), ueberbotene/
+     *   abgelaufene aus den Transferzielen - aber NUR mit dem Endpunkt, den der
+     *   Mitschnitt an EAs eigener Oberflaeche gelernt hat (nie geraten).
+     * - Helfer und Kauf-Lauf schliessen sich aus (bidHelperBusy / buyBusy).
+     */
+    const BID_WATCH_DEL_KEY = 'sbcOptBidWatchDel';
+    const BID_COLLECT_GAP_MIN_MS = 1500, BID_COLLECT_GAP_MAX_MS = 3000;
+    /** Gelernter Endpunkt zum Entfernen aus den Transferzielen ({ method, param }) oder null. */
+    function bidWatchDelLearned() {
+        try {
+            const v = JSON.parse(localStorage.getItem(BID_WATCH_DEL_KEY) || 'null');
+            return v && v.method === 'DELETE' && /^[a-z]{2,20}$/i.test(String(v.param || '')) ? { method: 'DELETE', param: String(v.param) } : null;
+        } catch (e) { return null; }
+    }
+    /** Aus dem Mitschnitt: DELETE watchlist?<param>=<ids> mit 2xx -> merken. Pure Pruefung in bidWatchDelFrom. */
+    function bidWatchDelLearn(op) {
+        try {
+            const got = bidWatchDelFrom(op);
+            if (got) localStorage.setItem(BID_WATCH_DEL_KEY, JSON.stringify(Object.assign({ at: Date.now() }, got)));
+        } catch (e) {}
+    }
+    function bidWatchDelFrom(op) {
+        if (!op || String(op.m || '').toUpperCase() !== 'DELETE' || op.path !== 'watchlist') return null;
+        if (!(op.status >= 200 && op.status < 300)) return null;
+        const names = Object.keys(op.params || {}).filter(k => /^[\d,]+$/.test(String(op.params[k])));
+        return names.length === 1 && /^[a-z]{2,20}$/i.test(names[0]) ? { method: 'DELETE', param: names[0] } : null;
+    }
+    /** Eigener DELETE (nur Transferziele), mit Zeitlimit; wirft mit Status in der Meldung. */
+    async function bidApiDelete(path) {
+        const url = STATE.session.apiBase + String(path).replace(/^\//, '');
+        const tmo = apiTimeoutStart();
+        let resp;
+        try { resp = await _origFetch(url, { method: 'DELETE', headers: apiHeaders(), credentials: 'omit', signal: tmo.signal }); }
+        catch (e0) { const e = apiTimeoutError(e0, tmo); diagError('DELETE ' + path + ' -> ' + (e.message || e)); throw e; }
+        finally { tmo.done(); }
+        if (!resp.ok) { noteThrottle('DELETE ' + path + ' -> HTTP ' + resp.status); diagError('DELETE ' + path + ' -> HTTP ' + resp.status); throw new Error(httpErrText('DELETE', path, resp.status)); }
+        noteRequestOk();
+        return true;
+    }
+    function bidRunRecord(run) {
+        const ring = STATE.diag.bidRuns || (STATE.diag.bidRuns = []);
+        ring.push(run);
+        if (ring.length > 5) ring.shift();
+        return run;
+    }
+    function bidSleep(min, max) { return BgTimer.wait(Math.round(min + Math.random() * (max - min))); }
+    /**
+     * "Gewonnene abholen": GET watchlist -> gewonnene Gebots-Karten in den Verein
+     * (+ Pool, Speicher, Kaufbuch), ueberbotene/abgelaufene entfernen (nur mit
+     * gelerntem Endpunkt). Unbekannte Zustaende: nichts tun, im Report.
+     */
+    async function bidCollect(source) {
+        if (bidHelperBusy) throw new Error('Der Gebots-Helfer arbeitet schon.');
+        if (buyBusy || sbcSolveBusy) throw new Error('Gerade läuft ein Kauf-Lauf - bitte danach erneut.');
+        if (!sessionReady()) throw new Error('Keine EA-Sitzung erkannt - einmal in der Web App klicken, dann erneut.');
+        const persona = ownPersonaId();
+        const run = bidRunRecord({ at: Date.now(), mode: 'abholen', source: source || 'panel', won: 0, wonGold: 0, moved: 0, httpMoved: 0, merged: 0,
+                                   outbid: 0, expired: 0, removed: 0, removeSkipped: null, unknown: 0, stopped: null });
+        bidHelperBusy = true;
+        try {
+            let json;
+            try { json = await apiGet('watchlist'); }
+            catch (e) { run.stopped = 'Transferziele nicht lesbar: ' + (e && e.message || e); throw new Error(run.stopped); }
+            const ai = json && Array.isArray(json.auctionInfo) ? json.auctionInfo : [];
+            const rawByTrade = new Map(ai.filter(a => a && a.tradeId != null).map(a => [String(a.tradeId), a.itemData || null]));
+            const res = bidNoteWatchlist(ai, 'abholen');
+            run.won = res.ev.won.length; run.wonGold = res.won.length; run.outbid = res.ev.outbid.length; run.expired = res.ev.expired.length; run.unknown = res.ev.unknown.length;
+            // 1) Gewonnene Gebots-Karten in den Verein
+            const bought = res.won.map(w => ({ itemId: w.id, raw: rawByTrade.get(String(w.tradeId)) || null, rec: w })).filter(b => b.raw);
+            if (bought.length) {
+                const ad = await adoptBoughtIntoClient(bought, () => ownPersonaId() === persona);
+                run.moved = ad.moved; run.httpMoved = ad.httpMoved;
+                if (ad.moved + ad.httpMoved >= bought.length) {
+                    const players = bought.map(b => { try { return normalizePlayer(b.raw, false); } catch (e) { return null; } }).filter(Boolean);
+                    if (players.length) { mergeIntoPool(players); run.merged = players.length; }
+                } else run.mergeHint = 'Nicht alle Karten verschoben - bitte „Verein neu laden“.';
+                bought.forEach(b => { try { buyLedgerRecord({ mode: 'gebot-gewonnen', via: 'abholen', name: null, defId: b.rec.defId, rating: b.rec.rating, tradeId: b.rec.tradeId,
+                    itemId: b.itemId, bid: b.rec.paid, ea: { currentBid: b.rec.paid, answered: false } }); } catch (e) {} });
+            }
+            // 2) Ueberboten/abgelaufen entfernen - nur mit gelerntem Endpunkt
+            const gone = res.ev.outbid.concat(res.ev.expired).filter(a => String(a.tradeState || '').toLowerCase() !== 'active' || String(a.bidState || '').toLowerCase() === 'outbid')
+                .map(a => a.tradeId).filter(t => t && /^\d+$/.test(t));
+            if (gone.length) {
+                const ep = bidWatchDelLearned();
+                if (!ep) run.removeSkipped = 'Endpunkt zum Entfernen noch nicht mitgeschnitten - einmal in der EA-Oberfläche einen Eintrag aus den Transferzielen entfernen.';
+                else {
+                    for (let i = 0; i < gone.length; i += 20) {
+                        if (ownPersonaId() !== persona) { run.stopped = 'Account gewechselt'; break; }
+                        await bidSleep(BID_COLLECT_GAP_MIN_MS, BID_COLLECT_GAP_MAX_MS);
+                        const chunk = gone.slice(i, i + 20);
+                        try { await bidApiDelete('watchlist?' + ep.param + '=' + chunk.join(',')); run.removed += chunk.length; }
+                        catch (e) { run.removeSkipped = 'Entfernen abgelehnt: ' + (e && e.message || e); break; }
+                    }
+                }
+            }
+            if (bidWatchState) bidWatchState.total = Math.max(0, bidWatchState.total - (run.moved + run.httpMoved) - run.removed);
+            return run;
+        } finally {
+            bidHelperBusy = false;
+            renderBidCardSoon();
+        }
+    }
+    async function onBidCollectClick() {
+        const btn = document.getElementById('sbc-opt-bid-collect');
+        setBtnBusy(btn, true, 'hole ab');
+        try {
+            const r = await bidCollect('panel');
+            const parts = [r.wonGold + ' gewonnene Gebots-Karte(n)' + (r.merged ? ' im Verein' : ''), r.outbid + ' überboten', r.expired + ' abgelaufen'];
+            if (r.removed) parts.push(r.removed + ' entfernt');
+            toast('Transferziele: ' + parts.join(' · ') + (r.removeSkipped ? '. ' + r.removeSkipped : '') + (r.mergeHint ? ' ' + r.mergeHint : ''), r.removeSkipped || r.mergeHint ? 'warn' : 'success');
+        } catch (e) {
+            toast('Abholen: ' + (e && e.message || e), 'error');
+        } finally { setBtnBusy(btn, false); renderBidCard(); }
+    }
+    // [BIDHELPER-END]
     /** Report-Feld bidHelper (Einstellungen, Grenzen, Bestand, Transferziele, Mitschnitt). */
-    function bidHelperReport(capture) {
+    function bidHelperReport(capture, runs) {
         const persona = ownPersonaId();
         const s = bidSettingsLoad();
         const lg = bidJsonLoad(bidPersonaKey(BID_LOG_KEY), {});
         const won = bidWonLoad(null);
         return { settings: s, limits: bidLimitCounts(lg, persona, Date.now()), won: won.length, byRating: bidByRating(won),
-                 trades: bidTradesLoad().length, watchlist: bidWatchState, capture: capture || null };
+                 trades: bidTradesLoad().length, watchlist: bidWatchState, runs: runs || [], watchDelLearned: bidWatchDelLearned(), capture: capture || null };
     }
     function buyLedgerKey() { let p = null; try { p = ownPersonaId(); } catch (e) {} return 'sbcOptBuyLedger:' + (p || 'unbekannt'); }
     function buyLedgerLoad() { try { const a = JSON.parse(localStorage.getItem(buyLedgerKey()) || '[]'); return buyLedgerPrune(a, Date.now()); } catch (e) { return []; } }
@@ -15067,6 +15196,7 @@ const HybridSbcEa = (() => {
         if (opts.leanSearch) diag.leanSearch = true;
         // v6.32.1: nie zwei Kauf-Laeufe gleichzeitig (Review F7) - die Aufrufer setzen buyBusy vorher zurueck.
         if (buyBusy) { diag.stopped = 'Es läuft schon ein Kauf-Lauf'; return diag; }
+        if (typeof bidHelperIsBusy === 'function' && bidHelperIsBusy()) { diag.stopped = 'Es läuft gerade der Gebots-Helfer'; return diag; } // v6.37.0: Helfer und Kauf-Lauf schliessen sich aus
         STATE.diag.futbinBuy = diag;
         buyBusy = true;
         let fails = 0;
@@ -21490,7 +21620,7 @@ const HybridSbcEa = (() => {
             // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten mit
             // Kosten, Marktabfragen, Fehler, eingefuegte Loesung.
             hybridSbc: STATE.diag.hybridSbc || null,
-            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, batchSpare: STATE.diag.batchSpare || null, mcp: STATE.diag.mcp || null, relay: STATE.diag.relay || null, liveChecks: liveChecksLoad(), buyLedger: (function () { try { return buyLedgerLoad().slice(-50); } catch (e) { return null; } })(), marketBudget: (function () { try { return marketGuardSnapshot(marketGuardLoad(), Date.now()); } catch (e) { return null; } })(), points: STATE.diag.points || null, pointsBuy: STATE.diag.pointsBuy || null, galleryTokens: (function () { try { const p = ownPersonaId(); return p ? galleryTokenBookLoad(p) : null; } catch (e) { return null; } })(), galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null, handBuys: STATE.diag.handBuys || null, bidHelper: (function () { try { return bidHelperReport(STATE.diag.bidCapture); } catch (e) { return null; } })(), bidSbc: (function () { try { const b = STATE.diag.bidSbc; if (!b) return null; const pl = STATE.batch; return Object.assign({}, b, { done: pl && pl.bidOnly && pl.bidStamp === b.stamp ? (pl.usedChallengeIds || []).length : null }); } catch (e) { return null; } })(),
+            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, batchSpare: STATE.diag.batchSpare || null, mcp: STATE.diag.mcp || null, relay: STATE.diag.relay || null, liveChecks: liveChecksLoad(), buyLedger: (function () { try { return buyLedgerLoad().slice(-50); } catch (e) { return null; } })(), marketBudget: (function () { try { return marketGuardSnapshot(marketGuardLoad(), Date.now()); } catch (e) { return null; } })(), points: STATE.diag.points || null, pointsBuy: STATE.diag.pointsBuy || null, galleryTokens: (function () { try { const p = ownPersonaId(); return p ? galleryTokenBookLoad(p) : null; } catch (e) { return null; } })(), galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null, handBuys: STATE.diag.handBuys || null, bidHelper: (function () { try { return bidHelperReport(STATE.diag.bidCapture, STATE.diag.bidRuns); } catch (e) { return null; } })(), bidSbc: (function () { try { const b = STATE.diag.bidSbc; if (!b) return null; const pl = STATE.batch; return Object.assign({}, b, { done: pl && pl.bidOnly && pl.bidStamp === b.stamp ? (pl.usedChallengeIds || []).length : null }); } catch (e) { return null; } })(),
             futbinBuy: STATE.diag.futbinBuy || null,
             futbinBuyPlan: STATE.diag.futbinBuyPlan || null,
             marketUrls: STATE.diag.marketUrls,

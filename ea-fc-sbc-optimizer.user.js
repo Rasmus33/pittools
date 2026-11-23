@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.30.1
+// @version      6.31.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.30.1';
+    const VERSION = '6.31.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -15622,7 +15622,9 @@ const HybridSbcEa = (() => {
             const gain = tAt == null ? null : tokensBase == null ? null : tAt - tokensBase;
             return { grade: p.grade, threshold: p.threshold, score: p.assessment.score, coins: p.coins, buys: p.missing.length,
                      tokensAtGrade: tAt == null ? null : tAt, tokensGain: gain, perToken: gain > 0 ? Math.round(p.coins / gain) : null,
-                     cards: p.missing.map(c => ({ defId: c.id, name: c.name, rating: c.rating, score: c.score, priceFutgg: c.price })),
+                     cards: p.missing.map(c => { const v = (rules.versions || {})[c.id] || [], h = c.attrs ? c.attrs.HYPER_COSMETIC_TYPE : null;
+                         return { defId: c.id, name: c.name, rating: c.rating, score: c.score, priceFutgg: c.price,
+                                  type: v[0] || null, holo: v[1] ? true : (h != null ? h >= 0 : null) }; }),
                      bonus: p.assessment.breakdown, selection: p.cards };
         });
         return {
@@ -15803,17 +15805,45 @@ const HybridSbcEa = (() => {
         });
         return changed;
     }
+    /**
+     * v6.31.0: Kosten NACH Wiederverkauf (live 23.11. der richtige Massstab): Karten ab
+     * resellMin werden nach dem Bewerten wieder verkauft (5 % EA-Steuer), Karten ab
+     * selfBuyMin kauft der Nutzer selbst (Rasmus: "mach nur sets fertig die keine karten
+     * mit 50k+ haben"). Eingabe: Preise (Zahlen). Pure.
+     */
+    function galleryNetCost(prices, opts) {
+        const o = Object.assign({ resellMin: 5000, tax: 0.05, selfBuyMin: 50000 }, opts || {});
+        let coins = 0, resale = 0, resellCards = 0, selfBuyCards = 0, selfBuyCoins = 0;
+        (prices || []).forEach(v => {
+            const p = Number(v) || 0;
+            if (!(p > 0)) return;
+            coins += p;
+            if (p >= o.resellMin) { resale += Math.floor(p * (1 - o.tax)); resellCards++; }
+            if (p >= o.selfBuyMin) { selfBuyCards++; selfBuyCoins += p; }
+        });
+        return { coins: coins, resale: resale, net: coins - resale, resellCards: resellCards, selfBuyCards: selfBuyCards, selfBuyCoins: selfBuyCoins, kiCoins: coins - selfBuyCoins };
+    }
     function galleryChancesRank(results, opts) {
         const o = opts || {};
         const all = [];
         (results || []).forEach(res => (res.options || []).forEach(op => {
             if (o.maxCoins > 0 && op.coins > o.maxCoins) return;
             if (o.grade && op.grade !== o.grade) return;
-            all.push(Object.assign({ set: res.name, setId: res.id, gradeNow: res.gradeNow, redeemed: res.redeemed }, op));
+            const x = Object.assign({ set: res.name, setId: res.id, gradeNow: res.gradeNow, redeemed: res.redeemed }, op);
+            if (Array.isArray(op.cards)) { // v6.31.0: Netto nach Wiederverkauf, wer kauft
+                const nc = galleryNetCost(op.cards.map(c => c.priceFutgg));
+                x.net = nc.net; x.resale = nc.resale; x.selfBuyCards = nc.selfBuyCards; x.selfBuyCoins = nc.selfBuyCoins; x.kiCoins = nc.kiCoins;
+                x.netPerToken = op.tokensGain > 0 ? Math.round(nc.net / op.tokensGain) : null;
+                x.buyer = nc.selfBuyCards === 0 ? 'ki' : nc.selfBuyCards === op.cards.length ? 'nutzer' : 'nutzer+ki';
+                x.cards = op.cards.map(c => Object.assign({}, c, { resell: c.priceFutgg >= 5000, selfBuy: c.priceFutgg >= 50000, priceCheck: c.priceFutgg >= 50000 }));
+            }
+            all.push(x);
         }));
         const per = x => x.perToken != null ? x.perToken : (x.tokensAtGrade > 0 ? x.coins / x.tokensAtGrade : Infinity);
+        const net = x => x.netPerToken != null ? x.netPerToken : (x.net != null && x.tokensAtGrade > 0 ? x.net / x.tokensAtGrade : per(x));
         return all.sort((a, b) => o.sort === 'grade'
             ? (GALLERY_GRADE_ORDER.indexOf(b.grade) - GALLERY_GRADE_ORDER.indexOf(a.grade)) || a.coins - b.coins
+            : o.sort === 'netPerToken' ? net(a) - net(b) || a.coins - b.coins
             : per(a) - per(b) || a.coins - b.coins);
     }
     // [GALLERYSCAN-END]
@@ -16327,7 +16357,9 @@ const HybridSbcEa = (() => {
                 diag.phase = 'Vorschlag (Chat)';
                 return { preview: true, planId: id, set: row.name, grade: grade, total: prepared.total, score: prepared.assessment.score, threshold: threshold,
                          chatApproval: galleryChatOkEnabled(), priceSource: prepared.estimated ? 'Schätzung ohne EA-Anfrage' : 'live geprüft',
-                         purchases: prepared.purchases.map(p => ({ name: p.name, rating: p.rating, version: p.versionLabel || null, planned: p.planned, maxPrice: p.maxPrice, source: p.source || 'live' })),
+                         purchases: prepared.purchases.map(p => ({ name: p.name, rating: p.rating, version: p.versionLabel || null, planned: p.planned, maxPrice: p.maxPrice, source: p.source || 'live',
+                                                                    type: ((rules.versions || {})[p.resourceId] || [])[0] || null, selfBuy: p.planned >= 50000 || undefined })),
+                         selfBuyHint: prepared.purchases.some(p => p.planned >= 50000) ? 'Enthält Karten ab 50.000 - die kauft der Nutzer laut seiner Regel selbst; vor dem Kauf nachfragen.' : undefined,
                          note: (prepared.estimated ? 'Preise geschätzt (fut.gg bzw. gemerkter Live-Preis), Höchstpreis = Schätzung +10 % (mindestens eine Preisstufe). Beim Kauf sucht PitTools je Karte höchstens zweimal live (erst bis zur Schätzung, dann bis zum Höchstpreis) und zahlt das günstigste Angebot. ' : '') +
                                (galleryChatOkEnabled() ? 'Nichts gekauft. Rasmus im Chat fragen; bei Ja pittools_gallery_buy mit planId (10 min gültig).'
                                                        : 'Nichts gekauft. Chat-Freigabe ist im Panel AUS - ein Kauf mit planId braucht weiterhin den Tipp im Panel.') };
@@ -18575,9 +18607,9 @@ const HybridSbcEa = (() => {
             const sets = Array.isArray(a.sets) ? a.sets.map(String).filter(Boolean) : null;
             const grade = typeof a.grade === 'string' && /^[DCBAS]$/.test(a.grade) ? a.grade : null;
             const job = mcpStartJob(tool, async () => {
-                const r = await galleryChancesRun({ sets: sets, maxSets: a.maxSets, maxCoins: a.maxCoins, grade: grade, sort: a.sort === 'grade' ? 'grade' : 'perToken', refreshRules: a.refreshRules === true });
+                const r = await galleryChancesRun({ sets: sets, maxSets: a.maxSets, maxCoins: a.maxCoins, grade: grade, sort: a.sort === 'grade' ? 'grade' : a.sort === 'perToken' ? 'perToken' : 'netPerToken', refreshRules: a.refreshRules === true });
                 const top = Math.max(1, Math.min(50, Number(a.top) || 15));
-                return { note: 'Punkte MIT Bonusregeln (Holo wird berücksichtigt; Erstbesitz früherer Karten zählt nur mit Beleg). Preise = fut.gg-Schätzung, vor einem Kauf wird live bei EA geprüft. Tokens-Gewinn nur, wenn die eingelöste Note bekannt ist (pittools_gallery_grade). Vorauswahl ohne sets: eingelöste Note und offene Tokens (v6.18.0).',
+                return { note: 'Sortiert nach netPerToken = Coins je Token NACH Wiederverkauf (Karten ab 5.000 werden wieder verkauft, 5 % Steuer). selfBuy = Karte ab 50.000, die der Nutzer selbst kauft (buyer: ki / nutzer+ki / nutzer); type/holo je Karte. Punkte MIT Bonusregeln (Holo wird berücksichtigt; Erstbesitz früherer Karten zählt nur mit Beleg). Preise = fut.gg-Schätzung, vor einem Kauf wird live bei EA geprüft. Tokens-Gewinn nur, wenn die eingelöste Note bekannt ist (pittools_gallery_grade). Vorauswahl ohne sets: eingelöste Note und offene Tokens (v6.18.0).',
                          // v6.18.0: was Rasmus im Spiel OHNE Kauf bewerten kann - erst das, dann kaufen
                          gradeWithoutBuying: r.results.filter(x => !x.error && x.gradeable).map(x => ({ set: x.name, grade: x.gradeable, redeemed: x.redeemed, tokens: x.gradeableTokens, score: x.scoreNow })),
                          chances: r.ranked.slice(0, top).map(c => { const o = Object.assign({}, c); delete o.selection; return o; }),

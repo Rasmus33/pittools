@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.42.1
+// @version      6.43.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.42.1';
+    const VERSION = '6.43.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -6635,9 +6635,16 @@
             box-shadow: var(--pt-glow-accent), 0 12px 0 0 var(--pt-bg-base); }
         .sbc-opt-nextbtn small { font-size:var(--pt-type-meta); font-weight:var(--pt-weight-medium); letter-spacing:var(--pt-tracking-caps); text-transform:uppercase; opacity:.75; }
         /* v6.1.0: Freigabe im Panel (showBatchConfirm). */
-        .sbc-opt-confirm { margin-top:var(--pt-space-2-5); padding:var(--pt-space-3); border-radius:var(--pt-card-radius);
-            background:var(--pt-bg-surface); border:1px solid var(--pt-danger-border); }
+        .sbc-opt-confirm { margin-top:var(--pt-space-2-5); padding:var(--pt-inset); border-radius:var(--pt-card-radius);
+            background:var(--pt-bg-surface); border:1px solid var(--pt-border-strong); }
+        .sbc-opt-confirm.danger { border-color:var(--pt-danger-border); }
         .sbc-opt-confirm[hidden] { display:none; }
+        .sbc-opt-confirm-facts { margin:0 0 var(--pt-space-1-5); }
+        .sbc-opt-confirm-facts > div { display:flex; justify-content:space-between; gap:var(--pt-space-3); padding:var(--pt-space-1) 0; font-size:var(--pt-type-label); }
+        .sbc-opt-confirm-facts span { color:var(--pt-fg-muted); }
+        .sbc-opt-confirm-facts b { font-family:var(--pt-font-mono); font-weight:var(--pt-weight-medium); color:var(--pt-fg-default); }
+        .sbc-opt-confirm-warn { margin:var(--pt-space-1) 0; font-size:var(--pt-type-label); line-height:var(--pt-leading-normal); color:var(--pt-warning-fg); }
+        .sbc-opt-confirm-details { margin-top:var(--pt-space-1-5); }
         .sbc-opt-confirm-title { font-size:var(--pt-type-title); font-weight:var(--pt-weight-semibold); color:var(--pt-fg-default); margin-bottom:var(--pt-space-1-5); }
         .sbc-opt-confirm-body { font-size:var(--pt-type-label); color:var(--pt-fg-muted); line-height:1.5; white-space:pre-line; max-height:220px; overflow-y:auto; }
         .sbc-opt-confirm-actions { display:grid; grid-template-columns:1fr 1.4fr; gap:var(--pt-space-2); margin-top:var(--pt-space-2-5); }
@@ -7662,6 +7669,75 @@
         const none = !bridgeKind();
         if (a.hidden === none) a.hidden = !none;
     }
+    // [CONFIRM-BEGIN]
+    // v6.43.0: EIN Freigabe-Kasten fuer alle Rueckfragen. Aufbau immer gleich:
+    // Titel als Frage, hoechstens drei Kennzahlzeilen, Warnzeilen, optional
+    // Fliesstext, "Details (N)" zugeklappt, Abbrechen : Ja = 1 : 1,4.
+    // confirmBoxHtml ist rein (testbar); askConfirm haengt den Kasten in ein
+    // Element und liefert ein Promise (true nur beim Tipp auf "Ja").
+    function confirmBoxHtml(spec) {
+        const esc = function (x) {
+            return String(x == null ? '' : x).replace(/[&<>"']/g, function (c) {
+                return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+            });
+        };
+        spec = spec || {};
+        const attrs = function (o) {
+            return Object.keys(o || {}).map(function (k) { return ' ' + k + '="' + esc(o[k]) + '"'; }).join('');
+        };
+        const facts = (spec.facts || []).filter(function (f) { return f && f[1] != null && f[1] !== ''; });
+        const warns = (spec.warns || []).filter(Boolean);
+        const det = spec.details && spec.details.lines && spec.details.lines.length ? spec.details : null;
+        const yes = spec.yes || {}, no = spec.no || {};
+        return '<div class="sbc-opt-confirm-title">' + esc(spec.title || 'Fortfahren?') + '</div>' +
+            (facts.length ? '<div class="sbc-opt-confirm-facts">' + facts.map(function (f) {
+                return '<div><span>' + esc(f[0]) + '</span><b>' + esc(f[1]) + '</b></div>';
+            }).join('') + '</div>' : '') +
+            warns.map(function (w) { return '<div class="sbc-opt-confirm-warn">⚠ ' + esc(w) + '</div>'; }).join('') +
+            (spec.text ? '<div class="sbc-opt-confirm-body">' + esc(spec.text) + '</div>' : '') +
+            (det ? '<details class="sbc-opt-details-toggle sbc-opt-confirm-details"><summary>' + esc(det.label || 'Details') +
+                ' (' + det.lines.length + ')</summary><div class="sbc-opt-confirm-body">' +
+                det.lines.map(esc).join('\n') + '</div></details>' : '') +
+            '<div class="sbc-opt-confirm-actions">' +
+            '<button type="button" class="sbc-opt-btn ghost"' + attrs(Object.assign({ 'data-confirm': 'no' }, no.attrs)) + '>' + esc(no.label || 'Abbrechen') + '</button>' +
+            '<button type="button" class="sbc-opt-btn ' + (spec.danger ? 'danger' : 'primary') + '"' +
+            attrs(Object.assign({ 'data-confirm': 'yes' }, yes.attrs)) + '><span>' + esc(yes.label || 'Ja') + '</span></button>' +
+            '</div>';
+    }
+    // Eine offene Rueckfrage je Element: eine neue beantwortet die alte mit
+    // NEIN. Ohne Tipp verfaellt sie (Standard 10 min) ebenfalls als NEIN.
+    function askConfirm(host, spec) {
+        return new Promise(function (resolve) {
+            if (!host) { resolve(false); return; }
+            if (typeof host.__ptConfirmCancel === 'function') { try { host.__ptConfirmCancel(); } catch (e) {} }
+            let done = false, timer = null;
+            const fin = function (v) {
+                if (done) return;
+                done = true;
+                if (timer) clearTimeout(timer);
+                host.__ptConfirmCancel = null;
+                try { host.removeEventListener('click', onClick); } catch (e) {}
+                host.hidden = true;
+                host.innerHTML = '';
+                resolve(!!v);
+            };
+            const onClick = function (ev) {
+                const t = ev && ev.target && typeof ev.target.closest === 'function' ? ev.target.closest('[data-confirm]') : null;
+                if (!t) return;
+                fin(t.getAttribute('data-confirm') === 'yes');
+            };
+            host.__ptConfirmCancel = function () { fin(false); };
+            host.className = 'sbc-opt-confirm' + (spec && spec.danger ? ' danger' : '');
+            host.innerHTML = confirmBoxHtml(spec);
+            host.hidden = false;
+            host.addEventListener('click', onClick);
+            const ms = spec && spec.timeoutMs > 0 ? spec.timeoutMs : 10 * 60 * 1000;
+            timer = setTimeout(function () { fin(false); }, ms);
+            try { host.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) {}
+        });
+    }
+    // [CONFIRM-END]
+
     // [PANELSIZE-BEGIN]
     // v6.42.1: Panelgroesse (Rasmus 24.11.: "die Groesse vom PitTools-Dialog
     // auch aendern koennen"). PC (feiner Zeiger, Fenster >= 700 px): Breite
@@ -8143,7 +8219,7 @@
                         </details>
                         <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-bid-search">Kandidaten suchen (je Gebot ein Tipp)</button>
                         <label class="sbc-opt-switch"><input type="checkbox" id="sbc-opt-bid-auto"><span class="track" aria-hidden="true"></span><span class="txt">Automatisches Bieten erlauben<small>eine Runde je Freigabe · verstößt gegen EAs Regeln</small></span></label>
-                        <div class="sbc-opt-bid-confirm" id="sbc-opt-bid-confirm" hidden></div>
+                        <div class="sbc-opt-confirm danger sbc-opt-bid-confirm" id="sbc-opt-bid-confirm" hidden></div>
                         <button type="button" class="sbc-opt-btn danger" id="sbc-opt-bid-round" hidden>Gebots-Runde starten</button>
                         <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-bid-stop" hidden>Stopp nach diesem Gebot</button>
                         <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-bid-collect">Gewonnene abholen</button>
@@ -8444,7 +8520,7 @@
                     </button>
                     <!-- v6.1.0: Freigabe im Panel statt window.confirm - Frage,
                          Zusammenfassung, dann Abbrechen / Ja (showBatchConfirm). -->
-                    <div class="sbc-opt-confirm" id="sbc-opt-batch-confirm" hidden>
+                    <div class="sbc-opt-confirm danger" id="sbc-opt-batch-confirm" hidden>
                         <div class="sbc-opt-confirm-title" id="sbc-opt-batch-confirm-title"></div>
                         <div class="sbc-opt-confirm-body" id="sbc-opt-batch-confirm-body"></div>
                         <div class="sbc-opt-confirm-actions">
@@ -15091,9 +15167,11 @@ const HybridSbcEa = (() => {
         const p = bidRoundProposal();
         if (p.why) { toast(p.why, 'error'); return; }
         bidRoundPending = Object.assign({ stamp: Date.now() + ':' + Math.random(), at: Date.now() }, p);
-        bidBox('<div class="sbc-opt-group-title" style="margin-top:0;">Gebots-Runde starten?</div><div class="sbc-opt-dim">' + escapeHtml(bidRoundConfirmText(p)) + '</div>' +
-               '<div class="sbc-opt-inline"><button type="button" class="sbc-opt-btn danger" data-bid-act="round-yes" data-stamp="' + escapeHtml(bidRoundPending.stamp) + '">Ja, Runde starten</button>' +
-               '<button type="button" class="sbc-opt-btn ghost" data-bid-act="no">Abbrechen</button></div>');
+        bidBox(confirmBoxHtml({
+            title: 'Gebots-Runde starten?', text: bidRoundConfirmText(p), danger: true,
+            yes: { label: 'Ja, Runde starten', attrs: { 'data-bid-act': 'round-yes', 'data-stamp': bidRoundPending.stamp } },
+            no: { label: 'Abbrechen', attrs: { 'data-bid-act': 'no' } }
+        }));
     }
     async function onBidRoundYes(stamp) {
         const p = bidRoundPending;
@@ -15213,9 +15291,11 @@ const HybridSbcEa = (() => {
         if (!sw.checked) { bidSettingsSave({ on: false }); bidBox(''); bidAutoSync(); return; }
         sw.checked = false;
         if (bidSettingsLoad().riskOk) { bidSettingsSave({ on: true, riskOk: true }); bidAutoSync(); return; }
-        bidBox('<div class="sbc-opt-warn">⚠ ' + escapeHtml(BID_RISK_TEXT) + '</div>' +
-               '<div class="sbc-opt-inline"><button type="button" class="sbc-opt-btn danger" data-bid-act="risk-yes">Ja, einschalten</button>' +
-               '<button type="button" class="sbc-opt-btn ghost" data-bid-act="no">Abbrechen</button></div>');
+        bidBox(confirmBoxHtml({
+            title: 'Automatisches Bieten einschalten?', warns: [BID_RISK_TEXT], danger: true,
+            yes: { label: 'Ja, einschalten', attrs: { 'data-bid-act': 'risk-yes' } },
+            no: { label: 'Abbrechen', attrs: { 'data-bid-act': 'no' } }
+        }));
     }
     function onBidBoxClick(ev) {
         const t = ev.target && ev.target.closest ? ev.target.closest('button[data-bid-act]') : null;
@@ -18349,11 +18429,13 @@ const HybridSbcEa = (() => {
             try { if (tabCurrent !== 'galerie') setTab('galerie'); } catch (e) {}
             try { if (ui.panel && !ui.panel.classList.contains('open')) togglePanel(); } catch (e) {}
             const id = 'sbc-opt-claude-buy-' + Date.now();
-            setGalleryResult('<div class="sbc-opt-card" id="' + id + '"><b>KI möchte kaufen: ' + escapeHtml(title) + '</b>' +
-                lines.map(l => '<div class="sbc-opt-fb-meta">' + escapeHtml(l) + '</div>').join('') +
-                '<div class="sbc-opt-dim">Je Karte höchstens der gerade gemessene Marktpreis, nichts wird erhöht. Kauf langsam, einer nach dem anderen.</div>' +
-                '<button type="button" class="sbc-opt-btn primary" data-act="yes"><span>Ja, kaufen</span></button>' +
-                '<button type="button" class="sbc-opt-btn ghost" data-act="no">Abbrechen</button></div>');
+            // v6.43.0: derselbe Freigabe-Kasten wie ueberall (Optik); Fristen und Knoepfe unveraendert.
+            setGalleryResult('<div class="sbc-opt-confirm" id="' + id + '">' + confirmBoxHtml({
+                title: 'KI möchte kaufen: ' + title + '?',
+                text: lines.join('\n') + '\nJe Karte höchstens der gemessene Marktpreis, nichts wird erhöht.',
+                yes: { label: 'Ja, kaufen', attrs: { 'data-act': 'yes' } },
+                no: { label: 'Abbrechen', attrs: { 'data-act': 'no' } }
+            }) + '</div>');
             const box = document.getElementById(id);
             let done = false;
             const fin = v => { if (done) return; done = true; clearTimeout(t); resolve(v); };

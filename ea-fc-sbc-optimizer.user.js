@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.41.0
+// @version      6.42.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.41.0';
+    const VERSION = '6.42.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -6389,6 +6389,7 @@
             width:44px; height:44px; margin:-4px -4px -4px 0; border-radius:50%;
             display:flex; align-items:center; justify-content:center;
             font-size:var(--pt-type-title); line-height:1; flex:0 0 auto; color: var(--pt-fg-muted); cursor:pointer;
+            border:none; background:transparent; padding:0; font-family:inherit;
             transition: background var(--pt-dur-fast) ease, color var(--pt-dur-fast) ease;
         }
         #sbc-opt-close:hover { background: var(--pt-state-hover); color: var(--pt-fg-default); }
@@ -6413,19 +6414,22 @@
            Batch-Team-Details (Ticket #73) - eine Stelle statt zweier
            synchron zu haltender Kopien. */
         .sbc-opt-details-toggle summary {
-            cursor: pointer; color: var(--pt-fg-muted); font-weight: 600;
-            padding: var(--pt-space-2-5) var(--pt-space-3); background: var(--pt-bg-surface);
-            border: 1px solid var(--pt-border-subtle);
-            border-radius: var(--pt-radius-md); user-select: none; list-style: none;
-            transition: background var(--pt-dur-fast) ease, border-color var(--pt-dur-fast) ease;
+            cursor: pointer; color: var(--pt-fg-secondary); font-weight: 600;
+            display:flex; align-items:center; justify-content:space-between; gap:var(--pt-space-2);
+            min-height: var(--pt-row-h); padding: 0;
+            border-top: 1px solid var(--pt-border-subtle);
+            user-select: none; list-style: none;
+            transition: color var(--pt-dur-fast) ease;
         }
         .sbc-opt-details-toggle summary:hover {
-            background: var(--pt-state-hover); border-color: var(--pt-border-strong);
+            color: var(--pt-fg-default);
         }
         .sbc-opt-details-toggle summary::-webkit-details-marker { display: none; }
-        .sbc-opt-details-toggle summary::before { content: '▸ '; color: var(--pt-accent); }
-        .sbc-opt-details-toggle[open] summary::before { content: '▾ '; }
-        .sbc-opt-details-toggle[open] summary { margin-bottom: var(--pt-space-2-5); }
+        .sbc-opt-details-toggle summary::before { content: none; }
+        .sbc-opt-details-toggle summary::after { content: '›'; flex:0 0 auto; color: var(--pt-fg-subtle); font-size: var(--pt-type-title); line-height:1; transition: transform var(--pt-dur-fast) ease; }
+        .sbc-opt-details-toggle[open] > summary::after { transform: rotate(90deg); }
+        .sbc-opt-details-toggle summary:active { color: var(--pt-accent); }
+        .sbc-opt-details-toggle[open] summary { margin-bottom: var(--pt-stack-tight); }
         .sbc-opt-info {
             background:var(--pt-bg-surface); border:1px solid var(--pt-border-subtle);
             border-radius:var(--pt-radius-md);
@@ -6479,8 +6483,10 @@
         .sbc-opt-bridge-link:active { background:var(--pt-state-press); }
         /* Karte: gruppiert die Eingaben einer Aktion */
         .sbc-opt-card {
-            background:var(--pt-bg-surface); border:1px solid var(--pt-border-subtle); border-radius:var(--pt-card-radius);
-            padding:var(--pt-card-pad); margin:0 0 var(--pt-space-3);
+            margin:0 0 var(--pt-stack);
+        }
+        .sbc-opt-card + .sbc-opt-card, .sbc-opt-result + .sbc-opt-card, .sbc-opt-section + .sbc-opt-section {
+            margin-top:var(--pt-stack); padding-top:var(--pt-stack); border-top:1px solid var(--pt-border-subtle);
         }
         .sbc-opt-card .sbc-opt-btn:last-child { margin-bottom:0; }
         /* Schalter (v5.31.0): Checkbox bleibt das Element, ist nur unsichtbar */
@@ -6517,10 +6523,8 @@
         .sbc-opt-bar-fill { height:100%; width:0; background:var(--pt-accent); border-radius:var(--pt-radius-full); transition: width var(--pt-dur-slow) var(--pt-ease-out); }
         /* Leerzustand */
         .sbc-opt-result.sbc-opt-result-empty {
-            background:transparent; border:1px solid var(--pt-border-default); text-align:center;
-            color:var(--pt-fg-subtle); padding:var(--pt-space-4) var(--pt-space-3); font-size:var(--pt-type-label); line-height:1.5;
+            color:var(--pt-fg-subtle); font-size:var(--pt-type-label); line-height:var(--pt-leading-normal);
         }
-        .sbc-opt-result-empty svg { width:28px; height:28px; display:block; margin:0 auto var(--pt-space-1-5); color:var(--pt-fg-muted); }
         .sbc-opt-tab-btn svg { width:16px; height:16px; flex:0 0 auto; }
         #sbc-opt-availability { font-size:var(--pt-type-label); margin-top:var(--pt-space-1); color:var(--pt-fg-muted); }
         /* Gleiche Warnfarbe wie .sbc-opt-warn/Toast-Warnungen - kein neues
@@ -7041,8 +7045,8 @@
         .sbc-opt-receipt .sum { border-top-color:var(--pt-border-default); }
         .sbc-opt-receipt .sum span { color:var(--pt-fg-default); font-weight:var(--pt-weight-semibold); }
         .sbc-opt-receipt .sum b { font-size:var(--pt-type-title); font-weight:var(--pt-weight-semibold); }
-        .sbc-opt-fb-row { padding:var(--pt-space-3); margin:var(--pt-space-2) 0; border-radius:var(--pt-card-radius); background:var(--pt-bg-sunken); }
-        .sbc-opt-fb-row.best { box-shadow: 0 0 0 4px var(--pt-accent-soft); }
+        .sbc-opt-fb-row { padding:var(--pt-space-3) 0; margin:0; border-bottom:1px solid var(--pt-border-subtle); font-size:var(--pt-type-label); }
+        .sbc-opt-fb-row:last-child { border-bottom:none; }
         .sbc-opt-fb-actions { display:flex; gap:var(--pt-space-1-5); align-items:stretch; }
         .sbc-opt-fb-actions .sbc-opt-btn { margin:var(--pt-space-1-5) 0 0; }
         .sbc-opt-fb-actions .sbc-opt-btn.small { flex:0 0 auto; width:auto; padding:var(--pt-space-2) var(--pt-space-2-5); font-size:var(--pt-type-label); }
@@ -7189,10 +7193,7 @@
         .sbc-opt-batch-card .untr { color:var(--pt-fg-subtle); font-style:italic; }
         .sbc-opt-batch-card.prot .rar { color:var(--pt-warning-fg); font-weight:700; }
         .sbc-opt-result {
-            /* surface wie die Batch-Vorschau: gleiche Rolle (Ergebnis-Kasten),
-               gleiche Flaeche. sunken ist fuer EINGABEN reserviert. */
-            margin-top:var(--pt-space-3); background:var(--pt-bg-surface); border:1px solid var(--pt-border-subtle);
-            border-radius:var(--pt-radius-md); padding:var(--pt-space-2-5); display:none;
+            margin-top:var(--pt-stack); display:none;
         }
         .sbc-opt-result.show { display:block; }
         .sbc-opt-spare { margin-left:var(--pt-space-1); padding:1px var(--pt-space-2); border-radius:var(--pt-radius-sm); border:1px solid var(--pt-border-default); background:transparent;
@@ -7204,11 +7205,6 @@
         .sbc-opt-cv-num { grid-column: 1 / -1; font-size:var(--pt-type-label); color:var(--pt-fg-muted); font-variant-numeric: tabular-nums; }
         /* Futbin-Kandidaten (v5.16.0): eine Zeile pro Loesung, Empfehlung
            mit Akzent-Rand; Knopf in voller Breite fuer den Daumen. */
-        .sbc-opt-fb-row {
-            border:1px solid var(--pt-border-subtle); border-radius:var(--pt-card-radius);
-            padding:var(--pt-space-3); margin:var(--pt-space-2) 0; font-size:var(--pt-type-label);
-        }
-        .sbc-opt-fb-row.best { border-color:var(--pt-accent-border); }
         .sbc-opt-fb-row .sbc-opt-btn { margin:var(--pt-space-1-5) 0 0; }
         .sbc-opt-player {
             display:flex; justify-content:space-between; align-items:center;
@@ -7326,6 +7322,46 @@
             line-height:var(--pt-leading-normal);
         }
         #sbc-opt-tipbox[hidden] { display:none; }
+
+        /* v6.42.0: gemeinsame Bausteine aller Reiter (roter Faden):
+           Statuszeile, Abschnittskopf, Listenzeile, Textknopf. Rahmen tragen
+           nur noch Freigabe, Vorschau und Warnung. */
+        .sbc-opt-btn.ghost { min-height:var(--pt-control-h); }
+        .sbc-opt-btn.link {
+            width:auto; min-height:var(--pt-control-h-sm); padding:0 var(--pt-space-1); margin-top:var(--pt-space-1);
+            background:transparent; box-shadow:none; color:var(--pt-fg-muted);
+            font-weight:var(--pt-weight-medium); font-size:var(--pt-type-label);
+            text-decoration:underline; text-underline-offset:3px;
+        }
+        .sbc-opt-btn.link:hover:not(:disabled) { background:transparent; box-shadow:none; color:var(--pt-fg-default); }
+        .sbc-opt-btn.link:active:not(:disabled) { background:var(--pt-state-press); box-shadow:none; }
+        .sbc-opt-line {
+            display:flex; align-items:center; flex-wrap:wrap; gap:var(--pt-space-1) var(--pt-space-2);
+            min-height:var(--pt-control-h-sm); margin:0 0 var(--pt-stack-tight);
+            font-size:var(--pt-type-label); color:var(--pt-fg-muted); line-height:var(--pt-leading-normal);
+        }
+        .sbc-opt-line b { font-family:var(--pt-font-mono); font-weight:var(--pt-weight-medium); color:var(--pt-fg-default); }
+        .sbc-opt-line .grow { flex:1 1 auto; min-width:0; }
+        .sbc-opt-line .sbc-opt-btn { width:auto; flex:0 0 auto; margin:0; }
+        .sbc-opt-dot { flex:0 0 auto; width:8px; height:8px; border-radius:50%; background:transparent; box-shadow: inset 0 0 0 1px var(--pt-border-strong); }
+        .sbc-opt-dot.on { background:var(--pt-accent); box-shadow:0 0 0 3px var(--pt-accent-soft); }
+        .sbc-opt-dot.warn { background:var(--pt-warning-fg); box-shadow:0 0 0 3px var(--pt-warning-soft); }
+        .sbc-opt-dot.bad { background:var(--pt-danger-fg); box-shadow:0 0 0 3px var(--pt-danger-soft); }
+        .sbc-opt-head {
+            display:flex; align-items:center; justify-content:space-between; gap:var(--pt-space-2);
+            margin:var(--pt-space-4) 0 var(--pt-space-2);
+            font-size:var(--pt-type-body); font-weight:var(--pt-weight-semibold); color:var(--pt-fg-default);
+        }
+        .sbc-opt-head:first-child { margin-top:0; }
+        .sbc-opt-head .count { font-family:var(--pt-font-mono); font-size:var(--pt-type-meta); font-weight:var(--pt-weight-regular); color:var(--pt-fg-subtle); }
+        .sbc-opt-head .sbc-opt-tip { margin:calc(-1 * var(--pt-space-2)) 0; }
+        .sbc-opt-item { padding:var(--pt-space-2-5) 0; border-bottom:1px solid var(--pt-border-subtle); }
+        .sbc-opt-item:last-child { border-bottom:none; }
+        .sbc-opt-item-top { display:flex; align-items:baseline; justify-content:space-between; gap:var(--pt-space-2); }
+        .sbc-opt-item-title { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:var(--pt-type-body); font-weight:var(--pt-weight-semibold); color:var(--pt-fg-default); }
+        .sbc-opt-item-num { flex:0 0 auto; font-family:var(--pt-font-mono); font-size:var(--pt-type-body); font-weight:var(--pt-weight-medium); color:var(--pt-accent); white-space:nowrap; }
+        .sbc-opt-item-meta { display:flex; align-items:center; gap:var(--pt-space-2); margin-top:var(--pt-space-0-5); font-size:var(--pt-type-meta); color:var(--pt-fg-muted); }
+        .sbc-opt-item-meta .grow { flex:1 1 auto; min-width:0; }
 
         /* v6.40.0: Abstands-Hilfsklassen statt style="margin/padding" im
            Panel-Template. Mit #sbc-opt-panel .sbc-opt-body davor (schlaegt auch
@@ -7827,7 +7863,7 @@
         panel.innerHTML = `
             <div class="sbc-opt-header">
                 <span><img class="sbc-opt-logo" src="` + ICON_URI + `" alt="">PitTools <span class="sbc-opt-ver">` + VERSION + `</span></span>
-                <span id="sbc-opt-close">✕</span>
+                <button type="button" id="sbc-opt-close" aria-label="Schließen">✕</button>
             </div>
             <div class="sbc-opt-body">
                 <!-- v5.28.0: REITER. Rasmus (20.09.): "maximale Uebersichtlichkeit
@@ -7861,11 +7897,11 @@
                     <div class="sbc-opt-debug sbc-opt-stat-wide sbc-opt-tech" id="sbc-opt-debug">API: – · SID: – · Services: –</div>
                 </div>
                 <div class="sbc-opt-tabs" id="sbc-opt-tabs" role="tablist">
-                    <button type="button" class="sbc-opt-tab-btn" data-tab="kaufen" role="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>Kaufen</button>
-                    <button type="button" class="sbc-opt-tab-btn" data-tab="galerie" role="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Galerie</button>
-                    <button type="button" class="sbc-opt-tab-btn" data-tab="rating" role="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/></svg>Rating</button>
-                    <button type="button" class="sbc-opt-tab-btn" data-tab="ki" role="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 9h8"/><path d="M8 13h5"/></svg>KI</button>
-                    <button type="button" class="sbc-opt-tab-btn" data-tab="mehr" role="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/><circle cx="5" cy="12" r="1.5"/></svg>Mehr</button>
+                    <button type="button" class="sbc-opt-tab-btn" data-tab="kaufen" role="tab" aria-selected="false" aria-controls="sbc-opt-tab-kaufen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>Kaufen</button>
+                    <button type="button" class="sbc-opt-tab-btn" data-tab="galerie" role="tab" aria-selected="false" aria-controls="sbc-opt-tab-galerie"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Galerie</button>
+                    <button type="button" class="sbc-opt-tab-btn" data-tab="rating" role="tab" aria-selected="false" aria-controls="sbc-opt-tab-rating"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/></svg>Rating</button>
+                    <button type="button" class="sbc-opt-tab-btn" data-tab="ki" role="tab" aria-selected="false" aria-controls="sbc-opt-tab-ki"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 9h8"/><path d="M8 13h5"/></svg>KI</button>
+                    <button type="button" class="sbc-opt-tab-btn" data-tab="mehr" role="tab" aria-selected="false" aria-controls="sbc-opt-tab-mehr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/><circle cx="5" cy="12" r="1.5"/></svg>Mehr</button>
                 </div>
                 <!-- REITER KAUFEN: FUTBIN-LOESUNG (v5.16.0) fuer SBCs, die man
                      zusammenkauft. Holt die Community-Lösungen der offenen
@@ -9285,7 +9321,11 @@
         tabCurrent = name;
         const panel = document.getElementById('sbc-opt-panel');
         if (panel) panel.setAttribute('data-tab', name);
-        (ui.tabBtns || []).forEach(b => b.classList.toggle('on', b.getAttribute('data-tab') === name));
+        (ui.tabBtns || []).forEach(b => {
+            const on = b.getAttribute('data-tab') === name;
+            b.classList.toggle('on', on);
+            b.setAttribute('aria-selected', on ? 'true' : 'false');
+        });
         (ui.tabPanes || []).forEach(p => p.classList.toggle('on', p.id === 'sbc-opt-tab-' + name));
         if (manual) { try { localStorage.setItem('sbcOptTab', name); } catch (e) {} }
         if (name === 'ki') { try { renderKiTab(); } catch (e) {} }
@@ -13306,9 +13346,7 @@ const HybridSbcEa = (() => {
         // v5.31.0: Leerzustand statt leerem Kasten - sagt, was passieren wird.
         if (ui.futbinResult && !ui.futbinResult.innerHTML) {
             ui.futbinResult.className = 'sbc-opt-result show sbc-opt-result-empty';
-            ui.futbinResult.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>' +
-                'Öffne eine Kauf-SBC im Spiel und tippe auf <b>Futbin-Lösungen suchen</b>.<br>' +
-                'PitTools holt die Community-Lösungen, prüft die Live-Preise am EA-Markt und kauft die fehlenden Spieler nach und nach.';
+            ui.futbinResult.innerHTML = 'Öffne eine Kauf-SBC im Spiel und tippe auf <b>Futbin-Lösungen suchen</b>.';
         }
     }
     function renderFutbinPlatformChips() {
@@ -16298,9 +16336,7 @@ const HybridSbcEa = (() => {
         }
         if (ui.galleryResult && !ui.galleryResult.innerHTML) {
             ui.galleryResult.className = 'sbc-opt-result show sbc-opt-result-empty';
-            ui.galleryResult.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>' +
-                'Tippe auf <b>Nächstes Set kaufen</b>: PitTools holt die günstigsten Gallery-Sets von fut.gg, ' +
-                'du wählst eines, PitTools kauft die fehlenden Spieler nach und nach in den Verein. Bewertet wird danach im Spiel.';
+            ui.galleryResult.innerHTML = 'Tippe auf <b>Nächstes Set kaufen</b>. Bewertet wird danach im Spiel.';
         }
     }
     async function onGalleryLoadClick(withUpgrades) {

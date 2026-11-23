@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.43.0
+// @version      6.44.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.43.0';
+    const VERSION = '6.44.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7402,6 +7402,36 @@
         /* Deckt beim Kleben die Rumpfraender links/rechts ab (sonst scheint der Inhalt neben der Leiste durch). */
         .sbc-opt-tabs { box-shadow: 0 0 0 var(--pt-space-1-5) var(--pt-bg-base), calc(-1 * var(--pt-gutter)) 0 0 var(--pt-space-1-5) var(--pt-bg-base), var(--pt-gutter) 0 0 var(--pt-space-1-5) var(--pt-bg-base); }
 
+        /* v6.44.0: Zeilentitel, der oeffnet. Bleibt ein .sbc-opt-btn(.primary),
+           damit "Naechster Schritt" ihn findet - sieht aber wie ein Titel aus. */
+        .sbc-opt-btn.sbc-opt-rowbtn, .sbc-opt-btn.primary.sbc-opt-rowbtn, .sbc-opt-btn.ghost.sbc-opt-rowbtn {
+            flex:1 1 auto; width:auto; min-width:0; min-height:var(--pt-control-h); margin:0; padding:0;
+            background:transparent; box-shadow:none; color:var(--pt-fg-default); text-align:left;
+            font-size:var(--pt-type-body); font-weight:var(--pt-weight-semibold);
+            overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+        }
+        .sbc-opt-btn.sbc-opt-rowbtn::after { content:' ›'; color:var(--pt-fg-subtle); }
+        .sbc-opt-btn.sbc-opt-rowbtn:hover:not(:disabled) { background:transparent; box-shadow:none; color:var(--pt-accent); }
+        .sbc-opt-btn.sbc-opt-rowbtn:active:not(:disabled) { background:var(--pt-state-press); box-shadow:none; }
+        .sbc-opt-item-meta .sbc-opt-btn.link { margin:0; min-width:var(--pt-control-h-sm); text-decoration:none; }
+        .sbc-opt-item-meta .sbc-opt-tip { margin:calc(-1 * var(--pt-space-2)) calc(-1 * var(--pt-space-1)); }
+        .sbc-opt-item-meta.sbc-opt-gal-line { margin:0; }
+        .sbc-opt-item-meta.sbc-opt-gal-line .bar { flex:0 0 36px; }
+        .sbc-opt-tag.warn { background:var(--pt-warning-soft); color:var(--pt-warning-fg); box-shadow:none; }
+        /* Hauptaktion je Reiter: dieselbe Stelle, klebt unten wie "Optimieren + Eintragen". */
+        .sbc-opt-btn.sbc-opt-main { position:sticky; bottom:var(--pt-space-3); z-index:1; box-shadow: var(--pt-glow-accent), 0 var(--pt-space-3) 0 0 var(--pt-bg-base); }
+        .sbc-opt-btn[hidden] { display:none; }
+        #sbc-opt-gallery-more .sbc-opt-switch { margin-top:var(--pt-space-2); }
+
+        .sbc-opt-head > span:first-child { display:flex; align-items:center; gap:var(--pt-space-1); min-width:0; }
+        .sbc-opt-head .count { flex:0 0 auto; white-space:nowrap; }
+        .sbc-opt-head .count b { color:var(--pt-fg-secondary); font-weight:var(--pt-weight-medium); }
+        .sbc-opt-item-meta .grow, .sbc-opt-item-meta .v { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .sbc-opt-item-meta .v { flex:0 0 auto; }
+        .sbc-opt-item-meta b { color:var(--pt-fg-default); font-weight:var(--pt-weight-medium); }
+        .sbc-opt-btn.link { text-align:left; }
+        #sbc-opt-panel .sbc-opt-body textarea.sbc-opt-code { background:var(--pt-bg-sunken); color:var(--pt-fg-default); border:1px solid var(--pt-border-default); border-radius:var(--pt-field-radius); padding:var(--pt-space-2); }
+
         /* v6.40.0: Abstands-Hilfsklassen statt style="margin/padding" im
            Panel-Template. Mit #sbc-opt-panel .sbc-opt-body davor (schlaegt auch
            #sbc-opt-panel input[type=number]), damit sie (wie vorher das
@@ -7636,7 +7666,7 @@
         let target = null, targetVisible = false, io = null;
         const render = function () {
             bar.hidden = !(target && !targetVisible);
-            if (target) label.textContent = target.textContent.trim();
+            if (target) label.textContent = target.getAttribute('data-next') || target.textContent.trim();
         };
         const refresh = function () {
             const t = nextBarTarget(resultEl);
@@ -8235,46 +8265,54 @@
                 </div>
                 <!-- REITER GALERIE (v5.32.0): FUT-Gallery-Sets von fut.gg kaufen. -->
                 <div class="sbc-opt-tab" id="sbc-opt-tab-galerie" role="tabpanel">
+                    <!-- v6.44.0: gleiches Geruest wie jeder Reiter - Statuszeile, Segment,
+                         Hauptaktion, Liste, Seltenes zugeklappt unter "Mehr". -->
+                    <div class="sbc-opt-line" id="sbc-opt-gallery-line">
+                        <span class="grow" id="sbc-opt-gallery-line-txt">Keine gekauften Karten.</span>
+                        <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gallery-sell" hidden><span>0 Karten verkaufen</span></button>
+                    </div>
+                    <div class="sbc-opt-withtip">
                     <div class="sbc-opt-flow" id="sbc-opt-gallery-flow">
                         <div class="step on" data-step="1"><span class="dot">1</span><span class="lbl">Sets laden</span></div>
                         <div class="step" data-step="2"><span class="dot">2</span><span class="lbl">Set wählen</span></div>
                         <div class="step" data-step="3"><span class="dot">3</span><span class="lbl">Kaufen</span></div>
                         <div class="step" data-step="4"><span class="dot">4</span><span class="lbl">Bewerten</span></div>
                     </div>
-                    <div class="sbc-opt-card">
+                    <button type="button" class="sbc-opt-tip" aria-label="Info: Ablauf" aria-expanded="false" data-tip="Bewertet wird im Spiel: Galerie → Set → Bewerten. Karten zählen, sobald sie einmal im Verein waren, und dürfen danach verkauft werden.">i</button>
+                    </div>
+                    <label class="sbc-opt-chiplabel">Reihenfolge</label>
+                    <div class="sbc-opt-chips" id="sbc-opt-gallery-sort">
+                        <button type="button" class="sbc-opt-chip on" data-sort="guenstig">Günstigste Tokens</button>
+                        <button type="button" class="sbc-opt-chip" data-sort="fertig">Fast fertig</button>
+                        <button type="button" class="sbc-opt-chip" data-sort="tokens">Meiste Tokens</button>
+                    </div>
+                    <button class="sbc-opt-btn primary sbc-opt-btn-icon sbc-opt-main" id="sbc-opt-gallery-load"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span>Nächstes Set kaufen</span></button>
+                    <div class="sbc-opt-card" id="sbc-opt-gtokens" hidden></div>
+                    <div class="sbc-opt-result" id="sbc-opt-gallery-result"></div>
+                    <details class="sbc-opt-details-toggle" id="sbc-opt-gallery-more">
+                        <summary>Mehr …</summary>
                         <label class="sbc-opt-switch">
                             <input type="checkbox" id="sbc-opt-gallery-hidedone" checked>
                             <span class="track" aria-hidden="true"></span>
-                            <span class="txt">Erledigte Sets ausblenden<small>Sets, die du hier als erledigt markiert hast</small></span>
+                            <span class="txt">Erledigte ausblenden</span>
                         </label>
-                        <!-- v5.35.0: gekaufte Galerie-Karten wieder verkaufen (Preis = guenstigstes aktuelles Angebot). -->
-                        <div class="sbc-opt-inline sbc-opt-m0 sbc-opt-mb2">
-                            <button type="button" class="sbc-opt-btn ghost sbc-opt-m0" id="sbc-opt-gallery-sell"><span>Gekaufte Karten verkaufen (0)</span></button>
-                            <button type="button" class="sbc-opt-btn ghost small sbc-opt-m0 sbc-opt-autow sbc-opt-pad-md" id="sbc-opt-gallery-sell-clear" title="Merkliste leeren (z.B. schon von Hand verkauft)">Liste leeren</button>
+                        <div class="sbc-opt-withtip">
+                        <button type="button" class="sbc-opt-btn ghost sbc-opt-mt0" id="sbc-opt-gallery-upgrade-load">Aufwertungen prüfen</button>
+                        <button type="button" class="sbc-opt-tip" aria-label="Info: Aufwertungen prüfen" aria-expanded="false" data-tip="Zeigt fast fertige Vereine und Sets, die mit wenigen Nachkäufen eine höhere Note erreichen – auch C/D ohne Tokens.">i</button>
                         </div>
-                        <label class="sbc-opt-chiplabel">Reihenfolge der Sets</label>
-                        <div class="sbc-opt-chips" id="sbc-opt-gallery-sort">
-                            <button type="button" class="sbc-opt-chip on" data-sort="guenstig">Günstigste Tokens</button>
-                            <button type="button" class="sbc-opt-chip" data-sort="fertig">Fast fertig</button>
-                            <button type="button" class="sbc-opt-chip" data-sort="tokens">Meiste Tokens</button>
+                        <div class="sbc-opt-withtip">
+                        <button type="button" class="sbc-opt-btn link" id="sbc-opt-gallery-sell-clear">Merkliste leeren</button>
+                        <button type="button" class="sbc-opt-tip" aria-label="Info: Merkliste leeren" aria-expanded="false" data-tip="Vergisst die gekauften Karten, etwa nach einem Verkauf von Hand. Verkauft oder gelöscht wird nichts.">i</button>
                         </div>
-                        <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gallery-upgrade-load">Fast fertige Vereine / Aufwertungen prüfen</button>
-                        <button class="sbc-opt-btn primary sbc-opt-btn-icon" id="sbc-opt-gallery-load"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span>Nächstes Set kaufen</span></button>
-                    </div>
-                    <!-- v6.17.0: Galerie-Tokens mitschreiben; neue Note aus dem Zuwachs -->
-                    <div class="sbc-opt-card" id="sbc-opt-gtokens" hidden></div>
-                    <div class="sbc-opt-result" id="sbc-opt-gallery-result"></div>
-                    <!-- v5.57.0: Stand zwischen PC und Handy uebertragen (localStorage ist pro Geraet). -->
-                    <details class="sbc-opt-details-toggle" id="sbc-opt-gallery-sync">
-                        <summary>Stand auf anderes Gerät übertragen</summary>
-                        <div class="sbc-opt-dim">Erledigte Sets und Merkliste liegen pro Gerät. Hier Code erzeugen, auf dem anderen Gerät einfügen und übernehmen - zusammengeführt, nichts geht verloren.</div>
-                        <textarea class="sbc-opt-code" id="sbc-opt-gallery-code" rows="3" placeholder="Code hier einfügen ..."></textarea>
+                        <div id="sbc-opt-gallery-sync">
+                        <div class="sbc-opt-head"><span>Stand übertragen<button type="button" class="sbc-opt-tip" aria-label="Info: Stand übertragen" aria-expanded="false" data-tip="Erledigte Sets und Merkliste liegen je Gerät. Code erzeugen, auf dem anderen Gerät einfügen und übernehmen – zusammengeführt, nichts geht verloren.">i</button></span></div>
+                        <textarea id="sbc-opt-gallery-code" rows="3" placeholder="Code hier einfügen …" class="sbc-opt-code"></textarea>
                         <div class="sbc-opt-inline sbc-opt-m0">
                             <button type="button" class="sbc-opt-btn ghost sbc-opt-m0" id="sbc-opt-gallery-export">Code erzeugen</button>
                             <button type="button" class="sbc-opt-btn ghost sbc-opt-m0" id="sbc-opt-gallery-import">Code übernehmen</button>
                         </div>
+                        </div>
                     </details>
-                    <div class="sbc-opt-debug">Quelle fut.gg (günstigste Aufstellung je Set). Bewertet wird im Spiel: Galerie → Set → Bewerten. Die Karten zählen, sobald sie im Verein waren, und dürfen danach verkauft werden.</div>
                     <div class="sbc-opt-nextbar" id="sbc-opt-gallery-next" hidden>
                         <button type="button" class="sbc-opt-btn primary sbc-opt-nextbtn"><small>Nächster Schritt</small><span></span></button>
                     </div>
@@ -16746,45 +16784,47 @@ const HybridSbcEa = (() => {
         if (x.coins > 0 && x.tokens > 0) return 'ab ' + n(Math.ceil(x.coins / x.tokens)) + ' / Token';
         return '';
     }
+    // v6.44.0: hoechstens EINE Plakette je Set-Zeile. Rang: zu teuer >
+    // ungeprueft (mit Erklaerung) > bester Kurs. "Geprueft" ist der Normalfall
+    // und traegt keine Plakette - der Kurs sagt es mit "~" statt "ab".
+    function galleryRowTag(x, i) {
+        if (!x) return null;
+        if (x.overBudget) return { cls: 'warn', text: 'zu teuer', tip: 'Teurer als dein Kontostand.' };
+        if (x.truePerToken == null) return { cls: '', text: 'ungeprüft', tip: 'fut.gg-Untergrenze, die echte Summe ist meist deutlich höher. Ein Tipp auf den Namen prüft sie.' };
+        if (i === 0) return { cls: 'best', text: x.upgradeView ? 'Nah dran' : 'Best' };
+        return null;
+    }
     function renderGallerySets(ranked) {
         const coins = galleryLast && galleryLast.coins;
         const over = ranked.filter(x => x.overBudget).length;
-        let h = '<div class="sbc-opt-summary">' + ranked.length + (ranked.some(x => x.upgradeView) ? ' Galerie-Sets · auch C/D ohne Tokens · ' : ' Sets mit Tokens · ') +
-                (gallerySortMode() === 'fertig' ? 'begonnene Sets zuerst (wenigste fehlende Karten)' : gallerySortMode() === 'tokens' ? 'meiste Tokens zuerst (im Budget)' : 'sortiert nach Coins je Token') +
-                ' <span class="sbc-opt-muted">(fut.gg)</span></div>' +
-                (coins > 0 ? '<div class="sbc-opt-fb-meta">Kontostand <b>' + fmtCoins(coins) + '</b>' + (over ? ' · ' + over + ' Sets darüber stehen am Ende' : '') + '</div>' : '');
-        if (!ranked.length) h += warnHtml('Kein Set übrig - alle erledigt oder ohne Tokens. Schalter "Erledigte ausblenden" prüfen.');
+        // v6.44.0: Kopf als Abschnittskopf (Anzahl · Sortierung, Kontostand rechts),
+        // je Set eine Listenzeile: Name (oeffnet) + Kurs, darunter Fortschritt,
+        // Note, Tokens, Summe und hoechstens EINE Plakette.
+        const modeTxt = gallerySortMode() === 'fertig' ? 'begonnene Sets zuerst' : gallerySortMode() === 'tokens' ? 'meiste Tokens zuerst' : 'Coins je Token';
+        let h = '<div class="sbc-opt-head"><span>' + ranked.length + (ranked.some(x => x.upgradeView) ? ' Galerie-Sets · ' : ' Sets · ') + modeTxt +
+                tipHtml('Quelle fut.gg, günstigste Aufstellung je Set. „~“ = geprüfte Gesamtsumme, „ab“ = Untergrenze.' +
+                        (over ? ' ' + over + ' Sets über deinem Kontostand stehen am Ende.' : ''), 'Sets') + '</span>' +
+                (coins > 0 ? '<span class="count">Kontostand <b>' + fmtCoins(coins).replace(/ Coins$/, '') + '</b></span>' : '') + '</div>';
+        if (!ranked.length) h += warnHtml('Kein Set übrig. Unter „Mehr …“ „Erledigte ausblenden“ prüfen.');
         ranked.forEach(function (x, i) {
-            h += '<div class="sbc-opt-fb-row' + (i === 0 ? ' best' : '') + (i >= GALLERY_SHOW_OPEN ? ' sbc-opt-fb-more' : '') + '">' +
-                 '<div class="sbc-opt-fb-top"><span class="sbc-opt-fb-price">' + escapeHtml(x.name) + '</span>' +
-                 '<span class="sbc-opt-fb-tags">' + (i === 0 ? '<span class="sbc-opt-tag best">'+(x.upgradeView ? 'Wenige Nachkäufe' : 'Bester Kurs')+'</span>' : '') +
-                 (x.overBudget ? '<span class="sbc-opt-tag" title="teurer als dein Kontostand">zu teuer</span>' : '') +
-                 (x.truePerToken != null ? '<span class="sbc-opt-tag ok">geprüft</span>' : '<span class="sbc-opt-tag">ungeprüft</span>') +
-                '<span class="sbc-opt-tag ok">Quelle: ' + escapeHtml(x.bestGrade || '?') + '</span></span></div>' +
-                 (function () {
-                     // v6.2.0: Fortschritt und Kurs auf einen Blick (Muster
-                     // "Sammel-Fortschritt pro Eintrag").
-                     const pr = galleryProgress(x), kurs = galleryKursText(x);
-                     if (!pr && !kurs) return '';
-                     return '<div class="sbc-opt-gal-line">' +
-                         (pr ? '<span class="bar" title="Fortschritt"><span class="fill" style="width:' + pr.pct + '%"></span></span>' +
-                               '<span class="v">' + escapeHtml(pr.label) + '</span>' : '<span class="bar-empty"></span>') +
-                         (kurs ? '<span class="kurs">' + escapeHtml(kurs) + '</span>' : '') + '</div>';
-                 })() +
-                 (x.truePerToken != null
-                    ? '<div class="sbc-opt-fb-meta"><b>' + fmtCoins(x.total) + '</b> gesamt für <b>' + x.tokens + '</b> Tokens' + (x.tokensTotal ? ' von ' + x.tokensTotal : '') + ' · ~' + fmtCoins(x.truePerToken) + ' je Token</div>'
-                    : '<div class="sbc-opt-fb-meta">mind. <b>' + fmtCoins(x.coins) + '</b> für <b>' + x.tokens + '</b> Tokens' + (x.tokensTotal ? ' von ' + x.tokensTotal : '') + ' <span class="sbc-opt-muted">(fut.gg-Untergrenze, die echte Summe ist meist deutlich höher - "Set ansehen" prüft)</span></div>') +
-                 '<div class="sbc-opt-fb-meta">' + (x.playersN || x.items || '?') + ' Spieler' +
-                 (x.own && x.eaKind ? ' · im Verein <b>' + x.own.count + '</b>' + (x.items ? ' von ' + x.items : '') : '') +
-                 ' · ' + escapeHtml(x.league.replace(/-/g, ' ')) +
-                 (x.score != null && x.threshold != null ? ' · Score ' + x.score.toLocaleString('de-DE') + ' / ' + x.threshold.toLocaleString('de-DE') : '') + '</div>' +
+            const pr = galleryProgress(x), kurs = galleryKursText(x);
+            const tag = galleryRowTag(x, i);
+            const sum = (x.truePerToken != null ? fmtCoins(x.total) : (x.coins > 0 ? 'mind. ' + fmtCoins(x.coins) : '')).replace(/ Coins$/, '');
+            h += '<div class="sbc-opt-fb-row sbc-opt-item' + (i === 0 ? ' best' : '') + (i >= GALLERY_SHOW_OPEN ? ' sbc-opt-fb-more' : '') + '">' +
+                 '<div class="sbc-opt-item-top">' +
+                 '<button type="button" class="sbc-opt-btn ' + (i === 0 ? 'primary' : 'ghost') + ' sbc-opt-rowbtn" data-gal-idx="' + i + '" data-next="Set ansehen">' + escapeHtml(x.name) + '</button>' +
+                 (kurs ? '<span class="sbc-opt-item-num">' + escapeHtml(kurs) + '</span>' : '') + '</div>' +
+                 '<div class="sbc-opt-item-meta sbc-opt-gal-line">' +
+                 (pr ? '<span class="bar"><span class="fill" style="width:' + pr.pct + '%"></span></span><span class="v">' + escapeHtml(pr.label) + '</span>' : '') +
+                 '<span class="grow">' + (pr ? '· ' : '') + escapeHtml(x.bestGrade || '?') + ' · <b>' + x.tokens + '</b> T' + (sum ? ' · ' + sum : '') + '</span>' +
+                 (tag ? '<span class="sbc-opt-tag' + (tag.cls ? ' ' + tag.cls : '') + '">' + escapeHtml(tag.text) + '</span>' + (tag.tip ? tipHtml(tag.tip, tag.text) : '') : '') +
+                 '<button type="button" class="sbc-opt-btn link" data-gal-done="' + i + '" aria-label="' + escapeHtml(x.name) + ' als erledigt markieren">✓</button></div>' +
                  (x.personal ? '<div class="sbc-opt-fb-meta"><b>' + escapeHtml(galleryPersonalHint(x.personal)) + '</b> · Live-Prüfung vor Kauf</div>' : '') +
                  (galleryPersonalTargets(x.personal).slice(0,1).map(p => '<button type="button" class="sbc-opt-btn ghost" data-gal-upgrade-set="'+i+'" data-gal-upgrade-grade="'+p.grade+'">'+p.grade+'-Aufwertung prüfen ('+p.missing.length+' Nachkäufe)</button>').join('')) +
-                 '<div class="sbc-opt-fb-actions"><button type="button" class="sbc-opt-btn ' + (i === 0 ? 'primary' : 'ghost') + '" data-gal-idx="' + i + '">Set ansehen</button>' +
-                 '<button type="button" class="sbc-opt-btn ghost small" data-gal-done="' + i + '" title="Als erledigt markieren (ausblenden)">Erledigt ✓</button></div></div>';
+                 '</div>';
         });
         if (ranked.length > GALLERY_SHOW_OPEN) {
-            h += '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-showmore">' + (ranked.length - GALLERY_SHOW_OPEN) + ' weitere Sets anzeigen</button>';
+            h += '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-showmore">' + (ranked.length - GALLERY_SHOW_OPEN) + ' weitere Sets</button>';
         }
         setGalleryResult(h);
         ui.galleryResult.querySelectorAll('button[data-gal-idx]').forEach(function (b) {
@@ -19235,9 +19275,9 @@ const HybridSbcEa = (() => {
         if (!book || !Number.isFinite(book.balance)) { if (!card.hidden) card.hidden = true; return; }
         const fmt = ms => new Date(ms).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
         const evs = (book.events || []).slice(-6).reverse();
-        let h = '<label class="sbc-opt-chiplabel">' + escapeHtml(book.label || 'Galerie-Tokens') + ': <b>' + book.balance.toLocaleString('de-DE') + '</b>' +
-                ' <span class="sbc-opt-muted">· mitgeschrieben seit ' + fmt(book.since || book.at) + '</span></label>';
-        if (!evs.length) h += '<div class="sbc-opt-muted">Nach einer Bewertung im Spiel erkennt PitTools die neue Note am Zuwachs (Web App einmal neu laden).</div>';
+        let h = '<div class="sbc-opt-head"><span>' + escapeHtml(book.label || 'Galerie-Tokens') +
+                tipHtml('Mitgeschrieben seit ' + fmt(book.since || book.at) + '. Nach einer Bewertung im Spiel die Web App einmal neu laden – PitTools erkennt die neue Note am Zuwachs.', 'Galerie-Tokens') +
+                '</span><span class="count"><b>' + book.balance.toLocaleString('de-DE') + '</b></span></div>';
         evs.forEach(ev => {
             const head = (ev.delta > 0 ? '+' : '') + ev.delta + ' Tokens · ' + fmt(ev.at);
             const who = a => escapeHtml(a.name) + ' ' + (a.from || '?') + ' → ' + a.to;
@@ -19643,8 +19683,14 @@ const HybridSbcEa = (() => {
         if (!ui.gallerySell) return;
         const n = galleryBoughtLoad().length;
         const span = ui.gallerySell.querySelector('span') || ui.gallerySell;
-        span.textContent = 'Gekaufte Karten verkaufen (' + n + ')';
+        const txt = n + (n === 1 ? ' Karte verkaufen' : ' Karten verkaufen');
+        if (span.textContent !== txt) span.textContent = txt;
         ui.gallerySell.disabled = n === 0;
+        // v6.44.0: Statuszeile des Reiters - der Knopf steht nur bei N > 0 da.
+        ui.gallerySell.hidden = n === 0;
+        const line = document.getElementById('sbc-opt-gallery-line-txt');
+        const lt = n ? 'Gekauft: <b>' + n + '</b>' : 'Keine gekauften Karten.';
+        if (line && line.innerHTML !== lt) line.innerHTML = lt;
         if (ui.gallerySellClear) ui.gallerySellClear.style.display = n ? '' : 'none';
     }
     function rememberGalleryBought(meta, bought) {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.29.6
+// @version      6.29.7
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.29.6';
+    const VERSION = '6.29.7';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -591,6 +591,35 @@
             if (ring.length > 25) ring.shift();
         } catch (e) {}
     }
+    // v6.29.7: Punkte-SBCs (One-Click) gibt der Nutzer in EAs EIGENER Ansicht
+    // ab (Review -> Submit). PitTools merkte davon nichts: die abgegebenen
+    // Storage-Karten blieben im Pool, die naechste Rating-SBC plante sie ein,
+    // und EA lehnte den Kader-PUT mit 475 ab (live 23.11.: "Year in Review
+    // Player Pick" mit 18 Storage-Karten, danach "10x 82+ Upgrade" 6x 475).
+    // Pure: aus Methode, URL und Request-Body die abgegebenen Item-IDs
+    // (als Strings) lesen; null, wenn es keine One-Click-Abgabe ist.
+    function oneClickSubmittedIds(method, url, body) {
+        try {
+            if (String(method || '').toUpperCase() !== 'POST') return null;
+            if (!/\/sbs\/challenge\/\d+\/item\/submit(\?|$)/.test(String(url || ''))) return null;
+            const data = typeof body === 'string' ? JSON.parse(body) : body;
+            const ids = data && Array.isArray(data.playerItemIds) ? data.playerItemIds : null;
+            if (!ids) return null;
+            const out = ids.map(x => String(x)).filter(x => /^\d+$/.test(x));
+            return out.length ? out : null;
+        } catch (e) { return null; }
+    }
+    // Nach EAs Antwort 2xx: genau diese Karten aus dem Pool nehmen.
+    function onOneClickSubmitted(ids, status) {
+        try {
+            const st = parseInt(status, 10);
+            if (!ids || !ids.length || !(st >= 200 && st < 300)) return;
+            const want = new Set(ids);
+            const gone = (STATE.pool || []).filter(p => p && want.has(String(p.id)));
+            STATE.diag.oneClickSubmit = { at: Date.now(), ids: ids.length, removed: gone.length };
+            if (gone.length) removeFromPool(gone);
+        } catch (e) {}
+    }
     // v5.15.0: Feld-Union der SBC-Objekte, die EA liefert. Ein neues Feld an
     // Set oder Challenge (Score-Ziel, Challenge-Typ, ...) faellt damit im
     // Report auf, ohne dass jemand die Antwort von Hand lesen muss. Felder,
@@ -660,6 +689,10 @@
                     if (url) noteUnclassifiedUtas(url);
                     if (url) noteSbcSetsStatus(url, resp && resp.status);
                     if (url) noteSbsTraffic((init && init.method) || (input && input.method) || 'GET', url, resp && resp.status);
+                    if (url) {
+                        const ocIds = oneClickSubmittedIds((init && init.method) || (input && input.method) || 'GET', url, init && init.body);
+                        if (ocIds) onOneClickSubmitted(ocIds, resp && resp.status);
+                    }
                     if (url && classifyUrl(url)) {
                         resp.clone().text().then(function (txt) {
                             handleResponseBody(url, txt);
@@ -727,8 +760,10 @@
                 // mitschreiben - genau die sind beim Freischalten interessant.
                 if (url && RE_SBS_SBC_PREFIX_PATH.test(String(url))) {
                     const m = this.__sbcMethod;
+                    const oneClickIds = oneClickSubmittedIds(m, url, body);
                     this.addEventListener('loadend', function () {
                         noteSbsTraffic(m, url, this.status);
+                        if (oneClickIds) onOneClickSubmitted(oneClickIds, this.status);
                     });
                 }
                 // v5.20.0: Marktsuchen MIT Query festhalten (welche Parameter

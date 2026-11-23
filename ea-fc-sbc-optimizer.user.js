@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.30.0
+// @version      6.30.1
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.30.0';
+    const VERSION = '6.30.1';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -15570,9 +15570,16 @@ const HybridSbcEa = (() => {
         const prices = {};
         const take = items => (Array.isArray(items) ? items : []).forEach(p => { if (p && Number.isInteger(p.eaId) && p.eaId > 0 && Number.isFinite(p.price) && p.price > 0 && !(prices[p.eaId] <= p.price)) prices[p.eaId] = p.price; });
         if (data.solution) { take(data.solution.items); (data.solution.costTiers || []).forEach(t => take(t && t.items)); }
+        // v6.30.1: Karten, die fut.gg OHNE Preis fuehrt (vermutlich nicht handelbar), und Kartentyp/Holo je Version.
+        const unpriced = new Set(), versions = {};
+        const noPrice = items => (Array.isArray(items) ? items : []).forEach(p => { if (p && Number.isInteger(p.eaId) && p.eaId > 0 && !(Number.isFinite(p.price) && p.price > 0)) unpriced.add(p.eaId); });
+        if (data.solution) { noPrice(data.solution.items); (data.solution.costTiers || []).forEach(t => noPrice(t && t.items)); }
+        (data.lineupCards || []).concat(data.lineupItems || []).forEach(c => {
+            if (c && Number.isInteger(c.eaId) && c.eaId > 0 && !versions[c.eaId]) versions[c.eaId] = [c.rarityName || null, c.holographicType || null];
+        });
         return { id: data.set.id, name: data.set.name, requiredCards: data.set.requiredCards,
                  grades: galleryGradeTokensFromRewards(data.set.grades),
-                 tags: data.tags, prices: prices,
+                 tags: data.tags, prices: prices, unpriced: Array.from(unpriced).filter(id => !(prices[id] > 0)), versions: versions,
                  firstOwnedDefs: (data.lineupCards || []).concat(data.lineupItems || []).filter(c => c && c.alwaysFirstOwner === true && Number.isInteger(c.eaId) && c.eaId > 0).map(c => c.eaId) };
     }
     const GALLERY_GRADE_ORDER = 'NDCBAS';
@@ -15723,6 +15730,51 @@ const HybridSbcEa = (() => {
         };
     }
     /** Pure: alle Chancen ueber Sets sortiert - Kurs je Token (bekannte eingeloeste Note) oder Zielnote. */
+    /**
+     * v6.30.1: starke, ungesammelte Versionen OHNE Preis - bisher fielen sie still aus der
+     * Rechnung (options: 0 ohne Grund, live Valencia). Stark = mehr Punkte als die schwaechste
+     * Karte der eigenen besten requiredCards (bei unvollstaendigem Set: jede). Pure.
+     */
+    function galleryNoPriceCards(entry, rules, opts) {
+        const o = opts || {};
+        if (!entry || !Array.isArray(entry.defs) || !rules) return [];
+        const prices = o.prices || rules.prices || {};
+        const req = rules.requiredCards || 0;
+        const own = entry.defs.filter(d => d[1] === 1).map(d => d[2]).sort((a, b) => b - a);
+        const floor = req > 0 && own.length >= req ? own[req - 1] : -Infinity;
+        const noOffer = o.noOffer || new Set();
+        const unpriced = new Set((rules.unpriced || []).map(String));
+        const versions = rules.versions || {}, names = entry.names || {}, attrs = entry.attrs || {};
+        return entry.defs.filter(d => d[1] === 0 && !(prices[d[0]] > 0) && d[2] > floor)
+            .sort((a, b) => b[2] - a[2]).slice(0, o.max || 5).map(d => {
+                const a = attrs[d[0]] || [], v = versions[d[0]] || [];
+                const holo = v[1] ? true : (a.length > 8 && a[8] != null ? a[8] >= 0 : null);
+                return { defId: d[0], name: names[d[0]] || ('#' + d[0]), rating: d[3], score: d[2], rareflag: a[3] != null ? a[3] : null,
+                         type: v[0] || null, holo: holo,
+                         why: noOffer.has(String(d[0])) ? 'kein Angebot am Markt (live geprüft)'
+                            : unpriced.has(String(d[0])) ? 'fut.gg führt die Karte ohne Preis (vermutlich nicht handelbar)'
+                            : 'nicht in fut.ggs Aufstellungen - Preis per pittools_gallery_quote' };
+            });
+    }
+    const GALLERY_NOPRICE_PLACEHOLDER = 1e8;
+    /**
+     * v6.30.1: Was wuerden die Karten ohne Preis freischalten? Derselbe Rechenkern mit einem
+     * Platzhalterpreis - der Planer nimmt sie nur, wo es ohne sie nicht geht. Pure.
+     */
+    function galleryNoPriceUnlock(row, entry, rules, firstOwned, known, base, cards, search) {
+        if (!cards || !cards.length || !base || base.error) return [];
+        const ph = new Set(cards.map(c => Number(c.defId)));
+        const prices = Object.assign({}, rules.prices);
+        ph.forEach(d => { prices[d] = GALLERY_NOPRICE_PLACEHOLDER; });
+        const res = galleryChanceForSet(row, entry, Object.assign({}, rules, { prices: prices }), firstOwned, known, search);
+        const have = new Set((base.options || []).map(o => o.grade));
+        return (res.options || []).filter(o => !have.has(o.grade) && o.cards.some(c => ph.has(Number(c.defId)))).map(o => {
+            const other = o.cards.filter(c => !ph.has(Number(c.defId)));
+            return { grade: o.grade, score: o.score, threshold: o.threshold, tokensGain: o.tokensGain,
+                     needs: o.cards.filter(c => ph.has(Number(c.defId))).map(c => c.defId),
+                     otherBuys: other.length, otherCoins: other.reduce((s, c) => s + (c.priceFutgg || 0), 0) };
+        });
+    }
     /**
      * v6.30.0: Definitions-IDs, die sicher gesammelt sind - fuer den Abgleich mit dem Scan.
      * Streng: aus dem Pool nur echte Versions-IDs (definitionId/resourceId), NICHT assetId
@@ -16008,7 +16060,13 @@ const HybridSbcEa = (() => {
                 let rules;
                 try { rules = await galleryRulesLoad(row, o.refreshRules === true); }
                 catch (e) { results.push({ name: row.name, error: String(e && e.message || e) }); continue; }
-                const res = galleryChanceForSet(row, entry, rules, firstOwned, galleryKnownGrade(row.id));
+                // v6.30.1: gemerkte Live-Preise (30 min) gehen vor fut.gg; Karten ohne Preis werden benannt.
+                const cRules = Object.assign({}, rules, { prices: galleryLivePrices(rules) });
+                const res = galleryChanceForSet(row, entry, cRules, firstOwned, galleryKnownGrade(row.id));
+                if (res && !res.error) {
+                    res.noPrice = galleryNoPriceCards(entry, cRules, { noOffer: galleryNoOfferSet() });
+                    if (res.noPrice.length) res.unlock = galleryNoPriceUnlock(row, entry, cRules, firstOwned, galleryKnownGrade(row.id), res, res.noPrice);
+                }
                 if (res && res.gradeable && galleryKnownGrade(row.id)) galleryExpectNote(row.id, res.gradeable, 'ohne Kauf');
                 results.push(res);
                 await BgTimer.wait(0); // Seite atmen lassen (Bewertung ist rechenintensiv)
@@ -16050,6 +16108,8 @@ const HybridSbcEa = (() => {
     const GALLERY_LIVE_QUOTE_TTL_MS = 30 * 60 * 1000;
     const GALLERY_EST_TOLERANCE = 0.10; // v6.23.0: Hoechstpreis einer geschaetzten Karte (fut.gg/gemerkt) = +10 %, mindestens eine Stufe
     const galleryLiveQuotes = new Map(); // defId -> { price, at }
+    const galleryNoOffers = new Map(); // v6.30.1: defId -> Zeit, live kein Angebot (30 min wie galleryLiveQuotes)
+    function galleryNoOfferSet() { const out = new Set(); galleryNoOffers.forEach((t, d) => { if (Date.now() - t < GALLERY_LIVE_QUOTE_TTL_MS) out.add(String(d)); }); return out; }
     function galleryLivePrices(rules) {
         const out = Object.assign({}, rules.prices);
         galleryLiveQuotes.forEach((q, d) => { if (Date.now() - q.at < GALLERY_LIVE_QUOTE_TTL_MS && q.price > 0) out[d] = q.price; });
@@ -16079,13 +16139,14 @@ const HybridSbcEa = (() => {
     const galleryClaudeState = { progress: null };
     const GALLERY_BUY_SCAN_MAX_AGE_MS = 3 * 60 * 60 * 1000;
     /** Live-Preise fuer die staerksten noch nicht gesammelten Versionen eines Sets, dann Chancen neu rechnen. Kauft nichts. */
-    async function galleryQuoteRun(setName, maxCards) {
+    async function galleryQuoteRun(setName, maxCards, onlyCards) {
         if (galleryBusy || buyBusy || sellBusy) throw new Error('In der Galerie läuft gerade ein anderer Lauf - kurz warten.');
         if (!sessionReady()) throw new Error('EA-Sitzung noch nicht erfasst - einmal im Spiel klicken.');
         const persona = ownPersonaId();
         if (!persona) throw new Error('EA-Persona unbekannt - einmal im Spiel klicken.');
         // v6.23.0: teuer (je Karte bis zu 5 Suchen) - nur im Markt-Takt, nie waehrend einer Marktsperre.
-        await marketGuardGate({ searches: Math.max(1, Math.min(20, Number(maxCards) || 10)) * 2 }, 'Live-Preise', t => { galleryClaudeState.progress = t; });
+        const wantN = Array.isArray(onlyCards) && onlyCards.length ? Math.min(10, onlyCards.length) : Math.max(1, Math.min(20, Number(maxCards) || 10));
+        await marketGuardGate({ searches: wantN * 2 }, 'Live-Preise', t => { galleryClaudeState.progress = t; });
         galleryBusy = true;
         try {
             const cat = await galleryCatalogLoad(false, t => { galleryClaudeState.progress = t; });
@@ -16097,7 +16158,9 @@ const HybridSbcEa = (() => {
             const rules = await galleryRulesLoad(row);
             const k = Math.max(1, Math.min(20, Number(maxCards) || 10));
             let changed = galleryMarkKnownCollected(entry, galleryKnownDefIds(STATE.pool, collectedLoad())).length > 0; // v6.30.0: keine Suche fuer Bekanntes
-            const cands = entry.defs.filter(d => d[1] === 0).sort((a, b) => b[2] - a[2]).slice(0, k);
+            // v6.30.1: gezielt nur die genannten Karten (defIds oder Namen, hoechstens 10) - spart Marktsuchen.
+            const only = Array.isArray(onlyCards) && onlyCards.length ? galleryExcludeDefs(onlyCards.slice(0, 10), entry.names) : null;
+            const cands = entry.defs.filter(d => d[1] === 0 && (!only || only.has(Number(d[0])))).sort((a, b) => b[2] - a[2]).slice(0, only ? 10 : k);
             const quoted = [];
             let stopped = null;
             for (let i = 0; i < cands.length; i++) {
@@ -16112,13 +16175,20 @@ const HybridSbcEa = (() => {
                 if (coll === true) { d[1] = 1; changed = true; quoted.push({ defId: d[0], name: (entry.names || {})[d[0]] || null, collected: true }); }
                 else {
                     const price = offers.length ? robustMinBin(offers.map(x => x.bin)).robust : null;
-                    if (price > 0) galleryLiveQuotes.set(d[0], { price: price, at: Date.now() });
+                    if (price > 0) { galleryLiveQuotes.set(d[0], { price: price, at: Date.now() }); galleryNoOffers.delete(d[0]); }
+                    else if (!offers.length) galleryNoOffers.set(d[0], Date.now());
                     quoted.push({ defId: d[0], name: (entry.names || {})[d[0]] || null, rating: d[3], score: d[2], live: price || null, futgg: rules.prices[d[0]] || null, offers: offers.length });
                 }
                 if (i < cands.length - 1) await futbinSleep(FUTBIN_MARKET_GAP_MS);
             }
             if (changed) await galleryScanCacheSave(persona, cache);
-            const res = galleryChanceForSet(row, entry, Object.assign({}, rules, { prices: galleryLivePrices(rules) }), galleryFirstOwnedDefs(), galleryKnownGrade(row.id));
+            const qPrices = galleryLivePrices(rules);
+            const res = galleryChanceForSet(row, entry, Object.assign({}, rules, { prices: qPrices }), galleryFirstOwnedDefs(), galleryKnownGrade(row.id));
+            const qFirst = galleryFirstOwnedDefs();
+            if (res && !res.error) { // v6.30.1
+                res.noPrice = galleryNoPriceCards(entry, rules, { prices: qPrices, noOffer: galleryNoOfferSet() });
+                if (res.noPrice.length) res.unlock = galleryNoPriceUnlock(row, entry, Object.assign({}, rules, { prices: qPrices }), qFirst, galleryKnownGrade(row.id), res, res.noPrice);
+            }
             STATE.diag.galleryQuote = { at: Date.now(), set: row.name, quoted: quoted.length, stopped: stopped };
             return { result: res, quoted: quoted, stopped: stopped };
         } finally { galleryBusy = false; }
@@ -18511,7 +18581,10 @@ const HybridSbcEa = (() => {
                          // v6.18.0: was Rasmus im Spiel OHNE Kauf bewerten kann - erst das, dann kaufen
                          gradeWithoutBuying: r.results.filter(x => !x.error && x.gradeable).map(x => ({ set: x.name, grade: x.gradeable, redeemed: x.redeemed, tokens: x.gradeableTokens, score: x.scoreNow })),
                          chances: r.ranked.slice(0, top).map(c => { const o = Object.assign({}, c); delete o.selection; return o; }),
-                         sets: r.results.map(x => x.error ? { name: x.name, error: x.error } : { name: x.name, gradeNow: x.gradeNow, scoreNow: x.scoreNow, bonusNow: x.bonusNow, redeemed: x.redeemed, freeUpgrade: x.freeUpgrade, gradeable: x.gradeable, options: x.options.length, unknownBonus: x.unknownBonus }) };
+                         sets: r.results.map(x => x.error ? { name: x.name, error: x.error } : { name: x.name, gradeNow: x.gradeNow, scoreNow: x.scoreNow, bonusNow: x.bonusNow, redeemed: x.redeemed, freeUpgrade: x.freeUpgrade, gradeable: x.gradeable, options: x.options.length, unknownBonus: x.unknownBonus,
+                             noPrice: x.noPrice && x.noPrice.length ? x.noPrice : undefined, unlock: x.unlock && x.unlock.length ? x.unlock : undefined,
+                             whyNoOptions: !x.options.length && x.noPrice && x.noPrice.length ? 'Starke Karten ohne Preis - siehe noPrice/unlock' : undefined,
+                             hint: x.noPrice && x.noPrice.length ? 'Live-Preis: pittools_gallery_quote set:"' + x.name + '" cards:' + JSON.stringify(x.noPrice.map(c => c.defId)) : undefined }) };
             }, () => galleryChancesState.progress);
             const v = await mcpAwaitJob(job, a.wait);
             return v.state === 'done' ? v.result : v;
@@ -18534,11 +18607,11 @@ const HybridSbcEa = (() => {
             if (running) return await mcpAwaitJob(running, a.wait);
             if (!a.set) throw new Error('Welches Set? Parameter set.');
             const job = mcpStartJob(tool, async () => {
-                const r = await galleryQuoteRun(String(a.set), a.maxCards);
+                const r = await galleryQuoteRun(String(a.set), a.maxCards, Array.isArray(a.cards) ? a.cards : null);
                 const res = r.result;
                 return { set: res.name, gradeNow: res.gradeNow, scoreNow: res.scoreNow, redeemed: res.redeemed, freeUpgrade: res.freeUpgrade, error: res.error || null,
                          options: (res.options || []).map(o => { const x = Object.assign({}, o); delete x.selection; return x; }),
-                         quoted: r.quoted, stopped: r.stopped,
+                         quoted: r.quoted, stopped: r.stopped, noPrice: res.noPrice || [], unlock: res.unlock || [],
                          note: 'Live = gerade gemessenes Marktminimum bei EA (30 min gemerkt), sonst fut.gg. Kaufen nur mit pittools_gallery_buy nach Rasmus\' Ja im Chat - dann bestätigt er noch einmal im Panel.' };
             }, () => galleryClaudeState.progress);
             const v = await mcpAwaitJob(job, a.wait);

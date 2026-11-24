@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.57.0
+// @version      6.57.1
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.57.0';
+    const VERSION = '6.57.1';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7096,6 +7096,8 @@
         #sbc-opt-tab-loesen, #sbc-opt-way, .sbc-opt-ctxline { display:none; }
         /* v6.57.0: Aktionsleiste (eine Hauptaktion im Fuss) gibt es nur in der neuen Oberflaeche */
         #sbc-opt-actbar { display:none; }
+        /* v6.57.1: Zeilen "Anzahl" und "Ganzes Set" gibt es nur in der neuen Oberflaeche */
+        #sbc-opt-count-lbl, #sbc-opt-set-row { display:none; }
         .sbc-opt-ctxline { align-items:baseline; gap:var(--pt-space-2); padding:var(--pt-space-2-5) 0 var(--pt-space-1-5); font-size:var(--pt-type-label); color:var(--pt-fg-muted); }
         .sbc-opt-ctxline b { color:var(--pt-fg-default); font-weight:var(--pt-weight-semibold); }
         .sbc-opt-line.sbc-opt-logline { align-items:flex-start; flex-wrap:nowrap; gap:var(--pt-space-2); min-height:0; margin:0; padding:var(--pt-space-1) 0; font-size:var(--pt-type-label); }
@@ -7856,6 +7858,42 @@
             border-color:var(--pt-accent); background:var(--pt-accent); box-shadow: inset 0 0 0 3px var(--pt-bg-base);
         }
         :where(:root[data-ui7]) #sbc-opt-panel[data-act7] .sbc-opt-fb-row:not(.is-picked) .sbc-opt-fb-price { color:var(--pt-fg-secondary); }
+        /* v6.57.1 Etappe 3b (2): Weg "Verein" - Zeile "Anzahl" statt "Mehrere erledigen", Zeile "Ganzes Set",
+           Punkte-SBC als eigener Zustand; die Hauptaktion steht in der Aktionsleiste. */
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-run, :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-batch-plan, :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-queue-plan,
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-points-run, :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-points-buy { display:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-batch-run { display:none !important; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-tab-rating.on { display:flex; flex-direction:column; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-tab-rating.on > * { min-width:0; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-multi { display:contents; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-multi > .sbc-opt-group-title, :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-multi-modes { display:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-batchsection {
+            display:grid; grid-template-columns:auto minmax(0, 1fr); align-items:center; column-gap:var(--pt-space-4);
+            order:1; min-width:0; margin:0 0 var(--pt-stack-tight); padding:0; border-top:none;
+        }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-batchsection > .sbc-opt-chiplabel { display:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-count-lbl { display:block; font-size:var(--pt-type-label); color:var(--pt-fg-muted); }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-batch-chips { margin:0; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-batch-edit, :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-batch-count { grid-column:1 / -1; margin-top:var(--pt-space-2); }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7]:not([data-multi7="batch"]) #sbc-opt-batch-count { display:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-multi.has-queue #sbc-opt-set-row {
+            display:flex; align-items:center; justify-content:space-between; order:2; min-width:0; text-align:left;
+            margin:0 0 var(--pt-stack-tight); min-height:var(--pt-row-h);
+        }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-set-row[aria-pressed="true"] { color:var(--pt-fg-default); box-shadow: inset 0 0 0 1px var(--pt-accent); }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-set-n { font-weight:var(--pt-weight-regular); color:var(--pt-fg-muted); }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7]:not([data-multi7="reihe"]) #sbc-opt-queuesection { display:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7][data-multi7="reihe"] #sbc-opt-queuesection:not(.sbc-opt-hidden) { display:block; order:3; min-width:0; margin-top:0; padding-top:0; border-top:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-advanced { order:4; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-result { order:6; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-planresult { order:7; min-width:0; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7][data-multi7="eins"] #sbc-opt-planresult { display:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-vorlagensection { display:block; order:9; min-width:0; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7][data-punkte7][data-multi7] #sbc-opt-minrow, :where(:root[data-ui7]) #sbc-opt-panel[data-act7][data-punkte7][data-multi7] #sbc-opt-batchsection,
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7][data-punkte7][data-multi7] #sbc-opt-multi.has-queue #sbc-opt-set-row, :where(:root[data-ui7]) #sbc-opt-panel[data-act7][data-punkte7][data-multi7] #sbc-opt-queuesection,
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7][data-punkte7][data-multi7] #sbc-opt-advanced, :where(:root[data-ui7]) #sbc-opt-panel[data-act7][data-punkte7][data-multi7] #sbc-opt-runhint,
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7][data-punkte7][data-multi7] #sbc-opt-result, :where(:root[data-ui7]) #sbc-opt-panel[data-act7][data-punkte7][data-multi7] #sbc-opt-planresult,
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7][data-punkte7][data-multi7] #sbc-opt-vorlagensection { display:none; }
         @keyframes pt7-leiste { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:none; } }
         @keyframes pt7-fuss { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:none; } }
         @keyframes pt7-wackel { 0%, 100% { transform:none; } 30% { transform:translateX(-4px); } 60% { transform:translateX(4px); } }
@@ -8363,7 +8401,7 @@
     // nur ihn auf, sie hat keinen eigenen Ablauf.
     function ptActState(s) {
         s = s || {};
-        const none = { show: false, label: '', target: null, step: '', busy: false, disabled: false, tone: '', side: null };
+        const none = { show: false, label: '', target: null, step: '', busy: false, disabled: false, blocked: false, tone: '', side: null };
         const mk = function (o) { return Object.assign({}, none, { show: true }, o); };
         if (s.asking || s.store) return none;
         if (s.way === 'zukaufen') {
@@ -8389,7 +8427,42 @@
             if (h.buy) return mk({ label: 'Nachkäufe prüfen und kaufen …', target: 'hybrid-buy', side: { label: 'Neu vergleichen', target: 'hybrid-search' } });
             return mk({ label: 'Verein + Nachkäufe vergleichen', target: 'hybrid-search', side: { label: 'Nur Verein', target: 'hybrid-club-search' } });
         }
+        if (s.way === 'verein') {
+            // v6.57.1: Punkte-SBC | 1 = Optimieren + eintragen | N = planen, dann abgeben | Ganzes Set = Angehakte planen, dann abgeben.
+            const v = s.ve || {};
+            if (v.punkte) {
+                if (v.pointsBusy) return mk({ label: v.pointsText || 'Läuft …', busy: true });
+                return mk({ label: 'Karten auswählen', target: 'points-run', side: { label: 'Fehlende Punkte kaufen …', target: 'points-buy' } });
+            }
+            if (v.running) return mk({ label: 'Läuft …', busy: true });
+            const multi = v.multi === 'batch' || v.multi === 'reihe' ? v.multi : 'eins';
+            if (multi !== 'eins' && v.planned > 0) {
+                return mk({ label: 'Alle ' + v.planned + ' abgeben …', target: 'batch-run', tone: 'danger', step: 'Schritt 2 von 2',
+                    side: { label: 'Neu planen', target: multi === 'reihe' ? 'queue-plan' : 'batch-plan' } });
+            }
+            if (multi === 'reihe') {
+                const q = v.queueN > 0 ? v.queueN : 0;
+                if (!q) return mk({ label: 'Keine SBC angehakt', disabled: true, step: 'Schritt 1 von 2' });
+                return mk({ label: q + (q === 1 ? ' SBC planen' : ' SBCs planen'), target: 'queue-plan', step: 'Schritt 1 von 2' });
+            }
+            if (multi === 'batch') {
+                const n = v.count > 0 ? v.count : 1;
+                return mk({ label: n + (n === 1 ? ' Team planen' : ' Teams planen'), target: 'batch-plan', step: 'Schritt 1 von 2' });
+            }
+            return mk({ label: 'Optimieren + eintragen', target: 'run', blocked: !!v.blocked });
+        }
         return none;
+    }
+    /** v6.57.1: welche Anzahl-Wahl gilt nach einem Tipp/Ereignis? Rein. ('eins' | 'batch' | 'reihe') */
+    function ptMultiNext(cur, ev) {
+        ev = ev || {};
+        let m = cur === 'batch' || cur === 'reihe' ? cur : 'eins';
+        if (ev.pick === 'eins' || ev.pick === 'batch') m = ev.pick;
+        else if (ev.pick === 'set') m = m === 'reihe' ? 'eins' : 'reihe';
+        // Ein neuer Plan (auch aus "Mit Gebots-Karten planen" oder der KI) muss abgebbar sein: nie in "1" verstecken.
+        if (ev.newPlan && m === 'eins') m = ev.newPlan === 'reihe' ? 'reihe' : 'batch';
+        if (m === 'reihe' && ev.queue === false) m = 'eins';
+        return m;
     }
     // [UI7-END]
     function ui7IsOn() {
@@ -8437,6 +8510,17 @@
                 }
             } catch (e) {}
             s.fb = f;
+        } else if (s.way === 'verein') {
+            const pc = document.getElementById('sbc-opt-points'), pr = document.getElementById('sbc-opt-points-run');
+            const num = function (el) { const m = /\d+/.exec(el ? String(el.textContent || '') : ''); return m ? parseInt(m[0], 10) : 0; };
+            const v = { punkte: !!(pc && pc.style.display !== 'none'), multi: ptMulti, count: 1, planned: 0, queueN: 0, running: false, blocked: false, pointsBusy: false, pointsText: '' };
+            if (pr) { v.pointsBusy = pr.classList.contains('is-busy'); v.pointsText = String(pr.textContent || '').trim(); }
+            v.count = ui.batchCount ? (parseInt(ui.batchCount.value, 10) || 1) : 1;
+            v.running = !!((ui.run && ui.run.disabled) || (ui.batchPlan && ui.batchPlan.disabled));
+            v.blocked = !!(ui.run && ui.run.classList.contains('is-blocked'));
+            if (ui.batchRun && ui.batchRun.style.display !== 'none' && ui.planResult && !ui.planResult.classList.contains('sbc-opt-hidden')) v.planned = num(ui.batchRun);
+            v.queueN = ui.queuePlan && !ui.queuePlan.disabled ? num(ui.queuePlan) : 0;
+            s.ve = v;
         } else if (s.way === 'hybrid') {
             const stop = ui.hybridClubStop;
             s.hy = { stop: !!(stop && !stop.hidden), buy: !!panel.querySelector('#sbc-opt-hybrid-buy'), busy: false };
@@ -8468,11 +8552,66 @@
         if (!row.classList.contains('is-picked')) row.classList.add('is-picked');
         syncActBar();
     }
+    // v6.57.1: Weg "Verein" - Anzahl (1 / N / Ganzes Set). Nicht gemerkt: jede Sitzung beginnt bei 1.
+    let ptMulti = 'eins', ptMultiPlanSeen = null, ptVereinOn = false;
+    function ptMultiPick(pick) {
+        ptMulti = ptMultiNext(ptMulti, { pick: pick, queue: ptQueueOk() });
+        syncActBar();
+    }
+    function ptQueueOk() {
+        const q = ui.queueSection;
+        return !!(q && !q.classList.contains('sbc-opt-hidden'));
+    }
+    /** Chips der Anzahl: "1" vorn einhaengen (renderChips baut die Leiste neu), genau die geltende Wahl ist markiert. */
+    function ptSyncVerein() {
+        const panel = ui.panel, box = ui.batchChips, input = ui.batchCount;
+        if (!panel || !box || !input) return;
+        ptVereinOn = true;
+        const plan = STATE.batch || null;
+        const fresh = plan !== ptMultiPlanSeen;
+        ptMultiPlanSeen = plan;
+        ptMulti = ptMultiNext(ptMulti, { newPlan: fresh && plan && plan.planned ? (plan.mode === 'reihe' ? 'reihe' : 'batch') : null, queue: ptQueueOk() });
+        if (panel.getAttribute('data-multi7') !== ptMulti) panel.setAttribute('data-multi7', ptMulti);
+        const pc = document.getElementById('sbc-opt-points');
+        const punkte = !!(pc && pc.style.display !== 'none');
+        if (panel.hasAttribute('data-punkte7') !== punkte) panel.toggleAttribute('data-punkte7', punkte);
+        if (box.firstChild && !box.querySelector('[data-one]')) {
+            const one = document.createElement('button');
+            one.type = 'button'; one.className = 'sbc-opt-chip'; one.textContent = '1';
+            one.setAttribute('data-one', '1');
+            box.insertBefore(one, box.firstChild);
+        }
+        const cur = String(parseInt(input.value, 10));
+        Array.from(box.querySelectorAll('.sbc-opt-chip')).forEach(function (b) {
+            if (b.classList.contains('edit')) return;
+            const on = b.hasAttribute('data-one') ? ptMulti === 'eins' : (ptMulti === 'batch' && b.textContent === cur);
+            if (b.classList.contains('on') !== on) b.classList.toggle('on', on);
+        });
+        const row = document.getElementById('sbc-opt-set-row'), n = document.getElementById('sbc-opt-set-n');
+        if (row && n) {
+            const on = ptMulti === 'reihe';
+            if (row.getAttribute('aria-pressed') !== String(on)) row.setAttribute('aria-pressed', String(on));
+            const cnt = ui.queueList ? ui.queueList.querySelectorAll('.sbc-opt-queuerow').length : 0;
+            const t = (cnt ? cnt + ' SBCs' : '') + (on ? (cnt ? ' · ' : '') + 'gewählt' : '');
+            if (n.textContent !== t) n.textContent = t;
+        }
+    }
+    /** Schalter aus: die alte Oberflaeche bekommt ihre Chip-Leiste unveraendert zurueck. */
+    function ptVereinClean() {
+        if (!ptVereinOn) return;
+        ptVereinOn = false;
+        try {
+            const panel = ui.panel;
+            if (panel) { panel.removeAttribute('data-multi7'); panel.removeAttribute('data-punkte7'); }
+            renderChips('batch', ui.batchChips, ui.batchCount, ui.batchEdit);
+        } catch (e) {}
+    }
     /** Leiste nach dem Zustand zeichnen (nur UI 7; schreibt nur bei Aenderung). */
     function syncActBar() {
         const bar = document.getElementById('sbc-opt-actbar');
-        if (!bar || !ui.panel || !ui7IsOn()) { ptAct = null; return; }
+        if (!bar || !ui.panel || !ui7IsOn()) { ptAct = null; ptVereinClean(); return; }
         try { ptActRows(); } catch (e) {}
+        try { ptSyncVerein(); } catch (e) {}
         let st;
         try { st = ptActState(ptActRead()); } catch (e) { st = ptActState(null); }
         if (!ptAct || ptAct.target !== st.target) ptActChangedAt = Date.now();
@@ -8485,6 +8624,7 @@
         if (lbl.textContent !== st.label) lbl.textContent = st.label;
         if (main.classList.contains('is-busy') !== st.busy) main.classList.toggle('is-busy', st.busy);
         if (main.disabled !== !!st.disabled) main.disabled = !!st.disabled;
+        if (main.classList.contains('is-blocked') !== !!st.blocked) main.classList.toggle('is-blocked', !!st.blocked);
         const danger = st.tone === 'danger';
         if (main.classList.contains('danger') !== danger) { main.classList.toggle('danger', danger); main.classList.toggle('primary', !danger); }
         const sl = st.side ? st.side.label : '';
@@ -8524,6 +8664,14 @@
                 if (r && r === ev.target) { ev.preventDefault(); ptActPickRow(r); }
             });
         }
+        // v6.57.1: Anzahl (1 / N) und "Ganzes Set" - nur die Wahl, geplant und abgegeben wird ueber die echten Knoepfe.
+        const chips = panel.querySelector('#sbc-opt-batch-chips'), cnt = panel.querySelector('#sbc-opt-batch-count'), setRow = panel.querySelector('#sbc-opt-set-row');
+        if (chips) chips.addEventListener('click', function (ev) {
+            const b = ui7IsOn() && ev.target && typeof ev.target.closest === 'function' ? ev.target.closest('.sbc-opt-chip') : null;
+            if (b && !b.classList.contains('edit')) ptMultiPick(b.hasAttribute('data-one') ? 'eins' : 'batch');
+        });
+        if (cnt) cnt.addEventListener('input', function (ev) { if (ui7IsOn() && ev.isTrusted) ptMultiPick('batch'); });
+        if (setRow) setRow.addEventListener('click', function () { if (ui7IsOn()) ptMultiPick('set'); });
         panel.setAttribute('data-act7', '1');
         if (typeof MutationObserver === 'function') {
             let queued = false;
@@ -9344,7 +9492,7 @@
                     <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-points-buy"><span>Fehlende Punkte kaufen …</span></button>
                     <div id="sbc-opt-points-buyres"></div>
                 </div>
-                <div class="sbc-opt-row sbc-opt-mb0">
+                <div class="sbc-opt-row sbc-opt-mb0" id="sbc-opt-minrow">
                     <label class="sbc-opt-chiplabel">Min. Rating pro Spieler</label>
                     <div class="sbc-opt-chips" id="sbc-opt-minrating-chips"></div>
                     <div class="sbc-opt-chipedit sbc-opt-inline" id="sbc-opt-minrating-edit">
@@ -9506,6 +9654,8 @@
                         <button type="button" class="sbc-opt-chip on" data-mode="batch">Diese SBC N&#215;</button>
                         <button type="button" class="sbc-opt-chip" data-mode="vorlagen">Vorlagen</button>
                     </div>
+                    <!-- v6.57.1 UI 7: Zeile "Ganzes Set" (nur bei Sets mit mehreren Challenges, nur unter data-ui7). -->
+                    <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-set-row" aria-pressed="false"><span>Ganzes Set</span><span id="sbc-opt-set-n"></span></button>
                 <!-- SBC-REIHE: verschiedene Challenges EINES Sets nacheinander.
                      Nur sichtbar, wenn das offene Set mehr als eine Challenge
                      hat (syncQueueSection()). Vorschau, Plan-Check und die
@@ -9526,6 +9676,8 @@
                      ansehen, dann EINE Freigabe für den ganzen Lauf. -->
                 <div class="sbc-opt-batch" id="sbc-opt-batchsection">
                     <label class="sbc-opt-chiplabel">SBC mehrfach abschließen</label>
+                    <!-- v6.57.1 UI 7: Zeile "Anzahl" (1 · 3 · 5 · 10 · ✎) - nur unter data-ui7 sichtbar. -->
+                    <span id="sbc-opt-count-lbl">Anzahl</span>
                     <div class="sbc-opt-chips" id="sbc-opt-batch-chips"></div>
                     <div class="sbc-opt-chipedit sbc-opt-inline" id="sbc-opt-batch-edit">
                         <input type="text" id="sbc-opt-batch-editval" placeholder="3, 5, 10">

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.51.0
+// @version      6.52.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.51.0';
+    const VERSION = '6.52.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7479,6 +7479,12 @@
         #sbc-opt-tab-mehr > .sbc-opt-withtip .sbc-opt-btn { margin-top:0; }
         #sbc-opt-panel[data-tab="mehr"] #sbc-opt-info { background:transparent; border:none; padding:0; margin-bottom:var(--pt-space-1); }
 
+        /* v6.52.0: solange eine Rueckfrage offen ist, nimmt das Panel nur ihre Knoepfe an
+           (window.confirm hielt frueher die ganze Seite an). Scrollen bleibt moeglich. */
+        #sbc-opt-panel[data-asking] .sbc-opt-body * { pointer-events:none; }
+        #sbc-opt-panel[data-asking] .sbc-opt-confirm:not([hidden]), #sbc-opt-panel[data-asking] .sbc-opt-confirm:not([hidden]) * { pointer-events:auto; }
+        #sbc-opt-panel[data-asking] .sbc-opt-tabs, #sbc-opt-panel[data-asking] .sbc-opt-main, #sbc-opt-panel[data-asking] #sbc-opt-run { opacity:var(--pt-state-disabled-opacity); }
+
         /* v6.40.0: Abstands-Hilfsklassen statt Inline-Abstaenden im
            Panel-Template. Mit #sbc-opt-panel .sbc-opt-body davor (schlaegt auch
            #sbc-opt-panel input[type=number]), damit sie (wie vorher das
@@ -7845,7 +7851,57 @@
             try { host.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) {}
         });
     }
+    // v6.52.0: aus einer bisherigen window.confirm-Frage (erste Zeile = Frage,
+    // Rest = Erlaeuterung) wird die Angabe fuer den Freigabe-Kasten. Rein.
+    function confirmSpecFromText(text, extra) {
+        const t = String(text == null ? '' : text);
+        const i = t.indexOf('\n');
+        const title = (i < 0 ? t : t.slice(0, i)).trim();
+        const body = i < 0 ? '' : t.slice(i + 1).replace(/^\n+/, '');
+        return Object.assign({ title: title || 'Fortfahren?', text: body }, extra || {});
+    }
     // [CONFIRM-END]
+
+    // v6.52.0: Rueckfrage IM PANEL statt window.confirm (Rasmus 23.11.: ja;
+    // window.confirm ist in der WebView unzuverlaessig). Der Kasten haengt
+    // direkt VOR dem genannten Element (nie in einem beobachteten
+    // Ergebnis-Container). window.confirm hielt die Seite an - das faengt
+    // dieser Helfer so ab: (1) solange gefragt wird, nimmt das Panel sonst
+    // keinen Tipp an (data-asking), (2) der Aufrufer haelt sein Busy-Flag,
+    // (3) aendert sich die Lage waehrend der Frage (ctxFn liefert danach
+    // etwas anderes), gilt das Ja nicht. War das Panel zu, geht es fuer die
+    // Frage auf und danach wieder zu (Verdecker-Regel: der Lauf findet das
+    // Panel so vor, wie er es ohne Frage vorgefunden haette). Ohne Panel: NEIN.
+    let uiAskPending = 0;
+    function uiConfirm(nearEl, spec, ctxFn) {
+        const panel = (ui && ui.panel) || document.getElementById('sbc-opt-panel');
+        if (!panel || !nearEl || !nearEl.parentNode) return Promise.resolve(false);
+        let host = nearEl.__ptConfirmHost;
+        if (!host || host.isConnected === false) {
+            host = document.createElement('div');
+            host.className = 'sbc-opt-confirm';
+            host.hidden = true;
+            nearEl.parentNode.insertBefore(host, nearEl);
+            nearEl.__ptConfirmHost = host;
+        }
+        const read = function () { try { return ctxFn ? String(ctxFn()) : ''; } catch (e) { return '!'; } };
+        const before = read();
+        let opened = false;
+        try { if (!panel.classList.contains('open')) { togglePanel(); opened = true; } } catch (e) {}
+        uiAskPending++;
+        panel.setAttribute('data-asking', '1');
+        return askConfirm(host, spec).then(function (ok) {
+            uiAskPending = Math.max(0, uiAskPending - 1);
+            if (!uiAskPending) panel.removeAttribute('data-asking');
+            if (opened) { try { if (panel.classList.contains('open')) togglePanel(); } catch (e) {} }
+            if (ok && read() !== before) {
+                toast('Die Lage hat sich seit der Rückfrage geändert – bitte neu starten.', 'warn');
+                return false;
+            }
+            return ok;
+        });
+    }
+
 
     // [PANELSIZE-BEGIN]
     // v6.42.1: Panelgroesse (Rasmus 24.11.: "die Groesse vom PitTools-Dialog
@@ -16693,7 +16749,9 @@ const HybridSbcEa = (() => {
             ui.gallerySell.dataset.wired = '1';
             ui.gallerySell.addEventListener('click', onGallerySellClick);
             if (ui.gallerySellClear) ui.gallerySellClear.addEventListener('click', function () {
-                if (window.confirm('Merkliste der gekauften Galerie-Karten leeren? (Nichts wird verkauft oder gelöscht.)')) { galleryBoughtSave([]); toast('Merkliste geleert.', 'ok'); }
+                const near = (ui.gallerySellClear.closest && ui.gallerySellClear.closest('.sbc-opt-withtip')) || ui.gallerySellClear;
+                uiConfirm(near, { title: 'Merkliste der gekauften Galerie-Karten leeren?', text: 'Nichts wird verkauft oder gelöscht.', yes: { label: 'Ja, leeren' } })
+                    .then(function (ok) { if (ok) { galleryBoughtSave([]); toast('Merkliste geleert.', 'ok'); } });
             });
         }
         refreshGallerySellBtn();
@@ -17088,7 +17146,9 @@ const HybridSbcEa = (() => {
                     prepared.purchases.map(p => p.name+' ('+p.rating+(p.versionLabel ? ', '+p.versionLabel : '')+', ID '+p.resourceId+'): bis '+fmtCoins(p.maxPrice)).join('\n')+
                     '\n\n'+prepared.assessment.score+' berechnete Punkte / Ziel '+target.threshold+'. Zusammen höchstens '+fmtCoins(prepared.total)+
                     '. Preise werden nicht automatisch erhöht. Langsamer Kauf, danach die Auswahl im Spiel bewerten.';
-                if (!window.confirm(question)) {
+                // v6.52.0: Freigabe im Panel. galleryBusy steht (seit Funktionsbeginn), running() prueft danach die Lage.
+                const okBuy = await uiConfirm(ui.galleryResult, Object.assign(confirmSpecFromText(question), { yes: { label: 'Ja, kaufen' }, timeoutMs: 3 * 60 * 1000 }));
+                if (!okBuy) {
                     diag.phase = 'nicht freigegeben'; renderGallerySet(ch.meta,ch.set,ch.owned); return;
                 }
                 running(); diag.phase = 'kaufen';
@@ -17341,10 +17401,16 @@ const HybridSbcEa = (() => {
             setGalleryResult(warnHtml('Nichts nachzufragen - alle Spieler dieser Aufstellung sind im Verein oder schon gemerkt.'));
             return;
         }
-        if (!window.confirm('Sammelstand von "' + (ch.set.name || ch.meta.name) + '" bei EA nachfragen?\n\n' +
-                            idx.length + ' Marktabfrage(n), rund ' + Math.ceil(idx.length * 2) + ' Sekunden. ' +
-                            known + ' Spieler sind schon sicher (Verein oder gemerkt).')) return;
+        // v6.52.0: Freigabe im Panel; das Busy-Flag steht schon WAEHREND der Frage.
         galleryBusy = true;
+        let okCheck = false;
+        try {
+            okCheck = await uiConfirm(ui.galleryResult, { title: 'Sammelstand von „' + (ch.set.name || ch.meta.name) + '“ bei EA nachfragen?',
+                facts: [['Marktabfragen', String(idx.length)], ['Dauer', 'rund ' + Math.ceil(idx.length * 2) + ' s'], ['Schon sicher', known + ' Spieler']],
+                yes: { label: 'Ja, nachfragen' }, timeoutMs: 3 * 60 * 1000 },
+                function () { return ownPersonaId() + ':' + (galleryLast && galleryLast.chosen === ch); });
+        } catch (e) { okCheck = false; }
+        if (!okCheck) { galleryBusy = false; return; }
         const diag = { at: Date.now(), set: ch.meta.name, asked: idx.length, known: known, results: [], stopped: null };
         STATE.diag.galleryCheck = diag;
         const results = [];
@@ -19722,10 +19788,40 @@ const HybridSbcEa = (() => {
                       // v5.56.0: was NICHT gekauft wird, steht mit Grund in der Rueckfrage.
                       (built.skipped.length ? '\n\nNicht dabei (selbst entscheiden):\n' + built.skipped.map(s => '- ' + s.name + ': ' + s.reason).join('\n') : '') +
                       '.\nEin Kauf alle 4-8 Sekunden, Abbruch bei Fehlern. Die Karten gehen in den Verein und zählen für die Galerie. ' + BUY_REPLAN_NOTE;
-        if (!window.confirm(frage)) { renderGallerySet(ch.meta, ch.set, ch.owned); return; }
-        if (coins != null && coins < total) {
-            if (!window.confirm('Der Kontostand reicht nicht für die Obergrenze aller Spieler. Trotzdem starten (kauft, so weit die Coins reichen)?')) { renderGallerySet(ch.meta, ch.set, ch.owned); return; }
-        }
+        // v6.52.0: Freigabe im Panel statt Browser-Dialog. Der bisherige Wortlaut
+        // (frage) geht in den Report; der Kasten zeigt dieselben Angaben als
+        // Kennzahlen, Warnzeilen und zugeklappte Kartenliste.
+        if (STATE.diag.gallery && STATE.diag.gallery.plan) STATE.diag.gallery.plan.question = frage;
+        const nCo = function (v) { return fmtCoins(v).replace(/ Coins$/, ''); };
+        const buySpec = {
+            title: ch.meta.name + ': ' + built.plan.length + (built.plan.length === 1 ? ' Karte' : ' Karten') + ' kaufen?',
+            facts: [['Höchstens', fmtCoins(total)], perTokenHere != null ? ['Kurs', nCo(perTokenHere) + ' / Token (' + tokensHere + ' Tokens)'] : null,
+                    coins != null ? ['Kontostand', fmtCoins(coins)] : null].filter(Boolean),
+            warns: [
+                prof.dominant.length ? prof.dominant.length + (prof.dominant.length === 1 ? ' Karte = ' : ' Karten = ') + Math.round(prof.dominantShare * 100) + ' %: ' + prof.dominant.map(d => d.name + ' ' + nCo(d.price)).join(', ') : null,
+                bestOther2 && perTokenHere != null && bestOther2.perToken < perTokenHere ? bestOther2.name + ': ' + nCo(bestOther2.perToken) + ' / Token' : null,
+                prof.duplicates.length ? 'Mehrfach dabei: ' + prof.duplicates.map(d => d.name + ' ' + d.count + '× (' + nCo(d.total) + ')').join(', ') : null,
+                noLive ? noLive + (noLive === 1 ? ' Preis stammt' : ' Preise stammen') + ' von fut.gg – der Markt zeigt gerade kein Angebot' : null,
+                built.skipped.length ? built.skipped.length + ' nicht dabei (siehe Karten)' : null
+            ].filter(Boolean),
+            details: { label: 'Karten', lines: lines.split('\n').concat(built.skipped.map(s => 'Nicht dabei – ' + s.name + ': ' + s.reason)) },
+            text: 'Ein Kauf alle 4–8 s, Abbruch bei Fehlern. ' + BUY_REPLAN_NOTE,
+            yes: { label: 'Ja, kaufen' }, timeoutMs: 3 * 60 * 1000
+        };
+        const sameCtx = function () { return ownPersonaId() + ':' + (galleryLast && galleryLast.chosen === ch); };
+        galleryBusy = true;
+        let okGo = false;
+        try {
+            setGalleryResult('<div class="sbc-opt-line"><span class="grow">Warte auf deine Freigabe …</span></div>');
+            okGo = await uiConfirm(ui.galleryResult, buySpec, sameCtx);
+            if (okGo && coins != null && coins < total) {
+                okGo = await uiConfirm(ui.galleryResult, { title: 'Der Kontostand reicht nicht für alle Obergrenzen. Trotzdem starten?',
+                    facts: [['Höchstens', fmtCoins(total)], ['Kontostand', fmtCoins(coins)]], text: 'Gekauft wird, so weit die Coins reichen.',
+                    yes: { label: 'Ja, trotzdem' }, timeoutMs: 3 * 60 * 1000 }, sameCtx);
+            }
+        } catch (e) { okGo = false; }
+        finally { galleryBusy = false; }
+        if (!okGo) { renderGallerySet(ch.meta, ch.set, ch.owned); return; }
         await buyPlannedPlayers(null, built.plan, {
             noSquad: true, setResult: setGalleryResult, maxPerRun: GALLERY_BUY_MAX_PER_RUN,
             confirmedTotal: total, // v6.32.3 (Review F5): Neubewertung bleibt in der bestaetigten Summe

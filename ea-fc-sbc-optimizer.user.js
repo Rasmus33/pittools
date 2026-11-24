@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.49.0
+// @version      6.50.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.49.0';
+    const VERSION = '6.50.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -6407,7 +6407,7 @@
            Scrollen noch nicht erreicht ist (Muster aus Trading-Apps, siehe
            Design-Canvas). Reine CSS-Loesung: Position im Markup und damit
            die Reihenfolge der Aktionen bleiben unveraendert. */
-        #sbc-opt-run { position: sticky; bottom: 12px; z-index: 1;
+        #sbc-opt-run { position: sticky; bottom: var(--pt-space-3); z-index: 1;
             /* Der zweite Schatten fuellt die 12px bis zum Panel-Rand, sonst
                scheint dort der Inhalt durch, der unter dem Knopf scrollt. */
             box-shadow: var(--pt-glow-accent), 0 12px 0 0 var(--pt-bg-base); }
@@ -6629,7 +6629,7 @@
         }
         /* v6.1.0: Naechster Schritt - klebt unten, solange der echte Knopf
            ausser Sicht ist (wireNextBar). */
-        .sbc-opt-nextbar { position:sticky; bottom:12px; z-index:1; margin-top:var(--pt-space-3); }
+        .sbc-opt-nextbar { position:sticky; bottom:var(--pt-space-3); z-index:1; margin-top:var(--pt-space-3); }
         .sbc-opt-nextbar[hidden] { display:none; }
         .sbc-opt-nextbtn { display:flex; flex-direction:column; align-items:center; gap:1px; line-height:1.2;
             box-shadow: var(--pt-glow-accent), 0 12px 0 0 var(--pt-bg-base); }
@@ -7485,6 +7485,11 @@
         #sbc-opt-points-info { align-items:flex-start; }
         .sbc-opt-result .sbc-opt-meta { font-size:var(--pt-type-meta); }
 
+        /* v6.50.0 */
+        #sbc-opt-tab-mehr > .sbc-opt-withtip { margin-top:var(--pt-space-2); }
+        #sbc-opt-tab-mehr > .sbc-opt-withtip .sbc-opt-btn { margin-top:0; }
+        #sbc-opt-panel[data-tab="mehr"] #sbc-opt-info { background:transparent; border:none; padding:0; margin-bottom:var(--pt-space-1); }
+
         /* v6.40.0: Abstands-Hilfsklassen statt style="margin/padding" im
            Panel-Template. Mit #sbc-opt-panel .sbc-opt-body davor (schlaegt auch
            #sbc-opt-panel input[type=number]), damit sie (wie vorher das
@@ -7494,7 +7499,7 @@
         #sbc-opt-panel .sbc-opt-body .sbc-opt-mt0 { margin-top:0; }
         #sbc-opt-panel .sbc-opt-body .sbc-opt-mt1 { margin-top:var(--pt-space-1); }
         #sbc-opt-panel .sbc-opt-body .sbc-opt-mt15 { margin-top:var(--pt-space-1-5); }
-        #sbc-opt-panel .sbc-opt-body .sbc-opt-mt2 { margin-top:var(--pt-space-2); }
+        #sbc-opt-panel .sbc-opt-body .sbc-opt-mt2, #sbc-opt-vorlagen .sbc-opt-mt2 { margin-top:var(--pt-space-2); }
         #sbc-opt-panel .sbc-opt-body .sbc-opt-mb0 { margin-bottom:0; }
         #sbc-opt-panel .sbc-opt-body .sbc-opt-mb1 { margin-bottom:var(--pt-space-1); }
         #sbc-opt-panel .sbc-opt-body .sbc-opt-mb15 { margin-bottom:var(--pt-space-1-5); }
@@ -7506,7 +7511,9 @@
         #sbc-opt-panel .sbc-opt-body .sbc-opt-pad-sm { padding:var(--pt-space-1) var(--pt-space-2); }
         #sbc-opt-panel .sbc-opt-body .sbc-opt-pad-md { padding:var(--pt-space-2) var(--pt-space-2-5); }
         #sbc-opt-panel .sbc-opt-body .sbc-opt-autow { width:auto; flex:0 0 auto; }
-        #sbc-opt-panel .sbc-opt-body .sbc-opt-flex1 { flex:1; }
+        #sbc-opt-panel .sbc-opt-body .sbc-opt-flex1 { flex:1; min-width:0; }
+        #sbc-opt-panel .sbc-opt-body .sbc-opt-w100 { width:100%; }
+        #sbc-opt-panel .sbc-opt-body .sbc-opt-inl { display:inline; width:auto; margin:0; padding:0 var(--pt-space-2); min-height:var(--pt-control-h-sm); }
         #sbc-opt-panel .sbc-opt-body .sbc-opt-w72 { width:72px; flex:0 0 auto; }
         #sbc-opt-panel .sbc-opt-body .sbc-opt-meta { font-size:var(--pt-type-meta); }
         #sbc-opt-panel .sbc-opt-body textarea.sbc-opt-code { width:100%; box-sizing:border-box; margin:var(--pt-space-2) 0; font-family:var(--pt-font-mono); font-size:var(--pt-type-meta); }
@@ -8772,47 +8779,42 @@
                     </details>
                 </div>
                 <div class="sbc-opt-tab" id="sbc-opt-tab-mehr" role="tabpanel">
-                    <div class="sbc-opt-stats sbc-opt-card sbc-opt-mb3">
-                        <div class="sbc-opt-stat"><span class="k">Version</span><b>v` + VERSION + `</b></div>
-                        <div class="sbc-opt-stat"><span class="k">Brücke zu futbin</span><b id="sbc-opt-bridge-status">–</b></div>
+                    <!-- v6.50.0: gleiches Geruest - Statuszeile (Version, Bruecke), vier
+                         Werkzeuge als Zeile je Knopf + ⓘ, "System" zugeklappt am Ende. Kein
+                         Akzentknopf: der Reiter ist ein Werkzeugkasten ohne Hauptaktion. -->
+                    <div class="sbc-opt-line" id="sbc-opt-more-line">
+                        <span class="grow">Version <b>v` + VERSION + `</b> · Brücke <b id="sbc-opt-bridge-status">–</b></span>
                     </div>
-                    <!-- v6.3.0: ohne Bruecke fehlen futbin-Suche und Galerie - der Weg
-                         zur Installation steht direkt da (syncBridgeLink). In der App
-                         gibt es die Bruecke nativ, dort bleibt der Link verborgen. -->
                     <a class="sbc-opt-bridge-link" id="sbc-opt-bridge-install" href="https://raw.githubusercontent.com/Rasmus33/pittools/main/pittools-bridge.user.js" target="_blank" rel="noopener" hidden>PitTools Bridge in Tampermonkey installieren ↗<small>Ohne sie fehlen futbin-Lösungssuche und Galerie.</small></a>
-                    <div class="sbc-opt-group-title sbc-opt-mt0">Transfermarkt</div>
-                    <!-- v5.37.0: alle unverkauften Spieler der Transferliste zum Marktpreis listen. -->
-                    <button type="button" class="sbc-opt-btn primary sbc-opt-mt0" id="sbc-opt-tools-sell"><span>Transferliste zum Marktpreis listen</span></button>
-                    <div class="sbc-opt-debug">Liest EAs Transferliste, holt je Karte das günstigste aktuelle Angebot, zeigt eine Vorschau und listet nach Rückfrage nacheinander (1 Stunde). Aktive und verkaufte Karten bleiben unberührt.</div>
-                    <div class="sbc-opt-result" id="sbc-opt-tools-result"></div>
-                    <div class="sbc-opt-group-title">Verein</div>
-                    <!-- v6.6.0: Bestand nach Rating/Seltenheit/Liga/Nation/Verein - nur aus dem geladenen Pool. -->
                     <div class="sbc-opt-withtip">
-                    <button type="button" class="sbc-opt-btn ghost sbc-opt-mt0" id="sbc-opt-clubview">Verein im Überblick</button>
+                    <button type="button" class="sbc-opt-btn ghost sbc-opt-mt0" id="sbc-opt-tools-sell"><span>Transferliste listen</span></button>
+                    <button type="button" class="sbc-opt-tip" aria-label="Info: Transferliste listen" aria-expanded="false" data-tip="Liest EAs Transferliste, holt je Karte das günstigste aktuelle Angebot und zeigt eine Vorschau. Gelistet wird nach Rückfrage nacheinander für 1 Stunde; aktive und verkaufte Karten bleiben unberührt.">i</button>
+                    </div>
+                    <div class="sbc-opt-result" id="sbc-opt-tools-result"></div>
+                    <div class="sbc-opt-withtip">
+                    <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-clubview">Verein im Überblick</button>
                     <button type="button" class="sbc-opt-tip" aria-label="Info: Verein im Überblick" aria-expanded="false" data-tip="Zählt den geladenen Verein nach Rating, Seltenheit, Liga, Nation und Verein, mit Item-Score-Summen. Keine Anfrage bei EA.">i</button>
                     </div>
                     <div class="sbc-opt-result" id="sbc-opt-clubview-result"></div>
-                    <div class="sbc-opt-group-title">Gauntlet</div>
-                    <!-- v6.5.0: Teams aus dem Verein nach Meta-Rating (fut.gg) und Chemie (EA) - nichts wird gekauft. -->
-                    <button type="button" class="sbc-opt-btn primary sbc-opt-mt0" id="sbc-opt-gauntlet-open"><span>Gauntlet-Teams bauen</span></button>
-                    <div class="sbc-opt-debug">Baut aus deinem Verein mehrere Teams ohne gemeinsame Spieler: Chemie plus Ø Meta-Rating je Position (fut.gg). Zeigt die besten 5 Varianten, Anker je Team möglich.</div>
-                    <div class="sbc-opt-result" id="sbc-opt-gauntlet-result"></div>
-                    <div class="sbc-opt-group-title">System</div>
-                    <div class="sbc-opt-row sbc-opt-withtip">
-                        <label class="sbc-opt-toggle"><input type="checkbox" id="sbc-opt-poolcache" checked>Verein zwischenspeichern</label>
-                        <button type="button" class="sbc-opt-tip" aria-label="Info: Verein zwischenspeichern" aria-expanded="false" data-tip="Nach dem Neuladen der Web App ist der Verein sofort wieder da.">i</button>
-                    </div>
-                    <div class="sbc-opt-group-title">Werkzeuge</div>
                     <div class="sbc-opt-withtip">
-                    <button class="sbc-opt-btn ghost sbc-opt-mt0" id="sbc-opt-diag">Diagnose in Konsole schreiben</button>
+                    <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gauntlet-open"><span>Gauntlet-Teams</span></button>
+                    <button type="button" class="sbc-opt-tip" aria-label="Info: Gauntlet-Teams" aria-expanded="false" data-tip="Baut aus deinem Verein mehrere Teams ohne gemeinsame Spieler: Chemie plus Ø Meta-Rating je Position (fut.gg). Zeigt die besten 5 Varianten, Anker je Team möglich.">i</button>
+                    </div>
+                    <div class="sbc-opt-result" id="sbc-opt-gauntlet-result"></div>
+                    <div class="sbc-opt-withtip">
+                    <button class="sbc-opt-btn ghost" id="sbc-opt-diag">Diagnose in Konsole schreiben</button>
                     <button type="button" class="sbc-opt-tip" aria-label="Info: Diagnose" aria-expanded="false" data-tip="JSON-Report für die Fehlersuche. Landet in der Konsole bzw. im App-Log.">i</button>
                     </div>
+                    <details class="sbc-opt-details-toggle sbc-opt-mt2" id="sbc-opt-system">
+                        <summary>System</summary>
+                        <div class="sbc-opt-row sbc-opt-withtip">
+                            <label class="sbc-opt-toggle"><input type="checkbox" id="sbc-opt-poolcache" checked>Verein zwischenspeichern</label>
+                            <button type="button" class="sbc-opt-tip" aria-label="Info: Verein zwischenspeichern" aria-expanded="false" data-tip="Nach dem Neuladen der Web App ist der Verein sofort wieder da.">i</button>
+                        </div>
+                    </details>
                 </div>
-                <!-- PACK-OPENER (Store, Ticket #69/#76): nur in der Store-Ansicht
-                     sichtbar (syncPackSection()) - Pack-Oeffnen ist unumkehrbar,
-                     "Alle oeffnen" stoppt deshalb beim ERSTEN Fehler jeder Art. -->
                 <div class="sbc-opt-batch sbc-opt-hidden" id="sbc-opt-packsection">
-                    <div class="sbc-opt-group-title sbc-opt-mt0">Pack-Opener (Store)</div>
+                    <div class="sbc-opt-head"><span>Pack-Opener</span></div>
                     <div class="sbc-opt-inline sbc-opt-mb2">
                         <select class="sbc-opt-flex1" id="sbc-opt-pack-type">
                             <option value="">– Aktualisieren drücken –</option>
@@ -8823,7 +8825,7 @@
                          nicht mehr, 'Alle öffnen' reicht vollkommen"). Wer einen
                          Testlauf will, traegt bei Anzahl eine 1 ein. -->
                     <div class="sbc-opt-compact sbc-opt-mt0 sbc-opt-mb2">
-                        <label>Anzahl (leer = alle)</label>
+                        <label>Anzahl</label>
                         <input class="sbc-opt-w72" type="number" id="sbc-opt-pack-count" min="1" placeholder="alle">
                     </div>
                     <!-- Was mit den Karten passiert - als Segment-Schalter, wie
@@ -18824,7 +18826,7 @@ const HybridSbcEa = (() => {
         if (!galleryBoughtLoad().length) return { opened: false, note: 'Keine gekauften Galerie-Karten gemerkt.' };
         // v6.23.0: die Vorschau fragt je Karte den Markt ab - nicht waehrend einer Sperre oder ueber dem Suchen-Budget.
         const g = marketGuardCheck(marketGuardLoad(), { searches: galleryBoughtLoad().length * 2 }, Date.now());
-        if (!g.ok) return { opened: false, deferred: true, note: 'Verkaufsvorschau später: ' + marketGuardWaitText(g) + ' Danach im Panel „Gekaufte Karten verkaufen“ tippen oder pittools_gallery_sell.' };
+        if (!g.ok) return { opened: false, deferred: true, note: 'Verkaufsvorschau später: ' + marketGuardWaitText(g) + ' Danach im Reiter „Galerie“ auf „Karten verkaufen“ tippen oder pittools_gallery_sell.' };
         for (let i = 0; i < 20 && (sellBusy || buyBusy || galleryBusy); i++) await futbinSleep(500);
         try { if (tabCurrent !== 'galerie') setTab('galerie'); } catch (e) {}
         try { if (ui.panel && !ui.panel.classList.contains('open')) togglePanel(); } catch (e) {}
@@ -19772,9 +19774,9 @@ const HybridSbcEa = (() => {
                 // erledigt anklicken kann" - der Knopf steht jetzt nach JEDEM Lauf.
                 if (ui.galleryResult) {
                     ui.galleryResult.insertAdjacentHTML('beforeend',
-                        '<div class="sbc-opt-inline" style="margin-top:8px;">' +
-                        '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-list" style="margin:0;">Zur Set-Liste</button>' +
-                        '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-done3" style="margin:0;">Set als erledigt markieren</button></div>');
+                        '<div class="sbc-opt-inline sbc-opt-mt2">' +
+                        '<button type="button" class="sbc-opt-btn ghost sbc-opt-m0" id="sbc-opt-gal-list">Zur Set-Liste</button>' +
+                        '<button type="button" class="sbc-opt-btn ghost sbc-opt-m0" id="sbc-opt-gal-done3">Set als erledigt markieren</button></div>');
                     const l = ui.galleryResult.querySelector('#sbc-opt-gal-list');
                     if (l) l.addEventListener('click', function () { renderGallerySets(galleryLast.ranked); setGalleryStep(2); });
                     const dn = ui.galleryResult.querySelector('#sbc-opt-gal-done3');
@@ -19802,9 +19804,9 @@ const HybridSbcEa = (() => {
                     (komplett ? '<div class="sbc-opt-summary sbc-opt-gain">' + escapeHtml(ch.meta.name) + ' wurde als erledigt markiert.</div>' : '') +
                     '<div>Die Karten zählen ab jetzt dauerhaft für die Galerie - sie mussten den Verein nur EINMAL berührt haben (Rasmus 22.09.). Du kannst sie sofort wieder verkaufen (5 % Steuer) und <b>später</b> im Spiel bewerten: <b>Galerie → ' + escapeHtml(ch.meta.name) + ' → bewerten</b> (Konsole/PC oder Companion App).</div>' +
                     (zumVerkauf ? '<button type="button" class="sbc-opt-btn primary" id="sbc-opt-gal-sell-now">Gekaufte Karten verkaufen (' + zumVerkauf + ')</button>' : '') +
-                    '<div class="sbc-opt-inline" style="margin-top:8px;">' +
-                    (komplett ? '' : '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-done2" style="margin:0;">Set als erledigt markieren</button>') +
-                    '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-next" style="margin:0;">Nächstes Set suchen</button></div>');
+                    '<div class="sbc-opt-inline sbc-opt-mt2">' +
+                    (komplett ? '' : '<button type="button" class="sbc-opt-btn ghost sbc-opt-m0" id="sbc-opt-gal-done2">Set als erledigt markieren</button>') +
+                    '<button type="button" class="sbc-opt-btn ghost sbc-opt-m0" id="sbc-opt-gal-next">Nächstes Set suchen</button></div>');
                 const sell = el.querySelector('#sbc-opt-gal-sell-now');
                 if (sell) sell.addEventListener('click', onGallerySellClick);
                 const b = el.querySelector('#sbc-opt-gal-done2');
@@ -21813,29 +21815,29 @@ const HybridSbcEa = (() => {
         const fName = forms.some(f => f.name === st.formation) ? st.formation : ((forms.find(f => /433$/.test(f.name)) || forms[0]).name);
         const byId = new Map(players.map(p => [String(p.id), p]));
         const label = p => p.name + ' · ' + p.rating + ' · ' + p.positions.map(Gauntlet.posName).join('/') + (p.evo ? ' · Evo' : '');
-        const evoNote = (!STATE.evoRaws || !STATE.evoRaws.size) ? '<div class="sbc-opt-dim">Evos fehlen noch: sie werden erst beim Laden des Vereins erfasst („↻ Verein neu laden“).</div>' : '';
+        const evoNote = (!STATE.evoRaws || !STATE.evoRaws.size) ? '<div class="sbc-opt-dim">Evos fehlen noch: sie werden erst beim Laden des Vereins erfasst (Reiter „Rating“, „↻“).</div>' : '';
         let h = '<div class="sbc-opt-card">' +
-            '<label class="sbc-opt-chiplabel">Aufstellung</label><select id="sbc-opt-gt-formation" style="width:100%;">' +
+            '<label class="sbc-opt-chiplabel">Aufstellung</label><select class="sbc-opt-w100" id="sbc-opt-gt-formation">' +
             forms.map(f => '<option value="' + escapeHtml(f.name) + '"' + (f.name === fName ? ' selected' : '') + '>' + escapeHtml(f.label) + '</option>').join('') + '</select>' +
-            '<label class="sbc-opt-chiplabel">Anzahl Teams (Runden)</label><div class="sbc-opt-chips" id="sbc-opt-gt-teams">' +
+            '<label class="sbc-opt-chiplabel">Teams</label><div class="sbc-opt-chips" id="sbc-opt-gt-teams">' +
             [1, 2, 3, 4].map(n => '<button type="button" class="sbc-opt-chip' + (n === st.teams ? ' on' : '') + '" data-n="' + n + '">' + n + '</button>').join('') + '</div>' +
-            '<div class="sbc-opt-compact" style="margin-top:8px;"><label>Gewicht Chemie (je Punkt)</label><input type="number" id="sbc-opt-gt-weight" min="0" step="0.1" value="' + st.chemWeight + '" style="width:72px;flex:0 0 auto;"></div>' +
-            '<div class="sbc-opt-dim">Wert eines Teams = Chemie × Gewicht + Ø Meta-Rating der elf (fut.gg, je Position). Bei Gewicht 1 höchstens 133.</div>' +
-            '<label class="sbc-opt-chiplabel">Anker (Spieler, um die ein Team gebaut wird)</label>' +
+            '<div class="sbc-opt-withtip sbc-opt-fieldrow sbc-opt-mt2"><label for="sbc-opt-gt-weight">Gewicht Chemie</label><input class="sbc-opt-w72" type="number" id="sbc-opt-gt-weight" min="0" step="0.1" value="' + st.chemWeight + '">' +
+            tipHtml('Wert eines Teams = Chemie × Gewicht + Ø Meta-Rating der elf (fut.gg, je Position). Bei Gewicht 1 höchstens 133.', 'Gewicht Chemie') + '</div>' +
+            '<label class="sbc-opt-chiplabel">Anker je Team</label>' +
             '<div class="sbc-opt-chips" id="sbc-opt-gt-anchor-team">' + Array.from({ length: st.teams }, (_, t) =>
                 '<button type="button" class="sbc-opt-chip' + (t === Math.min(gauntletState.anchorTeam, st.teams - 1) ? ' on' : '') + '" data-t="' + t + '">Team ' + (t + 1) + '</button>').join('') + '</div>' +
-            '<div class="sbc-opt-inline" style="margin-top:6px;"><input type="text" id="sbc-opt-gt-anchor-input" list="sbc-opt-gt-anchor-list" placeholder="Spieler suchen …" style="flex:1;min-width:0;">' +
-            '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gt-anchor-add" style="margin:0;width:auto;flex:0 0 auto;">+</button></div>' +
+            '<div class="sbc-opt-inline sbc-opt-mt15"><input class="sbc-opt-flex1" type="text" id="sbc-opt-gt-anchor-input" list="sbc-opt-gt-anchor-list" placeholder="Spieler suchen …">' +
+            '<button type="button" class="sbc-opt-btn ghost sbc-opt-m0 sbc-opt-autow" id="sbc-opt-gt-anchor-add">+</button></div>' +
             '<datalist id="sbc-opt-gt-anchor-list">' + players.slice().sort((a, b) => b.rating - a.rating).map(p => '<option value="' + escapeHtml(label(p)) + '"></option>').join('') + '</datalist>';
         gauntletState.anchors.forEach((ids, t) => {
             if (!ids.length) return;
             h += '<div class="sbc-opt-fb-meta">Team ' + (t + 1) + ': ' + ids.map(id => { const p = byId.get(String(id)); return '<span class="sbc-opt-gt-anchor">' + escapeHtml(p ? p.name : '#' + id) +
-                ' <button type="button" class="sbc-opt-btn ghost" data-gt-del="' + t + ':' + escapeHtml(String(id)) + '" style="margin:0;padding:0 6px;width:auto;display:inline;">✕</button></span>'; }).join(' ') + '</div>';
+                ' <button type="button" class="sbc-opt-btn ghost sbc-opt-inl" data-gt-del="' + t + ':' + escapeHtml(String(id)) + '">✕</button></span>'; }).join(' ') + '</div>';
         });
         if (used.ids.length) {
-            h += '<div class="sbc-opt-fb-meta" style="margin-top:8px;">Schon gespielt (gesperrt): <b>' + used.ids.length + '</b> Karten' +
+            h += '<div class="sbc-opt-fb-meta sbc-opt-mt2">Schon gespielt (gesperrt): <b>' + used.ids.length + '</b> Karten' +
                  (used.at ? ' <span class="sbc-opt-muted">seit ' + escapeHtml(new Date(used.at).toLocaleString('de-DE')) + '</span>' : '') +
-                 ' <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gt-used-reset" style="margin:0;padding:0 8px;width:auto;display:inline;">Neues Event</button></div>' +
+                 ' <button type="button" class="sbc-opt-btn ghost sbc-opt-inl" id="sbc-opt-gt-used-reset">Neues Event</button></div>' +
                  '<div class="sbc-opt-dim">Diese Karten plant PitTools nicht mehr ein. „Neues Event“ gibt sie wieder frei.</div>';
         }
         h += '</div><button type="button" class="sbc-opt-btn primary" id="sbc-opt-gt-run"><span>Teams bauen</span></button>' +
@@ -21940,14 +21942,14 @@ const HybridSbcEa = (() => {
         const L = gauntletState.last;
         if (!L) return;
         const f = L.formation, res = L.res;
-        let h = '<div class="sbc-opt-summary">' + res.variants.length + ' Variante' + (res.variants.length === 1 ? '' : 'n') + ' · ' + escapeHtml(f.label) + '</div>' +
-                (L.chemKind === 'simple' ? warnHtml('EAs Chemie-Rechner war nicht erreichbar - Chemie nach klassischem Modell geschätzt.') : '') +
-                '<div class="sbc-opt-dim">Wert = Chemie × Gewicht + Ø Meta-Rating. „Team übernehmen“ hält ein Team fest und plant die übrigen neu.</div>';
+        let h = '<div class="sbc-opt-head"><span>' + res.variants.length + ' Variante' + (res.variants.length === 1 ? '' : 'n') + ' · ' + escapeHtml(f.label) +
+                tipHtml('Wert = Chemie × Gewicht + Ø Meta-Rating. „Team übernehmen“ hält ein Team fest und plant die übrigen neu.', 'Varianten') + '</span></div>' +
+                (L.chemKind === 'simple' ? warnHtml('EAs Chemie-Rechner war nicht erreichbar - Chemie nach klassischem Modell geschätzt.') : '');
         res.variants.forEach((v, vi) => {
             h += '<details class="sbc-opt-details-toggle"' + (vi === 0 ? ' open' : '') + '><summary><b>Variante ' + (vi + 1) + '</b> · Summe ' + gauntletFmt(v.total, 1) + '</summary>';
             v.teams.forEach((team, t) => {
                 const s = v.scores[t];
-                h += '<div class="sbc-opt-fb-meta" style="margin-top:6px;"><b>Team ' + (t + 1) + '</b> · ' + gauntletFmt(s.score, 1) + ' (Chemie ' + s.chem + ' · Meta Ø ' + gauntletFmt(s.avgMeta, 1) + ')</div>';
+                h += '<div class="sbc-opt-fb-meta sbc-opt-mt15"><b>Team ' + (t + 1) + '</b> · ' + gauntletFmt(s.score, 1) + ' (Chemie ' + s.chem + ' · Meta Ø ' + gauntletFmt(s.avgMeta, 1) + ')</div>';
                 team.forEach((p, i) => {
                     const pos = f.slots[i], m = Gauntlet.metaAt(p, Gauntlet.generalPos(pos));
                     const ch = s.perSlot ? s.perSlot[i] : null;
@@ -21956,8 +21958,8 @@ const HybridSbcEa = (() => {
                 });
                 const bench = (v.bench && v.bench[t]) || [];
                 if (bench.length) h += '<div class="sbc-opt-dim">Bank-Vorschlag (wird mitgesperrt): ' + bench.map(p => escapeHtml(p.name) + ' ' + p.rating).join(', ') + '</div>';
-                h += '<div class="sbc-opt-inline" style="margin-top:4px;"><button type="button" class="sbc-opt-btn ghost" data-gt-take="' + vi + ':' + t + '" style="margin:0;">Team ' + (t + 1) + ' übernehmen, Rest neu planen</button>' +
-                     '<button type="button" class="sbc-opt-btn ghost" data-gt-played="' + vi + ':' + t + '" style="margin:0;" title="Startelf und Bank-Vorschlag für die nächsten Runden sperren">Gespielt</button></div>';
+                h += '<div class="sbc-opt-inline sbc-opt-mt1"><button type="button" class="sbc-opt-btn ghost sbc-opt-m0" data-gt-take="' + vi + ':' + t + '">Team ' + (t + 1) + ' übernehmen, Rest neu planen</button>' +
+                     '<button type="button" class="sbc-opt-btn ghost sbc-opt-m0" data-gt-played="' + vi + ':' + t + '" title="Startelf und Bank-Vorschlag für die nächsten Runden sperren">Gespielt</button></div>';
             });
             h += '</details>';
         });
@@ -22167,7 +22169,7 @@ const HybridSbcEa = (() => {
             const el = sellTargetEl || ui.galleryResult;
             if (el) {
                 const isGallery = el === ui.galleryResult;
-                el.insertAdjacentHTML('beforeend', '<div class="sbc-opt-dim">Die Karten sind auf dem Transfermarkt (im Spiel unter Transfers → Transferliste). Nicht verkaufte kannst du nach Ablauf mit "Transferliste zum Marktpreis listen" erneut anbieten.</div>' +
+                el.insertAdjacentHTML('beforeend', '<div class="sbc-opt-dim">Die Karten sind auf dem Transfermarkt (im Spiel unter Transfers → Transferliste). Nicht verkaufte kannst du nach Ablauf unter „Mehr“ mit „Transferliste listen“ erneut anbieten.</div>' +
                     (isGallery ? '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-sell-back2">Zur Set-Liste</button>' : ''));
                 const b = el.querySelector('#sbc-opt-gal-sell-back2');
                 if (b) b.addEventListener('click', function () { if (galleryLast && galleryLast.ranked) renderGallerySets(galleryLast.ranked); else onGalleryLoadClick(); });
@@ -26133,7 +26135,7 @@ const HybridSbcEa = (() => {
         });
         h += '<button class="sbc-opt-vl-stepadd" data-act="vl-step-add" aria-label="Schritt hinzuf\u00fcgen">' +
             '<span class="plus" aria-hidden="true">+</span>Schritt hinzuf\u00fcgen</button></div>';
-        h += '<label class="sbc-opt-chiplabel" style="margin-top:10px;">Schnellwahl-Anzahlen (z.B. 3, 5, 10)</label>' +
+        h += '<label class="sbc-opt-chiplabel sbc-opt-mt2">Schnellwahl-Anzahlen (z.B. 3, 5, 10)</label>' +
             '<input type="text" id="sbc-opt-vl-anzahlchips" class="sbc-opt-vl-input" value="' +
             escapeHtml((draft.anzahlChips || [3, 5, 10]).join(', ')) + '">';
         h += '<div class="sbc-opt-vl-hint">Das Profil friert die Panel-Einstellungen ' +

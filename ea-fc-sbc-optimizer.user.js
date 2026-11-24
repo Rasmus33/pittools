@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.60.0
+// @version      6.60.1
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.60.0';
+    const VERSION = '6.60.1';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -8012,6 +8012,11 @@
         :where(:root[data-ui7]) #sbc-opt-panel[data-galback7] #sbc-opt-gal-back, :where(:root[data-ui7]) #sbc-opt-panel[data-galback7] #sbc-opt-gal-sell-back, :where(:root[data-ui7]) #sbc-opt-panel[data-galback7] #sbc-opt-gal-check-back, :where(:root[data-ui7]) #sbc-opt-panel[data-galback7] #sbc-opt-gal-ea-back { display:none; }
         :where(:root[data-ui7]) #sbc-opt-panel[data-view7="galerie"] #sbc-opt-gallery-result { margin-top:0; padding-top:0; border-top:none; }
         :where(:root[data-ui7]) #sbc-opt-panel[data-view7="galerie"][data-act7] #sbc-opt-gallery-result.sbc-opt-result-empty { display:none; }
+        /* v6.60.1 Etappe 6 (2): Vorlagen im Blatt statt Vollbild - dasselbe Element, im Rumpf des Blatts. Offen ist
+           es wie bisher ueber sein style.display; data-vl7 blendet solange den Rest des Rumpfs aus. */
+        :where(:root[data-ui7]) #sbc-opt-panel[data-vl7] > .sbc-opt-body > :not(#sbc-opt-vorlagen) { display:none !important; }
+        :where(:root[data-ui7]) #sbc-opt-panel #sbc-opt-vorlagen { position:static; inset:auto; z-index:auto; background:transparent; overflow:visible; font-size:inherit; }
+        :where(:root[data-ui7]) #sbc-opt-panel #sbc-opt-vorlagen .sbc-opt-vl-box { margin:0; width:auto; padding:var(--pt-space-2) 0 var(--pt-space-4); border:none; border-radius:0; box-shadow:none; background:transparent; }
         /* v6.59.1 Etappe 5 (2): "Alle Aktionen" hinter der Lupe im Kopf (am PC Strg+K) - Register zum Hinspringen */
         :where(:root[data-ui7]) #sbc-opt-find {
             display:flex; align-items:center; justify-content:center; flex:0 0 auto; margin:0 0 0 auto; padding:0;
@@ -8651,6 +8656,18 @@
         if (d.set) return 'set';
         return 'sonst';
     }
+    /**
+     * v6.60.1 Etappe 6 (2): Vorlagen im Blatt. Das Vorlagen-Fenster liegt unter UI 7 IM Blatt; seine Logik
+     * schaltet es wie bisher nur ueber style.display. Was folgt daraus fuer das Blatt? s: { shown, open,
+     * wasShown, wasOpen } -> 'auf' (das Fenster ist erschienen, das Blatt ist zu: Pause, "Ansehen", Lauf-Ende),
+     * 'zu' (das Blatt wurde von Hand geschlossen, waehrend das Fenster offen war - dann gilt dessen eigenes ✕:
+     * im Lauf minimieren, sonst schliessen), 'nichts'. Rein.
+     */
+    function ptVl7Next(s) {
+        s = s || {};
+        if (!s.shown || s.open) return 'nichts';
+        return s.wasShown && s.wasOpen ? 'zu' : 'auf';
+    }
     /** v6.57.1: welche Anzahl-Wahl gilt nach einem Tipp/Ereignis? Rein. ('eins' | 'batch' | 'reihe') */
     function ptMultiNext(cur, ev) {
         ev = ev || {};
@@ -9030,6 +9047,33 @@
         const b = document.getElementById('sbc-opt-back7'), t = on ? '‹ Sets' : '‹ Start';
         if (b && b.textContent !== t) b.textContent = t;
     }
+    // ---- v6.60.1 Etappe 6 (2): Vorlagen im Blatt statt Vollbild (nur UI 7) ----
+    // Dasselbe Element (#sbc-opt-vorlagen samt Handlern) zieht in den Rumpf des Blatts; renderVorlagen, der Lauf
+    // (startVorlage, runVorlagenStep, vorlagenFrage, executePlan), Minimieren und die Leiste oben bleiben
+    // unberuehrt. vorlagenMinimize schliesst das Blatt wie bisher selbst - im Lauf ist nichts ueber EAs Zeilen.
+    const ptVl7 = { moved: false, shown: false, open: false };
+    function ptVl7Sync() {
+        const ov = ui.vorlagenOverlay, panel = ui.panel;
+        if (!ov || !panel) return;
+        if (!ui7IsOn() || !ptOrt.on) {
+            if (ptVl7.moved) { ptSet7Back(ov); ptVl7.moved = false; }
+            if (panel.hasAttribute('data-vl7')) panel.removeAttribute('data-vl7');
+            ptVl7.shown = false; ptVl7.open = false;
+            return;
+        }
+        if (!ptVl7.moved) {
+            const body = panel.querySelector('.sbc-opt-body');
+            if (!body) return;
+            ptSet7MoveTo(ov, body, null);
+            ptVl7.moved = true;
+        }
+        const next = ptVl7Next({ shown: ov.style.display === 'block', open: panel.classList.contains('open'), wasShown: ptVl7.shown, wasOpen: ptVl7.open });
+        if (next === 'auf') togglePanel();
+        else if (next === 'zu') onVorlagenAction('vl-zu');
+        ptVl7.shown = ov.style.display === 'block';
+        ptVl7.open = panel.classList.contains('open');
+        if (panel.hasAttribute('data-vl7') !== ptVl7.shown) panel.toggleAttribute('data-vl7', ptVl7.shown);
+    }
     /** Zustand fuer ptActState aus Panel und Lauf-Flags (nur lesen). */
     function ptActRead() {
         const panel = ui.panel;
@@ -9039,6 +9083,7 @@
         s.store = panel.hasAttribute('data-store'); // im Store steht der Pack-Opener oben, keine SBC ist offen
         s.set7 = panel.hasAttribute('data-set7'); // v6.58.0: in den Einstellungen gibt es keine Hauptaktion
         if (panel.hasAttribute('data-cmd7')) s.set7 = true; // v6.59.1: auch in "Alle Aktionen" keine Hauptaktion
+        if (panel.hasAttribute('data-vl7')) s.set7 = true; // v6.60.1: die Vorlagen haben ihre eigenen Knoepfe
         s.view = panel.getAttribute('data-view7') || null; // v6.59.0: "Jetzt › Packs" hat eine Hauptaktion
         if (s.view === 'galerie') { s.ga = ptGalRead(); return s; }   // v6.60.0: Ort "Galerie"
         if (s.view === 'packs') {
@@ -9237,7 +9282,7 @@
         panel.setAttribute('data-act7', '1');
         if (typeof MutationObserver === 'function') {
             let queued = false;
-            const run = function () { queued = false; try { syncActBar(); } catch (e) {} };
+            const run = function () { queued = false; try { ptVl7Sync(); } catch (e) {} try { syncActBar(); } catch (e) {} };
             new MutationObserver(function () {
                 if (queued || !ui7IsOn()) return;
                 queued = true; Promise.resolve().then(run);
@@ -9933,6 +9978,7 @@
         let w = '', ctx = null;
         if (ui7IsOn()) { try { ctx = ptContextNow(); w = ptFabWord(ctx); } catch (e) { w = ''; } }
         try { ptOrtTick(ctx); } catch (e) {}   // v6.59.0: Orte folgen demselben Takt (und demselben gelesenen Kontext)
+        try { ptVl7Sync(); } catch (e) {}      // v6.60.1: Vorlagen im Blatt (nach ptOrtTick: der raeumt ohne Schalter auf)
         if (el.textContent === w) return;
         el.textContent = w;
         // Die Pille ist breiter als der Kreis: eine gemerkte Position am

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.53.0
+// @version      6.54.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.53.0';
+    const VERSION = '6.54.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -6290,6 +6290,124 @@
             --pt-z-overlay: 1000000;
         }
         /* ------------------------------------------------------------------
+           UI 7, Etappe 1 (docs/UI7-KONZEPT.md 5): ZWEITER TOKEN-BLOCK.
+           Gilt nur mit dem Schalter "Neue Oberflaeche (Test)" (data-ui7 an
+           <html>, localStorage sbcOptUi7). Belegt die ROLLEN neu - die
+           Komponenten-Regeln oben bleiben, wie sie sind. Warmes Graphit statt
+           Navy, die Hauptaktion ist die hellste Flaeche (Papier), Volt heisst
+           aktiv/gewaehlt/laeuft, Bernstein pruefen, Rot nur Fehler und der
+           Ja-Knopf unumkehrbarer Freigaben. Systemschrift, Tabellenziffern
+           statt Mono, Text 14 statt 13, deckende Flaechen statt Glas.
+           ------------------------------------------------------------------ */
+        :root[data-ui7] {
+            /* ---------- 1 · PRIMITIVE (nur in diesem Block gelesen) ---------- */
+            --pt-graphit-0: #111110;
+            --pt-graphit-1: #1A1A18;
+            --pt-graphit-2: #242422;
+            --pt-graphit-3: #31312E;
+            --pt-graphit-line: #383834;
+            --pt-graphit-line-strong: #4A4A45;
+            --pt-sand-1: #F4F2EC;
+            --pt-sand-2: #B9B6AB;
+            --pt-sand-3: #8E8B80;
+            --pt-papier: #F4F2EC;
+            --pt-papier-hell: #FFFFFF;
+            --pt-papier-dunkel: #D9D6CC;
+            --pt-tinte: #141412;
+            --pt-volt: #C8F24F;
+            --pt-volt-hell: #D8F97A;
+            --pt-volt-dunkel: #B2DC3A;
+            --pt-bernstein: #FFB547;
+            --pt-rot: #FF6F63;
+            --pt-rot-voll: #E0392C;
+            --pt-rot-voll-hell: #EA4A3D;
+
+            /* ---------- 2 · ROLLEN ---------- */
+            --pt-bg-sunken: var(--pt-graphit-0);
+            --pt-bg-base: var(--pt-graphit-1);
+            --pt-bg-glass: var(--pt-graphit-1);       /* deckend: kein Glas */
+            --pt-bg-surface: var(--pt-graphit-2);
+            --pt-bg-raised: var(--pt-graphit-2);
+            --pt-bg-raised-hover: var(--pt-graphit-3);
+            --pt-bg-scrim: rgb(8 8 7 / .62);
+
+            --pt-fg-default: var(--pt-sand-1);
+            --pt-fg-secondary: var(--pt-sand-2);
+            --pt-fg-muted: var(--pt-sand-2);
+            --pt-fg-subtle: var(--pt-sand-3);
+            --pt-fg-on-accent: var(--pt-tinte);
+            --pt-fg-on-solid: var(--pt-papier-hell);
+
+            --pt-border-subtle: rgb(255 255 255 / .07);
+            --pt-border-default: var(--pt-graphit-line);
+            --pt-border-strong: var(--pt-graphit-line-strong);
+
+            /* Volt = aktiv, gewaehlt, laeuft, passt (nicht mehr die Hauptaktion) */
+            --pt-accent: var(--pt-volt);
+            --pt-accent-hover: var(--pt-volt-hell);
+            --pt-accent-press: var(--pt-volt-dunkel);
+            --pt-accent-soft: rgb(200 242 79 / .13);
+            --pt-accent-border: rgb(200 242 79 / .36);
+            /* Hauptaktion = Papier */
+            --pt-action: var(--pt-papier);
+            --pt-action-hover: var(--pt-papier-hell);
+            --pt-action-press: var(--pt-papier-dunkel);
+            --pt-fg-on-action: var(--pt-tinte);
+
+            /* Blau (Info) und Violett (Planen) entfallen: neutral angehoben */
+            --pt-info: var(--pt-graphit-3);
+            --pt-info-hover: var(--pt-graphit-line-strong);
+            --pt-info-fg: var(--pt-sand-2);
+            --pt-info-soft: var(--pt-graphit-2);
+            --pt-info-border: var(--pt-graphit-line);
+            --pt-plan: var(--pt-graphit-3);
+            --pt-plan-hover: var(--pt-graphit-line-strong);
+            --pt-plan-fg: var(--pt-sand-1);
+            --pt-plan-soft: var(--pt-graphit-2);
+            --pt-danger: var(--pt-rot-voll);
+            --pt-danger-hover: var(--pt-rot-voll-hell);
+            --pt-danger-fg: var(--pt-rot);
+            --pt-danger-soft: rgb(255 111 99 / .13);
+            --pt-danger-border: rgb(255 111 99 / .36);
+            --pt-warning-fg: var(--pt-bernstein);
+            --pt-warning-soft: rgb(255 181 71 / .13);
+            --pt-warning-border: rgb(255 181 71 / .36);
+
+            /* ---------- 3 · SKALEN ---------- */
+            --pt-radius-md: 10px;
+            --pt-radius-xl: 20px;
+            --pt-font-sans: Roboto, 'Segoe UI', Inter, system-ui, -apple-system, sans-serif;
+            --pt-font-mono: Roboto, 'Segoe UI', Inter, system-ui, -apple-system, sans-serif;
+            --pt-text-xs: 12px;
+            --pt-text-md: 14px;
+            --pt-text-lg: 17px;
+            --pt-text-2xl: 24px;
+            --pt-text-3xl: 24px;
+            --pt-weight-medium: 600;
+            --pt-weight-bold: 600;
+            /* Ein Schatten (Blatt); der Rest ist aus - als Null-Schatten, weil
+               die Tokens in Komma-Listen stehen ("none, none" waere ungueltig). */
+            --pt-shadow-1: 0 0 0 0 rgb(0 0 0 / 0);
+            --pt-shadow-2: 0 8px 24px rgb(0 0 0 / .5);
+            --pt-shadow-3: 0 -12px 40px rgb(0 0 0 / .55);
+            --pt-shadow-side: -16px 0 48px rgb(0 0 0 / .5);
+            --pt-highlight: inset 0 0 0 0 rgb(0 0 0 / 0);
+            --pt-glow-accent: 0 0 0 0 rgb(0 0 0 / 0);
+            --pt-blur-glass: 0px;
+            --pt-dur-fast: 120ms;
+            --pt-dur-base: 120ms;
+            --pt-dur-slow: 220ms;
+
+            /* ---------- 4 · KOMPONENTEN ---------- */
+            --pt-header-h: 44px;
+            --pt-row-h: 52px;                         /* Finger; mit Maus 44 (siehe unten) */
+            --pt-main-h: 52px;                        /* Hauptaktion; mit Maus 46 */
+            --pt-sheet-half: 60vh;
+            --pt-sheet-full: 92vh;
+            --pt-fab-h: 48px;
+            --pt-fab-img: 40px;
+        }
+        /* ------------------------------------------------------------------
            EINSTIEG: FAB und der Knopf in EAs Aktionsleiste
            ------------------------------------------------------------------ */
         #sbc-opt-fab {
@@ -7511,11 +7629,119 @@
         #sbc-opt-panel .sbc-opt-body .sbc-opt-meta { font-size:var(--pt-type-meta); }
         #sbc-opt-panel .sbc-opt-body textarea.sbc-opt-code { width:100%; box-sizing:border-box; margin:var(--pt-space-2) 0; font-family:var(--pt-font-mono); font-size:var(--pt-type-meta); }
 
+        /* ------------------------------------------------------------------
+           UI 7, Etappe 1: HUELLE (nur mit data-ui7 an <html>).
+           :where() haelt die Spezifitaet der Vorsilbe auf null - die Regeln
+           gewinnen nur ueber ihre Reihenfolge gegen die gleich starke
+           Grundregel; speziellere Varianten (rowbtn, is-blocked) bleiben.
+           IDs, data-*, Handler unveraendert.
+           ------------------------------------------------------------------ */
+        #sbc-opt-fab-word { display:none; pointer-events:none; white-space:nowrap; }
+        /* Knopf: Pille mit Kopf und Kontextwort (Loesen / Punkte / Packs) */
+        :where(:root[data-ui7]) #sbc-opt-fab {
+            width:auto; min-width:var(--pt-fab-h); height:var(--pt-fab-h); border-radius:var(--pt-radius-full);
+            padding:0 var(--pt-space-1); gap:var(--pt-space-2);
+            border:1px solid var(--pt-border-default); box-shadow:var(--pt-shadow-2);
+            font-family:var(--pt-font-sans); font-size:var(--pt-type-body); font-weight:var(--pt-weight-semibold);
+            font-variant-numeric:tabular-nums;
+        }
+        :where(:root[data-ui7]) #sbc-opt-fab:hover { transform:none; background:var(--pt-bg-raised); }
+        :where(:root[data-ui7]) #sbc-opt-fab:active { transform:scale(.97); }
+        :where(:root[data-ui7]) #sbc-opt-fab.sbc-opt-dragging { transform:none; }
+        /* Der tuerkise Ring steckt im Bild selbst: vergroessern und rund beschneiden (wie im Entwurf). */
+        :where(:root[data-ui7]) #sbc-opt-fab img { width:var(--pt-fab-img); height:var(--pt-fab-img); flex:0 0 auto; transform:scale(1.28); clip-path:circle(39% at 50% 50%); }
+        :where(:root[data-ui7]) #sbc-opt-fab-word:not(:empty) { display:block; padding-right:var(--pt-space-3); }
+        /* Blatt: deckend, kein Glas */
+        :where(:root[data-ui7]) #sbc-opt-panel {
+            background:var(--pt-bg-base); -webkit-backdrop-filter:none; backdrop-filter:none;
+            max-height:none; border:none;
+        }
+        :where(:root[data-ui7]) #sbc-opt-panel::-webkit-scrollbar-thumb { border-color:var(--pt-bg-base); }
+        /* Handy: randloses Bottom-Sheet, zwei Rasten. !important schlaegt die
+           Inline-Position eines frueher verschobenen Panels (sbcOptPanelPos). */
+        :where(:root[data-ui7]) #sbc-opt-panel[data-size-mode="hoehe"] {
+            left:0 !important; right:0 !important; top:auto !important; bottom:0 !important;
+            width:auto; height:var(--pt-sheet-full);
+            border-top:1px solid var(--pt-border-default);
+            border-radius:var(--pt-panel-radius) var(--pt-panel-radius) 0 0;
+        }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-size-mode="hoehe"][data-h="halb"] { height:var(--pt-sheet-half); max-height:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-size-mode="hoehe"].open { animation: pt7-auf var(--pt-dur-slow) var(--pt-ease-out); }
+        /* PC: angedockte Seitenleiste rechts, volle Hoehe; Breite weiter ueber --pt-panel-w */
+        :where(:root[data-ui7]) #sbc-opt-panel[data-size-mode="breite"] {
+            left:auto !important; right:0 !important; top:0 !important; bottom:0 !important;
+            height:auto; border-left:1px solid var(--pt-border-default);
+            border-radius:0; box-shadow:var(--pt-shadow-side);
+        }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-size-mode="breite"].open { animation: pt7-seite var(--pt-dur-slow) var(--pt-ease-out); }
+        @keyframes pt7-auf { from { opacity:0; transform:translateY(24px); } to { opacity:1; transform:none; } }
+        @keyframes pt7-seite { from { opacity:0; transform:translateX(24px); } to { opacity:1; transform:none; } }
+        /* Kopf: schlank, kein Logo-Band, kein Verschieben. Die Version bleibt sichtbar. */
+        :where(:root[data-ui7]) .sbc-opt-header {
+            cursor:default; touch-action:auto; border-bottom:none;
+            padding:0 var(--pt-space-1) 0 var(--pt-gutter);
+            font-size:var(--pt-type-label); font-weight:var(--pt-weight-regular); color:var(--pt-fg-subtle);
+        }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-size-mode="breite"] .sbc-opt-header { border-radius:0; }
+        :where(:root[data-ui7]) .sbc-opt-header img.sbc-opt-logo { display:none; }
+        :where(:root[data-ui7]) .sbc-opt-header .sbc-opt-ver {
+            font-size:var(--pt-type-label); color:var(--pt-fg-subtle); background:transparent;
+            padding:0; margin-left:var(--pt-space-1); vertical-align:baseline;
+        }
+        :where(:root[data-ui7]) #sbc-opt-close { width:var(--pt-control-h); height:var(--pt-control-h); margin:0; border-radius:var(--pt-radius-md); color:var(--pt-fg-secondary); }
+        /* Handy: der Hoehen-Knopf IST der Griff (oben mittig, Tipp = Halb/Voll) */
+        :where(:root[data-ui7]) #sbc-opt-panel[data-size-mode="hoehe"] #sbc-opt-size {
+            position:absolute; left:50%; top:0; width:120px; height:var(--pt-control-h-sm); margin:0 0 0 -60px; padding:0;
+            background:transparent; border-radius:0; font-size:0; color:transparent;
+        }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-size-mode="hoehe"] #sbc-opt-size::before {
+            content:''; position:absolute; left:50%; top:var(--pt-space-2); width:36px; height:4px; margin-left:-18px;
+            border-radius:var(--pt-radius-full); background:var(--pt-border-strong);
+            transition: background var(--pt-dur-fast) ease;
+        }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-size-mode="hoehe"] #sbc-opt-size:hover { background:transparent; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-size-mode="hoehe"] #sbc-opt-size:active { background:transparent; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-size-mode="hoehe"] #sbc-opt-size:active::before { background:var(--pt-fg-secondary); }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-size-mode="breite"] #sbc-opt-size { font-weight:var(--pt-weight-semibold); }
+        /* Reiter: Text mit Volt-Unterstrich statt Icon-Kacheln */
+        :where(:root[data-ui7]) .sbc-opt-tabs {
+            background:var(--pt-bg-base); border:none; border-bottom:1px solid var(--pt-border-subtle);
+            border-radius:0; padding:0; gap:var(--pt-space-1); justify-content:flex-start;
+        }
+        :where(:root[data-ui7]) .sbc-opt-tab-btn {
+            flex:0 0 auto; flex-direction:row; min-width:var(--pt-tap); min-height:var(--pt-tap);
+            padding:0 var(--pt-space-2-5); border-radius:0; position:relative;
+            font-size:var(--pt-type-body); color:var(--pt-fg-subtle);
+        }
+        :where(:root[data-ui7]) .sbc-opt-tab-btn:first-child { padding-left:0; }
+        :where(:root[data-ui7]) .sbc-opt-tab-btn svg { display:none; }
+        :where(:root[data-ui7]) .sbc-opt-tab-btn:hover { background:transparent; color:var(--pt-fg-default); }
+        :where(:root[data-ui7]) .sbc-opt-tab-btn:active { transform:none; color:var(--pt-fg-default); }
+        :where(:root[data-ui7]) .sbc-opt-tab-btn.on { background:transparent; box-shadow:none; color:var(--pt-fg-default); }
+        :where(:root[data-ui7]) .sbc-opt-tab-btn.on:hover { background:transparent; }
+        :where(:root[data-ui7]) .sbc-opt-tab-btn.on::after {
+            content:''; position:absolute; left:var(--pt-space-2-5); right:var(--pt-space-2-5); bottom:-1px; height:2px;
+            border-radius:var(--pt-radius-full); background:var(--pt-accent);
+        }
+        :where(:root[data-ui7]) .sbc-opt-tab-btn.on:first-child::after { left:0; }
+        /* Hauptaktion: Papier (hellste Flaeche), kein Schein. Zeilentitel (rowbtn) bleiben Titel. */
+        :where(:root[data-ui7]) .sbc-opt-btn.primary:where(:not(.sbc-opt-rowbtn)) { background:var(--pt-action); color:var(--pt-fg-on-action); }
+        :where(:root[data-ui7]) .sbc-opt-btn.primary:where(:not(.sbc-opt-rowbtn)):hover:not(:disabled) { background:var(--pt-action-hover); }
+        :where(:root[data-ui7]) .sbc-opt-btn.primary:where(:not(.sbc-opt-rowbtn)):active:not(:disabled) { background:var(--pt-action-press); }
+        :where(:root[data-ui7]) .sbc-opt-btn.sbc-opt-main, :where(:root[data-ui7]) #sbc-opt-run { min-height:var(--pt-main-h); }
+        /* Nebenaktion: Linie statt Flaeche */
+        :where(:root[data-ui7]) .sbc-opt-btn.ghost:where(:not(.sbc-opt-rowbtn)) { background:transparent; color:var(--pt-fg-default); box-shadow: inset 0 0 0 1px var(--pt-border-default); }
+        :where(:root[data-ui7]) .sbc-opt-btn.ghost:where(:not(.sbc-opt-rowbtn)):hover:not(:disabled) { background:var(--pt-state-hover); box-shadow: inset 0 0 0 1px var(--pt-border-strong); }
+        :where(:root[data-ui7]) .sbc-opt-btn.ghost:where(:not(.sbc-opt-rowbtn)):active:not(:disabled) { background:var(--pt-state-press); }
+
         @media (max-width: 359px) { .sbc-opt-tab-btn svg { display:none; } }
         .sbc-opt-tab-btn { padding:0 var(--pt-space-1); }
         @media (prefers-reduced-motion: reduce) {
             :root { --pt-dur-fast: 0ms; --pt-dur-base: 0ms; --pt-dur-slow: 0ms; }
+            :root[data-ui7] { --pt-dur-fast: 0ms; --pt-dur-base: 0ms; --pt-dur-slow: 0ms; }
             #sbc-opt-panel.open { animation: none; }
+            :root[data-ui7] #sbc-opt-panel.open { animation: none; }
+            :root[data-ui7] #sbc-opt-fab:active, :root[data-ui7] #sbc-opt-size::before { transform: none; transition: none; }
             #sbc-opt-fab, .sbc-opt-btn, .sbc-opt-chip, .sbc-opt-queuerow,
             .sbc-opt-tilebtn, #sbc-opt-progress .p-fill,
             #sbc-opt-panel input, #sbc-opt-panel select,
@@ -7528,6 +7754,10 @@
             #sbc-opt-fab:hover, #sbc-opt-fab:active,
             .sbc-opt-btn:active:not(:disabled), .sbc-opt-chip:active,
             .sbc-opt-tilebtn:active:not(:disabled) { transform: none; }
+        }
+        /* UI 7: mit Maus dichter (dasselbe Markup), Kopf etwas hoeher */
+        @media (pointer: fine) {
+            :root[data-ui7] { --pt-row-h: 44px; --pt-main-h: 46px; --pt-header-h: 48px; }
         }
         `;
         const style = document.createElement('style');
@@ -7904,6 +8134,69 @@
     }
 
 
+    // [UI7-BEGIN]
+    // UI 7, Etappe 1 "Schale und Sprache" (docs/UI7-KONZEPT.md 9 und 10.6).
+    // Schalter statt hartem Schnitt: die neue Huelle gilt nur mit
+    // localStorage.sbcOptUi7 === '1' (Mehr -> System -> "Neue Oberflaeche
+    // (Test)"). Standard in dieser Version: AUS. Rein, ohne DOM/EA.
+    function ui7Load(storage) {
+        try { return !!storage && storage.getItem('sbcOptUi7') === '1'; } catch (e) { return false; }
+    }
+    function ui7Save(storage, on) {
+        try {
+            if (on) storage.setItem('sbcOptUi7', '1');
+            else storage.removeItem('sbcOptUi7');
+        } catch (e) {}
+        return !!on;
+    }
+    /** Raste des Blatts am Handy: ohne gemerkte Wahl "halb" (EAs Kader bleibt sichtbar). */
+    function ui7SheetLoad(storage) {
+        try { return storage.getItem('sbcOptPanelH') === 'voll' ? 'voll' : 'halb'; } catch (e) { return 'halb'; }
+    }
+    /** Kontextwort des Knopfs aus ptContext(): Konzept 3.1 "Knopf sagt". */
+    function ptFabWord(ctx) {
+        const k = ctx && ctx.kind;
+        return k === 'loesen' ? 'Lösen' : k === 'punkte' ? 'Punkte' : k === 'packs' ? 'Packs' : '';
+    }
+    // [UI7-END]
+    function ui7IsOn() {
+        try { return document.documentElement.hasAttribute('data-ui7'); } catch (e) { return false; }
+    }
+    /** Schaltet die neue Huelle an/aus (Attribut an <html>); schreibt nur bei Aenderung. */
+    function ui7Apply(on) {
+        try {
+            const root = document.documentElement;
+            if (on && !root.hasAttribute('data-ui7')) root.setAttribute('data-ui7', '1');
+            if (!on && root.hasAttribute('data-ui7')) root.removeAttribute('data-ui7');
+        } catch (e) {}
+        try { if (ui.panel && typeof ui.panel.__ptSizeApply === 'function') ui.panel.__ptSizeApply(); } catch (e) {}
+        try { syncFabWord(); } catch (e) {}
+    }
+    /**
+     * Kontextwort am Knopf ("Lösen" / "Punkte" / "Packs"). Haengt am
+     * vorhandenen 500-ms-Takt (syncLauncher/syncPackSection) - kein eigener
+     * Takt; ohne data-ui7 wird der Kontext gar nicht erst gelesen. Schreibt
+     * nur bei echter Aenderung.
+     */
+    function syncFabWord() {
+        const el = document.getElementById('sbc-opt-fab-word');
+        if (!el) return;
+        let w = '';
+        if (ui7IsOn()) { try { w = ptFabWord(ptContextNow()); } catch (e) { w = ''; } }
+        if (el.textContent === w) return;
+        el.textContent = w;
+        // Die Pille ist breiter als der Kreis: eine gemerkte Position am
+        // rechten Rand wieder ins Bild holen (die gemerkte Position bleibt).
+        try {
+            const f = el.parentNode;
+            if (f && f.style.left && f.style.left !== 'auto') {
+                const r = f.getBoundingClientRect();
+                const over = r.right - window.innerWidth;
+                if (over > 0) f.style.left = Math.max(0, r.left - over) + 'px';
+            }
+        } catch (e) {}
+    }
+
     // [PANELSIZE-BEGIN]
     // v6.42.1: Panelgroesse (Rasmus 24.11.: "die Groesse vom PitTools-Dialog
     // auch aendern koennen"). PC (feiner Zeiger, Fenster >= 700 px): Breite
@@ -7975,6 +8268,12 @@
             try { fine = !!win.matchMedia('(pointer: fine)').matches; } catch (e) {}
             return panelSizeMode(fine, win.innerWidth);
         }
+        // UI 7: mit data-ui7 an <html> ist das Panel am Handy ein Blatt mit zwei
+        // Rasten; ohne gemerkte Wahl startet es "halb" (ui7SheetLoad).
+        function ui7() {
+            try { return !!(doc.documentElement && doc.documentElement.hasAttribute('data-ui7')); } catch (e) { return false; }
+        }
+        function heightNow() { return ui7() ? ui7SheetLoad(storage) : panelHeightLoad(storage); }
         function setW(w) {
             const n = panelWidthClamp(w, win.innerWidth);
             panel.style.setProperty('--pt-panel-w', n + 'px');
@@ -7991,7 +8290,7 @@
                 btn.setAttribute('aria-label', 'Panelbreite: ' + stored + ' px – tippen für die nächste Stufe (S/M/L)');
             } else {
                 setW(PANEL_W_STD);
-                const h = panelHeightLoad(storage);
+                const h = heightNow();
                 panel.setAttribute('data-h', h);
                 btn.textContent = h === 'halb' ? 'Halb' : 'Voll';
                 btn.setAttribute('aria-label', 'Panelhöhe: ' + (h === 'halb' ? 'halb' : 'voll') + ' – tippen zum Umschalten');
@@ -8000,7 +8299,7 @@
         }
         btn.addEventListener('click', function () {
             if (mode() === 'breite') panelWidthSave(storage, panelStepNext(panelWidthLoad(storage)));
-            else panelHeightSave(storage, panelHeightLoad(storage) === 'halb' ? 'voll' : 'halb');
+            else panelHeightSave(storage, heightNow() === 'halb' ? 'voll' : 'halb');
             apply();
         });
         let drag = null;
@@ -8039,6 +8338,7 @@
         win.addEventListener('resize', apply);
         try { new win.ResizeObserver(function () { try { grip.style.height = panel.clientHeight + 'px'; } catch (e) {} }).observe(panel); } catch (e) {}
         apply();
+        panel.__ptSizeApply = apply; // UI 7: der Schalter wendet die Raste sofort an
         return { apply: apply, btn: btn, grip: grip };
     }
     // [PANELSIZE-END]
@@ -8318,6 +8618,10 @@
         fabImg.src = ICON_URI;
         fabImg.alt = '';
         fab.appendChild(fabImg);
+        // UI 7: Kontextwort neben dem Kopf (ohne data-ui7 per CSS unsichtbar).
+        const fabWord = document.createElement('span');
+        fabWord.id = 'sbc-opt-fab-word';
+        fab.appendChild(fabWord);
         document.body.appendChild(fab);
         const panel = document.createElement('div');
         panel.id = 'sbc-opt-panel';
@@ -8854,6 +9158,10 @@
                             <label class="sbc-opt-toggle"><input type="checkbox" id="sbc-opt-poolcache" checked>Verein zwischenspeichern</label>
                             <button type="button" class="sbc-opt-tip" aria-label="Info: Verein zwischenspeichern" aria-expanded="false" data-tip="Nach dem Neuladen der Web App ist der Verein sofort wieder da.">i</button>
                         </div>
+                        <div class="sbc-opt-row sbc-opt-withtip">
+                            <label class="sbc-opt-toggle"><input type="checkbox" id="sbc-opt-ui7">Neue Oberfläche (Test)</label>
+                            <button type="button" class="sbc-opt-tip" aria-label="Info: Neue Oberfläche" aria-expanded="false" data-tip="Neues Aussehen: Blatt unten am Handy, Seitenleiste am PC. Alle Funktionen bleiben gleich. Gilt nur auf diesem Gerät.">i</button>
+                        </div>
                     </details>
                 </div>
                 <div class="sbc-opt-batch sbc-opt-hidden" id="sbc-opt-packsection">
@@ -9033,8 +9341,8 @@
         panel.querySelector('#sbc-opt-close').addEventListener('click', () => panel.classList.remove('open'));
         makeDraggable(panel, panel.querySelector('.sbc-opt-header'), 'sbcOptPanelPos', {
             minVisible: 60, // Header muss greifbar bleiben
-            ignore: (ev) => ev.target && (ev.target.id === 'sbc-opt-close' ||
-                (typeof ev.target.closest === 'function' && !!ev.target.closest('.sbc-opt-nodrag')))
+            ignore: (ev) => ui7IsOn() || (ev.target && (ev.target.id === 'sbc-opt-close' ||
+                (typeof ev.target.closest === 'function' && !!ev.target.closest('.sbc-opt-nodrag'))))
         });
         // Tippen (ohne Ziehen) oeffnet das Panel - siehe onTap in makeDraggable.
         // Bewusst KEIN zusaetzlicher click-Listener: der wuerde doppelt
@@ -22995,6 +23303,7 @@ const HybridSbcEa = (() => {
                 customBricks: STATE.sbc.customBricks || null,
                 // UI 7 Etappe 0: welcher Weg/Reiter automatisch gewaehlt wurde und warum
                 uiContext: STATE.diag.uiContext || null,
+                ui7: ui7IsOn(),
                 reqDump: STATE.sbc.reqDump,
                 // Scopes ohne Wert, die NICHT zur Standard-Boilerplate gehoeren -
                 // rein informativ (siehe applyScan: daraus folgt NICHTS).
@@ -29335,6 +29644,8 @@ const HybridSbcEa = (() => {
         if (document.getElementById('sbc-opt-fab')) return;
         noteScriptRun();
         injectStyles();
+        // UI 7: Attribut VOR dem Panelbau setzen (initPanelSize liest es).
+        ui7Apply(ui7Load(ptStore()));
         buildPanel();
         installLauncherDelegation();
         // Rarity-Einstellungen aus localStorage herstellen. Sie MUESSEN ein
@@ -29373,6 +29684,16 @@ const HybridSbcEa = (() => {
                 });
             }
         } catch (e) { reportError('Pool-Cache-Schalter', e); }
+        try {
+            const u7 = document.getElementById('sbc-opt-ui7');
+            if (u7) {
+                u7.checked = ui7Load(ptStore());
+                u7.addEventListener('change', function () {
+                    ui7Apply(ui7Save(ptStore(), u7.checked));
+                });
+            }
+            syncFabWord();
+        } catch (e) { reportError('UI-7-Schalter', e); }
         log('UI initialisiert. Version', VERSION);
     }
     function waitForBody() {
@@ -29400,6 +29721,7 @@ const HybridSbcEa = (() => {
         // DOM-Lookups - deutlich billiger als ein Observer über die ganze App.
         setInterval(function () {
             try { syncLauncher(); syncPackSection(); syncQueueSection(); } catch (e) {}
+            try { syncFabWord(); } catch (e) {}
         }, 500);
         // App-Services erscheinen erst nach dem App-Start.
         setInterval(installServicesHooks, 1000);

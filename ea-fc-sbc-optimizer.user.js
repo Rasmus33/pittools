@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.54.0
+// @version      6.54.1
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.54.0';
+    const VERSION = '6.54.1';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7683,6 +7683,8 @@
             font-size:var(--pt-type-label); font-weight:var(--pt-weight-regular); color:var(--pt-fg-subtle);
         }
         :where(:root[data-ui7]) #sbc-opt-panel[data-size-mode="breite"] .sbc-opt-header { border-radius:0; }
+        /* v6.54.1: am Handy ist der Kopf die Zieh-Flaeche des Blatts - der Browser darf dort nicht scrollen */
+        :where(:root[data-ui7]) #sbc-opt-panel[data-size-mode="hoehe"] .sbc-opt-header { touch-action:none; }
         :where(:root[data-ui7]) .sbc-opt-header img.sbc-opt-logo { display:none; }
         :where(:root[data-ui7]) .sbc-opt-header .sbc-opt-ver {
             font-size:var(--pt-type-label); color:var(--pt-fg-subtle); background:transparent;
@@ -8153,6 +8155,16 @@
     function ui7SheetLoad(storage) {
         try { return storage.getItem('sbcOptPanelH') === 'voll' ? 'voll' : 'halb'; } catch (e) { return 'halb'; }
     }
+    /**
+     * v6.54.1: Raste nach dem Ziehen am Griff (Rasmus 24.11.: "groesser oder
+     * kleiner ziehen geht nicht"). Naechste der beiden Rasten 60vh / 92vh;
+     * kaputte Werte = "halb".
+     */
+    function ui7SheetSnap(px, vh) {
+        px = Number(px); vh = Number(vh);
+        if (!(px > 0) || !(vh > 0)) return 'halb';
+        return px / vh >= (0.60 + 0.92) / 2 ? 'voll' : 'halb';
+    }
     /** Kontextwort des Knopfs aus ptContext(): Konzept 3.1 "Knopf sagt". */
     function ptFabWord(ctx) {
         const k = ctx && ctx.kind;
@@ -8297,7 +8309,43 @@
             }
             try { grip.style.height = panel.clientHeight + 'px'; } catch (e) {}
         }
+        // v6.54.1 (UI 7, Handy): das Blatt am Griff ODER am Kopf ziehen - die Hoehe
+        // folgt dem Finger, beim Loslassen rastet es auf Halb/Voll (ui7SheetSnap).
+        // Ein kurzer Tipp auf den Griff schaltet weiter um; Knoepfe im Kopf
+        // (Schliessen) bleiben Knoepfe.
+        let sheet = null, sheetMovedAt = 0;
+        header.addEventListener('pointerdown', function (ev) {
+            if (!ui7() || mode() !== 'hoehe') return;
+            const t = ev.target;
+            if (t !== btn && t && t.closest && t.closest('button, input, select, a, label')) return;
+            sheet = { y: ev.clientY, h: panel.getBoundingClientRect().height, moved: false, id: ev.pointerId };
+        });
+        header.addEventListener('pointermove', function (ev) {
+            if (!sheet) return;
+            const dy = ev.clientY - sheet.y;
+            if (!sheet.moved && Math.abs(dy) < 6) return;
+            // Erst beim echten Ziehen festhalten - sonst landet der Tipp auf den
+            // Griff (click) beim Kopf statt beim Knopf.
+            if (!sheet.moved) { try { header.setPointerCapture(sheet.id); } catch (e) {} }
+            sheet.moved = true;
+            const vh = win.innerHeight || 800;
+            panel.style.height = Math.round(Math.max(vh * 0.3, Math.min(vh * 0.92, sheet.h - dy))) + 'px';
+            if (ev.cancelable) ev.preventDefault();
+        });
+        function sheetEnd() {
+            if (!sheet) return;
+            const s0 = sheet; sheet = null;
+            if (!s0.moved) return;
+            const h = panel.getBoundingClientRect().height;
+            panel.style.height = '';
+            panelHeightSave(storage, ui7SheetSnap(h, win.innerHeight));
+            sheetMovedAt = Date.now();
+            apply();
+        }
+        header.addEventListener('pointerup', sheetEnd);
+        header.addEventListener('pointercancel', sheetEnd);
         btn.addEventListener('click', function () {
+            if (Date.now() - sheetMovedAt < 400) return; // Ziehen ist kein Tipp
             if (mode() === 'breite') panelWidthSave(storage, panelStepNext(panelWidthLoad(storage)));
             else panelHeightSave(storage, heightNow() === 'halb' ? 'voll' : 'halb');
             apply();

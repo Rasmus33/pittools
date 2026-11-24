@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.46.0
+// @version      6.47.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.46.0';
+    const VERSION = '6.47.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -6536,7 +6536,7 @@
         /* Seltenheit in der Zieh-Liste: dieselbe gedaempfte Farbe wie die
            uebrigen Nebeninfos, damit Name + Rating fuehrend bleiben. */
         .sbc-opt-dim { color:var(--pt-fg-subtle); }
-        .sbc-opt-bid-summary { font-weight:600; margin:var(--pt-space-0-5) 0 var(--pt-space-1-5); font-variant-numeric:tabular-nums; }
+        .sbc-opt-bid-summary { font-variant-numeric:tabular-nums; }
         .sbc-opt-bid-row { display:flex; justify-content:space-between; align-items:center; gap:var(--pt-space-2); margin:var(--pt-space-1) 0; font-variant-numeric:tabular-nums; }
         .sbc-opt-bid-row .sbc-opt-btn { margin:0; width:auto; min-height:var(--pt-tap); }
         .sbc-opt-bid-set { margin:var(--pt-space-1) 0 var(--pt-space-2); }
@@ -7450,6 +7450,23 @@
         #sbc-opt-ki-setup .sbc-opt-fb-meta { margin:0 0 var(--pt-space-2); }
         #sbc-opt-ki-line > span:not(.sbc-opt-dot):not(.grow) { flex:0 0 auto; margin-right:var(--pt-space-2); }
 
+        /* v6.47.0: Kaufen-Reiter - drei Wege, je einer sichtbar. */
+        #sbc-opt-tab-kaufen:not([data-mode="loesung"]) #sbc-opt-futbin { display:none; }
+        #sbc-opt-tab-kaufen:not([data-mode="hybrid"]) #sbc-opt-hybrid { display:none; }
+        #sbc-opt-tab-kaufen:not([data-mode="gebote"]) #sbc-opt-bid { display:none; }
+        #sbc-opt-tab-kaufen > .sbc-opt-section { margin-top:0; padding-top:0; border-top:none; }
+        .sbc-opt-fieldrow { display:flex; align-items:center; }
+        .sbc-opt-btn.sbc-opt-itembtn { flex:0 0 auto; width:auto; margin:0; min-height:var(--pt-control-h); padding:0 var(--pt-space-4); }
+        .sbc-opt-item-top { align-items:center; }
+        .sbc-opt-item-title.sbc-opt-fb-price { font-family:var(--pt-font-mono); font-size:var(--pt-type-title); }
+        .sbc-opt-item .sbc-opt-fb-meta { color:var(--pt-fg-subtle); }
+        .sbc-opt-bid-set .sbc-opt-inline { margin-bottom:var(--pt-space-2); }
+        .sbc-opt-bid-set .sbc-opt-inline label { flex:1 1 0; font-size:var(--pt-type-label); color:var(--pt-fg-muted); }
+
+        /* Ein verstecktes Element bleibt versteckt, auch wenn seine Klasse display setzt
+           (.sbc-opt-line, .sbc-opt-withtip, .sbc-opt-head sind flex). */
+        #sbc-opt-panel [hidden] { display:none !important; }
+
         /* v6.40.0: Abstands-Hilfsklassen statt style="margin/padding" im
            Panel-Template. Mit #sbc-opt-panel .sbc-opt-body davor (schlaegt auch
            #sbc-opt-panel input[type=number]), damit sie (wie vorher das
@@ -7711,7 +7728,40 @@
     }
 
     /** v6.3.0: Installations-Link nur, wenn es keine Bruecke gibt. */
+    // v6.47.0: Umschalter im Kaufen-Reiter (Rasmus 23.11.: ja). Drei Wege zu
+    // einer SBC, je einer sichtbar; gemerkt in localStorage sbcOptBuyMode.
+    const BUY_MODES = ['loesung', 'hybrid', 'gebote'];
+    function buyModeFor(saved) { return BUY_MODES.indexOf(saved) >= 0 ? saved : 'loesung'; }
+    function setBuyMode(mode, remember) {
+        mode = buyModeFor(mode);
+        const pane = document.getElementById('sbc-opt-tab-kaufen');
+        if (!pane) return mode;
+        if (pane.getAttribute('data-mode') !== mode) pane.setAttribute('data-mode', mode);
+        const box = document.getElementById('sbc-opt-buy-modes');
+        if (box) Array.from(box.querySelectorAll('.sbc-opt-chip')).forEach(function (b) {
+            const on = b.getAttribute('data-mode') === mode;
+            if (b.classList.contains('on') !== on) b.classList.toggle('on', on);
+            if (b.getAttribute('aria-pressed') !== String(on)) b.setAttribute('aria-pressed', String(on));
+        });
+        if (remember) { try { localStorage.setItem('sbcOptBuyMode', mode); } catch (e) {} }
+        try { nextBarRefreshers.forEach(function (f) { f(); }); } catch (e) {}
+        return mode;
+    }
+    function buyLineParts(kind) {
+        return kind === 'app' ? { t: 'Brücke verbunden (App)', dot: 'on' }
+            : kind === 'tm' ? { t: 'Brücke verbunden (Tampermonkey)', dot: 'on' }
+            : { t: 'Brücke fehlt – unter „Mehr“ installieren', dot: 'warn' };
+    }
+    function renderBuyLine() {
+        const t = document.getElementById('sbc-opt-buy-line-txt'), d = document.getElementById('sbc-opt-buy-dot');
+        if (!t || !d) return;
+        const v = buyLineParts(bridgeKind());
+        if (t.textContent !== v.t) t.textContent = v.t;
+        const cls = 'sbc-opt-dot ' + v.dot;
+        if (d.className !== cls) d.className = cls;
+    }
     function syncBridgeLink() {
+        try { renderBuyLine(); } catch (e) {}
         const a = document.getElementById('sbc-opt-bridge-install');
         if (!a) return;
         const none = !bridgeKind();
@@ -8048,6 +8098,16 @@
                 setInfoOpen(panel.getAttribute('data-info') !== 'open', true);
             });
         }
+        const buyModes = panel.querySelector('#sbc-opt-buy-modes');
+        if (buyModes) {
+            let saved = null;
+            try { saved = localStorage.getItem('sbcOptBuyMode'); } catch (e) {}
+            setBuyMode(saved, false);
+            buyModes.addEventListener('click', function (ev) {
+                const b = ev.target.closest('.sbc-opt-chip');
+                if (b) setBuyMode(b.getAttribute('data-mode'), true);
+            });
+        }
         const modes = panel.querySelector('#sbc-opt-multi-modes');
         if (modes) modes.addEventListener('click', function (ev) {
             const b = ev.target.closest('.sbc-opt-chip');
@@ -8203,80 +8263,82 @@
                      Challenge über die Brücke, gleicht mit dem Verein ab, prüft
                      am Markt, traegt eigene Karten echt und fehlende als Konzept-
                      Spieler ein, kauft die fehlenden schrittweise nach. -->
-                <div class="sbc-opt-tab" id="sbc-opt-tab-kaufen" role="tabpanel">
+                <div class="sbc-opt-tab" id="sbc-opt-tab-kaufen" role="tabpanel" data-mode="loesung">
+                <!-- v6.47.0: gleiches Geruest - Statuszeile, Umschalter (drei Wege zu
+                     einer SBC), je Weg EINE Hauptaktion. Umgeblendet wird per Attribut
+                     data-mode am Reiter (Muster syncMultiModes). -->
+                <div class="sbc-opt-line" id="sbc-opt-buy-line">
+                    <span class="sbc-opt-dot" id="sbc-opt-buy-dot"></span><span class="grow" id="sbc-opt-buy-line-txt">Brücke: –</span>
+                </div>
+                <div class="sbc-opt-chips" id="sbc-opt-buy-modes" role="group" aria-label="Weg">
+                    <button type="button" class="sbc-opt-chip on" data-mode="loesung" aria-pressed="true">Lösung</button>
+                    <button type="button" class="sbc-opt-chip" data-mode="hybrid" aria-pressed="false">Verein + Kauf</button>
+                    <button type="button" class="sbc-opt-chip" data-mode="gebote" aria-pressed="false">Gebote<span id="sbc-opt-buy-bidn"></span></button>
+                </div>
                 <div class="sbc-opt-section" id="sbc-opt-futbin">
-                    <!-- v5.29.0: Schritt-Anzeige - der aktuelle Schritt leuchtet,
-                         erledigte sind gedaempft (setFutbinStep). -->
                     <div class="sbc-opt-flow" id="sbc-opt-futbin-flow">
                         <div class="step on" data-step="1"><span class="dot">1</span><span class="lbl">Suchen</span></div>
                         <div class="step" data-step="2"><span class="dot">2</span><span class="lbl">Einfügen</span></div>
                         <div class="step" data-step="3"><span class="dot">3</span><span class="lbl">Kaufen</span></div>
                         <div class="step" data-step="4"><span class="dot">4</span><span class="lbl">Abgeben</span></div>
                     </div>
-                    <div class="sbc-opt-card">
-                        <label class="sbc-opt-chiplabel">Preise für</label>
-                        <div class="sbc-opt-chips" id="sbc-opt-futbin-platform"></div>
-                        <!-- v5.31.0: Schalter statt Haekchen - die Checkbox bleibt
-                             das Element (ID, .checked), nur die Optik ist neu. -->
-                        <div class="sbc-opt-withtip">
-                        <label class="sbc-opt-switch">
-                            <input type="checkbox" id="sbc-opt-futbin-market" checked>
-                            <span class="track" aria-hidden="true"></span>
-                            <span class="txt">Live-Preise prüfen</span>
-                        </label>
-                        <button type="button" class="sbc-opt-tip" aria-label="Info: Live-Preise prüfen" aria-expanded="false" data-tip="Empfohlen: prüft die besten Lösungen am EA-Markt. Dauert ein paar Sekunden pro Karte.">i</button>
-                        </div>
-                        <button class="sbc-opt-btn primary sbc-opt-btn-icon" id="sbc-opt-futbin-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><span>Futbin-Lösungen suchen</span></button>
+                    <label class="sbc-opt-chiplabel">Preise für</label>
+                    <div class="sbc-opt-chips" id="sbc-opt-futbin-platform"></div>
+                    <div class="sbc-opt-withtip">
+                    <label class="sbc-opt-switch">
+                        <input type="checkbox" id="sbc-opt-futbin-market" checked>
+                        <span class="track" aria-hidden="true"></span>
+                        <span class="txt">Live-Preise prüfen</span>
+                    </label>
+                    <button type="button" class="sbc-opt-tip" aria-label="Info: Live-Preise prüfen" aria-expanded="false" data-tip="Empfohlen: prüft die besten Lösungen am EA-Markt. Dauert ein paar Sekunden pro Karte.">i</button>
                     </div>
-                    <!-- v5.30.0: das Ergebnis steht DIREKT unter der Hauptaktion;
-                         die Nebenaktion (Nachkaufen) kommt danach. -->
+                    <button class="sbc-opt-btn primary sbc-opt-btn-icon sbc-opt-main" id="sbc-opt-futbin-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><span>Futbin-Lösungen suchen</span></button>
                     <div class="sbc-opt-result" id="sbc-opt-futbin-result"></div>
-                    <!-- v5.22.0: unabhaengig vom futbin-Lauf - liest die Konzept-
-                         Spieler aus dem offenen Kader (auch nach Neuladen oder
-                         von Hand eingesetzt), Marktpreis je Karte, Rueckfrage,
-                         dann derselbe schrittweise Kauf-Lauf. -->
-                    <div class="sbc-opt-card">
-                        <div class="sbc-opt-group-title">Verein und günstige Nachkäufe · Beta</div>
-                        <div class="sbc-opt-dim">Für Team-SBCs mit Chemie und engen Vorgaben. Geschützte Mannschafts- und Goldkarten bleiben erhalten.</div>
-                        <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-hybrid-club-search">Vereinslösung suchen</button>
-                        <div class="sbc-opt-inline"><label>Kaufbudget (Coins) <input type="number" id="sbc-opt-hybrid-budget" min="0" max="1000000" step="100" value="3000"></label>
-                        <label>Höchstens Nachkäufe <input type="number" id="sbc-opt-hybrid-count" min="0" max="11" value="3"></label></div>
-                        <button type="button" class="sbc-opt-btn primary" id="sbc-opt-hybrid-search">Verein + Nachkäufe vergleichen</button>
-                        <div class="sbc-opt-dim">Bis zu 16 Karten aus Community-Lösungen werden mit EA-Preisen geprüft. Die Suche kann einige Minuten dauern. Das Budget umfasst die Kaufobergrenzen aller Karten.</div>
-                        <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-hybrid-club-stop" hidden>Suche stoppen</button>
-                        <div class="sbc-opt-result" id="sbc-opt-hybrid-club-result"></div>
+                    <div class="sbc-opt-withtip">
+                    <button class="sbc-opt-btn link" id="sbc-opt-futbin-buyconcepts">Konzept-Spieler nachkaufen</button>
+                    <button type="button" class="sbc-opt-tip" aria-label="Info: Konzept-Spieler nachkaufen" aria-expanded="false" data-tip="Für Kader, die schon Konzept-Spieler enthalten – etwa nach Neuladen oder von Hand eingesetzt. Holt je Karte den Marktpreis und fragt vor dem Kauf.">i</button>
                     </div>
-                    <div class="sbc-opt-group-title sbc-opt-secondary">Ohne futbin</div>
-                    <button class="sbc-opt-btn ghost sbc-opt-mt0" id="sbc-opt-futbin-buyconcepts">Konzept-Spieler im Kader nachkaufen</button>
-                    <div class="sbc-opt-debug sbc-opt-pull">Für Kader, die schon Konzept-Spieler enthalten (z.B. nach Neuladen oder von Hand eingesetzt).</div>
                 </div>
-                <!-- v6.34.0: GEBOTS-HELFER (Gold bis 600). M0 = Mitlesen: Rasmus bietet
-                     von Hand, PitTools liest EAs Antworten und merkt gewonnene Karten. -->
+                <div class="sbc-opt-section" id="sbc-opt-hybrid">
+                    <div class="sbc-opt-head"><span>Verein + Kauf <span class="sbc-opt-tag">Beta</span><button type="button" class="sbc-opt-tip" aria-label="Info: Verein + Kauf" aria-expanded="false" data-tip="Für Team-SBCs mit Chemie und engen Vorgaben; geschützte Mannschafts- und Goldkarten bleiben erhalten. Bis zu 16 Karten aus Community-Lösungen werden mit EA-Preisen geprüft – das kann einige Minuten dauern. Das Budget umfasst die Kaufobergrenzen aller Karten.">i</button></span></div>
+                    <div class="sbc-opt-fieldrow"><label for="sbc-opt-hybrid-budget">Budget</label><input type="number" id="sbc-opt-hybrid-budget" min="0" max="1000000" step="100" value="3000"></div>
+                    <div class="sbc-opt-fieldrow"><label for="sbc-opt-hybrid-count">Max. Käufe</label><input type="number" id="sbc-opt-hybrid-count" min="0" max="11" value="3"></div>
+                    <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-hybrid-club-search">Vereinslösung suchen</button>
+                    <button type="button" class="sbc-opt-btn primary sbc-opt-main" id="sbc-opt-hybrid-search">Verein + Nachkäufe vergleichen</button>
+                    <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-hybrid-club-stop" hidden>Suche stoppen</button>
+                    <div class="sbc-opt-result" id="sbc-opt-hybrid-club-result"></div>
+                </div>
                 <div class="sbc-opt-section" id="sbc-opt-bid">
-                    <div class="sbc-opt-card" id="sbc-opt-bid-card">
-                        <div class="sbc-opt-group-title sbc-opt-mt0">Gebots-Helfer (Gold bis 600)</div>
-                        <div class="sbc-opt-bid-summary" id="sbc-opt-bid-summary">Gewonnen: 0 Karten</div>
-                        <div class="sbc-opt-dim" id="sbc-opt-bid-hint">Mitlesen: Biete in der Web App von Hand (höchstens 600). PitTools merkt sich gewonnene Gold-Karten, sobald du die Transferziele öffnest – ohne eigene Anfrage an EA.</div>
-                        <div class="sbc-opt-dim" id="sbc-opt-bid-pack" hidden></div>
-                        <details class="sbc-opt-bid-set" id="sbc-opt-bid-set"><summary>Einstellungen</summary>
+                    <div id="sbc-opt-bid-card">
+                        <div class="sbc-opt-head"><span>Gebots-Helfer (Gold bis 600) <span class="sbc-opt-tag" id="sbc-opt-bid-hint">Mitlesen</span><button type="button" class="sbc-opt-tip" aria-label="Info: Mitlesen" aria-expanded="false" data-tip="Biete in der Web App von Hand (höchstens 600). PitTools merkt sich gewonnene Gold-Karten, sobald du die Transferziele öffnest – ohne eigene Anfrage an EA.">i</button></span></div>
+                        <div class="sbc-opt-line sbc-opt-bid-summary" id="sbc-opt-bid-summary">Gewonnen: 0 Karten</div>
+                        <div class="sbc-opt-line" id="sbc-opt-bid-pack" hidden></div>
+                        <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-bid-plan">Mit Gebots-Karten planen</button>
+                        <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-bid-collect">Gewonnene abholen</button>
+                        <div class="sbc-opt-withtip">
+                        <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-bid-search">Kandidaten suchen</button>
+                        <button type="button" class="sbc-opt-tip" aria-label="Info: Kandidaten suchen" aria-expanded="false" data-tip="Sucht eine Seite Gold-Auktionen und schlägt passende Karten vor. Je Gebot ein Tipp – nie über 600 Coins.">i</button>
+                        </div>
+                        <div class="sbc-opt-result" id="sbc-opt-bid-result"></div>
+                        <details class="sbc-opt-details-toggle sbc-opt-bid-set" id="sbc-opt-bid-set"><summary>Einstellungen</summary>
                             <div class="sbc-opt-inline"><label>Rating von <input type="number" id="sbc-opt-bid-rmin" min="75" max="99" placeholder="Ziel−1"></label>
                             <label>bis <input type="number" id="sbc-opt-bid-rmax" min="75" max="99" value="99"></label></div>
-                            <div class="sbc-opt-inline"><label>Höchstgebot (nur senken) <input type="number" id="sbc-opt-bid-cap" min="150" max="600" step="50" value="600"></label>
+                            <div class="sbc-opt-inline"><label>Höchstgebot <input type="number" id="sbc-opt-bid-cap" min="150" max="600" step="50" value="600"></label>
                             <label>Gebote je Runde <input type="number" id="sbc-opt-bid-max" min="1" max="35" value="20"></label></div>
-                            <label class="sbc-opt-switch"><input type="checkbox" id="sbc-opt-bid-fest" checked><span class="track" aria-hidden="true"></span><span class="txt">Immer das Höchstgebot bieten<small>sonst das Mindestgebot</small></span></label>
+                            <div class="sbc-opt-withtip">
+                            <label class="sbc-opt-switch"><input type="checkbox" id="sbc-opt-bid-fest" checked><span class="track" aria-hidden="true"></span><span class="txt">Immer das Höchstgebot bieten</span></label>
+                            <button type="button" class="sbc-opt-tip" aria-label="Info: Höchstgebot" aria-expanded="false" data-tip="Aus: es wird nur das Mindestgebot geboten. Das Höchstgebot lässt sich nur senken, nie über 600.">i</button>
+                            </div>
+                            <div class="sbc-opt-withtip">
+                            <label class="sbc-opt-switch"><input type="checkbox" id="sbc-opt-bid-auto"><span class="track" aria-hidden="true"></span><span class="txt">Automatisches Bieten erlauben</span></label>
+                            <button type="button" class="sbc-opt-tip" aria-label="Info: Automatisches Bieten" aria-expanded="false" data-tip="Eine Runde je Freigabe. Verstößt gegen EAs Regeln – Marktsperre, Coin-Abzug oder Account-Sperre sind möglich.">i</button>
+                            </div>
                         </details>
-                        <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-bid-search">Kandidaten suchen (je Gebot ein Tipp)</button>
-                        <label class="sbc-opt-switch"><input type="checkbox" id="sbc-opt-bid-auto"><span class="track" aria-hidden="true"></span><span class="txt">Automatisches Bieten erlauben<small>eine Runde je Freigabe · verstößt gegen EAs Regeln</small></span></label>
                         <div class="sbc-opt-confirm danger sbc-opt-bid-confirm" id="sbc-opt-bid-confirm" hidden></div>
                         <button type="button" class="sbc-opt-btn danger" id="sbc-opt-bid-round" hidden>Gebots-Runde starten</button>
                         <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-bid-stop" hidden>Stopp nach diesem Gebot</button>
-                        <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-bid-collect">Gewonnene abholen</button>
-                        <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-bid-plan">Mit Gebots-Karten planen</button>
-                        <div class="sbc-opt-result" id="sbc-opt-bid-result"></div>
                     </div>
                 </div>
-                <!-- v6.1.0: Naechster Schritt (wireNextBar) - loest den Hauptknopf im
-                     Ergebnis aus, sobald der aus dem Blick gescrollt ist. -->
                 <div class="sbc-opt-nextbar" id="sbc-opt-futbin-next" hidden>
                     <button type="button" class="sbc-opt-btn primary sbc-opt-nextbtn"><small>Nächster Schritt</small><span></span></button>
                 </div>
@@ -13213,6 +13275,7 @@ const HybridSbcEa = (() => {
         if (!ui.futbinResult) return;
         ui.futbinResult.className = 'sbc-opt-result show';
         ui.futbinResult.innerHTML = html;
+        if (html) { try { setBuyMode('loesung', false); } catch (e) {} }
     }
     /** Schritt-Anzeige im Kaufen-Reiter (v5.29.0): 1 Suchen, 2 Einfuegen, 3 Kaufen, 4 Abgeben. */
     function setFutbinStep(n) {
@@ -14648,8 +14711,11 @@ const HybridSbcEa = (() => {
     function renderBidCard() {
         const el = document.getElementById('sbc-opt-bid-summary');
         if (!el) return;
-        const t = bidCardSummary().text;
+        const sum = bidCardSummary();
+        const t = sum.text;
         if (el.textContent !== t) el.textContent = t;
+        const chipN = document.getElementById('sbc-opt-buy-bidn'), nt = sum.won ? ' · ' + sum.won : '';
+        if (chipN && chipN.textContent !== nt) chipN.textContent = nt;
         const pk = document.getElementById('sbc-opt-bid-pack');
         if (pk) {
             let pt = null;
@@ -15949,13 +16015,15 @@ const HybridSbcEa = (() => {
         }
         const checkedN = marketStats ? marketStats.checked : Math.min(FUTBIN_MARKET_TOP, ranked.length);
         const marketActive = !!marketStats;
-        h += '<div class="sbc-opt-summary">' + ranked.length + ' Lösungen · ' +
-             (s.platform === 'pc' ? 'PC' : 'Konsole') + ' · ' +
-             (marketActive ? checkedN + ' am EA-Markt geprüft' : 'ohne Marktcheck (+15 % auf Platz 1-' + FUTBIN_SKIP_TOP + ')') + '</div>';
+        // v6.47.0: Kopf + Listenzeilen wie in der Galerie - Preis ist der Titel,
+        // "Einfuegen" rechts daneben, darunter eine Meta-Zeile und hoechstens
+        // eine Plakette.
+        h += '<div class="sbc-opt-head"><span>' + ranked.length + ' Lösungen · ' + (s.platform === 'pc' ? 'PC' : 'Konsole') + '</span>' +
+             '<span class="count">' + (marketActive ? checkedN + ' am EA-Markt geprüft' : 'ohne Marktcheck (+15 % auf Platz 1-' + FUTBIN_SKIP_TOP + ')') + '</span></div>';
         if (marketStats && marketStats.cheapUnchecked > 0) {
-            h += warnHtml(marketStats.cheapUnchecked + ' weitere Lösung' + (marketStats.cheapUnchecked === 1 ? ' ist' : 'en sind') +
-                          ' laut futbin billiger als die Empfehlung, aber nicht am Markt geprüft (Obergrenze ' + FUTBIN_MARKET_MAX +
-                          ' Kader pro Suche). Futbin-Preise können veraltet sein - die Live-Preise gelten.');
+            h += '<div class="sbc-opt-withtip"><div class="sbc-opt-confirm-warn">⚠ ' + marketStats.cheapUnchecked + ' laut futbin billigere Lösung' + (marketStats.cheapUnchecked === 1 ? '' : 'en') + ' ungeprüft</div>' +
+                 tipHtml('Laut futbin billiger als die Empfehlung, aber nicht am Markt geprüft (Obergrenze ' + FUTBIN_MARKET_MAX +
+                         ' Kader pro Suche). Futbin-Preise können veraltet sein – die Live-Preise gelten.', 'Ungeprüfte Lösungen') + '</div>';
         }
         if (ranked.length && ranked[0].formationOk === false) {
             h += warnHtml('Keine Lösung in der Formation der Challenge - Chemie und Positionen bitte vor dem Kaufen prüfen.');
@@ -15963,23 +16031,23 @@ const HybridSbcEa = (() => {
         ranked.forEach(function (c, i) {
             const cost = c.liveCost != null ? c.liveCost : c.adjCost;
             const live = c.liveCost != null;
-            const tag = live ? '<span class="sbc-opt-tag ok">live geprüft</span>'
-                      : c.livePruned ? '<span class="sbc-opt-tag">teurer als Empfehlung</span>'
-                      : '<span class="sbc-opt-tag">' + (c.row.source === 'futgg' ? 'FUT.GG-Schätzung' : 'futbin-Schätzung') + '</span>';
-            h += '<div class="sbc-opt-fb-row' + (i === 0 ? ' best' : '') + (i >= FUTBIN_SHOW_OPEN ? ' sbc-opt-fb-more' : '') + '">' +
-                 '<div class="sbc-opt-fb-top"><span class="sbc-opt-fb-price">' + fmtCoins(cost) + '</span>' +
-                 '<span class="sbc-opt-fb-tags">' + (i === 0 ? '<span class="sbc-opt-tag best">Empfehlung</span>' : '') + tag + '</span></div>' +
+            const srcTxt = live ? 'live geprüft' : (c.row.source === 'futgg' ? 'FUT.GG-Schätzung' : 'futbin-Schätzung');
+            const tag = i === 0 ? '<span class="sbc-opt-tag best">Empfehlung</span>'
+                      : live ? '<span class="sbc-opt-tag ok">live geprüft</span>'
+                      : c.livePruned ? '<span class="sbc-opt-tag">teurer als Empfehlung</span>' : '';
+            h += '<div class="sbc-opt-fb-row sbc-opt-item' + (i === 0 ? ' best' : '') + (i >= FUTBIN_SHOW_OPEN ? ' sbc-opt-fb-more' : '') + '">' +
+                 '<div class="sbc-opt-item-top"><span class="sbc-opt-item-title sbc-opt-fb-price">' + fmtCoins(cost) + '</span>' +
+                 '<button type="button" class="sbc-opt-btn ' + (i === 0 ? 'primary' : 'ghost') + ' sbc-opt-itembtn" data-fb-idx="' + i + '">Einfügen</button></div>' +
+                 '<div class="sbc-opt-item-meta"><span class="grow">eigene <b>' + c.eval.ownedCount + '</b> · kaufen <b>' + c.eval.missing + '</b>' +
+                 (c.squad.formation ? ' · ' + escapeHtml(String(c.squad.formation)) : '') + (i === 0 ? ' · ' + (live ? 'live' : srcTxt) : (!live && !c.livePruned) ? ' · ' + srcTxt : '') +
+                 (live && c.liveUnknown ? ' · ' + c.liveUnknown + ' ohne Angebot' : '') + '</span>' + tag + '</div>' +
                  '<div class="sbc-opt-fb-meta">' + (i + 1) + '. ' + (c.row.source === 'futgg' ? 'FUT.GG' : (c.row.ai ? 'FUTBIN AI' : 'Futbin Community')) +
-                 ' #' + escapeHtml(String(c.row.squadId)) + (c.row.source === 'futgg' ? ' · günstigste Lösung ' : ' · Platz ' + (c.listRank + 1) + ' · Liste ') + fmtCoins(c.listPrice) +
-                 (c.squad.formation ? ' · ' + escapeHtml(String(c.squad.formation)) : '') + '</div>' +
-                 '<div class="sbc-opt-fb-meta">eigene Karten <b>' + c.eval.ownedCount + '</b> · zu kaufen <b>' + c.eval.missing + '</b>' +
-                 (live && c.liveUnknown ? ' · ' + c.liveUnknown + ' ohne Angebot (futbin-Preis)' : '') + '</div>' +
+                 ' #' + escapeHtml(String(c.row.squadId)) + (c.row.source === 'futgg' ? ' · günstigste Lösung ' : ' · Platz ' + (c.listRank + 1) + ' · Liste ') + fmtCoins(c.listPrice) + '</div>' +
                  (c.formationOk === false ? '<div class="sbc-opt-warn">≠ Formation der Challenge - Positionen werden angepasst, Chemie prüfen</div>' : '') +
-                 '<button type="button" class="sbc-opt-btn ' + (i === 0 ? 'primary' : 'ghost') + '" data-fb-idx="' + i + '">Einfügen</button>' +
                  '</div>';
         });
         if (ranked.length > FUTBIN_SHOW_OPEN) {
-            h += '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-fb-showmore">' + (ranked.length - FUTBIN_SHOW_OPEN) + ' weitere Lösungen anzeigen</button>';
+            h += '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-fb-showmore">' + (ranked.length - FUTBIN_SHOW_OPEN) + ' weitere Lösungen</button>';
         }
         setFutbinResult(h);
         setFutbinStep(2);
@@ -15997,16 +16065,16 @@ const HybridSbcEa = (() => {
         try {
             setStatus('trage ' + (c.row.source === 'futgg' ? 'FUT.GG-' : 'Futbin-') + 'Lösung ein...');
             const res = await insertFutbinSolution(c.squad, c.owned);
-            let h = '<div class="sbc-opt-summary">Eingetragen: ' + res.placed + ' Spieler (' + res.ownedPlaced + ' eigene, ' +
-                    res.conceptPlaced + ' Konzept)</div>' +
-                    '<div>Positionen: ' + res.onPref + ' auf Hauptposition' + (res.onAlt ? ', ' + res.onAlt + ' auf Nebenposition (zählt für die Chemie voll)' : '') + '</div>';
+            let h = '<div class="sbc-opt-head"><span>Eingetragen: ' + res.placed + ' Spieler</span><span class="count">' + res.ownedPlaced + ' eigene · ' +
+                    res.conceptPlaced + ' Konzept</span></div>' +
+                    '<div class="sbc-opt-line"><span class="grow">Positionen: ' + res.onPref + ' auf Hauptposition' + (res.onAlt ? ', ' + res.onAlt + ' auf Nebenposition (zählt für die Chemie voll)' : '') + '</span></div>';
             if (res.fallbackPlaced) {
                 h += warnHtml(res.fallbackPlaced + ' Spieler steh' + (res.fallbackPlaced === 1 ? 't' : 'en') +
                               ' AUSSER Position - die Lösung passt nicht zur Formation der Challenge. Chemie vor dem Kaufen prüfen oder eine andere Lösung wählen.');
             }
             if (res.bricks) {
                 res.bricks.filled.forEach(function (b) {
-                    h += '<div>Pflicht-Slot ' + (b.index + 1) + ': <b>' + escapeHtml(b.name || '?') + '</b> (' + (b.rating || '?') + ') aus dem Verein</div>';
+                    h += '<div class="sbc-opt-listline">Pflicht-Slot ' + (b.index + 1) + ': <b>' + escapeHtml(b.name || '?') + '</b> (' + (b.rating || '?') + ') aus dem Verein</div>';
                 });
                 res.bricks.open.forEach(function (b) {
                     h += warnHtml('Pflicht-Slot ' + (b.index + 1) + ' bleibt leer - kein passender Spieler im Verein (Nation ' + (b.nation || '–') +
@@ -16023,23 +16091,23 @@ const HybridSbcEa = (() => {
                 const src = pl.liveBin != null
                     ? 'Markt: ' + (pl.liveDist && pl.liveDist.length ? fmtDist(pl.liveDist) : '2. Angebot von ' + (pl.liveOffers != null ? pl.liveOffers : '?'))
                     : (c.row.source === 'futgg' ? 'FUT.GG, kein Live-Angebot gesehen' : 'futbin' + (pl.liveOffers === 0 ? ', kein Angebot gesehen' : ''));
-                list += '<div>' + escapeHtml(pl.name || ('#' + pl.resourceId)) + ' <span class="sbc-opt-muted">(' + (pl.rating || '?') + ', ' +
+                list += '<div class="sbc-opt-listline">' + escapeHtml(pl.name || ('#' + pl.resourceId)) + ' <span class="sbc-opt-muted">(' + (pl.rating || '?') + ', ' +
                         escapeHtml(pl.cardPosition || pl.slotPosition || '?') + ')</span> ' + fmtCoins(price) +
                         ' <span class="sbc-opt-muted">(' + escapeHtml(src) + ')</span></div>';
             });
             const plan = buildBuyPlan(c, futbinLast.platform);
             if (plan.length) {
-                h += '<button type="button" class="sbc-opt-btn primary" id="sbc-opt-futbin-buy">' + plan.length + ' fehlende Spieler kaufen</button>';
-                h += '<div class="sbc-opt-dim">Zusammen höchstens <b>' + fmtCoins(plan.reduce((a, p) => a + p.maxPrice, 0)) + '</b> (Plan + ' +
-                     Math.round(BUY_TOLERANCE * 100) + ' %). Vor dem Kauf werden die Live-Preise geholt, dann kommt eine Rückfrage. ' +
-                     'Ein Kauf alle paar Sekunden, nie über der Obergrenze.</div>';
+                h += '<div class="sbc-opt-withtip"><button type="button" class="sbc-opt-btn primary" id="sbc-opt-futbin-buy">' + plan.length + ' fehlende Spieler kaufen</button>' +
+                     tipHtml('Live-Preis, dann Rückfrage. Ein Kauf alle paar Sekunden, je Karte höchstens Plan + ' + Math.round(BUY_TOLERANCE * 100) + ' %.', 'Kaufen') + '</div>';
+                h += '<div class="sbc-opt-line"><span class="grow">max. <b>' + fmtCoins(plan.reduce((a, p) => a + p.maxPrice, 0)) + '</b></span></div>';
             } else if (!missing) {
-                h += '<div class="sbc-opt-summary">Alle Spieler aus dem Verein - nichts zu kaufen.</div>';
+                h += '<div class="sbc-opt-line"><span class="sbc-opt-dot on"></span><span class="grow">Alle Spieler aus dem Verein – nichts zu kaufen.</span></div>';
             }
             if (missing) {
                 h += '<details class="sbc-opt-details-toggle"><summary>Kaufliste (' + missing + ' Konzept-Spieler auf dem Feld)</summary>' + list + '</details>';
             }
-            h += '<div class="sbc-opt-dim">Abgeben drückst du selbst - nach dem Kaufen prüfen, ob EA alle Vorgaben als erfüllt zeigt.</div>';
+            h += '<div class="sbc-opt-line"><span class="grow">Danach selbst abgeben.</span>' +
+                 tipHtml('Nach dem Kaufen prüfen, ob EA alle Vorgaben als erfüllt zeigt. Abgeben drückst du selbst im Spiel.', 'Abgeben') + '</div>';
             setFutbinResult(h);
             setFutbinStep(3);
             futbinLast.insertedIdx = idx;

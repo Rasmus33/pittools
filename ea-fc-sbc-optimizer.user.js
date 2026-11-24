@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.58.1
+// @version      6.59.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.58.1';
+    const VERSION = '6.59.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7098,6 +7098,8 @@
         #sbc-opt-actbar { display:none; }
         /* v6.58.0 UI 7 Etappe 4: Zahnrad und Ebene "Einstellungen" gibt es nur in der neuen Oberflaeche */
         #sbc-opt-gear, #sbc-opt-set7, #sbc-opt-prof7 { display:none; }
+        /* v6.59.0 UI 7 Etappe 5: Orte (Aktivitaet, Start, Pack-Liste, Zurueck, Zaehler) gibt es nur in der neuen Oberflaeche */
+        #sbc-opt-tab-akt, #sbc-opt-start7, #sbc-opt-akt7, #sbc-opt-pack-list7, #sbc-opt-back7, #sbc-opt-fab-n { display:none; }
         /* v6.57.1: Zeilen "Anzahl" und "Ganzes Set" gibt es nur in der neuen Oberflaeche */
         #sbc-opt-count-lbl, #sbc-opt-set-row { display:none; }
         .sbc-opt-ctxline { align-items:baseline; gap:var(--pt-space-2); padding:var(--pt-space-2-5) 0 var(--pt-space-1-5); font-size:var(--pt-type-label); color:var(--pt-fg-muted); }
@@ -7937,6 +7939,61 @@
         :where(:root[data-ui7]) #sbc-opt-prof7-state { color:var(--pt-fg-default); }
         :where(:root[data-ui7]) #sbc-opt-prof7-chips { margin:0; }
         :where(:root[data-ui7]) #sbc-opt-prof7-chips .sbc-opt-chip { white-space:nowrap; padding-left:var(--pt-space-1); padding-right:var(--pt-space-1); }
+        /* v6.59.0 Etappe 5: Orte "Jetzt · Galerie · Aktivitaet" statt fuenf Reiter. Jede Ansicht ist ein vorhandener
+           Reiter (data-view7 folgt aus Reiter + Kaufweg + Kontext): start = Mehr, packs = Mehr im Store, akt = KI,
+           gebote = Kaufen mit dem Weg Gebote. Die alten Reiter-Knoepfe KI und Mehr sind aus, sobald die Orte stehen. */
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7] .sbc-opt-tab-btn[data-tab="ki"], :where(:root[data-ui7]) #sbc-opt-panel[data-view7] .sbc-opt-tab-btn[data-tab="mehr"] { display:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7] #sbc-opt-tab-akt { display:flex; align-items:center; gap:var(--pt-space-1-5); }
+        :where(:root[data-ui7]) #sbc-opt-akt-n:not(:empty), :where(:root[data-ui7]) #sbc-opt-fab-n:not(:empty) {
+            display:block; box-sizing:border-box; min-width:18px; height:18px; padding:0 var(--pt-space-1); border-radius:var(--pt-radius-full);
+            background:var(--pt-accent); color:var(--pt-fg-on-accent); font-size:var(--pt-type-meta); font-weight:var(--pt-weight-semibold);
+            line-height:18px; text-align:center; font-variant-numeric:tabular-nums;
+        }
+        :where(:root[data-ui7]) #sbc-opt-fab-n:not(:empty) { position:absolute; top:-4px; right:-4px; pointer-events:none; }
+        /* Punkt am Ort "Jetzt": EA zeigt inzwischen etwas anderes (gewechselt wird erst auf Tipp oder beim naechsten Oeffnen) */
+        :where(:root[data-ui7]) #sbc-opt-tab-loesen[data-neu]::before {
+            content:''; position:absolute; top:var(--pt-space-3); right:0; width:6px; height:6px; border-radius:var(--pt-radius-full); background:var(--pt-accent);
+        }
+        /* Kontextzeile auch in Start, Packs und im Gebots-Helfer; die Info-Leiste ist dort aus */
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="start"] .sbc-opt-ctxline, :where(:root[data-ui7]) #sbc-opt-panel[data-view7="packs"] .sbc-opt-ctxline, :where(:root[data-ui7]) #sbc-opt-panel[data-view7="gebote"] .sbc-opt-ctxline { display:flex; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="start"][data-tab] #sbc-opt-infobar, :where(:root[data-ui7]) #sbc-opt-panel[data-view7="start"][data-tab] #sbc-opt-info, :where(:root[data-ui7]) #sbc-opt-panel[data-view7="packs"][data-tab] #sbc-opt-infobar, :where(:root[data-ui7]) #sbc-opt-panel[data-view7="packs"][data-tab] #sbc-opt-info,
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="akt"][data-tab] #sbc-opt-infobar, :where(:root[data-ui7]) #sbc-opt-panel[data-view7="akt"][data-tab] #sbc-opt-info { display:none; }
+        :where(:root[data-ui7]) .sbc-opt-ctxline > .grow { flex:1 1 auto; min-width:0; }
+        /* Gebots-Helfer ist ein Werkzeug (Start › Werkzeuge), kein vierter Weg mehr */
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7] #sbc-opt-way .sbc-opt-chip[data-way="gebote"] { display:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="gebote"] #sbc-opt-way { display:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="gebote"] #sbc-opt-back7 { display:inline-flex; flex:0 0 auto; width:auto; margin:0; padding:0 var(--pt-space-2) 0 0; min-height:0; }
+        /* Start: Weiter / Vorlagen / Werkzeuge als Zeilen, darunter die vorhandenen Werkzeuge des Mehr-Reiters */
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="start"] #sbc-opt-start7 { display:block; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="start"] #sbc-opt-more-line { display:none; }
+        :where(:root[data-ui7]) .sbc-opt-btn.sbc-opt-row7 {
+            display:flex; align-items:center; justify-content:space-between; gap:var(--pt-space-3);
+            min-height:var(--pt-row-h); margin:0 0 var(--pt-stack-tight); text-align:left;
+        }
+        :where(:root[data-ui7]) .sbc-opt-btn.sbc-opt-row7 > :first-child { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        :where(:root[data-ui7]) .sbc-opt-btn.sbc-opt-row7 > .sbc-opt-meta { flex:0 1 auto; min-width:0; max-width:60%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:var(--pt-weight-regular); color:var(--pt-fg-muted); }
+        :where(:root[data-ui7]) .sbc-opt-btn.sbc-opt-row7.is-picked { color:var(--pt-fg-default); box-shadow: inset 0 0 0 1px var(--pt-accent); }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="start"] #sbc-opt-tab-mehr .sbc-opt-withtip > .sbc-opt-btn { justify-content:flex-start; min-height:var(--pt-row-h); text-align:left; }
+        /* Packs (Store): Liste statt Auswahlfeld, Hauptaktion in der Aktionsleiste. Der Pack-Opener steht UNTER den Orten. */
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7]:not([data-view7="packs"]) #sbc-opt-packsection { display:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="packs"] > .sbc-opt-body { display:flex; flex-direction:column; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="packs"] > .sbc-opt-body > * { min-width:0; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="packs"] #sbc-opt-tab-mehr { display:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="packs"][data-store] #sbc-opt-packsection { order:1; margin:0; padding:0; border:none; border-radius:0; background:transparent; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="packs"] #sbc-opt-packsection > .sbc-opt-head, :where(:root[data-ui7]) #sbc-opt-panel[data-view7="packs"] #sbc-opt-packsection > .sbc-opt-inline:has(> #sbc-opt-pack-type) { display:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="packs"] #sbc-opt-pack-list7 { display:block; margin:0 0 var(--pt-stack); }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="packs"][data-act7] #sbc-opt-pack-all { display:none; }
+        /* Aktivitaet: wartet auf dich -> Auftraege -> Protokoll -> Nachricht -> Galerie, Kaufbuch, Verlauf (Flaeche des KI-Reiters) */
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="akt"] #sbc-opt-tab-ki.on { display:flex; flex-direction:column; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="akt"] #sbc-opt-tab-ki.on > * { min-width:0; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="akt"] #sbc-opt-ki-line { order:-5; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="akt"] #sbc-opt-akt7 { display:block; order:-4; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="akt"] #sbc-opt-akt7:empty { display:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="akt"] #sbc-opt-tab-ki > .sbc-opt-head:has(+ #sbc-opt-ki-jobs), :where(:root[data-ui7]) #sbc-opt-panel[data-view7="akt"] #sbc-opt-ki-jobs { order:-3; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="akt"] #sbc-opt-tab-ki > #sbc-opt-protokoll { order:-2; margin-top:var(--pt-space-4); }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="akt"] #sbc-opt-tab-ki > .sbc-opt-head:has(+ #sbc-opt-mcp-message), :where(:root[data-ui7]) #sbc-opt-panel[data-view7="akt"] #sbc-opt-mcp-message, :where(:root[data-ui7]) #sbc-opt-panel[data-view7="akt"] #sbc-opt-ki-nomsg { order:-1; }
+        :where(:root[data-ui7]) #sbc-opt-set7 #sbc-opt-ki-setup { margin-top:0; }
+        :where(:root[data-ui7]) .sbc-opt-flash7 { animation: pt7-wackel var(--pt-dur-slow) var(--pt-ease-out); }
         @keyframes pt7-leiste { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:none; } }
         @keyframes pt7-fuss { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:none; } }
         @keyframes pt7-wackel { 0%, 100% { transform:none; } 30% { transform:translateX(-4px); } 60% { transform:translateX(4px); } }
@@ -8446,6 +8503,15 @@
         s = s || {};
         const none = { show: false, label: '', target: null, step: '', busy: false, disabled: false, blocked: false, tone: '', side: null };
         const mk = function (o) { return Object.assign({}, none, { show: true }, o); };
+        // v6.59.0 Etappe 5: "Jetzt › Packs" (Store). Derselbe Knopf wie "Alle öffnen" - die rote Freigabe mit Halten folgt dort.
+        if (s.view === 'packs') {
+            const k = s.pk || {};
+            const reload = { label: 'Neu laden', target: 'pack-refresh' };
+            if (s.asking || s.set7) return none;
+            if (k.busy) return mk({ label: 'Läuft …', busy: true });
+            if (!(k.n > 0)) return mk({ label: 'Keine Packs gefunden', disabled: true, side: reload });
+            return mk({ label: k.n + (k.n === 1 ? ' Pack öffnen …' : ' Packs öffnen …'), target: 'pack-all', side: reload });
+        }
         if (s.asking || s.store || s.set7) return none;
         if (s.way === 'zukaufen') {
             const f = s.fb || {};
@@ -8518,8 +8584,11 @@
             { title: 'Verbrauchen', fields: ['storagebonus', 'untradeable', 'maxwaste'] },
             { title: 'Kosten', fields: ['costmode', 'bandbox'] }] },
         { id: 'kaufen', title: 'Kaufen', subs: [{ title: '', fields: ['futbin-platform', 'futbin-market'] }] },
+        // v6.59.0 Etappe 5: KI-Verbindung (beide Schalter samt Adresse/Schluessel/Anleitung ziehen als EIN Block um:
+        // die Klappe "Verbindung einrichten") und "Käufe im Chat freigeben". Das Protokoll steht jetzt in "Aktivität".
+        { id: 'ki', title: 'KI', subs: [{ title: '', fields: ['mcp-chatok', 'relay-on', 'mcp-on'] }] },
         { id: 'darstellung', title: 'Darstellung', subs: [{ title: '', fields: ['ui7', 'size'] }] },
-        { id: 'system', title: 'System', subs: [{ title: '', fields: ['poolcache', 'protokoll'] }] }
+        { id: 'system', title: 'System', subs: [{ title: '', fields: ['poolcache'] }] }
     ];
     /** Flache Liste [{ field, group, sub, slot }] - slot ist der Platz in der Ebene ("regeln/1"). Rein. */
     function ptSet7Fields(groups) {
@@ -8594,6 +8663,148 @@
             .map(function (f) { return { field: f, value: ptProfWant(p, f, state[f]), from: state[f].value }; });
     }
     // [UI7-END]
+    // [UI7ORT-BEGIN]
+    // v6.59.0 UI 7, Etappe 5 "Aktivitaet, Packs, Start, Aktionen" (Konzept 3.1):
+    // drei Orte statt fuenf Reiter - Jetzt · Galerie · Aktivitaet. Die Orte
+    // sind eine Schicht UEBER den vorhandenen Reitern: jede Ansicht ist ein
+    // vorhandener Reiter (gleiche Elemente, IDs, Handler) plus hoechstens ein
+    // per Script angelegter Kasten. Rein, ohne DOM/EA.
+    const PT_ORTE = [{ id: 'jetzt', label: 'Jetzt' }, { id: 'galerie', label: 'Galerie' }, { id: 'aktivitaet', label: 'Aktivität' }];
+    function ptEsc(x) {
+        return String(x == null ? '' : x).replace(/[&<>"']/g, function (c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+    }
+    /**
+     * Ort und Ansicht aus Reiter + Kaufweg. s: { tab, buyMode, store, pin }.
+     * Ansichten: loesen (Kaufen/Rating), gebote (Kaufen, Weg Gebote), galerie,
+     * akt (KI-Reiter), start (Mehr-Reiter), packs (Mehr-Reiter im Store; pin
+     * 'start' = von Hand auf Start geholt).
+     */
+    function ptOrtView(s) {
+        s = s || {};
+        const t = s.tab;
+        if (t === 'galerie') return { ort: 'galerie', view: 'galerie' };
+        if (t === 'ki') return { ort: 'aktivitaet', view: 'akt' };
+        if (t === 'kaufen' && s.buyMode === 'gebote') return { ort: 'jetzt', view: 'gebote' };
+        if (t === 'kaufen' || t === 'rating') return { ort: 'jetzt', view: 'loesen' };
+        return { ort: 'jetzt', view: s.store && s.pin !== 'start' ? 'packs' : 'start' };
+    }
+    /** Reiter, den "Jetzt" fuer den Kontext zeigt: offene SBC/Punkte-SBC = ihr Weg, Store und alles andere = Mehr (Packs bzw. Start). */
+    function ptJetztTab(ctx) {
+        const k = ctx && ctx.kind;
+        if (k === 'loesen' || k === 'punkte') return ctx.tab === 'rating' ? 'rating' : 'kaufen';
+        return 'mehr';
+    }
+    /** Woran ein Wechsel der EA-Ansicht erkannt wird: Art des Kontexts, bei SBCs samt Challenge. */
+    function ptOrtKey(ctx, challengeId) {
+        const k = ctx && ctx.kind ? String(ctx.kind) : 'start';
+        return (k === 'loesen' || k === 'punkte') ? k + ':' + (challengeId == null ? '' : challengeId) : k;
+    }
+    /**
+     * Darf "Jetzt" dem Kontext folgen? 'nichts' | 'warten' | 'folgen'.
+     * Regel (Konzept 3.1): gewechselt wird nur, wenn der Nutzer in EA die
+     * Ansicht gewechselt hat (key != seen) - nie waehrend einer Freigabe oder
+     * eines Laufs; bei offenem Blatt auch nicht, solange ein Ergebnis offen
+     * ist, ein anderer Ort gezeigt wird oder eine Ansicht von Hand geholt
+     * wurde (Gebots-Helfer, Start im Store). Beim OEFFNEN des Blatts gilt der
+     * Kontext (der Knopf nennt ihn), ausser Freigabe/Lauf.
+     */
+    function ptOrtFollow(s) {
+        s = s || {};
+        if (!s.open || s.key === s.seen) return 'nichts';
+        if (s.asking || s.running) return 'warten';
+        if (!s.wasOpen) return 'folgen';
+        if (s.ort !== 'jetzt' || s.hand || s.result) return 'warten';
+        return 'folgen';
+    }
+    /** Kontextzeile ausserhalb von "Loesen" (Start, Packs, Gebots-Helfer); sonst null. */
+    function ptOrtLine(view, s) {
+        s = s || {};
+        const n = function (v) { return (Number(v) || 0).toLocaleString('de-DE'); };
+        if (view === 'start') return { title: 'Start', sub: '', val: s.pool > 0 ? 'Verein ' + n(s.pool) : '' };
+        if (view === 'packs') {
+            return { title: 'Packs', sub: s.types > 0 ? ' · ' + s.types + (s.types === 1 ? ' Typ' : ' Typen') : '',
+                val: s.total > 0 ? n(s.total) + ' Stück' : '' };
+        }
+        if (view === 'gebote') return { title: 'Gebots-Helfer', sub: '', val: '' };
+        return null;
+    }
+    /**
+     * Inhalt von "Start". s: { sellN, sets: [{ name, own, need, done }],
+     * vorlagenN, bidText }. Liefert Zeilen [{ sec, go, label, meta }]:
+     * "Weiter" nur, wenn etwas da ist (zu verkaufende Karten, hoechstens drei
+     * angefangene Galerie-Sets - die mit den wenigsten fehlenden Karten),
+     * dann Vorlagen, dann als erste Werkzeug-Zeile der Gebots-Helfer.
+     */
+    function ptStartItems(s) {
+        s = s || {};
+        const out = [];
+        const sell = Number(s.sellN) || 0;
+        if (sell > 0) out.push({ sec: 'weiter', go: 'galerie-sell', label: sell + (sell === 1 ? ' Karte verkaufen' : ' Karten verkaufen'), meta: 'Galerie' });
+        (Array.isArray(s.sets) ? s.sets : []).filter(function (x) {
+            return x && x.name && !x.done && Number(x.own) > 0 && Number(x.need) > Number(x.own);
+        }).sort(function (a, b) { return (a.need - a.own) - (b.need - b.own); }).slice(0, 3).forEach(function (x) {
+            out.push({ sec: 'weiter', go: 'galerie', label: String(x.name), meta: x.own + ' von ' + x.need });
+        });
+        const vn = Number(s.vorlagenN) || 0;
+        out.push({ sec: 'vorlagen', go: 'vorlagen', label: 'Gespeicherte Abläufe', meta: vn > 0 ? String(vn) : 'noch keine' });
+        out.push({ sec: 'werkzeuge', go: 'gebote', label: 'Gebots-Helfer', meta: s.bidText ? String(s.bidText) : '' });
+        return out;
+    }
+    const PT_START_HEADS = { weiter: 'Weiter', vorlagen: 'Vorlagen', werkzeuge: 'Werkzeuge' };
+    function ptStartHtml(items) {
+        let h = '', sec = null;
+        (items || []).forEach(function (it) {
+            if (it.sec !== sec) { sec = it.sec; h += '<div class="sbc-opt-head"><span>' + ptEsc(PT_START_HEADS[sec] || sec) + '</span></div>'; }
+            h += '<button type="button" class="sbc-opt-btn ghost sbc-opt-row7" data-go="' + ptEsc(it.go) + '"><span>' + ptEsc(it.label) + '</span>' +
+                (it.meta ? '<span class="sbc-opt-meta">' + ptEsc(it.meta) + '</span>' : '') + '</button>';
+        });
+        return h;
+    }
+    /** "Aktivitaet › Wartet auf dich": offene Freigaben (nur nennen und hinspringen - entschieden wird im Fuss). */
+    function ptWaitHtml(list) {
+        const l = (Array.isArray(list) ? list : []).filter(function (x) { return x && x.title; });
+        if (!l.length) return '';
+        return '<div class="sbc-opt-head"><span>Wartet auf dich</span><span class="count">' + l.length + '</span></div>' +
+            l.map(function (x, i) {
+                return '<button type="button" class="sbc-opt-btn ghost sbc-opt-row7" data-wait="' + i + '"><span>' + ptEsc(String(x.title).slice(0, 90)) + '</span>' +
+                    '<span class="sbc-opt-meta">ansehen</span></button>';
+            }).join('');
+    }
+    /** Zaehler am Knopf und am Ort "Aktivitaet": '' bei 0, sonst die Zahl (ab 10 "9+"). */
+    function ptWaitBadge(n) {
+        n = Number(n) || 0;
+        return n <= 0 ? '' : n > 9 ? '9+' : String(n);
+    }
+    /** Packs: welcher Typ ist gewaehlt? Die Handwahl, solange es sie noch gibt - sonst der Typ mit den meisten Stueck (bei Gleichstand der erste). */
+    function ptPackPick(groups, hand) {
+        const g = (Array.isArray(groups) ? groups : []).filter(function (x) { return x && x.id != null; });
+        if (!g.length) return '';
+        if (hand != null && g.some(function (x) { return String(x.id) === String(hand); })) return String(hand);
+        let best = g[0];
+        g.forEach(function (x) { if ((Number(x.count) || 0) > (Number(best.count) || 0)) best = x; });
+        return String(best.id);
+    }
+    /** Wie viele Packs oeffnet die Hauptaktion? Feld leer/ungueltig = alle vorhandenen, sonst hoechstens die vorhandenen. */
+    function ptPackCount(available, raw) {
+        const a = Math.max(0, Number(available) || 0);
+        const t = String(raw == null ? '' : raw).trim();
+        const n = parseInt(t, 10);
+        if (t === '' || !isFinite(n) || n < 1) return a;
+        return Math.min(a, n);
+    }
+    /** Pack-Liste statt Auswahlfeld. rows: [{ id, label, count }]. */
+    function ptPackListHtml(rows, picked) {
+        const r = (Array.isArray(rows) ? rows : []).filter(function (x) { return x && x.id != null; });
+        if (!r.length) return '<div class="sbc-opt-meta">Keine eigenen Packs gefunden.</div>';
+        return r.map(function (x) {
+            const on = String(x.id) === String(picked);
+            return '<button type="button" class="sbc-opt-btn ghost sbc-opt-row7' + (on ? ' is-picked' : '') + '" role="radio" aria-checked="' + on + '" data-pack="' + ptEsc(x.id) + '">' +
+                '<span>' + ptEsc(x.label) + '</span><span class="sbc-opt-meta">' + (Number(x.count) || 0) + ' Stück</span></button>';
+        }).join('');
+    }
+    // [UI7ORT-END]
     function ui7IsOn() {
         try { return document.documentElement.hasAttribute('data-ui7'); } catch (e) { return false; }
     }
@@ -8617,6 +8828,13 @@
         s.asking = panel.hasAttribute('data-asking') || !!panel.querySelector('.sbc-opt-confirm:not([hidden])');
         s.store = panel.hasAttribute('data-store'); // im Store steht der Pack-Opener oben, keine SBC ist offen
         s.set7 = panel.hasAttribute('data-set7'); // v6.58.0: in den Einstellungen gibt es keine Hauptaktion
+        s.view = panel.getAttribute('data-view7') || null; // v6.59.0: "Jetzt › Packs" hat eine Hauptaktion
+        if (s.view === 'packs') {
+            const cur = ui.packType ? ui.packType.value : '';
+            const g = (STATE.packGroups || []).filter(function (x) { return String(x.id) === String(cur); })[0];
+            s.pk = { n: ptPackCount(g ? g.count : 0, ui.packCount ? ui.packCount.value : ''), busy: !!STATE.packOpenBusy };
+            return s;
+        }
         if (s.way === 'zukaufen') {
             const f = { rows: 0, price: '', buyN: 0, loadBtn: false, searchBusy: false, searchText: '', buyBusy: false, inserted: false, missing: 0, step: 1 };
             const sb = ui.futbinSearch, res = ui.futbinResult;
@@ -8810,7 +9028,7 @@
                 if (queued || !ui7IsOn()) return;
                 queued = true; Promise.resolve().then(run);
             }).observe(panel, { subtree: true, childList: true, attributes: true,
-                attributeFilter: ['class', 'hidden', 'style', 'disabled', 'data-mode', 'data-tab', 'data-way', 'data-asking', 'data-store', 'data-set7'] });
+                attributeFilter: ['class', 'hidden', 'style', 'disabled', 'data-mode', 'data-tab', 'data-way', 'data-asking', 'data-store', 'data-view7', 'data-set7'] });
         }
         syncActBar();
     }
@@ -8913,8 +9131,10 @@
             const l = el.previousElementSibling;
             return (l && l.classList.contains('sbc-opt-chiplabel') ? [l] : []).concat([el]);
         }
-        if (field === 'futbin-market') return [el.closest('.sbc-opt-withtip') || el];
-        if (field === 'protokoll' || field === 'bandbox') return [el];
+        if (field === 'futbin-market' || field === 'mcp-chatok') return [el.closest('.sbc-opt-withtip') || el];
+        // v6.59.0: beide KI-Schalter wohnen in der Klappe "Verbindung einrichten" - sie zieht als Ganzes um (ptSet7MoveTo nimmt jeden Knoten nur einmal)
+        if (field === 'relay-on' || field === 'mcp-on') { const d = el.closest('#sbc-opt-ki-setup'); return d ? [d] : []; }
+        if (field === 'bandbox') return [el];
         const row = el.closest('.sbc-opt-row');
         return row ? [row] : [];
     }
@@ -8944,6 +9164,9 @@
             const pickRow = pick ? pick.closest('.sbc-opt-row') : null;
             const prof = document.getElementById('sbc-opt-prof7');
             if (pickRow && adv && adv.parentNode) { ptSet7MoveTo(pickRow, adv.parentNode, prof && prof.parentNode === adv.parentNode ? prof.nextSibling : adv.nextSibling); pickRow.setAttribute('data-pick7', '1'); }
+            // v6.59.0 Etappe 5: das Protokoll gehoert zu "Aktivität" (Flaeche des KI-Reiters), nicht mehr zu den Einstellungen
+            const prot = document.getElementById('sbc-opt-protokoll'), kiPane = document.getElementById('sbc-opt-tab-ki');
+            if (prot && kiPane) ptSet7MoveTo(prot, kiPane, null);
             ptSet7Placed = true;
             panel.setAttribute('data-set7ok', '1');
         } else {
@@ -9105,6 +9328,284 @@
         box.addEventListener('click', later);
         try { initProf7(panel); } catch (e) { reportError('Regel-Profile', e); }
     }
+    // ---- v6.59.0 Etappe 5: Orte "Jetzt · Galerie · Aktivitaet" (nur UI 7) ----
+    // Schicht UEBER den Reitern: die Ansicht folgt aus Reiter + Kaufweg +
+    // Kontext (ptOrtView). Es gibt keinen zweiten Zustand neben setTab/
+    // setBuyMode - wer einen Reiter setzt (auch alter Code, die KI), landet
+    // damit in der passenden Ansicht.
+    const ptOrt = { ready: false, on: false, kind: null, seen: null, wasOpen: false, pin: null, held: null, view: null,
+        packHand: null, cache: {}, drawnAt: 0, protOpened: false };
+    function ptOrtBuyMode() { const pane = document.getElementById('sbc-opt-tab-kaufen'); return pane ? pane.getAttribute('data-mode') : null; }
+    function ptOrtNow() {
+        const panel = ui.panel;
+        return ptOrtView({ tab: tabCurrent, buyMode: ptOrtBuyMode(), pin: ptOrt.pin,
+            store: ptOrt.kind === 'packs' && !!panel && panel.hasAttribute('data-store') });
+    }
+    /** Offene Freigaben (unter UI 7 liegen sie im Fuss des Blatts). */
+    function ptOrtWaiting() {
+        const foot = document.getElementById('sbc-opt-foot');
+        return foot ? Array.from(foot.children).filter(function (c) { return c.classList.contains('sbc-opt-confirm') && !c.hidden; }) : [];
+    }
+    /** Freigabe offen / Lauf / Ergebnis in der gezeigten Ansicht - nur lesen. */
+    function ptOrtBusy(view) {
+        const panel = ui.panel, b = { asking: false, running: false, result: false };
+        if (!panel) return b;
+        b.asking = panel.hasAttribute('data-asking') || ptOrtWaiting().length > 0;
+        const flag = function (f) { try { return !!f(); } catch (e) { return false; } };
+        b.running = flag(function () { return buyBusy; }) || flag(function () { return sbcSolveBusy; }) || flag(function () { return futbinBusy; }) ||
+            flag(function () { return hybridClubBusy; }) || flag(function () { return galleryBusy; }) || flag(function () { return sellBusy; }) ||
+            flag(function () { return gauntletBusy; }) || flag(function () { return pointsBusy; }) || flag(function () { return pointsBuyBusy; }) ||
+            flag(function () { return bidHelperBusy; }) || flag(function () { return bidPlanBusy; }) || flag(function () { return STATE.packOpenBusy; }) ||
+            flag(function () { return ptRun.kind; }) || flag(function () { return vorlagenRun && !vorlagenRun.fertig; }) ||
+            flag(function () { return (ui.run && ui.run.disabled) || (ui.batchPlan && ui.batchPlan.disabled); });
+        const filled = function (id) { const e = document.getElementById(id); return !!(e && e.children.length); };
+        if (view === 'loesen') {
+            b.result = tabCurrent === 'kaufen' ? (filled('sbc-opt-futbin-result') || filled('sbc-opt-hybrid-club-result'))
+                : (filled('sbc-opt-result') || filled('sbc-opt-points-result') || filled('sbc-opt-points-buyres') ||
+                    !!(ui.planResult && !ui.planResult.classList.contains('sbc-opt-hidden')));
+        } else if (view === 'start') b.result = filled('sbc-opt-tools-result') || filled('sbc-opt-clubview-result') || filled('sbc-opt-gauntlet-result');
+        else if (view === 'gebote') b.result = filled('sbc-opt-bid-result');
+        return b;
+    }
+    /** Kurz aufblitzen lassen, wohin gesprungen wurde. */
+    function ptFlash(el) {
+        if (!el || !el.classList) return;
+        try { if (typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'center' }); } catch (e) {}
+        el.classList.remove('sbc-opt-flash7');
+        void el.offsetWidth;
+        el.classList.add('sbc-opt-flash7');
+        setTimeout(function () { el.classList.remove('sbc-opt-flash7'); }, 900);
+    }
+    function ptOrtSetHtml(id, html) {
+        const el = document.getElementById(id);
+        if (!el || ptOrt.cache[id] === html) return;
+        ptOrt.cache[id] = html;
+        el.innerHTML = html;
+    }
+    function ptOrtSetText(id, text) {
+        const el = document.getElementById(id);
+        if (el && el.textContent !== text) el.textContent = text;
+    }
+    /** Inhalte der Kaesten zeichnen (schreibt nur bei Aenderung). Zaehler auch bei geschlossenem Blatt. */
+    function ptOrtDraw() {
+        const panel = ui.panel;
+        if (!panel) return;
+        const wait = ptOrtWaiting();
+        const badge = ptWaitBadge(wait.length);
+        ptOrtSetText('sbc-opt-fab-n', badge);
+        ptOrtSetText('sbc-opt-akt-n', badge);
+        if (!panel.classList.contains('open')) return;
+        const view = ptOrt.view;
+        if (view === 'akt') {
+            ptOrtSetHtml('sbc-opt-akt7', ptWaitHtml(wait.map(function (box) {
+                const t = box.querySelector('.sbc-opt-confirm-title, #sbc-opt-batch-confirm-title') || box;
+                return { title: String(t.textContent || '').replace(/\s+/g, ' ').trim() || 'Freigabe' };
+            })));
+        } else if (view === 'packs') {
+            const groups = STATE.packGroups || [];
+            const sel = ui.packType;
+            const want = ptPackPick(groups, ptOrt.packHand);
+            if (sel && want && sel.value !== want && !STATE.packOpenBusy &&
+                Array.from(sel.options).some(function (o) { return o.value === want; })) sel.value = want;
+            ptOrtSetHtml('sbc-opt-pack-list7', ptPackListHtml(groups.map(function (g) {
+                let label = String(g.id);
+                try { label = packLabelOf(g); } catch (e) {}
+                return { id: g.id, label: label, count: g.count };
+            }), sel ? sel.value : ''));
+        } else if (view === 'start' && Date.now() - ptOrt.drawnAt >= 2000) {
+            ptOrt.drawnAt = Date.now();
+            const st = { sellN: 0, sets: [], vorlagenN: 0, bidText: '' };
+            try { st.sellN = galleryBoughtLoad().length; } catch (e) {}
+            try {
+                const done = galleryDoneIds();
+                st.sets = ((galleryLast && galleryLast.ranked) || []).map(function (x) {
+                    return { name: x.name, own: x.own && x.eaKind ? x.own.count : 0, need: x.items, done: done.indexOf(x.id) >= 0 };
+                });
+            } catch (e) {}
+            try { st.vorlagenN = vorlagenLoad().length; } catch (e) {}
+            const bs = document.getElementById('sbc-opt-bid-summary');
+            if (bs) st.bidText = String(bs.textContent || '').replace(/\s+/g, ' ').trim();
+            ptOrtSetHtml('sbc-opt-start7', ptStartHtml(ptStartItems(st)));
+        }
+    }
+    /** Ansicht am Blatt markieren (data-view7), Orte hervorheben. Laeuft nach jedem setTab/setBuyMode und am Takt; schreibt nur bei Aenderung. */
+    function ptOrtMark() {
+        const panel = ui.panel;
+        if (!panel || !ptOrt.ready || !ptOrt.on || !ui7IsOn()) return;
+        if (tabCurrent !== 'mehr') ptOrt.pin = null;
+        const v = ptOrtNow();
+        if (panel.getAttribute('data-view7') !== v.view) panel.setAttribute('data-view7', v.view);
+        ptOrtSetText('sbc-opt-jetzt-lbl', 'Jetzt');
+        const a = document.getElementById('sbc-opt-tab-akt');
+        if (a) {
+            const on = v.ort === 'aktivitaet';
+            if (a.classList.contains('on') !== on) a.classList.toggle('on', on);
+            if (a.getAttribute('aria-selected') !== String(on)) a.setAttribute('aria-selected', String(on));
+        }
+        if (ptOrt.view === v.view) return;
+        ptOrt.view = v.view;
+        ptOrt.drawnAt = 0;
+        if (v.view === 'akt') {
+            const pd = document.getElementById('sbc-opt-protokoll');
+            if (pd && !ptOrt.protOpened) { ptOrt.protOpened = true; pd.open = true; }
+            try { renderProtokoll(); } catch (e) {}
+        }
+        try { ptOrtDraw(); } catch (e) {}
+        try { syncCtxLine(); } catch (e) {}
+        try { syncActBar(); } catch (e) {}
+    }
+    /** "Jetzt" auf den Kontext stellen (Tipp auf den Ort, Oeffnen des Blatts, Wechsel der EA-Ansicht). */
+    function ptJetztGo(ctx) {
+        if (!ptOrt.ready || !ptOrt.on) return false;
+        if (!ctx) { try { ctx = ptContextNow(); } catch (e) { ctx = null; } }
+        const cur = ptOrtNow();
+        ptOrt.kind = ctx ? ctx.kind : null;
+        ptOrt.seen = ptOrtKey(ctx, STATE.sbc.challengeId);
+        ptOrt.pin = null;
+        let tab = ptJetztTab(ctx);
+        if (tab !== 'mehr') {
+            const h = ptOrt.held;
+            if (h && h.cid === STATE.sbc.challengeId) tab = h.tab;            // der Weg, den autoPickTab fuer diese SBC wollte
+            else if (cur.view === 'loesen') tab = tabCurrent;                 // der Weg dieser SBC steht schon (Vorgaben oder Handwahl)
+            // Der Gebots-Helfer ist ein Werkzeug (Start), kein Weg mehr: "Jetzt" zeigt die SBC, nie die Gebote.
+            if (tab === 'kaufen' && ptOrtBuyMode() === 'gebote') setBuyMode('loesung', false);
+        }
+        ptOrt.held = null;
+        const j = document.getElementById('sbc-opt-tab-loesen');
+        if (j && j.hasAttribute('data-neu')) j.removeAttribute('data-neu');
+        if (tab !== tabCurrent) setTab(tab, false);
+        else ptOrtMark();
+        return true;
+    }
+    /**
+     * autoPickTab fragt vor seinem setTab: darf der Reiter jetzt wechseln?
+     * true = gehalten (anderer Ort offen, Ergebnis/Freigabe/Lauf offen) - der
+     * gewuenschte Reiter wird gemerkt und gilt beim naechsten "Jetzt".
+     */
+    function ptOrtAutoTab(tab) {
+        const panel = ui.panel;
+        if (!ptOrt.ready || !ptOrt.on || !ui7IsOn() || !panel || !panel.classList.contains('open')) return false;
+        const cur = ptOrtNow();
+        const b = ptOrtBusy(cur.view);
+        const f = ptOrtFollow({ key: 'neu', seen: 'alt', open: true, wasOpen: true, ort: cur.ort,
+            hand: cur.view === 'gebote' || !!ptOrt.pin, asking: b.asking, running: b.running, result: b.result });
+        if (f === 'folgen') { ptOrt.held = null; return false; }
+        ptOrt.held = { cid: STATE.sbc.challengeId, tab: tab === 'rating' ? 'rating' : 'kaufen' };
+        return true;
+    }
+    /** Sprung zu einem Ziel (Start-Zeilen, Zurueck, Ort "Aktivitaet"). Nur Navigation - nichts wird ausgeloest ausser dem Vorlagen-Fenster. */
+    function ptOrtGo(target) {
+        if (!ui7IsOn() || !ptOrt.on) return;
+        if (target === 'jetzt') { ptJetztGo(null); return; }
+        if (target === 'start') { ptOrt.pin = 'start'; if (tabCurrent !== 'mehr') setTab('mehr', false); else ptOrtMark(); return; }
+        if (target === 'aktivitaet') { setTab('ki', false); return; }
+        if (target === 'galerie') { setTab('galerie', false); return; }
+        if (target === 'galerie-sell') { setTab('galerie', false); ptFlash(document.getElementById('sbc-opt-gallery-sell')); return; }
+        if (target === 'gebote') { setBuyMode('gebote', false); setTab('kaufen', false); return; }
+        if (target === 'vorlagen') { if (ui.vorlagenBtn) ui.vorlagenBtn.click(); }
+    }
+    /** Kontextzeile ausserhalb von "Loesen" (fuer syncCtxLine); null = die Zeile der SBC gilt. */
+    function ptOrtLineNow() {
+        if (!ptOrt.on || !ui7IsOn()) return null;
+        const s = { pool: STATE.pool ? STATE.pool.length : 0, types: 0, total: 0 };
+        (STATE.packGroups || []).forEach(function (g) { s.types++; s.total += Number(g.count) || 0; });
+        return ptOrtLine(ptOrt.view, s);
+    }
+    /** Schalter aus: Markierungen und gezeichnete Inhalte weg - die alte Oberflaeche sieht aus wie vorher. */
+    function ptOrtClean() {
+        if (!ptOrt.on) return;
+        ptOrt.on = false;
+        const panel = ui.panel;
+        if (panel) panel.removeAttribute('data-view7');
+        ptOrtSetText('sbc-opt-jetzt-lbl', 'Lösen');
+        ['sbc-opt-start7', 'sbc-opt-akt7', 'sbc-opt-pack-list7'].forEach(function (id) { ptOrtSetHtml(id, ''); });
+        ptOrtSetText('sbc-opt-fab-n', ''); ptOrtSetText('sbc-opt-akt-n', '');
+        const j = document.getElementById('sbc-opt-tab-loesen');
+        if (j) j.removeAttribute('data-neu');
+        ptOrt.cache = {}; ptOrt.view = null; ptOrt.seen = null; ptOrt.wasOpen = false; ptOrt.pin = null; ptOrt.held = null; ptOrt.kind = null;
+    }
+    /** Am 500-ms-Takt (syncFabWord, mit dem dort gelesenen Kontext): "Jetzt" folgt dem Kontext nach ptOrtFollow. */
+    function ptOrtTick(ctx) {
+        const panel = ui.panel;
+        if (!panel || !ptOrt.ready) return;
+        if (!ui7IsOn() || !ctx) { ptOrtClean(); return; }
+        if (!ptOrt.on) { ptOrt.on = true; ptOrt.seen = null; ptOrt.wasOpen = false; }
+        ptOrt.kind = ctx.kind;
+        const open = panel.classList.contains('open');
+        const key = ptOrtKey(ctx, STATE.sbc.challengeId);
+        const cur = ptOrtNow();
+        const b = open && key !== ptOrt.seen ? ptOrtBusy(cur.view) : {};
+        const f = ptOrtFollow({ key: key, seen: ptOrt.seen, open: open, wasOpen: ptOrt.wasOpen, ort: cur.ort,
+            hand: cur.view === 'gebote' || !!ptOrt.pin, asking: b.asking, running: b.running, result: b.result });
+        // "gerade geoeffnet" bleibt stehen, solange eine Freigabe oder ein Lauf das Folgen aufhaelt
+        if (!open) ptOrt.wasOpen = false;
+        else if (!(f === 'warten' && (b.asking || b.running))) ptOrt.wasOpen = true;
+        if (f === 'folgen') ptJetztGo(ctx);
+        else ptOrtMark();
+        // Punkt am Ort "Jetzt": EA zeigt inzwischen etwas anderes, als "Jetzt" gerade zeigt
+        const j = document.getElementById('sbc-opt-tab-loesen');
+        const neu = open && key !== ptOrt.seen;
+        if (j && j.hasAttribute('data-neu') !== neu) j.toggleAttribute('data-neu', neu);
+        ptOrtDraw();
+    }
+    /** Kaesten und Knoepfe der Orte anlegen (per Script, nicht im Panel-Markup; ohne Schalter unsichtbar). */
+    function initOrt7(panel) {
+        const tabs = panel ? panel.querySelector('#sbc-opt-tabs') : null;
+        const mehr = panel ? panel.querySelector('#sbc-opt-tab-mehr') : null, ki = panel ? panel.querySelector('#sbc-opt-tab-ki') : null;
+        const jetzt = panel ? panel.querySelector('#sbc-opt-tab-loesen') : null;
+        if (!tabs || !mehr || !ki || !jetzt || document.getElementById('sbc-opt-tab-akt')) return;
+        const mk = function (tag, id, cls) { const e = document.createElement(tag); e.id = id; if (cls) e.className = cls; return e; };
+        // Ort "Jetzt": derselbe Knopf wie "Loesen" (Etappe 3a) - nur die Beschriftung wechselt unter UI 7
+        jetzt.innerHTML = '<span id="sbc-opt-jetzt-lbl">Lösen</span>';
+        const akt = mk('button', 'sbc-opt-tab-akt', 'sbc-opt-tab-btn');
+        akt.type = 'button'; akt.setAttribute('aria-selected', 'false');
+        akt.innerHTML = 'Aktivität<span id="sbc-opt-akt-n"></span>';
+        tabs.appendChild(akt);
+        akt.addEventListener('click', function () { ptOrtGo('aktivitaet'); });
+        // Start: Weiter / Vorlagen / erste Werkzeug-Zeile - darunter folgen die vorhandenen Werkzeuge des Mehr-Reiters
+        const start = mk('div', 'sbc-opt-start7');
+        mehr.insertBefore(start, mehr.firstChild);
+        start.addEventListener('click', function (ev) {
+            const b = ev.target && typeof ev.target.closest === 'function' ? ev.target.closest('[data-go]') : null;
+            if (b) ptOrtGo(b.getAttribute('data-go'));
+        });
+        // Aktivitaet: "Wartet auf dich" ueber den vorhandenen Abschnitten des KI-Reiters
+        const wait = mk('div', 'sbc-opt-akt7');
+        ki.insertBefore(wait, ki.firstChild);
+        wait.addEventListener('click', function (ev) {
+            const b = ev.target && typeof ev.target.closest === 'function' ? ev.target.closest('[data-wait]') : null;
+            if (!b) return;
+            const box = ptOrtWaiting()[parseInt(b.getAttribute('data-wait'), 10) || 0];
+            if (box) ptFlash(box);
+        });
+        // Packs: Liste statt Auswahlfeld (waehlt nur - geoeffnet wird ueber den vorhandenen Knopf)
+        const sel = panel.querySelector('#sbc-opt-pack-type'), sec = panel.querySelector('#sbc-opt-packsection');
+        if (sel && sec) {
+            const list = mk('div', 'sbc-opt-pack-list7');
+            list.setAttribute('role', 'radiogroup'); list.setAttribute('aria-label', 'Pack-Typ');
+            const row = sel.parentNode && sel.parentNode.parentNode === sec ? sel.parentNode : null;
+            sec.insertBefore(list, row);
+            list.addEventListener('click', function (ev) {
+                const b = ev.target && typeof ev.target.closest === 'function' ? ev.target.closest('[data-pack]') : null;
+                if (!b || !ui7IsOn() || STATE.packOpenBusy) return;   // nicht mitten im Lauf umschalten
+                ptOrt.packHand = b.getAttribute('data-pack');
+                if (ui.packType) ui.packType.value = ptOrt.packHand;
+                try { ptOrtDraw(); syncActBar(); } catch (e) {}
+            });
+        }
+        // Zurueck aus einem Werkzeug (Gebots-Helfer) nach "Start"
+        const ctx = panel.querySelector('#sbc-opt-ctxline');
+        if (ctx) {
+            const back = mk('button', 'sbc-opt-back7', 'sbc-opt-btn link');
+            back.type = 'button'; back.textContent = '‹ Start';
+            ctx.insertBefore(back, ctx.firstChild);
+            back.addEventListener('click', function () { ptOrtGo('start'); });
+        }
+        // Zaehler offener Freigaben am Knopf
+        const fab = document.getElementById('sbc-opt-fab');
+        if (fab && !document.getElementById('sbc-opt-fab-n')) fab.appendChild(mk('span', 'sbc-opt-fab-n'));
+        ptOrt.ready = true;
+    }
     /** Schaltet die neue Huelle an/aus (Attribut an <html>); schreibt nur bei Aenderung. */
     function ui7Apply(on) {
         try {
@@ -9127,8 +9628,9 @@
         try { syncActBar(); } catch (e) {}
         const el = document.getElementById('sbc-opt-fab-word');
         if (!el) return;
-        let w = '';
-        if (ui7IsOn()) { try { w = ptFabWord(ptContextNow()); } catch (e) { w = ''; } }
+        let w = '', ctx = null;
+        if (ui7IsOn()) { try { ctx = ptContextNow(); w = ptFabWord(ctx); } catch (e) { w = ''; } }
+        try { ptOrtTick(ctx); } catch (e) {}   // v6.59.0: Orte folgen demselben Takt (und demselben gelesenen Kontext)
         if (el.textContent === w) return;
         el.textContent = w;
         // Die Pille ist breiter als der Kreis: eine gemerkte Position am
@@ -10210,6 +10712,7 @@
         initConfirmFoot(panel);
         try { initActBar(panel); } catch (e) { reportError('Aktionsleiste', e); }
         try { initSet7(panel); } catch (e) { reportError('Einstellungs-Ebene', e); }
+        try { initOrt7(panel); } catch (e) { reportError('Orte', e); }
         try {
             const pd = panel.querySelector('#sbc-opt-protokoll');
             pd.addEventListener('toggle', function () { if (pd.open) renderProtokoll(); });
@@ -11303,7 +11806,7 @@
         });
         const t = document.getElementById('sbc-opt-tab-loesen');
         if (t) {
-            const on = !!way;
+            const on = !!way || (tabCurrent === 'mehr' && ui7IsOn()); // v6.59.0: der Ort "Jetzt" umfasst auch Start und Packs (Mehr-Reiter)
             if (t.classList.contains('on') !== on) t.classList.toggle('on', on);
             if (t.getAttribute('aria-selected') !== String(on)) t.setAttribute('aria-selected', String(on));
         }
@@ -11311,6 +11814,7 @@
         if (panel && (panel.getAttribute('data-way') || '') !== (way || '')) {
             if (way) panel.setAttribute('data-way', way); else panel.removeAttribute('data-way');
         }
+        try { ptOrtMark(); } catch (e) {}
     }
     /** Weg gewaehlt: wie ein Tipp auf den Reiter (Handwahl gilt fuers Set) plus Kaufweg. */
     function ptWayPick(way) {
@@ -11324,6 +11828,8 @@
     /** Tipp auf "Loesen": der zuletzt gueltige Weg dieser SBC (Kontext), sonst der zuletzt offene. */
     let ptLastLoesenTab = null;
     function onLoesenTabClick() {
+        // v6.59.0: unter UI 7 ist der Knopf der Ort "Jetzt" - er zeigt, was zu EAs Ansicht gehoert (SBC, Packs, sonst Start)
+        try { if (ui7IsOn() && ptJetztGo(null)) return; } catch (e) {}
         let tab = tabCurrent === 'kaufen' || tabCurrent === 'rating' ? tabCurrent : ptLastLoesenTab;
         if (!tab) { try { tab = ptContextNow().tab; } catch (e) { tab = null; } }
         setTab(tab === 'rating' ? 'rating' : 'kaufen', true);
@@ -11345,9 +11851,13 @@
         const v = low ? '⚠ zu wenig Vorgabe-Karten'
             : (st && st !== 'bereit') ? st
             : STATE.pool && STATE.pool.length ? 'Verein ' + STATE.pool.length.toLocaleString('de-DE') : '';
-        if (tEl.textContent !== l.title) tEl.textContent = l.title;
-        if (sEl.textContent !== l.sub) sEl.textContent = l.sub;
-        if (vEl.textContent !== v) vEl.textContent = v;
+        // v6.59.0: ausserhalb von "Loesen" nennt die Zeile den Ort (Start, Packs, Gebots-Helfer)
+        let o = null;
+        try { o = ptOrtLineNow(); } catch (e) { o = null; }
+        const title = o ? o.title : l.title, sub = o ? o.sub : l.sub, val = o ? o.val : v;
+        if (tEl.textContent !== title) tEl.textContent = title;
+        if (sEl.textContent !== sub) sEl.textContent = sub;
+        if (vEl.textContent !== val) vEl.textContent = val;
     }
     /**
      * Reiter beim Wechsel der SBC (UI 7 Entscheidung 1, Rasmus 24.11.): einfache
@@ -11373,11 +11883,14 @@
             // Vorlaeufig gewaehlt und inzwischen von Hand woanders hin? Dann nichts tun.
             if (tabTentative && tabTentative.key === key && tabCurrent !== tabTentative.tab) { tabTentative = null; return; }
             tabTentative = null;
+            // v6.59.0 UI 7: nie wechseln, solange ein Ergebnis, eine Freigabe oder ein Lauf offen ist (ptOrtAutoTab merkt den Wunsch)
+            if (typeof ptOrtAutoTab === 'function' && ptOrtAutoTab(tab)) return;
             setTab(tab, false);
             return;
         }
         if (tabTentative && tabTentative.key === key) return;
         tabTentative = { key: key, tab: tab };
+        if (typeof ptOrtAutoTab === 'function' && ptOrtAutoTab(tab)) return;
         setTab(tab, false);
     }
     function refreshSbcInfoUI() {

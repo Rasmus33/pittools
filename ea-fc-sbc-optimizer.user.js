@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.59.1
+// @version      6.60.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.59.1';
+    const VERSION = '6.60.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7996,6 +7996,22 @@
         :where(:root[data-ui7]) #sbc-opt-panel[data-view7="akt"] #sbc-opt-tab-ki > .sbc-opt-head:has(+ #sbc-opt-mcp-message), :where(:root[data-ui7]) #sbc-opt-panel[data-view7="akt"] #sbc-opt-mcp-message, :where(:root[data-ui7]) #sbc-opt-panel[data-view7="akt"] #sbc-opt-ki-nomsg { order:-1; }
         :where(:root[data-ui7]) #sbc-opt-set7 #sbc-opt-ki-setup { margin-top:0; }
         :where(:root[data-ui7]) .sbc-opt-flash7 { animation: pt7-wackel var(--pt-dur-slow) var(--pt-ease-out); }
+        /* v6.60.0 Etappe 6: Ort "Galerie" im neuen Geruest - Kontextzeile (Galerie · N Sets · Kontostand bzw. Set-Name,
+           Note, Tokens; in Set und Verkauf mit Rueckweg "‹ Sets"), EINE Hauptaktion in der Aktionsleiste. Die echten
+           Hauptknoepfe (Sets laden, N Karten kaufen, N Karten listen ...) sind erst aus, wenn die Leiste steht. */
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="galerie"] .sbc-opt-ctxline { display:flex; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="galerie"][data-tab] #sbc-opt-infobar, :where(:root[data-ui7]) #sbc-opt-panel[data-view7="galerie"][data-tab] #sbc-opt-info { display:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="galerie"][data-act7] #sbc-opt-gallery-load, :where(:root[data-ui7]) #sbc-opt-panel[data-view7="galerie"][data-act7] #sbc-opt-gallery-next, :where(:root[data-ui7]) #sbc-opt-panel[data-view7="galerie"][data-act7] .sbc-opt-withtip:has(> #sbc-opt-gallery-flow) { display:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="galerie"][data-act7] #sbc-opt-gallery-result > .sbc-opt-btn.primary, :where(:root[data-ui7]) #sbc-opt-panel[data-view7="galerie"][data-act7] #sbc-opt-gallery-result > .sbc-opt-withtip:has(> .sbc-opt-btn.primary) { display:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="galerie"] #sbc-opt-gallery-line:has(#sbc-opt-gallery-sell[hidden]) { display:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="galerie"] #sbc-opt-gallery-line { margin-top:0; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-gal7]:not([data-gal7="liste"]):not([data-gal7="leer"]) #sbc-opt-gallery-line, :where(:root[data-ui7]) #sbc-opt-panel[data-gal7]:not([data-gal7="liste"]):not([data-gal7="leer"]) #sbc-opt-tab-galerie > .sbc-opt-chiplabel, :where(:root[data-ui7]) #sbc-opt-panel[data-gal7]:not([data-gal7="liste"]):not([data-gal7="leer"]) #sbc-opt-gallery-sort,
+        :where(:root[data-ui7]) #sbc-opt-panel[data-gal7]:not([data-gal7="liste"]):not([data-gal7="leer"]) #sbc-opt-gtokens, :where(:root[data-ui7]) #sbc-opt-panel[data-gal7]:not([data-gal7="liste"]):not([data-gal7="leer"]) #sbc-opt-gallery-more { display:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-gal7="set"] #sbc-opt-gallery-result > .sbc-opt-head:first-child, :where(:root[data-ui7]) #sbc-opt-panel[data-gal7="liste"] #sbc-opt-gallery-result > .sbc-opt-head:first-child > .count { display:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="galerie"][data-galback7] #sbc-opt-back7 { display:inline-flex; flex:0 0 auto; width:auto; margin:0; padding:0 var(--pt-space-2) 0 0; min-height:0; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-galback7] #sbc-opt-gal-back, :where(:root[data-ui7]) #sbc-opt-panel[data-galback7] #sbc-opt-gal-sell-back, :where(:root[data-ui7]) #sbc-opt-panel[data-galback7] #sbc-opt-gal-check-back, :where(:root[data-ui7]) #sbc-opt-panel[data-galback7] #sbc-opt-gal-ea-back { display:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="galerie"] #sbc-opt-gallery-result { margin-top:0; padding-top:0; border-top:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-view7="galerie"][data-act7] #sbc-opt-gallery-result.sbc-opt-result-empty { display:none; }
         /* v6.59.1 Etappe 5 (2): "Alle Aktionen" hinter der Lupe im Kopf (am PC Strg+K) - Register zum Hinspringen */
         :where(:root[data-ui7]) #sbc-opt-find {
             display:flex; align-items:center; justify-content:center; flex:0 0 auto; margin:0 0 0 auto; padding:0;
@@ -8534,6 +8550,23 @@
             if (!(k.n > 0)) return mk({ label: 'Keine Packs gefunden', disabled: true, side: reload });
             return mk({ label: k.n + (k.n === 1 ? ' Pack öffnen …' : ' Packs öffnen …'), target: 'pack-all', side: reload });
         }
+        // v6.60.0 Etappe 6: Ort "Galerie". Die Hauptaktion ist der erste Hauptknopf des Ergebnisses (Set ansehen,
+        // N Karten kaufen, N Karten listen ...) - sonst "Sets laden" bzw. der Rueckweg zur Liste. Kein eigener Ablauf.
+        if (s.view === 'galerie') {
+            const g = s.ga || {};
+            if (s.asking || s.set7) return none;
+            const kind = g.kind === 'liste' || g.kind === 'set' || g.kind === 'verkauf' || g.kind === 'sonst' ? g.kind : 'leer';
+            const st = kind === 'verkauf' ? '' : 'Schritt ' + Math.max(1, Math.min(4, parseInt(g.step, 10) || 1)) + ' von 4';
+            if (g.busy) return mk({ label: g.busyText || 'Läuft …', busy: true, step: st });
+            const lbl = ptGalLabel(g.main);
+            if (lbl) {
+                const l2 = ptGalLabel(g.second);
+                return mk({ label: lbl, target: 'gal-main', step: st,
+                    side: l2 ? { label: l2, target: 'gal-second' } : kind === 'liste' ? { label: 'Neu laden', target: 'gallery-load' } : null });
+            }
+            if (kind !== 'leer' && g.back) return mk({ label: 'Zur Set-Liste', target: 'gal-back', step: st });
+            return mk({ label: 'Sets laden', target: 'gallery-load', step: 'Schritt 1 von 4' });
+        }
         if (s.asking || s.store || s.set7) return none;
         if (s.way === 'zukaufen') {
             const f = s.fb || {};
@@ -8583,6 +8616,40 @@
             return mk({ label: 'Optimieren + eintragen', target: 'run', blocked: !!v.blocked });
         }
         return none;
+    }
+    /**
+     * v6.60.0 Etappe 6: Beschriftung der Galerie-Hauptaktion aus dem ECHTEN Knopf. b: { id, text, set } - set =
+     * Zeile der Set-Liste (ihr Text ist der Set-Name). Klammern fallen weg ("(~11.400 Coins)"); folgt eine
+     * Freigabe (Kaufen, Listen), endet die Beschriftung auf " …". '' = kein Knopf. Rein.
+     */
+    function ptGalLabel(b) {
+        if (!b) return '';
+        const id = String(b.id || '');
+        let t = String(b.text == null ? '' : b.text).replace(/\s+/g, ' ').trim();
+        if (b.set) return t ? (t.length > 24 ? t.slice(0, 23).trim() + '…' : t) + ' ansehen' : 'Set ansehen';
+        if (id === 'sbc-opt-gal-sell-now') {
+            const m = /\((\d+)\)/.exec(t), n = m ? parseInt(m[1], 10) : 0;
+            return n > 0 ? n + (n === 1 ? ' Karte verkaufen …' : ' Karten verkaufen …') : 'Gekaufte Karten verkaufen …';
+        }
+        if (id === 'sbc-opt-gal-rest') return 'Set neu prüfen';
+        if (id === 'sbc-opt-gal-ea-adopt') { const n = parseInt(t, 10); return n > 0 ? n + (n === 1 ? ' Karte übernehmen' : ' Karten übernehmen') : 'Karten übernehmen'; }
+        t = t.replace(/\s*\([^)]*\)/g, '').trim();
+        if (!t) return '';
+        if (t.length > 34) t = t.slice(0, 33).trim() + '…';
+        if ((id === 'sbc-opt-gal-buy' || id === 'sbc-opt-gal-buy-complete' || id === 'sbc-opt-gal-sell-go') && !/…$/.test(t)) t += ' …';
+        return t;
+    }
+    /**
+     * v6.60.0: was zeigt das Galerie-Ergebnis? d: { empty, rows, sell, set } (aus dem DOM gelesen) ->
+     * 'leer' | 'liste' | 'verkauf' | 'set' | 'sonst' (Fortschritt, Meldung, nach einem Kauf). Rein.
+     */
+    function ptGalKind(d) {
+        d = d || {};
+        if (d.empty) return 'leer';
+        if (d.rows > 0) return 'liste';
+        if (d.sell) return 'verkauf';
+        if (d.set) return 'set';
+        return 'sonst';
     }
     /** v6.57.1: welche Anzahl-Wahl gilt nach einem Tipp/Ereignis? Rein. ('eins' | 'batch' | 'reihe') */
     function ptMultiNext(cur, ev) {
@@ -8750,6 +8817,17 @@
                 val: s.total > 0 ? n(s.total) + ' Stück' : '' };
         }
         if (view === 'gebote') return { title: 'Gebots-Helfer', sub: '', val: '' };
+        // v6.60.0 Etappe 6: Galerie - Liste (N Sets, Kontostand), Set (Name, Note, Tokens), Verkaufen (N Karten)
+        if (view === 'galerie') {
+            const g = s.gal || {};
+            const coins = g.coins > 0 ? n(g.coins) + ' Coins' : '';
+            if (g.kind === 'set') {
+                // ohne Kontostand: Name, Note und Tokens brauchen die Zeile (der Kontostand steht in der Kauf-Freigabe)
+                return { title: g.name ? String(g.name) : 'Set', sub: (g.grade ? ' · ' + g.grade : '') + (g.tokens > 0 ? ' · ' + g.tokens + ' T' : ''), val: '' };
+            }
+            if (g.kind === 'verkauf') return { title: 'Verkaufen', sub: g.cards > 0 ? ' · ' + g.cards + (g.cards === 1 ? ' Karte' : ' Karten') : '', val: '' };
+            return { title: 'Galerie', sub: g.sets > 0 ? ' · ' + g.sets + (g.sets === 1 ? ' Set' : ' Sets') : '', val: coins };
+        }
         return null;
     }
     /**
@@ -8891,7 +8969,66 @@
         if (key === 'fb-row') return q('#sbc-opt-futbin-result .sbc-opt-fb-row.is-picked button[data-fb-idx]') || q('#sbc-opt-futbin-result button[data-fb-idx]');
         if (key === 'close') return q('#sbc-opt-close');
         if (key === 'hybrid-stop') return q('#sbc-opt-hybrid-club-stop');
+        // v6.60.0: Galerie - der Knopf, den ptGalRead zuletzt als Haupt-/Zweitknopf bzw. Rueckweg gelesen hat (noch im Ergebnis)
+        if (key === 'gal-main' || key === 'gal-second' || key === 'gal-back') {
+            const el = key === 'gal-main' ? ptGal.main : key === 'gal-second' ? ptGal.second : ptGal.back;
+            return el && ui.galleryResult && ui.galleryResult.contains(el) ? el : null;
+        }
         return q('#sbc-opt-' + key);
+    }
+    // ---- v6.60.0 Etappe 6: Ort "Galerie" im neuen Geruest (nur UI 7) ----------
+    // Die alten Render-Funktionen bleiben die Datenquelle: gelesen wird, was sie ins Ergebnis geschrieben haben.
+    const ptGal = { main: null, second: null, back: null, kind: null };
+    const PT_GAL_BACK = '#sbc-opt-gal-back, #sbc-opt-gal-sell-back, #sbc-opt-gal-sell-back2, #sbc-opt-gal-check-back, #sbc-opt-gal-ea-back, #sbc-opt-gal-list';
+    /** Zustand der Galerie fuer Aktionsleiste und Kontextzeile (nur lesen; merkt die gelesenen Knoepfe in ptGal). */
+    function ptGalRead() {
+        const res = ui.galleryResult;
+        const g = { kind: 'leer', busy: false, busyText: '', main: null, second: null, back: false, step: 1, sets: 0, coins: 0, name: '', grade: '', tokens: 0, cards: 0 };
+        ptGal.main = null; ptGal.second = null; ptGal.back = null;
+        if (!res) { ptGal.kind = g.kind; return g; }
+        const rows = res.querySelectorAll('button[data-gal-idx]');
+        g.kind = ptGalKind({ empty: !res.children.length || res.classList.contains('sbc-opt-result-empty'), rows: rows.length,
+            sell: !!res.querySelector('#sbc-opt-sell-markup, #sbc-opt-gal-sell-back, #sbc-opt-gal-sell-back2'), set: !!res.querySelector('#sbc-opt-gal-current-grade') });
+        ptGal.kind = g.kind;
+        g.sets = rows.length;
+        const flag = function (f) { try { return !!f(); } catch (e) { return false; } };
+        const lb = ui.galleryLoad;
+        g.busy = flag(function () { return galleryBusy; }) || flag(function () { return sellBusy; }) || flag(function () { return buyBusy; }) || !!(lb && lb.classList.contains('is-busy'));
+        // Hauptknoepfe im Fluss des Ergebnisses (nicht die in zugeklappten Details): die erste Set-Zeile bzw. Kaufen/Listen/Verkaufen
+        const prim = Array.from(res.querySelectorAll(':scope > .sbc-opt-btn.primary, :scope > .sbc-opt-withtip > .sbc-opt-btn.primary, button[data-gal-idx].primary'))
+            .filter(function (b) { return !b.disabled && !b.classList.contains('is-busy'); });
+        const info = function (b) { return { id: b.id || '', text: String(b.textContent || ''), set: b.hasAttribute('data-gal-idx') }; };
+        if (prim[0]) { ptGal.main = prim[0]; g.main = info(prim[0]); }
+        if (prim[1] && !prim[1].hasAttribute('data-gal-idx')) { ptGal.second = prim[1]; g.second = info(prim[1]); }
+        ptGal.back = res.querySelector(PT_GAL_BACK);
+        g.back = !!ptGal.back;
+        const on = document.querySelector('#sbc-opt-gallery-flow .step.on');
+        g.step = on ? (parseInt(on.getAttribute('data-step'), 10) || 1) : 1;
+        try {
+            const last = typeof galleryLast !== 'undefined' ? galleryLast : null;
+            if (last) {
+                g.coins = Number(last.coins) || 0;
+                const ch = last.chosen;
+                if (ch && g.kind === 'set') {
+                    g.name = (ch.set && ch.set.name) || (ch.meta && ch.meta.name) || '';
+                    g.grade = (ch.set && ch.set.bestGrade) || (ch.meta && ch.meta.bestGrade) || '';
+                    g.tokens = Number(ch.set && ch.set.tokens != null ? ch.set.tokens : (ch.meta && ch.meta.tokens)) || 0;
+                }
+            }
+        } catch (e) {}
+        if (g.kind === 'verkauf') { const go = res.querySelector('#sbc-opt-gal-sell-go'); g.cards = go ? (parseInt(go.textContent, 10) || 0) : 0; }
+        return g;
+    }
+    /** Ansicht der Galerie am Blatt markieren (data-gal7, data-galback7) und den Rueckweg beschriften; schreibt nur bei Aenderung. */
+    function ptGalMark(g) {
+        const panel = ui.panel;
+        if (!panel) return;
+        const on = !!g;
+        const kind = on ? g.kind : null, back = on && g.back && g.kind !== 'liste' && g.kind !== 'leer' && !g.busy;
+        if ((panel.getAttribute('data-gal7') || null) !== kind) { if (kind) panel.setAttribute('data-gal7', kind); else panel.removeAttribute('data-gal7'); }
+        if (panel.hasAttribute('data-galback7') !== back) panel.toggleAttribute('data-galback7', back);
+        const b = document.getElementById('sbc-opt-back7'), t = on ? '‹ Sets' : '‹ Start';
+        if (b && b.textContent !== t) b.textContent = t;
     }
     /** Zustand fuer ptActState aus Panel und Lauf-Flags (nur lesen). */
     function ptActRead() {
@@ -8903,6 +9040,7 @@
         s.set7 = panel.hasAttribute('data-set7'); // v6.58.0: in den Einstellungen gibt es keine Hauptaktion
         if (panel.hasAttribute('data-cmd7')) s.set7 = true; // v6.59.1: auch in "Alle Aktionen" keine Hauptaktion
         s.view = panel.getAttribute('data-view7') || null; // v6.59.0: "Jetzt › Packs" hat eine Hauptaktion
+        if (s.view === 'galerie') { s.ga = ptGalRead(); return s; }   // v6.60.0: Ort "Galerie"
         if (s.view === 'packs') {
             const cur = ui.packType ? ui.packType.value : '';
             const g = (STATE.packGroups || []).filter(function (x) { return String(x.id) === String(cur); })[0];
@@ -9034,6 +9172,8 @@
         if (!bar || !ui.panel || !ui7IsOn()) { ptAct = null; ptVereinClean(); return; }
         try { ptActRows(); } catch (e) {}
         try { ptSyncVerein(); } catch (e) {}
+        // v6.60.0: in der Galerie zieht die Kontextzeile mit jedem neuen Ergebnis nach (sonst erst am 500-ms-Takt)
+        try { if (ptOrt.view === 'galerie') syncCtxLine(); } catch (e) {}
         let st;
         try { st = ptActState(ptActRead()); } catch (e) { st = ptActState(null); }
         if (!ptAct || ptAct.target !== st.target) ptActChangedAt = Date.now();
@@ -9440,6 +9580,8 @@
                     !!(ui.planResult && !ui.planResult.classList.contains('sbc-opt-hidden')));
         } else if (view === 'start') b.result = filled('sbc-opt-tools-result') || filled('sbc-opt-clubview-result') || filled('sbc-opt-gauntlet-result');
         else if (view === 'gebote') b.result = filled('sbc-opt-bid-result');
+        // v6.60.0: Galerie - ein offenes Set, eine Verkaufs-Vorschau oder ein Zwischenstand ist ein Ergebnis (die Liste und der Leerzustand nicht)
+        else if (view === 'galerie') b.result = ptGal.kind === 'set' || ptGal.kind === 'verkauf' || ptGal.kind === 'sonst';
         return b;
     }
     /** Kurz aufblitzen lassen, wohin gesprungen wurde. */
@@ -9584,6 +9726,9 @@
         if (!ptOrt.on || !ui7IsOn()) return null;
         const s = { pool: STATE.pool ? STATE.pool.length : 0, types: 0, total: 0 };
         (STATE.packGroups || []).forEach(function (g) { s.types++; s.total += Number(g.count) || 0; });
+        // v6.60.0: Galerie - Zustand lesen und am Blatt markieren (ausserhalb der Galerie die Markierung loeschen)
+        if (ptOrt.view === 'galerie') { s.gal = ptGalRead(); ptGalMark(s.gal); }
+        else ptGalMark(null);
         return ptOrtLine(ptOrt.view, s);
     }
     /** Schalter aus: Markierungen und gezeichnete Inhalte weg - die alte Oberflaeche sieht aus wie vorher. */
@@ -9592,6 +9737,7 @@
         ptOrt.on = false;
         const panel = ui.panel;
         if (panel) { panel.removeAttribute('data-view7'); panel.removeAttribute('data-cmd7'); }
+        try { ptGalMark(null); } catch (e) {}
         ptOrtSetText('sbc-opt-jetzt-lbl', 'Lösen');
         ['sbc-opt-start7', 'sbc-opt-akt7', 'sbc-opt-pack-list7', 'sbc-opt-cmd7-list'].forEach(function (id) { ptOrtSetHtml(id, ''); });
         ptOrtSetText('sbc-opt-fab-n', ''); ptOrtSetText('sbc-opt-akt-n', '');
@@ -9750,7 +9896,11 @@
             const back = mk('button', 'sbc-opt-back7', 'sbc-opt-btn link');
             back.type = 'button'; back.textContent = '‹ Start';
             ctx.insertBefore(back, ctx.firstChild);
-            back.addEventListener('click', function () { ptOrtGo('start'); });
+            back.addEventListener('click', function () {
+                // v6.60.0: in der Galerie fuehrt der Rueckweg zur Set-Liste - ueber den vorhandenen Knopf des Ergebnisses
+                if (ptOrt.view === 'galerie') { const el = ptActTarget('gal-back'); if (el && !el.disabled) el.click(); return; }
+                ptOrtGo('start');
+            });
         }
         // Zaehler offener Freigaben am Knopf
         const fab = document.getElementById('sbc-opt-fab');

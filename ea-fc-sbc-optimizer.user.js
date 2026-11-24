@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.55.0
+// @version      6.55.1
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.55.0';
+    const VERSION = '6.55.1';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7088,6 +7088,8 @@
             transition: width var(--pt-dur-slow) var(--pt-ease-out);
         }
         #sbc-opt-progress .p-done { font-family: var(--pt-font-mono); font-size: var(--pt-type-meta); color: var(--pt-fg-subtle); margin-top: var(--pt-space-2-5); }
+        /* v6.55.1: Stopp gibt es nur in der Laufleiste der neuen Oberflaeche */
+        #sbc-opt-progress .p-stop { display:none; }
         /* ------------------------------------------------------------------
            BATCH / REIHE: Abschnitte, Vorschau, Team-Details
            ------------------------------------------------------------------ */
@@ -7765,6 +7767,31 @@
         :where(:root[data-ui7]) .sbc-opt-confirm .sbc-opt-btn[data-hold].is-holding::before { transform:scaleX(1); transition:transform var(--pt-hold) linear; }
         :where(:root[data-ui7]) .sbc-opt-confirm .sbc-opt-btn[data-hold].is-armed::before { transform:scaleX(1); }
         :where(:root[data-ui7]) .sbc-opt-confirm .sbc-opt-btn[data-hold].is-hint { animation: pt7-wackel var(--pt-dur-slow) var(--pt-ease-out); }
+        /* v6.55.1 Etappe 2b: Laufleiste oben statt Fenster in der Mitte. Nur der Stopp nimmt Tipps an. */
+        :where(:root[data-ui7]) #sbc-opt-progress {
+            left:0; right:0; top:0; transform:none; min-width:0; max-width:none;
+            border-width:0 0 1px; border-radius:0; box-shadow:var(--pt-shadow-2);
+            padding:max(var(--pt-space-2), env(safe-area-inset-top)) var(--pt-gutter) var(--pt-space-2);
+            text-align:left; animation: pt7-leiste var(--pt-dur-base) var(--pt-ease-out);
+        }
+        :where(:root[data-ui7]) #sbc-opt-progress.open { display:grid; grid-template-columns:minmax(0, 1fr) auto; column-gap:var(--pt-space-3); align-items:center; }
+        :where(:root[data-ui7]) #sbc-opt-progress .p-title { grid-column:1; margin:0; font-size:var(--pt-type-body); }
+        :where(:root[data-ui7]) #sbc-opt-progress[data-state="stop"] .p-title { color:var(--pt-warning-fg); }
+        :where(:root[data-ui7]) #sbc-opt-progress .p-step { grid-column:1; margin:0; font-size:var(--pt-type-label); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        :where(:root[data-ui7]) #sbc-opt-progress .p-done { grid-column:1; margin:0; }
+        :where(:root[data-ui7]) #sbc-opt-progress .p-done:empty { display:none; }
+        :where(:root[data-ui7]) #sbc-opt-progress .p-bar { grid-column:1 / -1; grid-row:4; height:3px; margin-top:var(--pt-space-1-5); }
+        :where(:root[data-ui7]) #sbc-opt-progress .p-stop:not([hidden]) {
+            display:inline-flex; align-items:center; align-self:center; grid-column:2; grid-row:1 / span 3; width:auto; min-height:var(--pt-control-h); margin:0; padding:0 var(--pt-space-3);
+            pointer-events:auto; font-size:var(--pt-type-label);
+        }
+        /* Vorlagen-Leiste: dieselbe Form */
+        :where(:root[data-ui7]) #sbc-opt-vl-topbar {
+            left:0; right:0; top:0; transform:none; max-width:none; border-width:0 0 1px; border-radius:0;
+            padding:max(var(--pt-space-2), env(safe-area-inset-top)) var(--pt-gutter) var(--pt-space-2);
+        }
+        :where(:root[data-ui7]) #sbc-opt-vl-topbar .t { flex:1 1 auto; max-width:none; }
+        @keyframes pt7-leiste { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:none; } }
         @keyframes pt7-fuss { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:none; } }
         @keyframes pt7-wackel { 0%, 100% { transform:none; } 30% { transform:translateX(-4px); } 60% { transform:translateX(4px); } }
 
@@ -9420,8 +9447,10 @@
         prog.id = 'sbc-opt-progress';
         prog.innerHTML = '<div class="p-title"></div><div class="p-step"></div>' +
             '<div class="p-bar"><div class="p-fill"></div></div>' +
-            '<div class="p-done"></div>';
+            '<div class="p-done"></div>' +
+            '<button type="button" class="sbc-opt-btn ghost p-stop" id="sbc-opt-progress-stop" hidden>Stopp nach dieser Runde</button>';
         document.body.appendChild(prog);
+        prog.querySelector('.p-stop').addEventListener('click', ptRunStopClick);
         // Vorlagen-Overlay: eigene Vollbild-Ebene ausserhalb des Panels.
         const vlOverlay = document.createElement('div');
         vlOverlay.id = 'sbc-opt-vorlagen';
@@ -24066,14 +24095,17 @@ const HybridSbcEa = (() => {
         if (vorlagenTopbarUpdate((ok ? 'Fertig: ' : 'Gestoppt: ') + (text || ''))) return;
         if (!ui.progress) return;
         ui.progTitle.textContent = ok ? 'Fertig' : 'Gestoppt';
-        ui.progTitle.style.color = ok ? '#00e0b8' : '#ff6b6b';
+        // v6.55.1: unter UI 7 faerbt das CSS ueber data-state (Volt/Rot statt Teal)
+        if (ui7IsOn()) ui.progress.setAttribute('data-state', ok ? 'ok' : 'stop');
+        else ui.progTitle.style.color = ok ? '#00e0b8' : '#ff6b6b';
         ui.progStep.textContent = text || '';
         ui.progFill.style.width = '100%';
         // Kurz stehen lassen, damit man das Ergebnis liest.
         setTimeout(function () {
             if (ui.progress) {
                 ui.progress.classList.remove('open');
-                ui.progTitle.style.color = '#00e0b8';
+                ui.progress.removeAttribute('data-state');
+                if (!ui7IsOn()) ui.progTitle.style.color = '#00e0b8';
             }
         }, ok ? 2600 : 5000);
     }
@@ -24085,6 +24117,25 @@ const HybridSbcEa = (() => {
      */
     function hideProgress() {
         if (ui.progress) ui.progress.classList.remove('open');
+    }
+    // v6.55.1 Etappe 2b: "Stopp nach dieser Runde" in der Laufleiste (nur
+    // unter UI 7 sichtbar). Gestoppt wird nur ZWISCHEN zwei Runden - eine
+    // angefangene Runde (Eintragen/Abgeben, ein Pack) laeuft zu Ende.
+    const ptRun = { kind: null, stop: false };
+    function ptRunBegin(kind) { ptRun.kind = kind || 'lauf'; ptRun.stop = false; ptRunSync(); }
+    function ptRunEnd() { ptRun.kind = null; ptRun.stop = false; ptRunSync(); }
+    function ptRunStopWanted() { return !!(ptRun.kind && ptRun.stop); }
+    function ptRunStopClick() {
+        if (!ptRun.kind || ptRun.stop) return;
+        ptRun.stop = true;
+        ptRunSync();
+    }
+    function ptRunSync() {
+        const b = document.getElementById('sbc-opt-progress-stop');
+        if (!b) return;
+        b.hidden = !ptRun.kind;
+        b.disabled = !!ptRun.stop;
+        b.textContent = ptRun.stop ? 'Stoppt nach dieser Runde …' : 'Stopp nach dieser Runde';
     }
     /** Belohnungs-Dialog wegräumen (EAs eigener Popup-Manager). */
     /**
@@ -27336,10 +27387,14 @@ const HybridSbcEa = (() => {
         ui.run.disabled = true;
         let done = 0, stopped = null;
         const doneLog = [];
+        if (typeof ptRunBegin === 'function') ptRunBegin('abgeben');
         try {
             for (let i = 0; i < n; i++) {
                 const round = plan.rounds[i];
                 const tag = 'Batch ' + (i + 1) + '/' + n;
+                if (i > 0 && typeof ptRunStopWanted === 'function' && ptRunStopWanted()) {
+                    throw new Error('Auf Wunsch gestoppt – die übrigen ' + (n - i) + ' Runde(n) sind nicht abgegeben.');
+                }
                 const missing = round.players.filter(p =>
                     !STATE.pool.some(q => String(q.id) === String(p.id)));
                 if (missing.length) {
@@ -27595,6 +27650,7 @@ const HybridSbcEa = (() => {
             warn('[Batch] gestoppt:', e);
             diagError('Batch gestoppt nach ' + done + '/' + n + ': ' + stopped);
         } finally {
+            if (typeof ptRunEnd === 'function') ptRunEnd();
             ui.batchPlan.disabled = false;
             ui.run.disabled = false;
             ui.batchRun.style.display = 'none';
@@ -29678,6 +29734,7 @@ const HybridSbcEa = (() => {
         let currentPack = 0;
         try {
             for (let i = 0; i < total; i++) {
+                if (i > 0 && typeof ptRunStopWanted === 'function' && ptRunStopWanted()) return stopWith('auf Wunsch gestoppt.');
                 currentPack = i + 1;
                 if (onProgress) onProgress(i + 1, total, 'öffne Pack ' + (i + 1) + ' von ' + total + '...');
                 const res = await runPackTestOpen(groupId, mode);
@@ -29780,9 +29837,13 @@ const HybridSbcEa = (() => {
         setPackButtonsDisabled(true);
         setPackStatus('öffne ' + plannedTotal + ' Pack(s)...');
         try {
-            const res = await runPackOpenAll(groupId, requestedCount, function (cur, cnt, step) {
-                showProgress(cur, cnt, step, '', 'Pack');
-            }, mode);
+            ptRunBegin('packs');
+            let res;
+            try {
+                res = await runPackOpenAll(groupId, requestedCount, function (cur, cnt, step) {
+                    showProgress(cur, cnt, step, '', 'Pack');
+                }, mode);
+            } finally { ptRunEnd(); }
             renderPackDrawList(res.drawn, res.message);
             if (!res.ok) {
                 finishProgress(res.message, false);

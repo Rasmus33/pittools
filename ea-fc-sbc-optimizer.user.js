@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.56.0
+// @version      6.56.1
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.56.0';
+    const VERSION = '6.56.1';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7807,6 +7807,9 @@
         :where(:root[data-ui7]) #sbc-opt-panel[data-way] .sbc-opt-ctxline { display:flex; }
         :where(:root[data-ui7]) #sbc-opt-panel[data-way] #sbc-opt-way { display:flex; margin:0 0 var(--pt-stack); }
         :where(:root[data-ui7]) #sbc-opt-buy-modes { display:none; }
+        /* v6.56.1: in "Loesen" ersetzt die Kontextzeile die Info-Leiste (Status/Warnung stehen rechts in ihr) */
+        :where(:root[data-ui7]) #sbc-opt-panel[data-way] #sbc-opt-infobar, :where(:root[data-ui7]) #sbc-opt-panel[data-way] #sbc-opt-info { display:none; }
+        :where(:root[data-ui7]) .sbc-opt-ctxline > .sbc-opt-meta { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:55%; }
         :where(:root[data-ui7]) #sbc-opt-way .sbc-opt-chip { white-space:nowrap; padding-left:var(--pt-space-1); padding-right:var(--pt-space-1); }
         @keyframes pt7-leiste { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:none; } }
         @keyframes pt7-fuss { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:none; } }
@@ -10623,7 +10626,13 @@
         try { c = ptContextNow(); } catch (e) { c = null; }
         const l = ptCtxLine(c, { title: STATE.sbc.challengeName || null, target: STATE.sbc.targetOVR || null,
             req: ui.rarity ? ui.rarity.textContent : '' });
-        const v = STATE.pool && STATE.pool.length ? 'Verein ' + STATE.pool.length.toLocaleString('de-DE') : '';
+        // v6.56.1: die Info-Leiste ist in "Loesen" aus - ihr Status und die
+        // Warnung "zu wenig Vorgabe-Karten" stehen deshalb hier rechts.
+        const st = ui.status ? String(ui.status.textContent || '') : '';
+        const low = !!(ui.availability && ui.availability.querySelector('.low'));
+        const v = low ? '⚠ zu wenig Vorgabe-Karten'
+            : (st && st !== 'bereit') ? st
+            : STATE.pool && STATE.pool.length ? 'Verein ' + STATE.pool.length.toLocaleString('de-DE') : '';
         if (tEl.textContent !== l.title) tEl.textContent = l.title;
         if (sEl.textContent !== l.sub) sEl.textContent = l.sub;
         if (vEl.textContent !== v) vEl.textContent = v;

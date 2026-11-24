@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.52.2
+// @version      6.52.3
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.52.2';
+    const VERSION = '6.52.3';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -26587,8 +26587,9 @@ const HybridSbcEa = (() => {
     function showBatchConfirm(plan, title, body) {
         const box = ui.batchConfirm;
         if (!box) {
-            // Ohne Kasten (sollte nicht vorkommen): die alte Rueckfrage.
-            if (window.confirm(title + '\n\n' + body)) executePlan(plan);
+            // v6.52.3: ohne Kasten (sollte nicht vorkommen) wird NICHT abgegeben -
+            // es gibt keinen Rueckfall auf den Browser-Dialog mehr.
+            toast('Freigabe nicht möglich – bitte das Panel neu öffnen und noch einmal planen.', 'error');
             return;
         }
         batchConfirmPlan = plan;
@@ -29071,8 +29072,26 @@ const HybridSbcEa = (() => {
                'abgestoßen, sondern einsortiert (SBC-Material).\n\nFortfahren?')
             : (packLabel + ': ' + plannedTotal + ' Pack(s) werden nacheinander geöffnet.\n\n' +
                'Stoppt beim ersten Fehler; bereits geöffnete Packs sind dann schon verteilt. Fortfahren?');
-        if (!window.confirm(frage)) return;
+        // v6.52.3: Freigabe im Panel (roter Kasten - Oeffnen ist unumkehrbar). packOpenBusy steht schon
+        // waehrend der Frage; war das Panel zu (Knopf an EAs Kachel), geht es dafuer auf und danach wieder zu.
         STATE.packOpenBusy = true;
+        let okPack = false;
+        try {
+            STATE.diag.packQuestion = frage;
+            okPack = await uiConfirm(ui.packResult, {
+                title: plannedTotal + (plannedTotal === 1 ? ' Pack' : ' Packs') + (mode === 'verwerten' ? ' öffnen und abstoßen?' : ' öffnen?'),
+                facts: [['Pack', packLabel], ['Anzahl', String(plannedTotal)], ['Karten', mode === 'verwerten' ? 'abstoßen' : 'in den Verein']],
+                warns: mode === 'verwerten' ? ['Normale Karten werden ABGESTOSSEN – unwiderruflich weg, gibt Coins'] : [],
+                text: mode === 'verwerten'
+                    ? 'Special-Karten stoppen den Lauf, bevor etwas abgestoßen wird – dann entscheidest du im Spiel selbst. Unverkäufliche Karten werden einsortiert (SBC-Material).'
+                    : 'Stoppt beim ersten Fehler; bereits geöffnete Packs sind dann schon verteilt.',
+                danger: true, yes: { label: mode === 'verwerten' ? 'Ja, öffnen und abstoßen' : 'Ja, öffnen' }, timeoutMs: 3 * 60 * 1000 },
+                function () {
+                    const g = (STATE.packGroups || []).find(function (x) { return String(x.id) === String(groupId); });
+                    return ownPersonaId() + ':' + (g ? g.count : 0) + ':' + !!STATE.loading;
+                });
+        } catch (e) { okPack = false; }
+        if (!okPack) { STATE.packOpenBusy = false; return; }
         setPackButtonsDisabled(true);
         setPackStatus('öffne ' + plannedTotal + ' Pack(s)...');
         try {

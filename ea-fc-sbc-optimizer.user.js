@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.50.0
+// @version      6.51.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.50.0';
+    const VERSION = '6.51.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -6994,7 +6994,6 @@
         #sbc-opt-panel[data-tab="kaufen"] .sbc-opt-only-rating,
         #sbc-opt-panel[data-tab="mehr"] .sbc-opt-only-rating { display:none; }
         #sbc-opt-panel:not([data-tab="mehr"]) .sbc-opt-tech { display:none; }
-        .sbc-opt-group-title.sbc-opt-secondary { margin-top:var(--pt-space-4); }
         .sbc-opt-section { margin-top:0; }
         /* Schritt-Anzeige im Kaufen-Reiter (v5.29.0; v5.31.0: Kreise mit Verbindungslinie) */
         .sbc-opt-flow { display:flex; align-items:flex-start; margin:var(--pt-space-0-5) 0 var(--pt-space-3); }
@@ -7016,7 +7015,6 @@
         .sbc-opt-flow .step.done .lbl { color:var(--pt-fg-muted); }
         .sbc-opt-flow .step.done::after { background:var(--pt-accent-border); }
         /* Loesungs-Karten (v5.29.0): Preis zuerst, Details klein, ab der vierten eingeklappt */
-        .sbc-opt-fb-top { display:flex; justify-content:space-between; align-items:center; gap:var(--pt-space-2); }
         .sbc-opt-fb-price { font-size:var(--pt-type-title); font-weight:var(--pt-weight-semibold); color:var(--pt-accent); }
         .sbc-opt-fb-meta { color:var(--pt-fg-muted); font-size:var(--pt-type-meta); margin-top:var(--pt-space-0-5); line-height:1.45; }
         .sbc-opt-fb-meta b { color:var(--pt-fg-default); font-weight:600; }
@@ -7035,7 +7033,6 @@
         }
         .sbc-opt-tag.ok { background:var(--pt-bg-raised); color:var(--pt-fg-secondary); box-shadow:none; }
         .sbc-opt-tag.best { background:var(--pt-accent-soft); color:var(--pt-accent); box-shadow:none; }
-        .sbc-opt-fb-tags { display:flex; gap:var(--pt-space-1); flex-wrap:wrap; justify-content:flex-end; }
         /* v6.2.0: Galerie-Zeile - Fortschritt und Kurs je Token. */
         .sbc-opt-gal-line { display:flex; align-items:center; gap:var(--pt-space-2-5); margin:var(--pt-space-2) 0 var(--pt-space-0-5); }
         /* In der Set-Liste ist .sbc-opt-fb-price ein NAME, kein Preis - neutral und kleiner. */
@@ -7056,9 +7053,6 @@
         .sbc-opt-receipt .sum b { font-size:var(--pt-type-title); font-weight:var(--pt-weight-semibold); }
         .sbc-opt-fb-row { padding:var(--pt-space-3) 0; margin:0; border-bottom:1px solid var(--pt-border-subtle); font-size:var(--pt-type-label); }
         .sbc-opt-fb-row:last-child { border-bottom:none; }
-        .sbc-opt-fb-actions { display:flex; gap:var(--pt-space-1-5); align-items:stretch; }
-        .sbc-opt-fb-actions .sbc-opt-btn { margin:var(--pt-space-1-5) 0 0; }
-        .sbc-opt-fb-actions .sbc-opt-btn.small { flex:0 0 auto; width:auto; padding:var(--pt-space-2) var(--pt-space-2-5); font-size:var(--pt-type-label); }
         .sbc-opt-fb-more { display:none; }
         .sbc-opt-result.fb-all .sbc-opt-fb-more { display:block; }
         .sbc-opt-result details.sbc-opt-details-toggle { margin-top:var(--pt-space-2); }
@@ -7215,11 +7209,6 @@
         /* Futbin-Kandidaten (v5.16.0): eine Zeile pro Loesung, Empfehlung
            mit Akzent-Rand; Knopf in voller Breite fuer den Daumen. */
         .sbc-opt-fb-row .sbc-opt-btn { margin:var(--pt-space-1-5) 0 0; }
-        .sbc-opt-player {
-            display:flex; justify-content:space-between; align-items:center;
-            padding:var(--pt-space-1) var(--pt-space-0-5); border-bottom:1px solid var(--pt-border-subtle);
-        }
-        .sbc-opt-player:last-child { border-bottom:none; }
         .sbc-opt-summary { margin:var(--pt-space-2-5) 0 var(--pt-space-1); font-size:var(--pt-type-title); }
         .sbc-opt-summary b { color:var(--pt-accent); }
         .sbc-opt-warn { color:var(--pt-warning-fg); font-size:var(--pt-type-label); margin-top:var(--pt-space-1-5); }
@@ -7490,7 +7479,7 @@
         #sbc-opt-tab-mehr > .sbc-opt-withtip .sbc-opt-btn { margin-top:0; }
         #sbc-opt-panel[data-tab="mehr"] #sbc-opt-info { background:transparent; border:none; padding:0; margin-bottom:var(--pt-space-1); }
 
-        /* v6.40.0: Abstands-Hilfsklassen statt style="margin/padding" im
+        /* v6.40.0: Abstands-Hilfsklassen statt Inline-Abstaenden im
            Panel-Template. Mit #sbc-opt-panel .sbc-opt-body davor (schlaegt auch
            #sbc-opt-panel input[type=number]), damit sie (wie vorher das
            style-Attribut) die Komponenten-Regel schlagen; sie stehen bewusst
@@ -7501,15 +7490,12 @@
         #sbc-opt-panel .sbc-opt-body .sbc-opt-mt15 { margin-top:var(--pt-space-1-5); }
         #sbc-opt-panel .sbc-opt-body .sbc-opt-mt2, #sbc-opt-vorlagen .sbc-opt-mt2 { margin-top:var(--pt-space-2); }
         #sbc-opt-panel .sbc-opt-body .sbc-opt-mb0 { margin-bottom:0; }
-        #sbc-opt-panel .sbc-opt-body .sbc-opt-mb1 { margin-bottom:var(--pt-space-1); }
         #sbc-opt-panel .sbc-opt-body .sbc-opt-mb15 { margin-bottom:var(--pt-space-1-5); }
         #sbc-opt-panel .sbc-opt-body .sbc-opt-mb2 { margin-bottom:var(--pt-space-2); }
         #sbc-opt-panel .sbc-opt-body .sbc-opt-mb25 { margin-bottom:var(--pt-space-2-5); }
         #sbc-opt-panel .sbc-opt-body .sbc-opt-mb3 { margin-bottom:var(--pt-space-3); }
-        #sbc-opt-panel .sbc-opt-body .sbc-opt-pull { margin-top:calc(-1 * var(--pt-space-1)); }
         #sbc-opt-panel .sbc-opt-body .sbc-opt-pad-xs { padding:var(--pt-space-1); }
         #sbc-opt-panel .sbc-opt-body .sbc-opt-pad-sm { padding:var(--pt-space-1) var(--pt-space-2); }
-        #sbc-opt-panel .sbc-opt-body .sbc-opt-pad-md { padding:var(--pt-space-2) var(--pt-space-2-5); }
         #sbc-opt-panel .sbc-opt-body .sbc-opt-autow { width:auto; flex:0 0 auto; }
         #sbc-opt-panel .sbc-opt-body .sbc-opt-flex1 { flex:1; min-width:0; }
         #sbc-opt-panel .sbc-opt-body .sbc-opt-w100 { width:100%; }
@@ -21959,7 +21945,7 @@ const HybridSbcEa = (() => {
                 const bench = (v.bench && v.bench[t]) || [];
                 if (bench.length) h += '<div class="sbc-opt-dim">Bank-Vorschlag (wird mitgesperrt): ' + bench.map(p => escapeHtml(p.name) + ' ' + p.rating).join(', ') + '</div>';
                 h += '<div class="sbc-opt-inline sbc-opt-mt1"><button type="button" class="sbc-opt-btn ghost sbc-opt-m0" data-gt-take="' + vi + ':' + t + '">Team ' + (t + 1) + ' übernehmen, Rest neu planen</button>' +
-                     '<button type="button" class="sbc-opt-btn ghost sbc-opt-m0" data-gt-played="' + vi + ':' + t + '" title="Startelf und Bank-Vorschlag für die nächsten Runden sperren">Gespielt</button></div>';
+                     '<button type="button" class="sbc-opt-btn ghost sbc-opt-m0" data-gt-played="' + vi + ':' + t + '" aria-label="Gespielt: Startelf und Bank-Vorschlag für die nächsten Runden sperren">Gespielt</button></div>';
             });
             h += '</details>';
         });
@@ -23132,7 +23118,7 @@ const HybridSbcEa = (() => {
             // abgeschnittener Scan heisst "wir wissen es nicht", nicht "es
             // gibt keine Vorgaben".
             if (anyDeepScanTruncated()) {
-                toast('Vorgaben nicht erkannt: der Challenge-Scan wurde abgeschnitten. Challenge bitte neu öffnen; bleibt es dabei, Diagnose schicken.', 'error');
+                toast('Vorgaben nicht erkannt (Scan abgeschnitten). Challenge neu öffnen, sonst Diagnose schicken.', 'error');
             } else {
                 toast('Kein Ziel-OVR erkannt. Bitte SBC-Challenge im Spiel öffnen (und ggf. Diagnose-Button nutzen).', 'error');
             }
@@ -23147,7 +23133,7 @@ const HybridSbcEa = (() => {
         // Scan abgeschnitten, aber ETWAS erkannt: weitermachen (kein Abbruch),
         // aber sichtbar machen, dass die Vorgaben unvollstaendig sein koennten.
         if (anyDeepScanTruncated()) {
-            toast('Hinweis: Der Vorgaben-Scan wurde abgeschnitten - erkannte Vorgaben könnten unvollständig sein. Ergebnis vor dem Abgeben prüfen.', 'warn');
+            toast('Vorgaben-Scan abgeschnitten – Vorgaben evtl. unvollständig. Ergebnis vor dem Abgeben prüfen.', 'warn');
         }
         // KEINE Vorab-Warnung aus reqDump-Scopes (war v4.34.0 und ist wieder
         // raus): "PLAYER"/"CLUB MEMBER" stehen bei JEDER SBC drin, die Warnung
@@ -24643,7 +24629,7 @@ const HybridSbcEa = (() => {
             await ensureSetChallenges('onBatchPlanClick');
         }
         if (anyDeepScanTruncated() && !STATE.setChallengesBySet[STATE.sbc.setId]) {
-            toast('Hinweis: Der Vorgaben-Scan wurde abgeschnitten - der Plan könnte auf unvollständigen Vorgaben beruhen. Vorschau prüfen.', 'warn');
+            toast('Vorgaben-Scan abgeschnitten – Plan evtl. unvollständig. Vorschau prüfen.', 'warn');
         }
         const want = Math.max(1, Math.min(10, parseInt(ui.batchCount.value, 10) || 1));
         STATE.batchSpare = new Set(); // v6.7.0: neue Planung = keine geschonten Karten
@@ -26013,12 +25999,12 @@ const HybridSbcEa = (() => {
                 // Aktion ist. Natives <details>: keine eigene Auf/Zu-Logik, und
                 // die Knoepfe tragen dieselben data-act wie vorher - der
                 // delegierte Klick-Handler bleibt unveraendert.
-                '<details class="sbc-opt-vl-menu"><summary title="Weitere Aktionen" aria-label="Weitere Aktionen">\u22ef</summary>' +
+                '<details class="sbc-opt-vl-menu"><summary aria-label="Weitere Aktionen">\u22ef</summary>' +
                 '<div class="sbc-opt-vl-menu-list">' +
                 '<button class="sbc-opt-vl-menu-item" data-act="vl-edit:' + escapeHtml(v.id) + '">Bearbeiten</button>' +
                 '<button class="sbc-opt-vl-menu-item" data-act="vl-copy:' + escapeHtml(v.id) + '">Kopie</button>' +
-                '<button class="sbc-opt-vl-menu-item" data-act="vl-up:' + escapeHtml(v.id) + '" title="nach oben">\u2191 Nach oben</button>' +
-                '<button class="sbc-opt-vl-menu-item" data-act="vl-down:' + escapeHtml(v.id) + '" title="nach unten">\u2193 Nach unten</button>' +
+                '<button class="sbc-opt-vl-menu-item" data-act="vl-up:' + escapeHtml(v.id) + '">\u2191 Nach oben</button>' +
+                '<button class="sbc-opt-vl-menu-item" data-act="vl-down:' + escapeHtml(v.id) + '">\u2193 Nach unten</button>' +
                 '<button class="sbc-opt-vl-menu-item danger" data-act="vl-del:' + escapeHtml(v.id) + '">L\u00f6schen</button>' +
                 '</div></details>' +
                 '</div>' +
@@ -26115,9 +26101,9 @@ const HybridSbcEa = (() => {
                 ' title="Eine SBC mehrfach abschlie\u00dfen">Mehrfach</option>' +
                 '<option value="reihe"' + (st.type === 'reihe' ? ' selected' : '') +
                 ' title="Alle Challenges eines Sets">Set komplett</option></select>' +
-                '<button class="sbc-opt-btn ghost sbc-opt-vl-mini" data-act="vl-step-up:' + i + '" title="nach oben">\u2191</button>' +
-                '<button class="sbc-opt-btn ghost sbc-opt-vl-mini" data-act="vl-step-down:' + i + '" title="nach unten">\u2193</button>' +
-                '<button class="sbc-opt-btn ghost sbc-opt-vl-mini" data-act="vl-step-del:' + i + '" title="Schritt entfernen">\u2715</button>' +
+                '<button class="sbc-opt-btn ghost sbc-opt-vl-mini" data-act="vl-step-up:' + i + '" aria-label="Schritt nach oben">\u2191</button>' +
+                '<button class="sbc-opt-btn ghost sbc-opt-vl-mini" data-act="vl-step-down:' + i + '" aria-label="Schritt nach unten">\u2193</button>' +
+                '<button class="sbc-opt-btn ghost sbc-opt-vl-mini" data-act="vl-step-del:' + i + '" aria-label="Schritt entfernen">\u2715</button>' +
                 '</div>' +
                 '<label>SBC-Set (Name der Hub-Kachel)</label>' +
                 '<input type="text" class="sbc-opt-vl-input" list="sbc-opt-vl-sets" data-f="setName" data-i="' + i +
@@ -26218,7 +26204,7 @@ const HybridSbcEa = (() => {
                     ' <span class="src' + (p.isStorage ? ' storage' : '') + '">' + (p.isStorage ? 'Storage' : 'Verein') + '</span>' +
                     ' <span class="rar">' + escapeHtml(rarityLabel(p)) + '</span>' +
                     (p.untradeable ? ' <span class="untr">unverkäuflich</span>' : '') +
-                    (spare ? ' <button type="button" class="sbc-opt-spare" data-spare="' + escapeHtml(String(p.id)) + '" title="Diese Karte nicht verbauen und neu planen">schonen</button>' : '') + '</div>';
+                    (spare ? ' <button type="button" class="sbc-opt-spare" data-spare="' + escapeHtml(String(p.id)) + '" aria-label="Diese Karte schonen und neu planen">schonen</button>' : '') + '</div>';
             }
             detailHtml += '</div>';
             for (const w of (r.warnings || [])) {

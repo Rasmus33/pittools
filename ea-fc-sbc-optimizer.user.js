@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.55.1
+// @version      6.55.2
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.55.1';
+    const VERSION = '6.55.2';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7090,6 +7090,11 @@
         #sbc-opt-progress .p-done { font-family: var(--pt-font-mono); font-size: var(--pt-type-meta); color: var(--pt-fg-subtle); margin-top: var(--pt-space-2-5); }
         /* v6.55.1: Stopp gibt es nur in der Laufleiste der neuen Oberflaeche */
         #sbc-opt-progress .p-stop { display:none; }
+        /* v6.55.2: Protokoll gibt es nur in der neuen Oberflaeche */
+        #sbc-opt-protokoll { display:none; }
+        .sbc-opt-line.sbc-opt-logline { align-items:flex-start; flex-wrap:nowrap; gap:var(--pt-space-2); min-height:0; margin:0; padding:var(--pt-space-1) 0; font-size:var(--pt-type-label); }
+        .sbc-opt-line.sbc-opt-logline > :last-child { flex:1 1 auto; min-width:0; color:var(--pt-fg-default); }
+        .sbc-opt-line.sbc-opt-logline > :first-child { margin-top:var(--pt-space-1); }
         /* ------------------------------------------------------------------
            BATCH / REIHE: Abschnitte, Vorschau, Team-Details
            ------------------------------------------------------------------ */
@@ -7791,6 +7796,7 @@
             padding:max(var(--pt-space-2), env(safe-area-inset-top)) var(--pt-gutter) var(--pt-space-2);
         }
         :where(:root[data-ui7]) #sbc-opt-vl-topbar .t { flex:1 1 auto; max-width:none; }
+        :where(:root[data-ui7]) #sbc-opt-protokoll { display:block; }
         @keyframes pt7-leiste { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:none; } }
         @keyframes pt7-fuss { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:none; } }
         @keyframes pt7-wackel { 0%, 100% { transform:none; } 30% { transform:translateX(-4px); } 60% { transform:translateX(4px); } }
@@ -7869,6 +7875,7 @@
         t.textContent = msg;
         wrap.appendChild(t);
         const ms = toastDuration(msg, type);
+        if (typeof ptLogRecord === 'function') ptLogRecord(msg, type);
         setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity .4s'; }, ms);
         setTimeout(() => { try { wrap.removeChild(t); } catch (e) {} }, ms + 500);
     }
@@ -8271,6 +8278,22 @@
         const st = Number(g.holdStart) || 0;
         const end = Number(g.releaseAt) > 0 ? Number(g.releaseAt) : now;
         return st > 0 && end >= st && end - st >= PT_HOLD_MS ? 'ok' : 'halten';
+    }
+    // v6.55.2 Etappe 2c: Meldungen (Toasts) landen zusaetzlich im Protokoll
+    // "heute" - eine Meldung, die nach 4 s verschwindet, ist dort nachlesbar.
+    const PT_LOG_MAX = 120;
+    /** Neue Liste: Eintrag angehaengt, nur derselbe Kalendertag (lokal), hoechstens max. Rein. */
+    function ptLogAdd(list, entry, now, max) {
+        const day = function (t) { const d = new Date(Number(t) || 0); return d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate(); };
+        const today = day(now);
+        const out = (Array.isArray(list) ? list : []).filter(function (e) {
+            return e && typeof e.msg === 'string' && day(e.t) === today;
+        });
+        if (entry && entry.msg != null && String(entry.msg) !== '') {
+            out.push({ t: Number(now) || 0, type: String(entry.type || ''), msg: String(entry.msg).slice(0, 400) });
+        }
+        const m = max > 0 ? max : PT_LOG_MAX;
+        return out.length > m ? out.slice(out.length - m) : out;
     }
     // [UI7-END]
     function ui7IsOn() {
@@ -9397,6 +9420,10 @@
                     <button class="sbc-opt-btn ghost" id="sbc-opt-diag">Diagnose in Konsole schreiben</button>
                     <button type="button" class="sbc-opt-tip" aria-label="Info: Diagnose" aria-expanded="false" data-tip="JSON-Report für die Fehlersuche. Landet in der Konsole bzw. im App-Log.">i</button>
                     </div>
+                    <details class="sbc-opt-details-toggle sbc-opt-mt2" id="sbc-opt-protokoll">
+                        <summary>Protokoll heute<span id="sbc-opt-protokoll-n"></span></summary>
+                        <div id="sbc-opt-protokoll-list"></div>
+                    </details>
                     <details class="sbc-opt-details-toggle sbc-opt-mt2" id="sbc-opt-system">
                         <summary>System</summary>
                         <div class="sbc-opt-row sbc-opt-withtip">
@@ -9441,6 +9468,11 @@
         initTips(panel);
         initPanelSize(panel);
         initConfirmFoot(panel);
+        try {
+            const pd = panel.querySelector('#sbc-opt-protokoll');
+            pd.addEventListener('toggle', function () { if (pd.open) renderProtokoll(); });
+            renderProtokollCount(ptLogAdd(ptLogLoad(), null, Date.now(), PT_LOG_MAX).length);
+        } catch (e) {}
         // Fortschritts-Overlay: bewusst ausserhalb des Panels, damit es auch
         // sichtbar ist, wenn das Panel zu ist.
         const prog = document.createElement('div');
@@ -23618,7 +23650,7 @@ const HybridSbcEa = (() => {
             // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten mit
             // Kosten, Marktabfragen, Fehler, eingefuegte Loesung.
             hybridSbc: STATE.diag.hybridSbc || null,
-            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, batchSpare: STATE.diag.batchSpare || null, mcp: STATE.diag.mcp || null, relay: STATE.diag.relay || null, liveChecks: liveChecksLoad(), buyLedger: (function () { try { return buyLedgerLoad().slice(-50); } catch (e) { return null; } })(), marketBudget: (function () { try { return marketGuardSnapshot(marketGuardLoad(), Date.now()); } catch (e) { return null; } })(), points: STATE.diag.points || null, pointsBuy: STATE.diag.pointsBuy || null, galleryTokens: (function () { try { const p = ownPersonaId(); return p ? galleryTokenBookLoad(p) : null; } catch (e) { return null; } })(), galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null, handBuys: STATE.diag.handBuys || null, bidHelper: (function () { try { return bidHelperReport(STATE.diag.bidCapture, STATE.diag.bidRuns); } catch (e) { return null; } })(), bidSbc: (function () { try { const b = STATE.diag.bidSbc; if (!b) return null; const pl = STATE.batch; return Object.assign({}, b, { done: pl && pl.bidOnly && pl.bidStamp === b.stamp ? (pl.usedChallengeIds || []).length : null }); } catch (e) { return null; } })(),
+            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, batchSpare: STATE.diag.batchSpare || null, mcp: STATE.diag.mcp || null, relay: STATE.diag.relay || null, liveChecks: liveChecksLoad(), buyLedger: (function () { try { return buyLedgerLoad().slice(-50); } catch (e) { return null; } })(), protokoll: (function () { try { return ptLogAdd(ptLogLoad(), null, Date.now(), PT_LOG_MAX).slice(-50); } catch (e) { return null; } })(), marketBudget: (function () { try { return marketGuardSnapshot(marketGuardLoad(), Date.now()); } catch (e) { return null; } })(), points: STATE.diag.points || null, pointsBuy: STATE.diag.pointsBuy || null, galleryTokens: (function () { try { const p = ownPersonaId(); return p ? galleryTokenBookLoad(p) : null; } catch (e) { return null; } })(), galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null, handBuys: STATE.diag.handBuys || null, bidHelper: (function () { try { return bidHelperReport(STATE.diag.bidCapture, STATE.diag.bidRuns); } catch (e) { return null; } })(), bidSbc: (function () { try { const b = STATE.diag.bidSbc; if (!b) return null; const pl = STATE.batch; return Object.assign({}, b, { done: pl && pl.bidOnly && pl.bidStamp === b.stamp ? (pl.usedChallengeIds || []).length : null }); } catch (e) { return null; } })(),
             futbinBuy: STATE.diag.futbinBuy || null,
             futbinBuyPlan: STATE.diag.futbinBuyPlan || null,
             marketUrls: STATE.diag.marketUrls,
@@ -24129,6 +24161,39 @@ const HybridSbcEa = (() => {
         if (!ptRun.kind || ptRun.stop) return;
         ptRun.stop = true;
         ptRunSync();
+    }
+    function ptLogLoad() {
+        try { const v = JSON.parse(localStorage.getItem('sbcOptProtokoll') || '[]'); return Array.isArray(v) ? v : []; } catch (e) { return []; }
+    }
+    /** Haengt eine Meldung ans Protokoll; Fehler hier stoeren nie den Toast. */
+    function ptLogRecord(msg, type) {
+        try {
+            const now = Date.now();
+            const list = ptLogAdd(ptLogLoad(), { type: type, msg: msg }, now, PT_LOG_MAX);
+            localStorage.setItem('sbcOptProtokoll', JSON.stringify(list));
+            const d = document.getElementById('sbc-opt-protokoll');
+            if (d && d.open) renderProtokoll();
+            else if (d) renderProtokollCount(list.length);
+        } catch (e) {}
+    }
+    function renderProtokollCount(n) {
+        const c = document.getElementById('sbc-opt-protokoll-n');
+        const v = n ? ' (' + n + ')' : '';
+        if (c && c.textContent !== v) c.textContent = v;
+    }
+    function renderProtokoll() {
+        const box = document.getElementById('sbc-opt-protokoll-list');
+        if (!box) return;
+        const list = ptLogAdd(ptLogLoad(), null, Date.now(), PT_LOG_MAX);
+        renderProtokollCount(list.length);
+        const dot = function (t) { return t === 'error' ? 'bad' : t === 'warn' ? 'warn' : t === 'ok' ? 'on' : ''; };
+        const hm = function (t) { const d = new Date(t); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
+        box.innerHTML = list.length
+            ? list.slice().reverse().map(function (e) {
+                return '<div class="sbc-opt-line sbc-opt-logline"><span class="sbc-opt-dot ' + dot(e.type) + '"></span>' +
+                    '<span class="sbc-opt-meta">' + hm(e.t) + '</span><span>' + escapeHtml(e.msg) + '</span></div>';
+            }).join('')
+            : '<div class="sbc-opt-meta">Heute noch keine Meldungen.</div>';
     }
     function ptRunSync() {
         const b = document.getElementById('sbc-opt-progress-stop');

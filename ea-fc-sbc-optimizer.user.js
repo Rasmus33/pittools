@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.61.1
+// @version      6.61.2
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.61.1';
+    const VERSION = '6.61.2';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7866,6 +7866,19 @@
             border-color:var(--pt-accent); background:var(--pt-accent); box-shadow: inset 0 0 0 3px var(--pt-bg-base);
         }
         :where(:root[data-ui7]) #sbc-opt-panel[data-act7] .sbc-opt-fb-row:not(.is-picked) .sbc-opt-fb-price { color:var(--pt-fg-secondary); }
+        /* v6.61.2: Plaene von "Verein + Kauf" als Zeilen zum Auswaehlen (der guenstigste vorgewaehlt), ihr Knopf
+           "Diesen Plan eintragen" ist aus, sobald die Leiste steht; Set-Zeilen der Galerie: der Name ist Text der Zeile */
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-hybrid-club-result [data-hybrid-apply] { display:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-hybrid-club-result > details[role="radio"] { position:relative; padding:var(--pt-space-2) 0 var(--pt-space-2) var(--pt-space-8); border-bottom:1px solid var(--pt-border-subtle); cursor:pointer; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-hybrid-club-result > details[role="radio"]::before {
+            content:""; position:absolute; left:var(--pt-space-1); top:var(--pt-space-3); width:18px; height:18px; box-sizing:border-box;
+            border:2px solid var(--pt-border-strong); border-radius:var(--pt-radius-full);
+        }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-hybrid-club-result > details.is-picked::before {
+            border-color:var(--pt-accent); background:var(--pt-accent); box-shadow: inset 0 0 0 3px var(--pt-bg-base);
+        }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-gallery-result .sbc-opt-fb-row[role="radio"] .sbc-opt-rowbtn { background:transparent; color:var(--pt-fg-default); box-shadow:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-gallery-result .sbc-opt-fb-row:not(.is-picked) .sbc-opt-rowbtn { color:var(--pt-fg-secondary); }
         /* v6.57.1 Etappe 3b (2): Weg "Verein" - Zeile "Anzahl" statt "Mehrere erledigen", Zeile "Ganzes Set",
            Punkte-SBC als eigener Zustand; die Hauptaktion steht in der Aktionsleiste. */
         :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-run, :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-batch-plan, :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-queue-plan,
@@ -8619,6 +8632,12 @@
             if (h.stop) return mk({ label: 'Suche stoppen', target: 'hybrid-stop' });
             if (h.busy) return mk({ label: 'Läuft …', busy: true });
             if (h.buy) return mk({ label: 'Nachkäufe prüfen und kaufen …', target: 'hybrid-buy', side: { label: 'Neu vergleichen', target: 'hybrid-search' } });
+            // v6.61.2 (Rasmus 24.11.): Plaene als Zeilen zum Auswaehlen - die Hauptaktion traegt den gewaehlten Plan ein (sein vorhandener Knopf)
+            if (h.plans > 0) {
+                const c = h.coins == null || h.coins === '' ? NaN : Number(h.coins);
+                return mk({ label: 'Plan eintragen' + (c > 0 ? ' · bis ' + String(Math.round(c)).replace(/\B(?=(\d{3})+(?!\d))/g, '.') + ' Coins' : c === 0 ? ' · ohne Kauf' : ''),
+                    target: 'hybrid-apply', side: { label: 'Neu vergleichen', target: 'hybrid-search' } });
+            }
             return mk({ label: 'Verein + Nachkäufe vergleichen', target: 'hybrid-search', side: { label: 'Nur Verein', target: 'hybrid-club-search' } });
         }
         if (s.way === 'verein') {
@@ -8692,6 +8711,28 @@
         s = s || {};
         if (!s.shown || s.open) return 'nichts';
         return s.wasShown && s.wasOpen ? 'zu' : 'auf';
+    }
+    /**
+     * v6.61.2: welche Zeile ist vorgewaehlt? coins: Nachkauf-Coins je Plan (Verein + Kauf) - der guenstigste,
+     * bei Gleichstand der erste; ohne lesbare Zahlen die erste Zeile. -1 bei leerer Liste. Rein.
+     */
+    function ptPickCheapest(coins) {
+        const l = Array.isArray(coins) ? coins : [];
+        if (!l.length) return -1;
+        let best = -1;
+        l.forEach(function (c, i) {
+            const n = Number(c);
+            if (c == null || c === '' || !isFinite(n)) return;
+            if (best < 0 || n < Number(l[best])) best = i;
+        });
+        return best < 0 ? 0 : best;
+    }
+    /** v6.61.2: "Stand HH:MM" aus dem Zeitpunkt des letzten "Sets laden" (lokale Zeit); ohne Zeitpunkt ''. Rein. */
+    function ptStandText(at) {
+        const t = Number(at);
+        if (!(t > 0)) return '';
+        const d = new Date(t);
+        return 'Stand ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
     }
     /** v6.57.1: welche Anzahl-Wahl gilt nach einem Tipp/Ereignis? Rein. ('eins' | 'batch' | 'reihe') */
     function ptMultiNext(cur, ev) {
@@ -8922,7 +8963,9 @@
                 return { title: g.name ? String(g.name) : 'Set', sub: (g.grade ? ' · ' + g.grade : '') + (g.tokens > 0 ? ' · ' + g.tokens + ' T' : ''), val: '' };
             }
             if (g.kind === 'verkauf') return { title: 'Verkaufen', sub: g.cards > 0 ? ' · ' + g.cards + (g.cards === 1 ? ' Karte' : ' Karten') : '', val: '' };
-            return { title: 'Galerie', sub: g.sets > 0 ? ' · ' + g.sets + (g.sets === 1 ? ' Set' : ' Sets') : '', val: coins };
+            // v6.61.2 (Rasmus 24.11.: nicht automatisch laden, dafuer "Stand von HH:MM · Neu laden"): der Stand steht hier,
+            // "Neu laden" ist die Nebenaktion der Liste. Ohne Laden keine Zeit.
+            return { title: 'Galerie', sub: (g.sets > 0 ? ' · ' + g.sets + (g.sets === 1 ? ' Set' : ' Sets') : '') + (g.stand ? ' · ' + g.stand : ''), val: coins };
         }
         return null;
     }
@@ -9057,7 +9100,7 @@
     }
     function ptInFoot(el) { return !!(el && el.parentNode && el.parentNode.id === 'sbc-opt-foot'); }
     // ---- v6.57.0 Etappe 3b: Aktionsleiste (nur UI 7) -------------------------
-    let ptAct = null, ptActChangedAt = 0;
+    let ptAct = null, ptActChangedAt = 0, ptActFiring = false;
     /** Der echte Knopf zum Schluessel aus ptActState (nichts Eigenes: nur vorhandene Knoepfe). */
     function ptActTarget(key) {
         const q = function (sel) { return ui.panel ? ui.panel.querySelector(sel) : null; };
@@ -9065,6 +9108,7 @@
         if (key === 'fb-row') return q('#sbc-opt-futbin-result .sbc-opt-fb-row.is-picked button[data-fb-idx]') || q('#sbc-opt-futbin-result button[data-fb-idx]');
         if (key === 'close') return q('#sbc-opt-close');
         if (key === 'hybrid-stop') return q('#sbc-opt-hybrid-club-stop');
+        if (key === 'hybrid-apply') return q('#sbc-opt-hybrid-club-result details.is-picked [data-hybrid-apply]') || q('#sbc-opt-hybrid-club-result [data-hybrid-apply]');
         // v6.60.0: Galerie - der Knopf, den ptGalRead zuletzt als Haupt-/Zweitknopf bzw. Rueckweg gelesen hat (noch im Ergebnis)
         if (key === 'gal-main' || key === 'gal-second' || key === 'gal-back') {
             const el = key === 'gal-main' ? ptGal.main : key === 'gal-second' ? ptGal.second : ptGal.back;
@@ -9094,8 +9138,13 @@
         const prim = Array.from(res.querySelectorAll(':scope > .sbc-opt-btn.primary, :scope > .sbc-opt-withtip > .sbc-opt-btn.primary, button[data-gal-idx].primary'))
             .filter(function (b) { return !b.disabled && !b.classList.contains('is-busy'); });
         const info = function (b) { return { id: b.id || '', text: String(b.textContent || ''), set: b.hasAttribute('data-gal-idx') }; };
-        if (prim[0]) { ptGal.main = prim[0]; g.main = info(prim[0]); }
-        if (prim[1] && !prim[1].hasAttribute('data-gal-idx')) { ptGal.second = prim[1]; g.second = info(prim[1]); }
+        // v6.61.2: in der Set-Liste gilt die GEWAEHLTE Zeile (ptActRows markiert sie; ohne Wahl die erste)
+        const picked = rows.length ? (res.querySelector('.sbc-opt-fb-row.is-picked button[data-gal-idx]') || rows[0]) : null;
+        if (picked && !picked.disabled) { ptGal.main = picked; g.main = info(picked); }
+        else {
+            if (prim[0]) { ptGal.main = prim[0]; g.main = info(prim[0]); }
+            if (prim[1] && !prim[1].hasAttribute('data-gal-idx')) { ptGal.second = prim[1]; g.second = info(prim[1]); }
+        }
         ptGal.back = res.querySelector(PT_GAL_BACK);
         g.back = !!ptGal.back;
         const on = document.querySelector('#sbc-opt-gallery-flow .step.on');
@@ -9104,6 +9153,7 @@
             const last = typeof galleryLast !== 'undefined' ? galleryLast : null;
             if (last) {
                 g.coins = Number(last.coins) || 0;
+                g.stand = g.kind === 'liste' ? ptStandText(last.at) : '';
                 const ch = last.chosen;
                 if (ch && g.kind === 'set') {
                     g.name = (ch.set && ch.set.name) || (ch.meta && ch.meta.name) || '';
@@ -9207,8 +9257,16 @@
             s.ve = v;
         } else if (s.way === 'hybrid') {
             const stop = ui.hybridClubStop;
-            s.hy = { stop: !!(stop && !stop.hidden), buy: !!panel.querySelector('#sbc-opt-hybrid-buy'), busy: false };
+            s.hy = { stop: !!(stop && !stop.hidden), buy: !!panel.querySelector('#sbc-opt-hybrid-buy'), busy: false, plans: 0, coins: null };
             try { s.hy.busy = !!(hybridClubBusy || buyBusy); } catch (e) {}
+            // v6.61.2: Plaene als Zeilen - Anzahl und die Nachkauf-Coins des gewaehlten Plans (aus dem Ergebnis der Suche)
+            try {
+                const btns = ui.hybridClubResult ? Array.from(ui.hybridClubResult.querySelectorAll('[data-hybrid-apply]')) : [];
+                s.hy.plans = btns.length;
+                const pb = ptActTarget('hybrid-apply');
+                const pl = pb && hybridLast && hybridLast.result ? hybridLast.result.plans[Number(pb.getAttribute('data-hybrid-apply'))] : null;
+                if (pl && isFinite(Number(pl.coins))) s.hy.coins = Number(pl.coins);
+            } catch (e) {}
         }
         return s;
     }
@@ -9232,9 +9290,33 @@
     }
     function ptActPickRow(row) {
         if (!row || !row.parentNode) return;
-        Array.from(row.parentNode.querySelectorAll('.sbc-opt-fb-row.is-picked')).forEach(function (r) { if (r !== row) r.classList.remove('is-picked'); });
+        Array.from(row.parentNode.querySelectorAll('.is-picked')).forEach(function (r) { if (r !== row && r.parentNode === row.parentNode) r.classList.remove('is-picked'); });
         if (!row.classList.contains('is-picked')) row.classList.add('is-picked');
         syncActBar();
+    }
+    /** Zeilen einer Liste als Auswahl markieren (genau eine gewaehlt; ohne Wahl die Zeile fallback). Schreibt nur bei Aenderung. */
+    function ptRowsMark(rows, fallback) {
+        if (!rows.length) return;
+        let pick = rows.findIndex(function (r) { return r.classList.contains('is-picked'); });
+        if (pick < 0) pick = fallback >= 0 && fallback < rows.length ? fallback : 0;
+        rows.forEach(function (r, i) {
+            const on = i === pick;
+            if (r.classList.contains('is-picked') !== on) r.classList.toggle('is-picked', on);
+            if (r.getAttribute('role') !== 'radio') r.setAttribute('role', 'radio');
+            if (r.getAttribute('aria-checked') !== String(on)) r.setAttribute('aria-checked', String(on));
+        });
+    }
+    /** v6.61.2: Set-Zeilen der Galerie (Rasmus 24.11.: auswaehlbar wie die Futbin-Loesungen) und Plaene von "Verein + Kauf" (der guenstigste vorgewaehlt). */
+    function ptActRowsMore() {
+        const gr = ui.galleryResult;
+        if (gr) ptRowsMark(Array.from(gr.querySelectorAll('.sbc-opt-fb-row')).filter(function (r) { return !!r.querySelector('button[data-gal-idx]'); }), 0);
+        const hr = ui.hybridClubResult;
+        if (hr) {
+            const plans = Array.from(hr.querySelectorAll('details')).filter(function (d) { return d.parentNode === hr && !!d.querySelector('[data-hybrid-apply]'); });
+            let coins = [];
+            try { coins = plans.map(function (d) { const pl = hybridLast.result.plans[Number(d.querySelector('[data-hybrid-apply]').getAttribute('data-hybrid-apply'))]; return pl ? pl.coins : null; }); } catch (e) { coins = []; }
+            ptRowsMark(plans, ptPickCheapest(coins));
+        }
     }
     // v6.57.1: Weg "Verein" - Anzahl (1 / N / Ganzes Set). Nicht gemerkt: jede Sitzung beginnt bei 1.
     let ptMulti = 'eins', ptMultiPlanSeen = null, ptVereinOn = false;
@@ -9295,6 +9377,7 @@
         const bar = document.getElementById('sbc-opt-actbar');
         if (!bar || !ui.panel || !ui7IsOn()) { ptAct = null; ptVereinClean(); return; }
         try { ptActRows(); } catch (e) {}
+        try { ptActRowsMore(); } catch (e) {}
         try { ptSyncVerein(); } catch (e) {}
         // v6.60.0: in der Galerie zieht die Kontextzeile mit jedem neuen Ergebnis nach (sonst erst am 500-ms-Takt)
         try { if (ptOrt.view === 'galerie') syncCtxLine(); } catch (e) {}
@@ -9332,7 +9415,9 @@
             // Gegen den Doppeltipp: die Beschriftung hat gerade gewechselt (gleiche Sperre wie an den Ja-Knoepfen).
             if (!ui7IsOn() || Date.now() - ptActChangedAt < PT_CONFIRM_LOCK_MS) return;
             const el = ptActTarget(key);
-            if (el && !el.disabled) el.click();
+            if (!el || el.disabled) return;
+            ptActFiring = true;
+            try { el.click(); } finally { ptActFiring = false; }
         };
         bar.querySelector('#sbc-opt-act').addEventListener('click', function () { if (ptAct && !ptAct.busy) fire(ptAct.target); });
         bar.querySelector('#sbc-opt-act-side').addEventListener('click', function () { if (ptAct && ptAct.side) fire(ptAct.side.target); });
@@ -9350,6 +9435,30 @@
                 if (r && r === ev.target) { ev.preventDefault(); ptActPickRow(r); }
             });
         }
+        // v6.61.2: Set-Zeilen der Galerie waehlen statt oeffnen. Der Name der Zeile ist der vorhandene Knopf, der das Set
+        // oeffnet - ein Tipp von Hand waehlt unter UI 7 nur die Zeile (Capture, vor dem Knopf); geoeffnet wird ueber die
+        // Hauptaktion, die genau diesen Knopf klickt (ptActFiring). "✓", ⓘ und Aufwertungs-Knoepfe bleiben Knoepfe.
+        const gres = panel.querySelector('#sbc-opt-gallery-result');
+        if (gres) {
+            gres.addEventListener('click', function (ev) {
+                const t = ev.target;
+                if (!ui7IsOn() || ptActFiring || !panel.hasAttribute('data-act7') || !t || typeof t.closest !== 'function') return;
+                const row = t.closest('.sbc-opt-fb-row');
+                if (!row || !row.querySelector('button[data-gal-idx]')) return;
+                const nameBtn = t.closest('button[data-gal-idx]');
+                if (!nameBtn && t.closest('button, a, summary, input, label')) return;
+                if (nameBtn) { ev.preventDefault(); ev.stopPropagation(); }
+                ptActPickRow(row);
+            }, true);
+        }
+        // v6.61.2: Plaene von "Verein + Kauf" waehlen (Tipp irgendwo in den Plan, nicht auf Knoepfe)
+        const hres = panel.querySelector('#sbc-opt-hybrid-club-result');
+        if (hres) hres.addEventListener('click', function (ev) {
+            const t = ev.target;
+            if (!ui7IsOn() || !t || typeof t.closest !== 'function' || t.closest('button, a, input, label')) return;
+            const d = t.closest('details');
+            if (d && d.parentNode === hres && d.querySelector('[data-hybrid-apply]')) ptActPickRow(d);
+        });
         // v6.57.1: Anzahl (1 / N) und "Ganzes Set" - nur die Wahl, geplant und abgegeben wird ueber die echten Knoepfe.
         const chips = panel.querySelector('#sbc-opt-batch-chips'), cnt = panel.querySelector('#sbc-opt-batch-count'), setRow = panel.querySelector('#sbc-opt-set-row');
         if (chips) chips.addEventListener('click', function (ev) {

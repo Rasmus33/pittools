@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.47.0
+// @version      6.48.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.47.0';
+    const VERSION = '6.48.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7467,6 +7467,19 @@
            (.sbc-opt-line, .sbc-opt-withtip, .sbc-opt-head sind flex). */
         #sbc-opt-panel [hidden] { display:none !important; }
 
+        /* v6.48.0: Einstellungen in vier zugeklappten Gruppen; je Zeile Kurzlabel + ⓘ + Feld. */
+        .sbc-opt-details-toggle.sbc-opt-sub > summary { min-height:var(--pt-control-h); font-size:var(--pt-type-label); color:var(--pt-fg-muted); }
+        .sbc-opt-details-toggle.sbc-opt-sub[open] { padding-bottom:var(--pt-space-2); }
+        #sbc-opt-advanced[open] > summary { margin-bottom:0; }
+        #sbc-opt-adv-n { flex:1 1 auto; font-weight:var(--pt-weight-regular); color:var(--pt-accent); }
+        .sbc-opt-rowhead { margin-bottom:var(--pt-space-1); }
+        .sbc-opt-rowhead > label { flex:1 1 auto; min-width:0; margin:0; font-size:var(--pt-type-label); color:var(--pt-fg-muted); }
+        .sbc-opt-row.sbc-opt-withtip > .sbc-opt-toggle { flex:1 1 auto; min-width:0; margin:0; font-size:var(--pt-type-body); color:var(--pt-fg-default); }
+        .sbc-opt-row .sbc-opt-withtip > .sbc-opt-toggle { flex:1 1 auto; min-width:0; margin:0; font-size:var(--pt-type-body); color:var(--pt-fg-default); }
+        .sbc-opt-row.sbc-opt-compact.sbc-opt-segrow .sbc-opt-rowhead > label { margin-bottom:0; }
+        #sbc-opt-rating-line .sbc-opt-btn.ghost:not(.is-loaded) { flex:1 1 auto; width:100%; }
+        .sbc-opt-runhint { margin:0 0 var(--pt-space-1-5); }
+
         /* v6.40.0: Abstands-Hilfsklassen statt style="margin/padding" im
            Panel-Template. Mit #sbc-opt-panel .sbc-opt-body davor (schlaegt auch
            #sbc-opt-panel input[type=number]), damit sie (wie vorher das
@@ -7609,7 +7622,7 @@
         if (!ui.load || STATE.loading) return;
         const n = STATE.pool ? STATE.pool.length : 0;
         ui.load.classList.toggle('is-loaded', n > 0);
-        const txt = n > 0 ? '↻ Verein neu laden (' + n + ')' : 'Spieler laden';
+        const txt = n > 0 ? 'Verein ' + n.toLocaleString('de-DE') + ' · ↻' : 'Spieler laden';
         // Nur bei echter Aenderung schreiben: der Knopf wird beobachtet
         // (initUxHelpers), jedes Setzen waere eine neue Mutation - Endlosschleife.
         if (ui.load.textContent !== txt) ui.load.textContent = txt;
@@ -8088,7 +8101,45 @@
     }
     // [TIPS-END]
 
+    // v6.48.0: wie viele Einstellungen weichen vom Auslieferungszustand ab?
+    // Der steht im Markup (defaultValue/defaultChecked/defaultSelected) - es
+    // gibt keine zweite Liste von Standardwerten, die veralten koennte.
+    function advChangedCount(fields) {
+        return (fields || []).filter(function (f) {
+            if (!f) return false;
+            return f.type === 'checkbox' ? !!f.checked !== !!f.defChecked : String(f.value) !== String(f.def);
+        }).length;
+    }
+    function advFieldStates(root) {
+        const skip = ['sbc-opt-raritypick-filter', 'sbc-opt-band-preset-name'];
+        return Array.from(root.querySelectorAll('input[id], select[id]')).filter(function (el) { return skip.indexOf(el.id) < 0; }).map(function (el) {
+            if (el.type === 'checkbox') return { type: 'checkbox', checked: el.checked, defChecked: el.defaultChecked };
+            if (el.tagName === 'SELECT') {
+                const d = Array.from(el.options).filter(function (o) { return o.defaultSelected; })[0] || el.options[0];
+                return { value: el.value, def: d ? d.value : '' };
+            }
+            return { value: el.value, def: el.defaultValue };
+        });
+    }
+    function renderAdvCount() {
+        const adv = document.getElementById('sbc-opt-advanced'), out = document.getElementById('sbc-opt-adv-n');
+        if (!adv || !out) return;
+        let n = advChangedCount(advFieldStates(adv));
+        const cm = adv.querySelector('#sbc-opt-costmode .sbc-opt-chip.on');
+        if (cm && cm.getAttribute('data-costmode') !== 'itemScore') n++;
+        const txt = n ? ' · ' + n + ' geändert' : '';
+        if (out.textContent !== txt) out.textContent = txt;
+    }
     function initUxHelpers(panel) {
+        const advBox = panel.querySelector('#sbc-opt-advanced');
+        if (advBox) {
+            const later = function () { setTimeout(renderAdvCount, 0); };
+            advBox.addEventListener('change', later);
+            advBox.addEventListener('input', later);
+            advBox.addEventListener('click', later);
+            advBox.addEventListener('toggle', later, true);
+            setTimeout(renderAdvCount, 1500);
+        }
         const bar = panel.querySelector('#sbc-opt-infobar');
         if (bar) {
             let open = false;
@@ -8399,8 +8450,12 @@
                 </div>
                 <!-- REITER RATING: der bisherige Optimizer (Rating-SBCs). -->
                 <div class="sbc-opt-tab" id="sbc-opt-tab-rating" role="tabpanel">
-                <!-- v6.15.0: Punkte-SBC (Streamlined / One-Click) - nur sichtbar, wenn EAs
-                     Auswahl-Ansicht offen ist (syncPointsCard). -->
+                <!-- v6.48.0: gleiches Geruest - Statuszeile (Verein, neu laden), das eine
+                     haeufige Feld (Min. Rating), Einstellungen zugeklappt in vier Gruppen,
+                     Hauptaktion klebt unten, darunter "Mehrere erledigen". -->
+                <div class="sbc-opt-line" id="sbc-opt-rating-line">
+                    <button class="sbc-opt-btn ghost sbc-opt-m0" id="sbc-opt-load">Spieler laden</button>
+                </div>
                 <div class="sbc-opt-card" id="sbc-opt-points" style="display:none;">
                     <div class="sbc-opt-group-title sbc-opt-mt0">Punkte-SBC</div>
                     <div class="sbc-opt-dim" id="sbc-opt-points-info"></div>
@@ -8410,11 +8465,6 @@
                     <button type="button" class="sbc-opt-btn" id="sbc-opt-points-buy"><span>Fehlende Punkte kaufen …</span></button>
                     <div id="sbc-opt-points-buyres"></div>
                 </div>
-                <!-- v6.1.0: der Vorlagen-Knopf steht im Bereich "Mehrere
-                     erledigen" (unten) - Rasmus, 25.09.: die drei Mehrfach-Wege
-                     gehoeren zusammen. "Spieler laden" ist nach dem ersten
-                     Laden nur noch eine Statuszeile (syncLoadBtn). -->
-                <button class="sbc-opt-btn ghost sbc-opt-mt0" id="sbc-opt-load">Spieler laden</button>
                 <div class="sbc-opt-row sbc-opt-mb0">
                     <label class="sbc-opt-chiplabel">Min. Rating pro Spieler</label>
                     <div class="sbc-opt-chips" id="sbc-opt-minrating-chips"></div>
@@ -8427,155 +8477,144 @@
                     <input class="sbc-opt-mb3" type="number" id="sbc-opt-minrating" value="75" min="1" max="99">
                 </div>
                 <details id="sbc-opt-advanced" class="sbc-opt-details-toggle">
-                    <summary>Erweiterte Einstellungen</summary>
-                <div class="sbc-opt-group-title">Kartenwahl</div>
-                <div class="sbc-opt-row">
-                    <label class="sbc-opt-toggle">
-                        <input type="checkbox" id="sbc-opt-maxrating-en">
-                        Max. Rating pro Spieler begrenzen
-                    </label>
-                    <div class="sbc-opt-inline sbc-opt-mt15">
-                        <input type="number" id="sbc-opt-maxrating" value="85" min="1" max="99" title="Max. Rating">
-                        <span class="sbc-opt-muted">OVR</span>
+                    <summary>Einstellungen<span id="sbc-opt-adv-n"></span></summary>
+                <details class="sbc-opt-details-toggle sbc-opt-sub"><summary>Kartenwahl</summary>
+                    <div class="sbc-opt-row">
+                        <div class="sbc-opt-withtip">
+                        <label class="sbc-opt-toggle"><input type="checkbox" id="sbc-opt-maxrating-en">Max. Rating</label>
+                        <button type="button" class="sbc-opt-tip" aria-label="Info: Max. Rating" aria-expanded="false" data-tip="Begrenzt das Rating je Spieler. Macht die Suche bei großem Verein deutlich schneller.">i</button>
+                        </div>
+                        <div class="sbc-opt-inline sbc-opt-mt15">
+                            <input type="number" id="sbc-opt-maxrating" value="85" min="1" max="99" aria-label="Max. Rating">
+                            <span class="sbc-opt-muted">OVR</span>
+                        </div>
                     </div>
-                </div>
-                <div class="sbc-opt-row">
-                    <label class="sbc-opt-toggle">
-                        <input type="checkbox" id="sbc-opt-applyrarity" checked>
-                        Erkannte SBC-Vorgaben automatisch erfüllen (Rarity / Spieler-Level)
-                    </label>
-                </div>
-                <div class="sbc-opt-row">
-                    <label class="sbc-opt-toggle">
-                        <input type="checkbox" id="sbc-opt-specialstorage" checked>
-                        Special-Karten nur aus Storage
-                    </label>
-                </div>
-                <div class="sbc-opt-row">
-                    <label class="sbc-opt-toggle">
-                        <input type="checkbox" id="sbc-opt-uselocks" checked>
-                        Gesperrte Karten (PaleTools-Schloss) nie verbauen
-                    </label>
-                </div>
-                <div class="sbc-opt-row">
-                    <label class="sbc-opt-toggle">
-                        <input type="checkbox" id="sbc-opt-poolcache" checked>
-                        Verein zwischenspeichern (nach Neuladen sofort da)
-                    </label>
-                </div>
-                <div class="sbc-opt-row">
-                    <label>Gold-SBCs ohne Ziel-OVR: höchstes Rating für Rare / für Common
-                        (Rare darüber bleibt für Rating-SBCs)</label>
-                    <div class="sbc-opt-inline">
-                        <span class="sbc-opt-dim sbc-opt-meta">Rare bis</span>
-                        <input type="number" id="sbc-opt-maxrare" value="77" min="0" max="99">
-                        <span class="sbc-opt-dim sbc-opt-meta">Common bis</span>
-                        <input type="number" id="sbc-opt-maxcommon" value="77" min="0" max="99">
+                    <div class="sbc-opt-row sbc-opt-withtip">
+                        <label class="sbc-opt-toggle"><input type="checkbox" id="sbc-opt-applyrarity" checked>SBC-Vorgaben erfüllen</label>
+                        <button type="button" class="sbc-opt-tip" aria-label="Info: SBC-Vorgaben erfüllen" aria-expanded="false" data-tip="Erkannte Vorgaben der SBC (Rarity, Spieler-Level) automatisch erfüllen.">i</button>
                     </div>
-                </div>
-                <div class="sbc-opt-group-title">Schonen &amp; Verbrauchen</div>
-                <div class="sbc-opt-row sbc-opt-compact">
-                    <label>Seltene Club-Karten schonen</label>
-                    <select id="sbc-opt-scarcity">
+                    <div class="sbc-opt-row sbc-opt-withtip">
+                        <label class="sbc-opt-toggle"><input type="checkbox" id="sbc-opt-specialstorage" checked>Specials nur aus Storage</label>
+                        <button type="button" class="sbc-opt-tip" aria-label="Info: Specials nur aus Storage" aria-expanded="false" data-tip="Special-Karten kommen nur aus dem Storage, nie aus dem Verein.">i</button>
+                    </div>
+                    <div class="sbc-opt-row sbc-opt-withtip">
+                        <label class="sbc-opt-toggle"><input type="checkbox" id="sbc-opt-uselocks" checked>Gesperrte nie verbauen</label>
+                        <button type="button" class="sbc-opt-tip" aria-label="Info: Gesperrte nie verbauen" aria-expanded="false" data-tip="Karten mit PaleTools-Schloss werden nie verbaut – auch nicht als Anker oder Vorgabe-Karte.">i</button>
+                    </div>
+                    <div class="sbc-opt-row">
+                        <div class="sbc-opt-withtip sbc-opt-rowhead"><label for="sbc-opt-maxrare">Gold-SBC: Rare bis / Common bis</label><button type="button" class="sbc-opt-tip" aria-label="Info: Gold-SBC" aria-expanded="false" data-tip="Für Gold-SBCs ohne Ziel-OVR: höchstes Rating für Rare und für Common. Rare darüber bleibt für Rating-SBCs.">i</button></div>
+                        <div class="sbc-opt-inline">
+                            <input type="number" id="sbc-opt-maxrare" value="77" min="0" max="99" aria-label="Rare bis">
+                            <input type="number" id="sbc-opt-maxcommon" value="77" min="0" max="99" aria-label="Common bis">
+                        </div>
+                    </div>
+                </details>
+                <details class="sbc-opt-details-toggle sbc-opt-sub"><summary>Schonen</summary>
+                    <div class="sbc-opt-row sbc-opt-compact">
+                        <div class="sbc-opt-withtip sbc-opt-rowhead"><label for="sbc-opt-scarcity">Seltene Karten</label><button type="button" class="sbc-opt-tip" aria-label="Info: Seltene Karten" aria-expanded="false" data-tip="Schont Karten, von denen du wenige im Verein hast. Aus: nur der Rating-Überschuss zählt.">i</button></div>
+                        <select id="sbc-opt-scarcity">
                         <option value="0">Aus (nur Waste zählt)</option>
                         <option value="8">Leicht</option>
                         <option value="18" selected>Normal</option>
                         <option value="35">Stark</option>
                     </select>
-                </div>
-                <div class="sbc-opt-row">
-                    <label>Max. Rating-Überschuss über Minimum (z.B. 0.10 = bis 84.10 statt
-                        84.00). Steht praktisch immer auf 0 - deshalb hier unten.</label>
-                    <input type="number" id="sbc-opt-maxwaste" value="0.00" min="0" max="2" step="0.01">
-                </div>
-                <div class="sbc-opt-row sbc-opt-compact">
-                    <label>Rarity-Schutz: was ist hart geschützt?</label>
-                    <select id="sbc-opt-raritymode">
+                    </div>
+                    <div class="sbc-opt-row">
+                        <div class="sbc-opt-withtip sbc-opt-rowhead"><label for="sbc-opt-raritymode">Hart geschützt</label><button type="button" class="sbc-opt-tip" aria-label="Info: Hart geschützt" aria-expanded="false" data-tip="Was nie ohne Vorgabe verbaut wird: nur TOTW aus dem Verein, die ganze Gruppe (TOTW/TOTS/FOF/FUTTIES) oder nichts.">i</button></div>
+                        <select id="sbc-opt-raritymode">
                         <option value="vereinTotw" selected>Nur TOTW aus dem Verein</option>
                         <option value="gruppe83">Ganze Gruppe (TOTW/TOTS/FOF/FUTTIES)</option>
                         <option value="aus">Nichts</option>
                     </select>
-                </div>
-                <div class="sbc-opt-row sbc-opt-compact">
-                    <label>Stärke des harten Schutzes</label>
-                    <select id="sbc-opt-rarityguard">
+                    </div>
+                    <div class="sbc-opt-row sbc-opt-compact">
+                        <div class="sbc-opt-withtip sbc-opt-rowhead"><label for="sbc-opt-rarityguard">Schutz-Stärke</label><button type="button" class="sbc-opt-tip" aria-label="Info: Schutz-Stärke" aria-expanded="false" data-tip="Wie stark der harte Schutz gewichtet wird.">i</button></div>
+                        <select id="sbc-opt-rarityguard">
                         <option value="0">Aus</option>
                         <option value="4">Leicht</option>
                         <option value="8" selected>Normal</option>
                         <option value="20">Stark</option>
                     </select>
-                </div>
-                <div class="sbc-opt-row sbc-opt-compact">
-                    <label>Aufschlag für Storage-TOTW (nicht unnötig verbauen)</label>
-                    <select id="sbc-opt-totwsoft">
+                    </div>
+                    <div class="sbc-opt-row sbc-opt-compact">
+                        <div class="sbc-opt-withtip sbc-opt-rowhead"><label for="sbc-opt-totwsoft">Storage-TOTW schonen</label><button type="button" class="sbc-opt-tip" aria-label="Info: Storage-TOTW schonen" aria-expanded="false" data-tip="Aufschlag für TOTW aus dem Storage – nicht unnötig verbauen.">i</button></div>
+                        <select id="sbc-opt-totwsoft">
                         <option value="0">Aus</option>
                         <option value="4">Leicht</option>
                         <option value="8" selected>Normal</option>
                         <option value="20">Stark</option>
                     </select>
-                </div>
-                <div class="sbc-opt-row sbc-opt-compact">
-                    <label>Aufschlag für Storage-Specials (Gold zuerst)</label>
-                    <select id="sbc-opt-specialsoft">
+                    </div>
+                    <div class="sbc-opt-row sbc-opt-compact">
+                        <div class="sbc-opt-withtip sbc-opt-rowhead"><label for="sbc-opt-specialsoft">Storage-Specials</label><button type="button" class="sbc-opt-tip" aria-label="Info: Storage-Specials" aria-expanded="false" data-tip="Aufschlag für Specials aus dem Storage, damit Gold zuerst geht.">i</button></div>
+                        <select id="sbc-opt-specialsoft">
                         <option value="0">Aus (Gold und Special gleich)</option>
                         <option value="1" selected>Klein (Gold zuerst)</option>
                         <option value="4">Deutlich</option>
                     </select>
-                </div>
-                <div class="sbc-opt-row sbc-opt-compact">
-                    <label>Storage-Karten bevorzugt verbrauchen</label>
-                    <select id="sbc-opt-storagebonus">
+                    </div>
+                </details>
+                <details class="sbc-opt-details-toggle sbc-opt-sub"><summary>Verbrauchen</summary>
+                    <div class="sbc-opt-row sbc-opt-compact">
+                        <div class="sbc-opt-withtip sbc-opt-rowhead"><label for="sbc-opt-storagebonus">Storage zuerst</label><button type="button" class="sbc-opt-tip" aria-label="Info: Storage zuerst" aria-expanded="false" data-tip="Storage-Karten bevorzugt verbrauchen.">i</button></div>
+                        <select id="sbc-opt-storagebonus">
                         <option value="0">Aus</option>
                         <option value="1">Leicht</option>
                         <option value="2" selected>Normal</option>
                         <option value="4">Stark</option>
                     </select>
-                </div>
-                <div class="sbc-opt-row sbc-opt-compact">
-                    <label>Unverkäufliche Karten zuerst verbauen (spart Coins)</label>
-                    <select id="sbc-opt-untradeable">
+                    </div>
+                    <div class="sbc-opt-row sbc-opt-compact">
+                        <div class="sbc-opt-withtip sbc-opt-rowhead"><label for="sbc-opt-untradeable">Unverkäufliche zuerst</label><button type="button" class="sbc-opt-tip" aria-label="Info: Unverkäufliche zuerst" aria-expanded="false" data-tip="Unverkäufliche Karten zuerst verbauen – das spart Coins.">i</button></div>
+                        <select id="sbc-opt-untradeable">
                         <option value="0">Aus</option>
                         <option value="1">Leicht</option>
                         <option value="3" selected>Normal</option>
                         <option value="6">Stark</option>
                     </select>
-                </div>
-                <div class="sbc-opt-group-title">Rating-Kosten</div>
-                <div class="sbc-opt-row">
-                    <label class="sbc-opt-chiplabel">Kosten je Karte</label>
-                    <div class="sbc-opt-chips" id="sbc-opt-costmode">
-                        <button type="button" class="sbc-opt-chip" data-costmode="itemScore" title="EAs Item Score der Karte; Storage immer zuerst">Item Score</button>
-                        <button type="button" class="sbc-opt-chip" data-costmode="table" title="Die alte Tabelle mit Zusatzregeln">Tabelle</button>
                     </div>
-                    <div class="sbc-opt-dim" id="sbc-opt-costmode-hint"></div>
-                </div>
-                <div class="sbc-opt-row" id="sbc-opt-bandbox">
-                    <label>Rating-Kosten (höher = Karten dieser Stufe mehr schonen)</label>
-                    <div class="sbc-opt-bandhead"><span></span><span>von</span><span>bis</span><span>Kosten</span><span></span></div>
+                    <div class="sbc-opt-row sbc-opt-withtip sbc-opt-fieldrow">
+                        <label for="sbc-opt-maxwaste">Max. Überschuss</label>
+                        <input type="number" id="sbc-opt-maxwaste" value="0.00" min="0" max="2" step="0.01">
+                        <button type="button" class="sbc-opt-tip" aria-label="Info: Max. Überschuss" aria-expanded="false" data-tip="Erlaubter Rating-Überschuss über dem Minimum: 0,10 heißt bis 84,10 statt 84,00. Steht praktisch immer auf 0.">i</button>
+                    </div>
+                </details>
+                <details class="sbc-opt-details-toggle sbc-opt-sub"><summary>Kosten &amp; Sonderfälle</summary>
+                    <div class="sbc-opt-row">
+                        <div class="sbc-opt-withtip sbc-opt-rowhead"><label>Kosten je Karte</label><button type="button" class="sbc-opt-tip" aria-label="Info: Kosten je Karte" aria-expanded="false" data-tip="Item Score: EAs Item Score der Karte, Storage immer zuerst. Tabelle: die alte Rating-Kosten-Tabelle mit Zusatzregeln.">i</button></div>
+                        <div class="sbc-opt-chips" id="sbc-opt-costmode">
+                            <button type="button" class="sbc-opt-chip" data-costmode="itemScore">Item Score</button>
+                            <button type="button" class="sbc-opt-chip" data-costmode="table">Tabelle</button>
+                        </div>
+                        <div class="sbc-opt-dim" id="sbc-opt-costmode-hint"></div>
+                    </div>
+                    <div class="sbc-opt-row" id="sbc-opt-bandbox">
+                        <div class="sbc-opt-withtip sbc-opt-rowhead"><label>Rating-Kosten</label><button type="button" class="sbc-opt-tip" aria-label="Info: Rating-Kosten" aria-expanded="false" data-tip="Höher = Karten dieser Stufe werden mehr geschont.">i</button></div>
+                        <div class="sbc-opt-bandhead"><span></span><span>von</span><span>bis</span><span>Kosten</span><span></span></div>
                     <div id="sbc-opt-bands"></div>
                     <div class="sbc-opt-inline sbc-opt-mt1">
                         <button class="sbc-opt-btn ghost sbc-opt-m0 sbc-opt-pad-xs" id="sbc-opt-band-add">+ Stufe</button>
                         <button class="sbc-opt-btn ghost sbc-opt-m0 sbc-opt-pad-xs" id="sbc-opt-band-reset">Zurücksetzen</button>
                     </div>
-                    <label class="sbc-opt-chiplabel sbc-opt-mt2">Preset (Saisonphase)</label>
+                    <label class="sbc-opt-chiplabel sbc-opt-mt2">Preset</label>
                     <div class="sbc-opt-chips" id="sbc-opt-band-presets"></div>
                     <div class="sbc-opt-chipedit" id="sbc-opt-band-preset-edit">
                         <input type="text" id="sbc-opt-band-preset-name" maxlength="18" placeholder="Name für die aktuelle Tabelle">
                         <button class="sbc-opt-btn" id="sbc-opt-band-preset-save" type="button">Speichern</button>
-                        <button class="sbc-opt-btn ghost" id="sbc-opt-band-preset-del" type="button" title="Eigene Presets löschen">✕ eigene</button>
+                        <button class="sbc-opt-btn ghost" id="sbc-opt-band-preset-del" type="button" aria-label="Eigene Presets löschen">✕ eigene</button>
                     </div>
-                </div>
-                <div class="sbc-opt-group-title">Vorgabe-Karte übersteuern</div>
-                <div class="sbc-opt-row">
-                    <label>Karte für Rarity-Vorgabe (z.B. TOTW/FUTTIES) - übersteuert die Automatik</label>
-                    <input class="sbc-opt-mb15" type="text" id="sbc-opt-raritypick-filter" placeholder="Name filtern...">
-                    <select id="sbc-opt-raritypick"><option value="">– automatisch wählen –</option></select>
-                </div>
+                    </div>
+                    <div class="sbc-opt-row">
+                        <div class="sbc-opt-withtip sbc-opt-rowhead"><label for="sbc-opt-raritypick">Vorgabe-Karte</label><button type="button" class="sbc-opt-tip" aria-label="Info: Vorgabe-Karte" aria-expanded="false" data-tip="Karte für eine Rarity-Vorgabe (etwa TOTW) von Hand wählen – übersteuert die Automatik.">i</button></div>
+                        <input class="sbc-opt-mb15" type="text" id="sbc-opt-raritypick-filter" placeholder="Name filtern …">
+                        <select id="sbc-opt-raritypick"><option value="">– automatisch wählen –</option></select>
+                    </div>
                 </details>
+                </details>
+                <div class="sbc-opt-runhint" id="sbc-opt-runhint" hidden></div>
                 <button class="sbc-opt-btn primary" id="sbc-opt-run">Optimieren + Eintragen</button>
                 <!-- v6.1.0: warum die Hauptaktion (noch) nicht greift - Hinweis
                      statt Fehler-Toast nach dem Tipp (runBlockReason). -->
-                <div class="sbc-opt-runhint" id="sbc-opt-runhint" hidden></div>
                 <div class="sbc-opt-result" id="sbc-opt-result"></div>
                 <!-- v6.1.0: MEHRERE ERLEDIGEN - Reihe, Batch und Vorlagen in EINEM
                      Bereich mit Umschalter (syncMultiModes). Die drei
@@ -8752,6 +8791,11 @@
                     <button type="button" class="sbc-opt-btn primary sbc-opt-mt0" id="sbc-opt-gauntlet-open"><span>Gauntlet-Teams bauen</span></button>
                     <div class="sbc-opt-debug">Baut aus deinem Verein mehrere Teams ohne gemeinsame Spieler: Chemie plus Ø Meta-Rating je Position (fut.gg). Zeigt die besten 5 Varianten, Anker je Team möglich.</div>
                     <div class="sbc-opt-result" id="sbc-opt-gauntlet-result"></div>
+                    <div class="sbc-opt-group-title">System</div>
+                    <div class="sbc-opt-row sbc-opt-withtip">
+                        <label class="sbc-opt-toggle"><input type="checkbox" id="sbc-opt-poolcache" checked>Verein zwischenspeichern</label>
+                        <button type="button" class="sbc-opt-tip" aria-label="Info: Verein zwischenspeichern" aria-expanded="false" data-tip="Nach dem Neuladen der Web App ist der Verein sofort wieder da.">i</button>
+                    </div>
                     <div class="sbc-opt-group-title">Werkzeuge</div>
                     <div class="sbc-opt-withtip">
                     <button class="sbc-opt-btn ghost sbc-opt-mt0" id="sbc-opt-diag">Diagnose in Konsole schreiben</button>

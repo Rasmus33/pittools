@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.52.3
+// @version      6.53.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.52.3';
+    const VERSION = '6.53.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -136,6 +136,7 @@
         // zugewiesen), sonst bleibt es im Report unbemerkt bei seinem
         // Initialwert stehen (siehe uiScan-Vorfall).
         diag: {
+            uiContext: null,             // UI 7 Etappe 0: automatisch gewaehlter Weg/Reiter (autoPickTab)
             fetchSeen: 0,
             xhrSeen: 0,
             utasSeen: 0,
@@ -9117,6 +9118,8 @@
         ui.tabBtns.forEach(function (b) {
             b.addEventListener('click', function () {
                 tabPinnedChallenge = STATE.sbc.challengeId;
+                // UI 7: Handwahl Kaufen/Rating gilt fuer das ganze SBC-Set weiter.
+                if (STATE.sbc.challengeId != null) { try { if (inSbcView()) ptSetTabPut(ptStore(), STATE.sbc.setId, b.getAttribute('data-tab')); } catch (e) {} }
                 setTab(b.getAttribute('data-tab'), true);
             });
         });
@@ -9787,6 +9790,7 @@
     let tabCurrent = null;
     let tabAutoKey = null;          // Challenge + Art, fuer die zuletzt automatisch gewaehlt wurde
     let tabPinnedChallenge = undefined; // Challenge, fuer die Rasmus selbst gewaehlt hat
+    let tabTentative = null;        // UI 7: vorlaeufige Wahl ohne Vorgaben { key, tab }
     function setTab(name, manual) {
         if (TAB_NAMES.indexOf(name) < 0) name = 'kaufen';
         tabCurrent = name;
@@ -9826,20 +9830,130 @@
         const pct = n > 0 ? Math.max(2, Math.min(100, Math.round(100 * k / n))) : 0;
         return '<div class="sbc-opt-dim">' + text + '</div><div class="sbc-opt-bar"><div class="sbc-opt-bar-fill" style="width:' + pct + '%"></div></div>';
     }
+    // [PTCONTEXT-BEGIN]
+    // UI 7, Etappe 0 (docs/UI7-KONZEPT.md 3.1 und 10.1). Rein, ohne DOM/EA.
+    // Rasmus 24.11.: "wenn es eine einfache rating sbc ist dann aus dem verein,
+    // wenn es aber mehrere bedingungen gibt zukaufen als erstes" (Beispiel
+    // 82x10: Ziel 81 + 1 TOTW = Verein; Marquee Matchups = Zukaufen).
+    // Einfach = nur Team-Rating, Anzahl, Qualitaet, Level, Rarity, OVR-Grenzen,
+    // Handelbarkeit. Alles andere (Chemie, Nation, Liga, Verein, Legenden,
+    // Erstbesitz, Pflicht-Slots, unbekannte Typen) = Zukaufen.
+    const PT_SIMPLE_REQ = /^(TEAM_RATING|TEAM_STAR_RATING|PLAYER_COUNT|PLAYER_QUALITY|PLAYER_LEVEL|PLAYER_RARITY|PLAYER_MIN_OVR|PLAYER_MAX_OVR|PLAYER_EXACT_OVR|PLAYER_TRADABILITY|SCOPE)(_|$)/;
+    /** Typen aus EAs elgReq einer Challenge (Set-Challenges-Antwort); null = keine Auskunft. */
+    function ptReqTypes(dto, customBricks) {
+        if (!dto || !Array.isArray(dto.elgReq)) return null;
+        const out = dto.elgReq.map(function (r) { return String(r && r.type || '?').toUpperCase(); });
+        if (Array.isArray(customBricks) && customBricks.length) out.push('CUSTOM_BRICK');
+        return out;
+    }
+    /** { way: 'verein' | 'zukaufen' | null, complex: [Typen, die Zukaufen ausloesen] } */
+    function ptWayFor(types) {
+        if (!Array.isArray(types) || !types.length) return { way: null, complex: [] };
+        const complex = [];
+        for (const t of types) {
+            const u = String(t || '?').toUpperCase();
+            if (!PT_SIMPLE_REQ.test(u) && complex.indexOf(u) < 0) complex.push(u);
+        }
+        return { way: complex.length ? 'zukaufen' : 'verein', complex: complex };
+    }
+    /** Reiter der heutigen Oberflaeche zum Weg (Punkte-SBCs liegen im Rating-Reiter). */
+    function ptTabForWay(way, oneClick) {
+        if (oneClick) return 'rating';
+        return way === 'verein' ? 'rating' : 'kaufen';
+    }
+    /** Handwahl je SBC-Set (localStorage sbcOptTabBySet, Liste [[setId, tab], ...], hoechstens 40, neueste zuletzt). */
+    function ptSetTabList(store) {
+        try {
+            const l = JSON.parse(store.getItem('sbcOptTabBySet') || '[]');
+            return Array.isArray(l) ? l.filter(function (e) { return Array.isArray(e) && e.length === 2; }) : [];
+        } catch (e) { return []; }
+    }
+    function ptSetTabGet(store, setId) {
+        if (setId == null || !store) return null;
+        const hit = ptSetTabList(store).filter(function (e) { return String(e[0]) === String(setId); }).pop();
+        const t = hit && hit[1];
+        return t === 'kaufen' || t === 'rating' ? t : null;
+    }
+    function ptSetTabPut(store, setId, tab) {
+        if (setId == null || !store || (tab !== 'kaufen' && tab !== 'rating')) return false;
+        try {
+            const l = ptSetTabList(store).filter(function (e) { return String(e[0]) !== String(setId); });
+            l.push([String(setId), tab]);
+            while (l.length > 40) l.shift();
+            store.setItem('sbcOptTabBySet', JSON.stringify(l));
+            return true;
+        } catch (e) { return false; }
+    }
     /**
-     * Reiter beim Wechsel der SBC: IMMER Kaufen (v5.31.0, Rasmus: "der kaufen
-     * reiter sollte in den jeweiligen sbcs als default angewaehlt sein, weil
-     * der andere reiter aktuell gar keinen sinn mehr gibt"). Die Handwahl fuer
-     * DIESE SBC bleibt. Die Ziel-OVR-Heuristik (v5.28.0) ist damit raus.
+     * Was "Jetzt" zeigen soll (Konzept 3.1). s: { view: 'sbc'|'store'|'other',
+     * oneClick, title, reqTypes, remembered ('kaufen'|'rating'|null) }.
+     * Liefert { kind: 'loesen'|'punkte'|'packs'|'start', way, wayWhy, tab, sure, complex }.
+     */
+    function ptContext(s) {
+        s = s || {};
+        if (s.view === 'sbc' && s.oneClick) return { kind: 'punkte', way: null, wayWhy: 'punkte', tab: 'rating', sure: true, complex: [], title: s.title || null };
+        if (s.view === 'sbc') {
+            const w = ptWayFor(s.reqTypes);
+            const mem = s.remembered === 'kaufen' || s.remembered === 'rating' ? s.remembered : null;
+            const way = mem ? (mem === 'rating' ? 'verein' : 'zukaufen') : (w.way || 'zukaufen');
+            return { kind: 'loesen', way: way, wayWhy: mem ? 'handwahl' : (w.way ? 'vorgaben' : 'unbekannt'),
+                tab: mem || ptTabForWay(w.way, false), sure: !!(mem || w.way), complex: w.complex, title: s.title || null };
+        }
+        if (s.view === 'store') return { kind: 'packs', way: null, wayWhy: null, tab: null, sure: true, complex: [], title: null };
+        return { kind: 'start', way: null, wayWhy: null, tab: null, sure: true, complex: [], title: null };
+    }
+    // [PTCONTEXT-END]
+    function ptStore() { try { return window.localStorage; } catch (e) { return null; } }
+    /** Kontext jetzt, aus EA und dem Set-Cache (nur lesen, keine Anfrage). */
+    function ptContextNow() {
+        let view = 'other', oneClick = false;
+        try { if (typeof inStoreView === 'function' && inStoreView()) view = 'store'; } catch (e) {}
+        if (STATE.sbc.challengeId != null) {
+            try { if (inSbcView()) view = 'sbc'; } catch (e) {}
+        }
+        if (view === 'sbc') { try { oneClick = !!findOneClickWorkArea(); } catch (e) {} }
+        let types = null;
+        try {
+            const sid = STATE.sbc.setId, cid = STATE.sbc.challengeId;
+            const cached = sid != null && (STATE.setChallengesBySet || {})[sid];
+            const dto = cached && findChallengeNode(cached, cid);
+            types = ptReqTypes(dto, STATE.sbc.customBricks);
+        } catch (e) {}
+        const c = ptContext({ view: view, oneClick: oneClick, reqTypes: types,
+            remembered: ptSetTabGet(ptStore(), STATE.sbc.setId), title: STATE.sbc.challengeName || null });
+        c.reqTypes = types;
+        return c;
+    }
+    /**
+     * Reiter beim Wechsel der SBC (UI 7 Entscheidung 1, Rasmus 24.11.): einfache
+     * Rating-SBC -> Rating ("aus dem Verein"), mehrere Bedingungen -> Kaufen,
+     * Punkte-SBC -> Rating; eine Handwahl je Set gilt weiter. Ohne Vorgaben
+     * (Set-Cache noch leer) wie bisher Kaufen - VORLAEUFIG: kommen die Vorgaben
+     * nach und steht der Reiter noch auf dieser Vorauswahl, wird einmal
+     * nachgezogen. Eine Handwahl fuer DIESE SBC (Tipp auf einen Reiter) bleibt.
+     * (Vorher v5.31.0: immer Kaufen.)
      */
     function autoPickTab() {
         const cid = STATE.sbc.challengeId;
         if (cid == null) return;
         const key = String(cid);
         if (key === tabAutoKey) return;
-        tabAutoKey = key;
-        if (tabPinnedChallenge === cid) return;
-        setTab('kaufen', false);
+        if (tabPinnedChallenge === cid) { tabAutoKey = key; return; }
+        let c = null;
+        try { c = ptContextNow(); } catch (e) { c = null; }
+        STATE.diag.uiContext = c ? { at: Date.now(), challengeId: cid, kind: c.kind, way: c.way, why: c.wayWhy, tab: c.tab, sure: c.sure, complex: c.complex, reqTypes: c.reqTypes } : null;
+        const tab = c && c.tab ? c.tab : 'kaufen';
+        if (c && c.sure) {
+            tabAutoKey = key;
+            // Vorlaeufig gewaehlt und inzwischen von Hand woanders hin? Dann nichts tun.
+            if (tabTentative && tabTentative.key === key && tabCurrent !== tabTentative.tab) { tabTentative = null; return; }
+            tabTentative = null;
+            setTab(tab, false);
+            return;
+        }
+        if (tabTentative && tabTentative.key === key) return;
+        tabTentative = { key: key, tab: tab };
+        setTab(tab, false);
     }
     function refreshSbcInfoUI() {
         if (!ui.target) return;
@@ -22879,6 +22993,8 @@ const HybridSbcEa = (() => {
                 rareConstraints: STATE.sbc.rareConstraints || [],
                 usableSlots: STATE.sbc.usableSlots || null,
                 customBricks: STATE.sbc.customBricks || null,
+                // UI 7 Etappe 0: welcher Weg/Reiter automatisch gewaehlt wurde und warum
+                uiContext: STATE.diag.uiContext || null,
                 reqDump: STATE.sbc.reqDump,
                 // Scopes ohne Wert, die NICHT zur Standard-Boilerplate gehoeren -
                 // rein informativ (siehe applyScan: daraus folgt NICHTS).
@@ -23077,37 +23193,71 @@ const HybridSbcEa = (() => {
         'scarcityWeight', 'storageBonus', 'untradeableBonus', 'maxRareRating',
         'maxCommonRating', 'rarityGuardCost', 'rarityMode', 'totwSoftCost',
         'specialCost', 'ratingCostSpec', 'costMode'];
-    function readConfig(profil) {
-        const cfg = {
-            targetOVR: STATE.sbc.targetOVR,
-            slots: STATE.sbc.formationSlots || 11,
-            minRating: parseInt(ui.minrating.value, 10) || 1,
-            maxOvershoot: Math.max(0, parseFloat(String(ui.maxwaste.value).replace(',', '.')) || 0),
-            applyRarity: ui.applyrarity.checked,
-            specialOnlyFromStorage: ui.specialstorage.checked,
-            maxRatingEnabled: ui.maxRatingEn.checked,
-            maxRating: parseInt(ui.maxRatingVal.value, 10) || 0,
-            scarcityWeight: parseFloat(ui.scarcity.value) || 0,
-            storageBonus: parseFloat(ui.storagebonus.value) || 0,
-            untradeableBonus: parseFloat(ui.untradeable.value) || 0,
+    // [UICONFIG-BEGIN]
+    // UI 7, Etappe 0 (docs/UI7-KONZEPT.md Abschnitt 8): das DOM ist bisher der
+    // Einstellungs-Speicher - readConfig() las jedes Feld direkt aus dem Panel.
+    // Getrennt in zwei reine Schritte: configRawFromUi() liest die Rohwerte
+    // (Strings/Booleans, wie das Feld sie hat; fehlendes Element = undefined),
+    // configFromRaw() rechnet daraus GENAU das Objekt, das readConfig() vorher
+    // lieferte (Test: alt == neu fuer jede Feldkombination). Eine neue
+    // Oberflaeche liefert spaeter dieselben Rohwerte aus ihrem eigenen Speicher.
+    function configRawFromUi(u) {
+        u = u || {};
+        const val = function (el) { return el ? el.value : undefined; };
+        const chk = function (el) { return el ? el.checked : undefined; };
+        return {
+            minrating: val(u.minrating), maxwaste: val(u.maxwaste),
+            applyrarity: chk(u.applyrarity), specialstorage: chk(u.specialstorage),
+            maxRatingEn: chk(u.maxRatingEn), maxRatingVal: val(u.maxRatingVal),
+            scarcity: val(u.scarcity), storagebonus: val(u.storagebonus), untradeable: val(u.untradeable),
+            useLocks: chk(u.useLocks), maxRare: val(u.maxRare), maxCommon: val(u.maxCommon),
+            rarityguard: val(u.rarityguard), raritymode: val(u.raritymode),
+            totwsoft: val(u.totwsoft), specialsoft: val(u.specialsoft), rarityPick: val(u.rarityPick)
+        };
+    }
+    /** x: { sbc, locks() -> Iterable gesperrter IDs, ratingCostSpec, costMode }. Rein bis auf locks(). */
+    function configFromRaw(r, x) {
+        r = r || {}; x = x || {};
+        const sbc = x.sbc || {};
+        return {
+            targetOVR: sbc.targetOVR,
+            slots: sbc.formationSlots || 11,
+            minRating: parseInt(r.minrating, 10) || 1,
+            maxOvershoot: Math.max(0, parseFloat(String(r.maxwaste).replace(',', '.')) || 0),
+            applyRarity: r.applyrarity,
+            specialOnlyFromStorage: r.specialstorage,
+            maxRatingEnabled: r.maxRatingEn,
+            maxRating: parseInt(r.maxRatingVal, 10) || 0,
+            scarcityWeight: parseFloat(r.scarcity) || 0,
+            storageBonus: parseFloat(r.storagebonus) || 0,
+            untradeableBonus: parseFloat(r.untradeable) || 0,
             // Gesperrte Karten (PaleTools-Schloss) beim Optimieren frisch
             // einlesen - sie koennen sich zwischen zwei Laeufen aendern.
-            lockedIds: ui.useLocks.checked ? Array.from(readPaletoolsLocks()) : [],
-            maxRareRating: parseInt(ui.maxRare.value, 10) || 0,
-            maxCommonRating: parseInt(ui.maxCommon.value, 10) || 0,
-            rarityGuardCost: parseFloat(ui.rarityguard.value) || 0,
-            rarityMode: ui.raritymode ? ui.raritymode.value : 'vereinTotw',
-            totwSoftCost: ui.totwsoft ? (parseFloat(ui.totwsoft.value) || 0) : 8,
-            specialCost: ui.specialsoft ? (parseFloat(ui.specialsoft.value) || 0) : 1,
-            ratingCostSpec: bandsToSpec(ratingBands),
-            costMode: (typeof costMode === 'string' ? costMode : 'itemScore'),
+            lockedIds: r.useLocks ? Array.from(x.locks ? x.locks() : []) : [],
+            maxRareRating: parseInt(r.maxRare, 10) || 0,
+            maxCommonRating: parseInt(r.maxCommon, 10) || 0,
+            rarityGuardCost: parseFloat(r.rarityguard) || 0,
+            rarityMode: r.raritymode !== undefined ? r.raritymode : 'vereinTotw',
+            totwSoftCost: r.totwsoft !== undefined ? (parseFloat(r.totwsoft) || 0) : 8,
+            specialCost: r.specialsoft !== undefined ? (parseFloat(r.specialsoft) || 0) : 1,
+            ratingCostSpec: x.ratingCostSpec,
+            costMode: (typeof x.costMode === 'string' ? x.costMode : 'itemScore'),
             anchorId: null,
-            rarityPickId: ui.rarityPick.value || null,
-            rarityConstraints: STATE.sbc.rarityConstraints || [],
-            qualityConstraints: STATE.sbc.qualityConstraints || [],
-            rareConstraints: STATE.sbc.rareConstraints || [],
-            playerLevelConstraints: STATE.sbc.playerLevelConstraints || []
+            rarityPickId: r.rarityPick || null,
+            rarityConstraints: sbc.rarityConstraints || [],
+            qualityConstraints: sbc.qualityConstraints || [],
+            rareConstraints: sbc.rareConstraints || [],
+            playerLevelConstraints: sbc.playerLevelConstraints || []
         };
+    }
+    // [UICONFIG-END]
+    function readConfig(profil) {
+        const cfg = configFromRaw(configRawFromUi(ui), {
+            sbc: STATE.sbc,
+            locks: readPaletoolsLocks,
+            ratingCostSpec: bandsToSpec(ratingBands),
+            costMode: (typeof costMode === 'string' ? costMode : 'itemScore')
+        });
         if (profil) {
             for (const k of PROFILE_KEYS) {
                 if (profil[k] !== undefined) cfg[k] = profil[k];

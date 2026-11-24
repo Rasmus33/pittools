@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.56.1
+// @version      6.57.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.56.1';
+    const VERSION = '6.57.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7094,6 +7094,8 @@
         #sbc-opt-protokoll { display:none; }
         /* v6.56.0: Ort "Loesen" gibt es nur in der neuen Oberflaeche */
         #sbc-opt-tab-loesen, #sbc-opt-way, .sbc-opt-ctxline { display:none; }
+        /* v6.57.0: Aktionsleiste (eine Hauptaktion im Fuss) gibt es nur in der neuen Oberflaeche */
+        #sbc-opt-actbar { display:none; }
         .sbc-opt-ctxline { align-items:baseline; gap:var(--pt-space-2); padding:var(--pt-space-2-5) 0 var(--pt-space-1-5); font-size:var(--pt-type-label); color:var(--pt-fg-muted); }
         .sbc-opt-ctxline b { color:var(--pt-fg-default); font-weight:var(--pt-weight-semibold); }
         .sbc-opt-line.sbc-opt-logline { align-items:flex-start; flex-wrap:nowrap; gap:var(--pt-space-2); min-height:0; margin:0; padding:var(--pt-space-1) 0; font-size:var(--pt-type-label); }
@@ -7811,6 +7813,49 @@
         :where(:root[data-ui7]) #sbc-opt-panel[data-way] #sbc-opt-infobar, :where(:root[data-ui7]) #sbc-opt-panel[data-way] #sbc-opt-info { display:none; }
         :where(:root[data-ui7]) .sbc-opt-ctxline > .sbc-opt-meta { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:55%; }
         :where(:root[data-ui7]) #sbc-opt-way .sbc-opt-chip { white-space:nowrap; padding-left:var(--pt-space-1); padding-right:var(--pt-space-1); }
+        /* v6.57.0 Etappe 3b: Aktionsleiste im Fuss des Blatts - EINE Hauptaktion, darueber der Schritt,
+           hoechstens eine Nebenaktion. Sie loest nur den echten Knopf aus; der ist in "Loesen" ausgeblendet,
+           aber erst, wenn die Leiste steht (data-act7 am Panel). */
+        :where(:root[data-ui7]) #sbc-opt-actbar:not([hidden]) {
+            display:block; padding:var(--pt-space-2) var(--pt-gutter) max(var(--pt-inset), env(safe-area-inset-bottom));
+            background:var(--pt-bg-base); border-top:1px solid var(--pt-border-subtle);
+        }
+        /* Fuss klebt auch bei kurzem Inhalt am unteren Rand des Blatts */
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7].open { display:flex; flex-direction:column; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] > .sbc-opt-body { flex:1 0 auto; }
+        :where(:root[data-ui7]) #sbc-opt-act-step { margin:0 0 var(--pt-space-1); font-size:var(--pt-type-meta); color:var(--pt-fg-subtle); }
+        :where(:root[data-ui7]) #sbc-opt-act-step:empty { display:none; }
+        :where(:root[data-ui7]) .sbc-opt-act-row { display:flex; gap:var(--pt-space-2); align-items:stretch; }
+        :where(:root[data-ui7]) .sbc-opt-act-row .sbc-opt-btn { margin:0; min-height:var(--pt-main-h); }
+        :where(:root[data-ui7]) #sbc-opt-act { flex:1 1 auto; width:auto; min-width:0; }
+        :where(:root[data-ui7]) #sbc-opt-act-side { flex:0 0 auto; width:auto; padding:0 var(--pt-space-3); }
+        :where(:root[data-ui7]) #sbc-opt-act-side[hidden] { display:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-futbin-search,
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-futbin-flow,
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-futbin-next,
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-futbin-load,
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-futbin-buy,
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-fb-showmore,
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] .sbc-opt-fb-row .sbc-opt-itembtn,
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-hybrid-search,
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-hybrid-club-search,
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-hybrid-club-stop,
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-hybrid-buy { display:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] .sbc-opt-withtip:has(> #sbc-opt-futbin-buy) { display:none; }
+        /* Ergebnis zuerst: Plattform und Live-Preise stehen nach der Suche unter den Loesungen (Etappe 4 holt sie in die Einstellungen) */
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-tab-kaufen[data-mode="loesung"] #sbc-opt-futbin { display:flex; flex-direction:column; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] #sbc-opt-futbin-result { order:-1; }
+        :where(:root[data-ui7]) #sbc-opt-buy-line:has(#sbc-opt-buy-dot.on) { display:none; }
+        /* Loesungs-Zeilen zum Auswaehlen: Auswahlpunkt links, die gewaehlte traegt den Akzent */
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] .sbc-opt-fb-row[role="radio"] { position:relative; padding-left:var(--pt-space-8); cursor:pointer; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] .sbc-opt-fb-row[role="radio"]::before {
+            content:""; position:absolute; left:var(--pt-space-1); top:var(--pt-space-3); width:18px; height:18px; box-sizing:border-box;
+            border:2px solid var(--pt-border-strong); border-radius:var(--pt-radius-full);
+        }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] .sbc-opt-fb-row.is-picked::before {
+            border-color:var(--pt-accent); background:var(--pt-accent); box-shadow: inset 0 0 0 3px var(--pt-bg-base);
+        }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] .sbc-opt-fb-row:not(.is-picked) .sbc-opt-fb-price { color:var(--pt-fg-secondary); }
         @keyframes pt7-leiste { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:none; } }
         @keyframes pt7-fuss { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:none; } }
         @keyframes pt7-wackel { 0%, 100% { transform:none; } 30% { transform:translateX(-4px); } 60% { transform:translateX(4px); } }
@@ -8310,11 +8355,187 @@
         const m = max > 0 ? max : PT_LOG_MAX;
         return out.length > m ? out.slice(out.length - m) : out;
     }
+    // v6.57.0 Etappe 3b: Aktionsleiste (Konzept 3.1 und 6, Baustein 9). EINE
+    // Hauptaktion im Fuss des Blatts, ihre Beschriftung wandert mit dem
+    // Ablauf; hoechstens eine Nebenaktion. Rein: aus dem gelesenen Zustand
+    // wird { show, label, target, step, busy, disabled, tone, side }. target
+    // ist der Schluessel des ECHTEN Knopfs (ptActTarget) - die Leiste ruft
+    // nur ihn auf, sie hat keinen eigenen Ablauf.
+    function ptActState(s) {
+        s = s || {};
+        const none = { show: false, label: '', target: null, step: '', busy: false, disabled: false, tone: '', side: null };
+        const mk = function (o) { return Object.assign({}, none, { show: true }, o); };
+        if (s.asking || s.store) return none;
+        if (s.way === 'zukaufen') {
+            const f = s.fb || {};
+            const again = { label: 'Neu suchen', target: 'futbin-search' };
+            if (f.buyBusy) return mk({ label: 'Läuft …', busy: true, step: 'Schritt 3 von 4' });
+            if (f.searchBusy) return mk({ label: f.searchText || 'Suche läuft', busy: true, step: 'Schritt 1 von 4' });
+            if (f.rows > 0) {
+                if (f.loadBtn) return mk({ label: 'Verein laden', target: 'futbin-load', step: 'Schritt 2 von 4', side: { label: 'Trotzdem einfügen', target: 'fb-row' } });
+                return mk({ label: 'Einfügen' + (f.price ? ' · ' + f.price : ''), target: 'fb-row', step: 'Schritt 2 von 4', side: again });
+            }
+            if (f.buyN > 0) return mk({ label: f.buyN + ' Spieler kaufen …', target: 'futbin-buy', step: 'Schritt 3 von 4', side: again });
+            if (f.inserted) {
+                if (f.missing > 0 && !(f.step >= 4)) return mk({ label: 'Konzept-Spieler nachkaufen …', target: 'futbin-buyconcepts', step: 'Schritt 3 von 4', side: again });
+                return mk({ label: 'Fertig · Abgeben in EA', target: 'close', step: 'Schritt 4 von 4', side: again });
+            }
+            return mk({ label: 'Lösungen suchen', target: 'futbin-search', step: 'Schritt 1 von 4' });
+        }
+        if (s.way === 'hybrid') {
+            const h = s.hy || {};
+            if (h.stop) return mk({ label: 'Suche stoppen', target: 'hybrid-stop' });
+            if (h.busy) return mk({ label: 'Läuft …', busy: true });
+            if (h.buy) return mk({ label: 'Nachkäufe prüfen und kaufen …', target: 'hybrid-buy', side: { label: 'Neu vergleichen', target: 'hybrid-search' } });
+            return mk({ label: 'Verein + Nachkäufe vergleichen', target: 'hybrid-search', side: { label: 'Nur Verein', target: 'hybrid-club-search' } });
+        }
+        return none;
+    }
     // [UI7-END]
     function ui7IsOn() {
         try { return document.documentElement.hasAttribute('data-ui7'); } catch (e) { return false; }
     }
     function ptInFoot(el) { return !!(el && el.parentNode && el.parentNode.id === 'sbc-opt-foot'); }
+    // ---- v6.57.0 Etappe 3b: Aktionsleiste (nur UI 7) -------------------------
+    let ptAct = null, ptActChangedAt = 0;
+    /** Der echte Knopf zum Schluessel aus ptActState (nichts Eigenes: nur vorhandene Knoepfe). */
+    function ptActTarget(key) {
+        const q = function (sel) { return ui.panel ? ui.panel.querySelector(sel) : null; };
+        if (!key) return null;
+        if (key === 'fb-row') return q('#sbc-opt-futbin-result .sbc-opt-fb-row.is-picked button[data-fb-idx]') || q('#sbc-opt-futbin-result button[data-fb-idx]');
+        if (key === 'close') return q('#sbc-opt-close');
+        if (key === 'hybrid-stop') return q('#sbc-opt-hybrid-club-stop');
+        return q('#sbc-opt-' + key);
+    }
+    /** Zustand fuer ptActState aus Panel und Lauf-Flags (nur lesen). */
+    function ptActRead() {
+        const panel = ui.panel;
+        const pane = document.getElementById('sbc-opt-tab-kaufen');
+        const s = { way: ptWayOf(tabCurrent, pane ? pane.getAttribute('data-mode') : null) };
+        s.asking = panel.hasAttribute('data-asking') || !!panel.querySelector('.sbc-opt-confirm:not([hidden])');
+        s.store = panel.hasAttribute('data-store'); // im Store steht der Pack-Opener oben, keine SBC ist offen
+        if (s.way === 'zukaufen') {
+            const f = { rows: 0, price: '', buyN: 0, loadBtn: false, searchBusy: false, searchText: '', buyBusy: false, inserted: false, missing: 0, step: 1 };
+            const sb = ui.futbinSearch, res = ui.futbinResult;
+            if (sb) { f.searchBusy = sb.classList.contains('is-busy'); f.searchText = String(sb.textContent || '').trim(); }
+            if (res) {
+                f.rows = res.querySelectorAll('.sbc-opt-fb-row').length;
+                const pr = res.querySelector('.sbc-opt-fb-row.is-picked .sbc-opt-fb-price');
+                f.price = pr ? String(pr.textContent || '').trim() : '';
+                const bb = res.querySelector('#sbc-opt-futbin-buy');
+                f.buyN = bb ? (parseInt(bb.textContent, 10) || 0) : 0;
+                f.loadBtn = !!res.querySelector('#sbc-opt-futbin-load');
+            }
+            const on = panel.querySelector('#sbc-opt-futbin-flow .step.on');
+            f.step = on ? (parseInt(on.getAttribute('data-step'), 10) || 1) : 1;
+            try { f.buyBusy = !!buyBusy; } catch (e) {}
+            try {
+                if (futbinLast && futbinLast.insertedIdx != null && f.step >= 3) {
+                    f.inserted = true;
+                    const c = futbinLast.ranked[futbinLast.insertedIdx];
+                    f.missing = c.squad.players.filter(function (pl, i) { return !c.owned[i]; }).length;
+                }
+            } catch (e) {}
+            s.fb = f;
+        } else if (s.way === 'hybrid') {
+            const stop = ui.hybridClubStop;
+            s.hy = { stop: !!(stop && !stop.hidden), buy: !!panel.querySelector('#sbc-opt-hybrid-buy'), busy: false };
+            try { s.hy.busy = !!(hybridClubBusy || buyBusy); } catch (e) {}
+        }
+        return s;
+    }
+    /** Loesungs-Zeilen: alle zeigen (EAs Liste scrollt), genau eine ist gewaehlt - ohne Wahl die empfohlene (erste). */
+    function ptActRows() {
+        const res = ui.futbinResult;
+        if (!res) return;
+        const more = res.querySelector('#sbc-opt-fb-showmore');
+        if (more) more.click();
+        const rows = Array.from(res.querySelectorAll('.sbc-opt-fb-row'));
+        if (!rows.length) return;
+        let pick = rows.findIndex(function (r) { return r.classList.contains('is-picked'); });
+        if (pick < 0) pick = 0;
+        rows.forEach(function (r, i) {
+            const on = i === pick;
+            if (r.classList.contains('is-picked') !== on) r.classList.toggle('is-picked', on);
+            if (r.getAttribute('role') !== 'radio') r.setAttribute('role', 'radio');
+            if (r.getAttribute('aria-checked') !== String(on)) r.setAttribute('aria-checked', String(on));
+            if (r.getAttribute('tabindex') !== '0') r.setAttribute('tabindex', '0');
+        });
+    }
+    function ptActPickRow(row) {
+        if (!row || !row.parentNode) return;
+        Array.from(row.parentNode.querySelectorAll('.sbc-opt-fb-row.is-picked')).forEach(function (r) { if (r !== row) r.classList.remove('is-picked'); });
+        if (!row.classList.contains('is-picked')) row.classList.add('is-picked');
+        syncActBar();
+    }
+    /** Leiste nach dem Zustand zeichnen (nur UI 7; schreibt nur bei Aenderung). */
+    function syncActBar() {
+        const bar = document.getElementById('sbc-opt-actbar');
+        if (!bar || !ui.panel || !ui7IsOn()) { ptAct = null; return; }
+        try { ptActRows(); } catch (e) {}
+        let st;
+        try { st = ptActState(ptActRead()); } catch (e) { st = ptActState(null); }
+        if (!ptAct || ptAct.target !== st.target) ptActChangedAt = Date.now();
+        ptAct = st;
+        const step = document.getElementById('sbc-opt-act-step'), main = document.getElementById('sbc-opt-act'), side = document.getElementById('sbc-opt-act-side');
+        if (!step || !main || !side) return;
+        const lbl = main.querySelector('span');
+        if (bar.hidden !== !st.show) bar.hidden = !st.show;
+        if (step.textContent !== st.step) step.textContent = st.step;
+        if (lbl.textContent !== st.label) lbl.textContent = st.label;
+        if (main.classList.contains('is-busy') !== st.busy) main.classList.toggle('is-busy', st.busy);
+        if (main.disabled !== !!st.disabled) main.disabled = !!st.disabled;
+        const danger = st.tone === 'danger';
+        if (main.classList.contains('danger') !== danger) { main.classList.toggle('danger', danger); main.classList.toggle('primary', !danger); }
+        const sl = st.side ? st.side.label : '';
+        if (side.hidden !== !st.side) side.hidden = !st.side;
+        if (side.textContent !== sl) side.textContent = sl;
+    }
+    /** Leiste in den Fuss haengen, Zeilen waehlbar machen, dem Panel folgen (Beobachter, ein Durchlauf je Mikro-Task). */
+    function initActBar(panel) {
+        const foot = document.getElementById('sbc-opt-foot');
+        if (!panel || !foot || document.getElementById('sbc-opt-actbar')) return;
+        const bar = document.createElement('div');
+        bar.id = 'sbc-opt-actbar';
+        bar.hidden = true;
+        bar.innerHTML = '<div id="sbc-opt-act-step"></div><div class="sbc-opt-act-row">' +
+            '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-act-side" hidden></button>' +
+            '<button type="button" class="sbc-opt-btn primary" id="sbc-opt-act"><span></span></button></div>';
+        foot.insertBefore(bar, foot.firstChild);
+        const fire = function (key) {
+            // Gegen den Doppeltipp: die Beschriftung hat gerade gewechselt (gleiche Sperre wie an den Ja-Knoepfen).
+            if (!ui7IsOn() || Date.now() - ptActChangedAt < PT_CONFIRM_LOCK_MS) return;
+            const el = ptActTarget(key);
+            if (el && !el.disabled) el.click();
+        };
+        bar.querySelector('#sbc-opt-act').addEventListener('click', function () { if (ptAct && !ptAct.busy) fire(ptAct.target); });
+        bar.querySelector('#sbc-opt-act-side').addEventListener('click', function () { if (ptAct && ptAct.side) fire(ptAct.side.target); });
+        const res = panel.querySelector('#sbc-opt-futbin-result');
+        const rowOf = function (ev) {
+            const t = ev.target;
+            if (!ui7IsOn() || !t || typeof t.closest !== 'function' || t.closest('button, a, summary, input, label')) return null;
+            return t.closest('.sbc-opt-fb-row');
+        };
+        if (res) {
+            res.addEventListener('click', function (ev) { const r = rowOf(ev); if (r) ptActPickRow(r); });
+            res.addEventListener('keydown', function (ev) {
+                if (ev.key !== 'Enter' && ev.key !== ' ') return;
+                const r = rowOf(ev);
+                if (r && r === ev.target) { ev.preventDefault(); ptActPickRow(r); }
+            });
+        }
+        panel.setAttribute('data-act7', '1');
+        if (typeof MutationObserver === 'function') {
+            let queued = false;
+            const run = function () { queued = false; try { syncActBar(); } catch (e) {} };
+            new MutationObserver(function () {
+                if (queued || !ui7IsOn()) return;
+                queued = true; Promise.resolve().then(run);
+            }).observe(panel, { subtree: true, childList: true, attributes: true,
+                attributeFilter: ['class', 'hidden', 'style', 'disabled', 'data-mode', 'data-tab', 'data-way', 'data-asking', 'data-store'] });
+        }
+        syncActBar();
+    }
     /**
      * v6.55.0 Etappe 2: ein Freigabe-Kasten ist gerade erschienen. Unter UI 7
      * wandert er in den Fuss des Blatts (ein Ort fuer Ja/Nein); ohne Schalter
@@ -8419,6 +8640,7 @@
      */
     function syncFabWord() {
         try { syncCtxLine(); } catch (e) {}
+        try { syncActBar(); } catch (e) {}
         const el = document.getElementById('sbc-opt-fab-word');
         if (!el) return;
         let w = '';
@@ -9498,6 +9720,7 @@
         initTips(panel);
         initPanelSize(panel);
         initConfirmFoot(panel);
+        try { initActBar(panel); } catch (e) { reportError('Aktionsleiste', e); }
         try {
             const pd = panel.querySelector('#sbc-opt-protokoll');
             pd.addEventListener('toggle', function () { if (pd.open) renderProtokoll(); });

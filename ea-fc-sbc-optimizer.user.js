@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.60.1
+// @version      6.61.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.60.1';
+    const VERSION = '6.61.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7102,6 +7102,8 @@
         #sbc-opt-tab-akt, #sbc-opt-start7, #sbc-opt-akt7, #sbc-opt-pack-list7, #sbc-opt-back7, #sbc-opt-fab-n { display:none; }
         /* v6.59.1: Lupe und Ebene "Alle Aktionen" gibt es nur in der neuen Oberflaeche */
         #sbc-opt-find, #sbc-opt-cmd7 { display:none; }
+        /* v6.61.0: Erstmeldung "was ist wo" gibt es nur in der neuen Oberflaeche */
+        #sbc-opt-hallo7 { display:none; }
         /* v6.57.1: Zeilen "Anzahl" und "Ganzes Set" gibt es nur in der neuen Oberflaeche */
         #sbc-opt-count-lbl, #sbc-opt-set-row { display:none; }
         .sbc-opt-ctxline { align-items:baseline; gap:var(--pt-space-2); padding:var(--pt-space-2-5) 0 var(--pt-space-1-5); font-size:var(--pt-type-label); color:var(--pt-fg-muted); }
@@ -8017,6 +8019,11 @@
         :where(:root[data-ui7]) #sbc-opt-panel[data-vl7] > .sbc-opt-body > :not(#sbc-opt-vorlagen) { display:none !important; }
         :where(:root[data-ui7]) #sbc-opt-panel #sbc-opt-vorlagen { position:static; inset:auto; z-index:auto; background:transparent; overflow:visible; font-size:inherit; }
         :where(:root[data-ui7]) #sbc-opt-panel #sbc-opt-vorlagen .sbc-opt-vl-box { margin:0; width:auto; padding:var(--pt-space-2) 0 var(--pt-space-4); border:none; border-radius:0; box-shadow:none; background:transparent; }
+        /* v6.61.0: einmalige Erstmeldung der neuen Oberflaeche (bis "Verstanden") */
+        :where(:root[data-ui7]) #sbc-opt-hallo7 { display:block; order:-9; margin:0 0 var(--pt-stack); padding:var(--pt-inset); border-radius:var(--pt-radius-md); background:var(--pt-bg-raised); }
+        :where(:root[data-ui7]) #sbc-opt-hallo7 > .sbc-opt-head { margin-top:0; }
+        :where(:root[data-ui7]) #sbc-opt-hallo7 > .sbc-opt-meta { margin:0 0 var(--pt-space-1-5); }
+        :where(:root[data-ui7]) #sbc-opt-hallo7 > .sbc-opt-btn { width:auto; margin:var(--pt-space-2) 0 0; }
         /* v6.59.1 Etappe 5 (2): "Alle Aktionen" hinter der Lupe im Kopf (am PC Strg+K) - Register zum Hinspringen */
         :where(:root[data-ui7]) #sbc-opt-find {
             display:flex; align-items:center; justify-content:center; flex:0 0 auto; margin:0 0 0 auto; padding:0;
@@ -8452,18 +8459,36 @@
 
     // [UI7-BEGIN]
     // UI 7, Etappe 1 "Schale und Sprache" (docs/UI7-KONZEPT.md 9 und 10.6).
-    // Schalter statt hartem Schnitt: die neue Huelle gilt nur mit
-    // localStorage.sbcOptUi7 === '1' (Mehr -> System -> "Neue Oberflaeche
-    // (Test)"). Standard in dieser Version: AUS. Rein, ohne DOM/EA.
+    // v6.61.0 (Rasmus 24.11.: "neue Oberflaeche wird Standard - sofort ...
+    // wenn mal was schief geht, fixen wir es"): die neue Huelle gilt IMMER,
+    // ausser der Schalter "Neue Oberflaeche" wurde ausdruecklich
+    // abgeschaltet (localStorage.sbcOptUi7 === '0', Notausgang bis Etappe 7).
+    // Kein Eintrag, '1', kaputter Wert, kein Speicher = AN. Rein, ohne DOM/EA.
     function ui7Load(storage) {
-        try { return !!storage && storage.getItem('sbcOptUi7') === '1'; } catch (e) { return false; }
+        try { return !(storage && storage.getItem('sbcOptUi7') === '0'); } catch (e) { return true; }
     }
     function ui7Save(storage, on) {
-        try {
-            if (on) storage.setItem('sbcOptUi7', '1');
-            else storage.removeItem('sbcOptUi7');
-        } catch (e) {}
+        try { storage.setItem('sbcOptUi7', on ? '1' : '0'); } catch (e) {}
         return !!on;
+    }
+    // v6.61.0: EINE Meldung beim ersten Start der neuen Oberflaeche, was wo
+    // ist (Konzept 9 "Mike"). Gemerkt in localStorage.sbcOptUi7Hallo; kann
+    // nicht gemerkt werden (kein Speicher), kommt sie nicht - sonst kaeme sie
+    // bei jedem Start.
+    function ui7HalloNeeded(storage) {
+        try { return !!storage && storage.getItem('sbcOptUi7Hallo') !== '1'; } catch (e) { return false; }
+    }
+    function ui7HalloDone(storage) {
+        try { storage.setItem('sbcOptUi7Hallo', '1'); return true; } catch (e) { return false; }
+    }
+    const PT_HALLO = ['„Jetzt“ zeigt, was zu EAs Ansicht passt: SBC lösen, Packs öffnen, sonst Start mit Vorlagen und Werkzeugen.',
+        '„Galerie“ und „Aktivität“ (Freigaben, KI, Protokoll) stehen daneben.',
+        'Die Hauptaktion steht immer unten. Lupe = alle Aktionen, Zahnrad = alle Einstellungen.',
+        'Alte Oberfläche: Zahnrad › Darstellung › „Neue Oberfläche“ aus.'];
+    function ui7HalloHtml() {
+        return '<div class="sbc-opt-head"><span>Neue Oberfläche</span></div>' +
+            PT_HALLO.map(function (t) { return '<div class="sbc-opt-meta">' + t + '</div>'; }).join('') +
+            '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-hallo7-ok">Verstanden</button>';
     }
     /** Raste des Blatts am Handy: ohne gemerkte Wahl "halb" (EAs Kader bleibt sichtbar). */
     function ui7SheetLoad(storage) {
@@ -9594,7 +9619,7 @@
     // setBuyMode - wer einen Reiter setzt (auch alter Code, die KI), landet
     // damit in der passenden Ansicht.
     const ptOrt = { ready: false, on: false, kind: null, seen: null, wasOpen: false, pin: null, held: null, view: null,
-        packHand: null, cache: {}, drawnAt: 0, protOpened: false };
+        packHand: null, cache: {}, drawnAt: 0 };
     function ptOrtBuyMode() { const pane = document.getElementById('sbc-opt-tab-kaufen'); return pane ? pane.getAttribute('data-mode') : null; }
     function ptOrtNow() {
         const panel = ui.panel;
@@ -9708,9 +9733,8 @@
         ptOrt.view = v.view;
         ptOrt.drawnAt = 0;
         if (v.view === 'akt') {
-            const pd = document.getElementById('sbc-opt-protokoll');
-            if (pd && !ptOrt.protOpened) { ptOrt.protOpened = true; pd.open = true; }
-            try { renderProtokoll(); } catch (e) {}
+            // v6.61.0 (Rasmus 24.11.): das Protokoll bleibt zugeklappt - in der Zeile steht nur die Zahl
+            try { renderProtokollCount(ptLogAdd(ptLogLoad(), null, Date.now(), PT_LOG_MAX).length); } catch (e) {}
         }
         try { ptOrtDraw(); } catch (e) {}
         try { syncCtxLine(); } catch (e) {}
@@ -9951,6 +9975,19 @@
         const fab = document.getElementById('sbc-opt-fab');
         if (fab && !document.getElementById('sbc-opt-fab-n')) fab.appendChild(mk('span', 'sbc-opt-fab-n'));
         try { initCmd7(panel); } catch (e) { reportError('Alle Aktionen', e); }
+        // v6.61.0: einmalige Meldung "was ist wo" (nur neue Oberflaeche; bleibt, bis "Verstanden" getippt wurde)
+        try {
+            const body = panel.querySelector('.sbc-opt-body');
+            if (body && ui7HalloNeeded(ptStore())) {
+                const hallo = mk('div', 'sbc-opt-hallo7');
+                hallo.innerHTML = ui7HalloHtml();
+                body.insertBefore(hallo, body.firstChild);
+                hallo.querySelector('#sbc-opt-hallo7-ok').addEventListener('click', function () {
+                    ui7HalloDone(ptStore());
+                    if (hallo.parentNode) hallo.parentNode.removeChild(hallo);
+                });
+            }
+        } catch (e) { reportError('Erstmeldung', e); }
         ptOrt.ready = true;
     }
     /** Schaltet die neue Huelle an/aus (Attribut an <html>); schreibt nur bei Aenderung. */
@@ -11021,8 +11058,8 @@
                             <button type="button" class="sbc-opt-tip" aria-label="Info: Verein zwischenspeichern" aria-expanded="false" data-tip="Nach dem Neuladen der Web App ist der Verein sofort wieder da.">i</button>
                         </div>
                         <div class="sbc-opt-row sbc-opt-withtip">
-                            <label class="sbc-opt-toggle"><input type="checkbox" id="sbc-opt-ui7">Neue Oberfläche (Test)</label>
-                            <button type="button" class="sbc-opt-tip" aria-label="Info: Neue Oberfläche" aria-expanded="false" data-tip="Neues Aussehen: Blatt unten am Handy, Seitenleiste am PC. Alle Funktionen bleiben gleich. Gilt nur auf diesem Gerät.">i</button>
+                            <label class="sbc-opt-toggle"><input type="checkbox" id="sbc-opt-ui7">Neue Oberfläche</label>
+                            <button type="button" class="sbc-opt-tip" aria-label="Info: Neue Oberfläche" aria-expanded="false" data-tip="Blatt unten am Handy, Seitenleiste am PC. Aus = alte Oberfläche als Notausgang. Gilt nur auf diesem Gerät.">i</button>
                         </div>
                     </details>
                 </div>
@@ -12090,6 +12127,17 @@
         if (s.view === 'store') return { kind: 'packs', way: null, wayWhy: null, tab: null, sure: true, complex: [], title: null };
         return { kind: 'start', way: null, wayWhy: null, tab: null, sure: true, complex: [], title: null };
     }
+    /**
+     * v6.61.0 (Rasmus 24.11.: Login-Seite/leere Controller-Kette zeigt "Start" statt einer leeren Packs-Liste):
+     * fuer die neue Oberflaeche gilt der Store nur, wenn er wirklich da ist - Pack-Kacheln mit "Open" auf dem
+     * Schirm oder ein Controller mit store/pack im Namen. Leere Kette oder keine Auskunft = kein Store.
+     * s: { buttons, names }. inStoreView() (alte Wege, Pack-Opener, Kachel-Knoepfe) bleibt unveraendert. Rein.
+     */
+    function ptStoreSure(s) {
+        s = s || {};
+        if (Number(s.buttons) > 0) return true;
+        return (Array.isArray(s.names) ? s.names : []).some(function (n) { return /store|pack/i.test(String(n || '')); });
+    }
     // v6.56.0 Etappe 3a: Weg-Wahl im Ort "Loesen". Reiter + Kaufweg -> Weg und zurueck.
     function ptWayOf(tab, buyMode) {
         if (tab === 'rating') return 'verein';
@@ -12125,7 +12173,11 @@
     /** Kontext jetzt, aus EA und dem Set-Cache (nur lesen, keine Anfrage). */
     function ptContextNow() {
         let view = 'other', oneClick = false;
-        try { if (typeof inStoreView === 'function' && inStoreView()) view = 'store'; } catch (e) {}
+        try {
+            const btn = packOpenButtons().length;
+            const names = btn ? [] : getControllerChain().map(function (c) { return (c && c.constructor && c.constructor.name) || ''; });
+            if (ptStoreSure({ buttons: btn, names: names })) view = 'store';
+        } catch (e) {}
         if (STATE.sbc.challengeId != null) {
             try { if (inSbcView()) view = 'sbc'; } catch (e) {}
         }

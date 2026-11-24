@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.48.0
+// @version      6.49.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.48.0';
+    const VERSION = '6.49.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7480,6 +7480,11 @@
         #sbc-opt-rating-line .sbc-opt-btn.ghost:not(.is-loaded) { flex:1 1 auto; width:100%; }
         .sbc-opt-runhint { margin:0 0 var(--pt-space-1-5); }
 
+        /* v6.49.0 */
+        #sbc-opt-points { padding-bottom:var(--pt-stack); border-bottom:1px solid var(--pt-border-subtle); }
+        #sbc-opt-points-info { align-items:flex-start; }
+        .sbc-opt-result .sbc-opt-meta { font-size:var(--pt-type-meta); }
+
         /* v6.40.0: Abstands-Hilfsklassen statt style="margin/padding" im
            Panel-Template. Mit #sbc-opt-panel .sbc-opt-body davor (schlaegt auch
            #sbc-opt-panel input[type=number]), damit sie (wie vorher das
@@ -8457,12 +8462,12 @@
                     <button class="sbc-opt-btn ghost sbc-opt-m0" id="sbc-opt-load">Spieler laden</button>
                 </div>
                 <div class="sbc-opt-card" id="sbc-opt-points" style="display:none;">
-                    <div class="sbc-opt-group-title sbc-opt-mt0">Punkte-SBC</div>
-                    <div class="sbc-opt-dim" id="sbc-opt-points-info"></div>
-                    <button type="button" class="sbc-opt-btn primary" id="sbc-opt-points-run"><span>Karten auswählen (Storage zuerst)</span></button>
+                    <div class="sbc-opt-head"><span>Punkte-SBC<button type="button" class="sbc-opt-tip" aria-label="Info: Punkte-SBC" aria-expanded="false" data-tip="Wählt die Karten in EAs Ansicht aus: Storage zuerst, dann Bronze/Silber und Duplikate aus dem Verein. Abgegeben wird von Hand (Review → Submit).">i</button></span></div>
+                    <div class="sbc-opt-line" id="sbc-opt-points-info"></div>
+                    <button type="button" class="sbc-opt-btn primary" id="sbc-opt-points-run"><span>Karten auswählen</span></button>
                     <div id="sbc-opt-points-result"></div>
                     <!-- v6.22.0: fehlende Punkte nach Coins je Punkt kaufen (fut.gg "Cheapest by Rating" + EAs Punktwerte). -->
-                    <button type="button" class="sbc-opt-btn" id="sbc-opt-points-buy"><span>Fehlende Punkte kaufen …</span></button>
+                    <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-points-buy"><span>Fehlende Punkte kaufen …</span></button>
                     <div id="sbc-opt-points-buyres"></div>
                 </div>
                 <div class="sbc-opt-row sbc-opt-mb0">
@@ -8638,11 +8643,10 @@
                              hier ein graues Feld-Label neben einem
                              Grossbuchstaben-Akzent-Titel derselben Ebene. -->
                         <div class="sbc-opt-group-title sbc-opt-m0 sbc-opt-flex1">SBCs in diesem Set</div>
-                        <button class="sbc-opt-btn ghost sbc-opt-m0 sbc-opt-autow sbc-opt-pad-sm" id="sbc-opt-queue-refresh"
-                                title="Liste neu laden">↻</button>
+                        <button class="sbc-opt-btn ghost sbc-opt-m0 sbc-opt-autow sbc-opt-pad-sm" id="sbc-opt-queue-refresh" aria-label="Liste neu laden">↻</button>
                     </div>
                     <div id="sbc-opt-queue-list"></div>
-                    <button class="sbc-opt-btn plan" id="sbc-opt-queue-plan">Angehakte planen (Vorschau)</button>
+                    <button class="sbc-opt-btn plan" id="sbc-opt-queue-plan">Angehakte planen</button>
                 </div>
                 <!-- BATCH: dieselbe SBC mehrfach. Zwei Schritte - erst planen und
                      ansehen, dann EINE Freigabe für den ganzen Lauf. -->
@@ -8655,13 +8659,15 @@
                     </div>
                     <!-- Zahlenfeld zuletzt und normalerweise versteckt, s.o. -->
                     <input class="sbc-opt-mb25" type="number" id="sbc-opt-batch-count" value="5" min="1" max="10">
-                    <button class="sbc-opt-btn plan" id="sbc-opt-batch-plan">Teams planen (Vorschau)</button>
+                    <button class="sbc-opt-btn plan" id="sbc-opt-batch-plan">Teams planen</button>
                 </div>
                 <!-- VORLAGEN: gespeicherte Auto-Laeufe, eigene Vollbild-
                      Oberflaeche (Rasmus, 28.08.: "einfach 'Vorlagen' reicht"). -->
                 <div class="sbc-opt-batch" id="sbc-opt-vorlagensection">
-                    <div class="sbc-opt-debug sbc-opt-m0 sbc-opt-mb1">Gespeicherte Abläufe, die mehrere SBCs nacheinander erledigen - abgegeben wird nur bei 100 % Confidence.</div>
+                    <div class="sbc-opt-withtip">
                     <button class="sbc-opt-btn blue" id="sbc-opt-vorlagen-btn">Vorlagen</button>
+                    <button type="button" class="sbc-opt-tip" aria-label="Info: Vorlagen" aria-expanded="false" data-tip="Gespeicherte Abläufe, die mehrere SBCs nacheinander erledigen. Abgegeben wird nur bei vollständigem Plan und 100 % Confidence.">i</button>
+                    </div>
                 </div>
                 </div>
                 <!-- VORSCHAU + FREIGABE fuer BEIDE Plan-Sorten (Batch und
@@ -8811,8 +8817,7 @@
                         <select class="sbc-opt-flex1" id="sbc-opt-pack-type">
                             <option value="">– Aktualisieren drücken –</option>
                         </select>
-                        <button class="sbc-opt-btn ghost sbc-opt-m0 sbc-opt-autow sbc-opt-pad-sm" id="sbc-opt-pack-refresh"
-                                title="Pack-Liste neu laden">↻</button>
+                        <button class="sbc-opt-btn ghost sbc-opt-m0 sbc-opt-autow sbc-opt-pad-sm" id="sbc-opt-pack-refresh" aria-label="Pack-Liste neu laden">↻</button>
                     </div>
                     <!-- "Test: 1 Pack oeffnen" ist weg (Rasmus: "brauchen wir auch
                          nicht mehr, 'Alle öffnen' reicht vollkommen"). Wer einen
@@ -23202,10 +23207,10 @@ const HybridSbcEa = (() => {
         html += '<div class="sbc-opt-summary">Team-OVR: <b>' + res.ovr + '</b>' +
                 (res.ovrExact != null ? ' <span class="sbc-opt-muted">(' + res.ovrExact.toFixed(2) + ')</span>' : '') +
                 (res.target ? ' / Ziel ' + res.target : '') +
-                ' &nbsp; Überschuss: <b>' + wasteTxt + '</b>' +
-                (nStorage ? ' &nbsp; Storage: <b>' + nStorage + '</b>' : '') + '</div>';
+                ' · Überschuss: <b>' + wasteTxt + '</b>' +
+                (nStorage ? ' · Storage: <b>' + nStorage + '</b>' : '') + '</div>';
         if (res.poolInfo) {
-            html += '<div class="sbc-opt-dim" style="font-size:11px;">Pool nach Filtern: ' + res.poolInfo.count +
+            html += '<div class="sbc-opt-dim sbc-opt-meta">Pool nach Filtern: ' + res.poolInfo.count +
                     ' Karten (' + res.poolInfo.min + '–' + res.poolInfo.max + ')</div>';
         }
         for (const w of (res.warnings || [])) html += '<div class="sbc-opt-warn">⚠ ' + escapeHtml(w) + '</div>';
@@ -26243,8 +26248,7 @@ const HybridSbcEa = (() => {
             // durchgefuehrten Pruefungen" - ohne Runde bleiben nur die zwei
             // globalen, die trivial bestehen, und das ergab live die
             // irrefuehrende Zeile "0 SBC(s) geplant · Confidence 100%".
-            html = '<div class="sbc-opt-batch-round sbc-opt-batch-bad"><b>Nichts geplant</b>' +
-                ' — es gibt also nichts abzugeben.</div>';
+            html = '<div class="sbc-opt-batch-round sbc-opt-batch-bad"><b>Nichts geplant.</b></div>';
         } else {
             html = '<div class="sbc-opt-batch-round"><b>' + plan.planned + noun +
                 '</b> · Confidence <b>' + pc.score + '%</b>' + srcInfo +

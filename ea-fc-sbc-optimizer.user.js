@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.61.0
+// @version      6.61.1
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.61.0';
+    const VERSION = '6.61.1';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -8711,9 +8711,12 @@
     const PT_SET7 = [
         { id: 'regeln', title: 'Regeln', subs: [
             { title: 'Kartenwahl', fields: ['maxrating-en', 'maxrating', 'applyrarity', 'specialstorage', 'uselocks', 'maxrare', 'maxcommon'] },
-            { title: 'Schonen', fields: ['scarcity', 'raritymode', 'rarityguard', 'totwsoft', 'specialsoft'] },
-            { title: 'Verbrauchen', fields: ['storagebonus', 'untradeable', 'maxwaste'] },
-            { title: 'Kosten', fields: ['costmode', 'bandbox'] }] },
+            { title: 'Rarity', fields: ['raritymode', 'rarityguard'] },
+            { title: 'Verbrauchen', fields: ['untradeable', 'maxwaste'] },
+            // v6.61.1 (Rasmus 24.11.: "die alten Schonen-Stufen brauchen wir nicht mehr. Item Score und Coins sind das
+            // einzig Entscheidende (plus natuerlich Rarity)"): alles, was nur im Tabellen-Modus wirkt, in EINER Gruppe.
+            { title: 'Rückfallweg ohne Item Score', note: 'Wirkt nur im Modus „Tabelle“ und für Karten ohne Item Score.',
+                fields: ['costmode', 'scarcity', 'storagebonus', 'totwsoft', 'specialsoft', 'bandbox'] }] },
         { id: 'kaufen', title: 'Kaufen', subs: [{ title: '', fields: ['futbin-platform', 'futbin-market'] }] },
         // v6.59.0 Etappe 5: KI-Verbindung (beide Schalter samt Adresse/Schluessel/Anleitung ziehen als EIN Block um:
         // die Klappe "Verbindung einrichten") und "Käufe im Chat freigeben". Das Protokoll steht jetzt in "Aktivität".
@@ -8738,14 +8741,15 @@
             h += '<div class="sbc-opt-set7-group" data-group="' + g.id + '"><div class="sbc-opt-set7-title">' + g.title + '</div>';
             (g.subs || []).forEach(function (sb, i) {
                 const slot = '<div data-slot="' + g.id + '/' + i + '"></div>';
-                h += sb.title ? '<details class="sbc-opt-details-toggle"><summary>' + sb.title + '</summary>' + slot + '</details>' : slot;
+                const note = sb.note ? '<div class="sbc-opt-meta">' + sb.note + '</div>' : '';
+                h += sb.title ? '<details class="sbc-opt-details-toggle"><summary>' + sb.title + '</summary>' + note + slot + '</details>' : slot;
             });
             h += '</div>';
         });
         return h;
     }
-    // v6.58.1 Etappe 4 (2): Regel-Profile (Entscheidung 4: "Standard", "Storage
-    // leeren", "Schonen"). Ein Profil ist ein Satz von Feldwerten: der
+    // v6.58.1 Etappe 4 (2): Regel-Profile (Entscheidung 4; seit v6.61.1 nur noch
+    // "Standard" und "Storage leeren" - "Schonen" entfaellt). Ein Profil ist ein Satz von Feldwerten: der
     // Auslieferungszustand des Markups (wie advFieldStates) plus die Abweichungen
     // in set. Welches Profil "an" ist, folgt dem INHALT der Felder (wie bei den
     // Band-Presets), nie einem gemerkten Namen. Felder = Regel-Felder, die ein
@@ -8757,14 +8761,64 @@
         'scarcity': 'scarcityWeight', 'raritymode': 'rarityMode', 'rarityguard': 'rarityGuardCost', 'totwsoft': 'totwSoftCost',
         'specialsoft': 'specialCost', 'storagebonus': 'storageBonus', 'untradeable': 'untradeableBonus',
         'maxwaste': 'maxOvershoot', 'costmode': 'costMode' };
-    // FACHWERTE (legt Rasmus fest - siehe CLAUDE.md v6.58.1):
-    // Storage leeren: nur das Rating-Fenster auf. Schonen: Tabelle (nur dort
-    // wirken Scarcity und Aufschlaege) und jede Schon-Stufe auf ihre staerkste.
+    // FACHWERTE (Rasmus 24.11., CLAUDE.md v6.61.1): Storage leeren = Standard
+    // + Max. Rating-Ueberschuss 0,10. "Schonen" gibt es nicht mehr.
     const PT_PROFILES = [
         { id: 'standard', label: 'Standard', set: {} },
-        { id: 'storage', label: 'Storage leeren', set: { 'maxwaste': '0.25' } },
-        { id: 'schonen', label: 'Schonen', set: { 'costmode': 'table', 'scarcity': '35', 'rarityguard': '20', 'totwsoft': '20', 'specialsoft': '4' } }
+        { id: 'storage', label: 'Storage leeren', set: { 'maxwaste': '0.10' } }
     ];
+    // v6.61.1 (Rasmus 24.11.: "alle Regel-Felder ueberleben ein Neuladen"): die
+    // Profil-Felder, die bisher NICHT gespeichert wurden (Rarity-Felder und
+    // Kostenmodus haben laengst eigene Schluessel). EIN Schluessel
+    // localStorage.sbcOptRules = { feld: wert } - nur Abweichungen vom
+    // Auslieferungszustand, damit ein spaeter geaenderter Standard ankommt.
+    // "Gesperrte nie verbauen" bleibt bewusst draussen: kein Profil-Feld, und
+    // sein Standard (an) ist der sichere.
+    const PT_RULE_KEEP = ['maxrating-en', 'maxrating', 'applyrarity', 'specialstorage', 'maxrare', 'maxcommon',
+        'scarcity', 'storagebonus', 'untradeable', 'maxwaste'];
+    function ptRulesLoad(storage) {
+        const out = {};
+        try {
+            const v = JSON.parse(storage.getItem('sbcOptRules') || '{}');
+            if (v && typeof v === 'object' && !Array.isArray(v)) {
+                PT_RULE_KEEP.forEach(function (f) {
+                    if (Object.prototype.hasOwnProperty.call(v, f) && (typeof v[f] === 'string' || typeof v[f] === 'boolean')) out[f] = v[f];
+                });
+            }
+        } catch (e) {}
+        return out;
+    }
+    /** Wert merken; isDefault = Auslieferungszustand -> Eintrag entfernen. true, wenn gespeichert. */
+    function ptRulesPut(storage, field, value, isDefault) {
+        if (PT_RULE_KEEP.indexOf(field) < 0) return false;
+        try {
+            const cur = ptRulesLoad(storage);
+            if (isDefault) delete cur[field];
+            else cur[field] = typeof value === 'boolean' ? value : String(value);
+            storage.setItem('sbcOptRules', JSON.stringify(cur));
+            return true;
+        } catch (e) { return false; }
+    }
+    /**
+     * Passt ein gespeicherter Wert noch ins Feld? d: { kind: 'check' | 'select' | 'number', options, min, max }.
+     * Liefert den Wert, wie er ins Feld geschrieben wird (Haken: boolean, sonst der gespeicherte Text - genau
+     * wie von Hand eingegeben), oder undefined (dann bleibt der Auslieferungszustand).
+     */
+    function ptRuleFit(d, v) {
+        d = d || {};
+        if (d.kind === 'check') return typeof v === 'boolean' ? v : undefined;
+        if (typeof v !== 'string') return undefined;
+        if (d.kind === 'select') return (d.options || []).indexOf(v) >= 0 ? v : undefined;
+        if (d.kind === 'number') {
+            const t = v.trim().replace(',', '.');
+            const n = Number(t);
+            if (t === '' || !isFinite(n)) return undefined;
+            if (d.min != null && d.min !== '' && n < Number(d.min)) return undefined;
+            if (d.max != null && d.max !== '' && n > Number(d.max)) return undefined;
+            return v;
+        }
+        return undefined;
+    }
     function ptProfSame(a, b) {
         if (typeof a === 'boolean' || typeof b === 'boolean') return !!a === !!b;
         const num = function (v) { const t = String(v == null ? '' : v).trim().replace(',', '.'); return t !== '' && isFinite(Number(t)) ? Number(t) : null; };
@@ -8775,7 +8829,7 @@
     function ptProfWant(prof, field, st) {
         return prof && prof.set && Object.prototype.hasOwnProperty.call(prof.set, field) ? prof.set[field] : (st ? st.def : undefined);
     }
-    /** state: { feld: { value, def } } -> 'standard' | 'storage' | 'schonen' | 'angepasst'. Rein. */
+    /** state: { feld: { value, def } } -> 'standard' | 'storage' | 'angepasst'. Rein. */
     function ptProfileOf(state, profiles) {
         state = state || {};
         const fields = Object.keys(PT_PROFILE_FIELDS);
@@ -8968,7 +9022,7 @@
         { id: 'diagnose', group: 'Werkzeuge', label: 'Diagnose schreiben', words: 'report fehler konsole log', go: { ort: 'start', flash: 'diag' } },
         { id: 'aktivitaet', group: 'Aktivität', label: 'Aktivität', words: 'freigaben aufträge protokoll meldungen heute ki nachricht verlauf', go: { ort: 'aktivitaet' } },
         { id: 'kaufbuch', group: 'Aktivität', label: 'Kaufbuch', words: 'käufe bought', go: { ort: 'aktivitaet', open: 'ki-ledger-box' } },
-        { id: 'set-regeln', group: 'Einstellungen', label: 'Regeln', words: 'kartenwahl schonen verbrauchen kosten tabelle item score überschuss rare totw sperren', go: { set7: 'regeln' } },
+        { id: 'set-regeln', group: 'Einstellungen', label: 'Regeln', words: 'kartenwahl rarity verbrauchen überschuss rare totw sperren rückfallweg tabelle kosten item score schonen', go: { set7: 'regeln' } },
         { id: 'set-kaufen', group: 'Einstellungen', label: 'Kaufen: Plattform, Live-Preise', words: 'konsole pc preise marktcheck', go: { set7: 'kaufen' } },
         { id: 'set-ki', group: 'Einstellungen', label: 'KI verbinden', words: 'internet pc chat freigeben adresse schlüssel chatgpt claude', go: { set7: 'ki' } },
         { id: 'set-darstellung', group: 'Einstellungen', label: 'Darstellung', words: 'neue alte oberfläche breite', go: { set7: 'darstellung' } },
@@ -9502,6 +9556,38 @@
             if (pickRow.hidden !== !need) pickRow.hidden = !need;
         }
         try { ptProfSync(); } catch (e) {}
+    }
+    // ---- v6.61.1: Regel-Felder ueberleben ein Neuladen (beide Oberflaechen) ----
+    // Gespeicherte Werte kommen beim Start in die VORHANDENEN Felder (readConfig()
+    // liest sie dort wie eine Handeingabe); jede Aenderung - von Hand oder ueber
+    // ein Profil (input/change) - wird gemerkt.
+    function ptRulesBoot() {
+        const saved = ptRulesLoad(ptStore());
+        PT_RULE_KEEP.forEach(function (f) {
+            const el = document.getElementById('sbc-opt-' + f);
+            if (!el) return;
+            const isCheck = el.type === 'checkbox', isSel = el.tagName === 'SELECT';
+            if (Object.prototype.hasOwnProperty.call(saved, f)) {
+                const v = ptRuleFit(isCheck ? { kind: 'check' }
+                    : isSel ? { kind: 'select', options: Array.from(el.options).map(function (o) { return o.value; }) }
+                    : { kind: 'number', min: el.min, max: el.max }, saved[f]);
+                if (v !== undefined) {
+                    if (isCheck) el.checked = v;
+                    else el.value = v;
+                    // Segment-Schalter und "N geändert" folgen dem Feld (noch kein Speichern: der Lauscher haengt erst danach)
+                    try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+                }
+            }
+            const save = function () {
+                const def = isCheck ? el.checked === el.defaultChecked
+                    : isSel ? (function () { const d = Array.from(el.options).filter(function (o) { return o.defaultSelected; })[0] || el.options[0]; return !!d && d.value === el.value; })()
+                    : el.value === el.defaultValue;
+                ptRulesPut(ptStore(), f, isCheck ? !!el.checked : el.value, def);
+            };
+            el.addEventListener('change', save);
+            if (!isCheck && !isSel) el.addEventListener('input', save);
+        });
+        try { renderAdvCount(); } catch (e) {}
     }
     // ---- v6.58.1 Etappe 4 (2): Regel-Profile in "Loesen" (nur UI 7) -----------
     let ptProfUndo = null;
@@ -31764,13 +31850,19 @@ const HybridSbcEa = (() => {
                 if (!el) continue;
                 try {
                     const saved = localStorage.getItem(lsKey);
-                    if (saved != null) el.value = saved;
+                    if (saved != null) {
+                        el.value = saved;
+                        // v6.61.1: der Segment-Schalter des Felds zeigte nach dem Neuladen weiter den Standard,
+                        // gerechnet wurde mit dem gespeicherten Wert (der Lauscher zum Speichern haengt erst danach)
+                        try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (e2) {}
+                    }
                 } catch (e) {}
                 el.addEventListener('change', function () {
                     try { localStorage.setItem(lsKey, el.value); } catch (e) {}
                 });
             }
         } catch (e) { reportError('Rarity-Einstellungen', e); }
+        try { ptRulesBoot(); } catch (e) { reportError('Regel-Felder', e); }
         try {
             if (ui.poolCacheBox) {
                 ui.poolCacheBox.checked = poolCacheEnabled();

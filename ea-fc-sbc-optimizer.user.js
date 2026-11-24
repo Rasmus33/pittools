@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.61.3
+// @version      6.61.4
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.61.3';
+    const VERSION = '6.61.4';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -8339,15 +8339,15 @@
         try { nextBarRefreshers.forEach(function (f) { f(); }); } catch (e) {}
         return mode;
     }
-    function buyLineParts(kind) {
+    function buyLineParts(kind, wo) {
         return kind === 'app' ? { t: 'Brücke verbunden (App)', dot: 'on' }
             : kind === 'tm' ? { t: 'Brücke verbunden (Tampermonkey)', dot: 'on' }
-            : { t: 'Brücke fehlt – unter „Mehr“ installieren', dot: 'warn' };
+            : { t: 'Brücke fehlt – unter ' + (wo || '„Mehr“') + ' installieren', dot: 'warn' };
     }
     function renderBuyLine() {
         const t = document.getElementById('sbc-opt-buy-line-txt'), d = document.getElementById('sbc-opt-buy-dot');
         if (!t || !d) return;
-        const v = buyLineParts(bridgeKind());
+        const v = buyLineParts(bridgeKind(), ptWo('„Mehr“', 'Zahnrad › Über'));
         if (t.textContent !== v.t) t.textContent = v.t;
         const cls = 'sbc-opt-dot ' + v.dot;
         if (d.className !== cls) d.className = cls;
@@ -9116,6 +9116,8 @@
     function ui7IsOn() {
         try { return document.documentElement.hasAttribute('data-ui7'); } catch (e) { return false; }
     }
+    /** v6.61.4: Ortsangabe in Texten - in der neuen Oberflaeche heissen die Orte anders als die alten Reiter. */
+    function ptWo(alt, neu) { return ui7IsOn() ? neu : alt; }
     function ptInFoot(el) { return !!(el && el.parentNode && el.parentNode.id === 'sbc-opt-foot'); }
     // ---- v6.57.0 Etappe 3b: Aktionsleiste (nur UI 7) -------------------------
     let ptAct = null, ptActChangedAt = 0, ptActFiring = false;
@@ -11757,7 +11759,7 @@
         if (ui.bandBox) ui.bandBox.style.display = costMode === 'table' ? '' : 'none';
         if (ui.costModeHint) {
             const t = costMode === 'table'
-                ? 'Alte Tabelle mit Zusatzregeln (Scarcity, Storage-Rabatt, Aufschläge unter „Erweitert“).'
+                ? 'Alte Tabelle mit Zusatzregeln (Scarcity, Storage-Rabatt, Aufschläge).'
                 : 'Kosten = EAs Item Score jeder Karte (z. B. 84er 830, 85er 2.100, 88er 8.300; Specials höher). Storage immer zuerst, Vereinskarten nur, wenn der Storage nicht reicht. Ohne Item Score gilt die Tabelle.';
             if (ui.costModeHint.textContent !== t) ui.costModeHint.textContent = t;
         }
@@ -16501,7 +16503,7 @@ const HybridSbcEa = (() => {
         // v5.31.0: Leerzustand statt leerem Kasten - sagt, was passieren wird.
         if (ui.futbinResult && !ui.futbinResult.innerHTML) {
             ui.futbinResult.className = 'sbc-opt-result show sbc-opt-result-empty';
-            ui.futbinResult.innerHTML = 'Öffne eine Kauf-SBC im Spiel und tippe auf <b>Futbin-Lösungen suchen</b>.';
+            ui.futbinResult.innerHTML = 'Öffne eine Kauf-SBC im Spiel und tippe auf <b>' + ptWo('Futbin-Lösungen suchen', 'Lösungen suchen') + '</b>.';
         }
     }
     function renderFutbinPlatformChips() {
@@ -17706,7 +17708,7 @@ const HybridSbcEa = (() => {
     async function bidSbcExecute(planId) {
         const saved = bidSbcPlans.get(planId);
         if (!saved || Date.now() - saved.at > BID_SBC_PLAN_TTL_MS) throw new Error('Plan unbekannt oder abgelaufen - bitte neu vorschlagen (preview).');
-        if (!galleryChatOkEnabled()) throw new Error('Im Reiter „KI“ ist „Käufe im Chat freigeben“ aus - ohne den Schalter gibt die KI keine SBC ab.');
+        if (!galleryChatOkEnabled()) throw new Error(ptWo('Im Reiter „KI“', 'Unter Zahnrad › KI') + ' ist „Käufe im Chat freigeben“ aus - ohne den Schalter gibt die KI keine SBC ab.');
         if (ownPersonaId() !== saved.persona) throw new Error('Anderer EA-Account als beim Planen - bitte neu vorschlagen.');
         if (buyBusy || sbcSolveBusy || bidHelperIsBusy()) throw new Error('Gerade läuft ein Kauf- oder Gebots-Lauf - bitte danach erneut.');
         bidSbcPlans.delete(planId); // eine Freigabe = ein Lauf
@@ -21397,7 +21399,7 @@ const HybridSbcEa = (() => {
             box.querySelector('[data-act="yes"]').addEventListener('click', () => fin(true));
             box.querySelector('[data-act="no"]').addEventListener('click', () => fin(false));
             if (typeof ptConfirmShown === 'function') ptConfirmShown(box);
-            toast('Die KI wartet auf deine Kauf-Freigabe im Reiter „Galerie“.', 'warn');
+            toast('Die KI wartet auf deine Kauf-Freigabe' + ptWo(' im Reiter „Galerie“', ' – unten im Blatt') + '.', 'warn');
         });
     }
     /**
@@ -23241,7 +23243,7 @@ const HybridSbcEa = (() => {
         const saved = sbcSolvePlans.get(planId);
         if (!saved || Date.now() - saved.at > SBC_SOLVE_PLAN_TTL_MS) throw new Error('Freigegebener Plan unbekannt oder abgelaufen - bitte neu vorschlagen (preview).');
         if (saved.persona !== persona || String(saved.challengeId) !== String(cid)) throw new Error('Gerade ist eine andere SBC oder ein anderer Account offen als im Plan - neu vorschlagen.');
-        if (!galleryChatOkEnabled()) throw new Error('Im Reiter „KI“ ist „Käufe im Chat freigeben“ aus - ohne den Schalter löst die KI keine SBC.');
+        if (!galleryChatOkEnabled()) throw new Error(ptWo('Im Reiter „KI“', 'Unter Zahnrad › KI') + ' ist „Käufe im Chat freigeben“ aus - ohne den Schalter löst die KI keine SBC.');
         sbcSolvePlans.delete(planId); // eine Freigabe = ein Lauf
         const result = { challengeId: cid, name: sbcSolveLiveName(saved.live, saved.dto), via: null, submitted: false, notes: [] };
         const live = saved.live;
@@ -24603,7 +24605,7 @@ const HybridSbcEa = (() => {
         const fName = forms.some(f => f.name === st.formation) ? st.formation : ((forms.find(f => /433$/.test(f.name)) || forms[0]).name);
         const byId = new Map(players.map(p => [String(p.id), p]));
         const label = p => p.name + ' · ' + p.rating + ' · ' + p.positions.map(Gauntlet.posName).join('/') + (p.evo ? ' · Evo' : '');
-        const evoNote = (!STATE.evoRaws || !STATE.evoRaws.size) ? '<div class="sbc-opt-dim">Evos fehlen noch: sie werden erst beim Laden des Vereins erfasst (Reiter „Rating“, „↻“).</div>' : '';
+        const evoNote = (!STATE.evoRaws || !STATE.evoRaws.size) ? '<div class="sbc-opt-dim">Evos fehlen noch: sie werden erst beim Laden des Vereins erfasst (' + ptWo('Reiter „Rating“, „↻“', '„Jetzt“ › Verein, „Spieler laden“') + ').</div>' : '';
         let h = '<div class="sbc-opt-card">' +
             '<label class="sbc-opt-chiplabel">Aufstellung</label><select class="sbc-opt-w100" id="sbc-opt-gt-formation">' +
             forms.map(f => '<option value="' + escapeHtml(f.name) + '"' + (f.name === fName ? ' selected' : '') + '>' + escapeHtml(f.label) + '</option>').join('') + '</select>' +
@@ -24972,7 +24974,7 @@ const HybridSbcEa = (() => {
             const el = sellTargetEl || ui.galleryResult;
             if (el) {
                 const isGallery = el === ui.galleryResult;
-                el.insertAdjacentHTML('beforeend', '<div class="sbc-opt-dim">Die Karten sind auf dem Transfermarkt (im Spiel unter Transfers → Transferliste). Nicht verkaufte kannst du nach Ablauf unter „Mehr“ mit „Transferliste listen“ erneut anbieten.</div>' +
+                el.insertAdjacentHTML('beforeend', '<div class="sbc-opt-dim">Die Karten sind auf dem Transfermarkt (im Spiel unter Transfers → Transferliste). Nicht verkaufte kannst du nach Ablauf unter ' + ptWo('„Mehr“', '„Jetzt“ › Start') + ' mit „Transferliste listen“ erneut anbieten.</div>' +
                     (isGallery ? '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-gal-sell-back2">Zur Set-Liste</button>' : ''));
                 const b = el.querySelector('#sbc-opt-gal-sell-back2');
                 if (b) b.addEventListener('click', function () { if (galleryLast && galleryLast.ranked) renderGallerySets(galleryLast.ranked); else onGalleryLoadClick(); });

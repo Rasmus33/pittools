@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.54.2
+// @version      6.55.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.54.2';
+    const VERSION = '6.55.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -6405,6 +6405,7 @@
             --pt-sheet-mini: 20vh;
             --pt-sheet-half: 60vh;
             --pt-sheet-full: 92vh;
+            --pt-hold: 600ms;
             --pt-fab-h: 48px;
             --pt-fab-img: 40px;
         }
@@ -6759,6 +6760,8 @@
             background:var(--pt-bg-surface); border:1px solid var(--pt-border-strong); }
         .sbc-opt-confirm.danger { border-color:var(--pt-danger-border); }
         .sbc-opt-confirm[hidden] { display:none; }
+        /* v6.55.0: Fuss des Blatts (UI 7); ohne Schalter bleibt er leer */
+        #sbc-opt-foot { margin:0; padding:0; }
         .sbc-opt-confirm-facts { margin:0 0 var(--pt-space-1-5); }
         .sbc-opt-confirm-facts > div { display:flex; justify-content:space-between; gap:var(--pt-space-3); padding:var(--pt-space-1) 0; font-size:var(--pt-type-label); }
         .sbc-opt-confirm-facts span { color:var(--pt-fg-muted); }
@@ -7737,6 +7740,33 @@
         :where(:root[data-ui7]) .sbc-opt-btn.ghost:where(:not(.sbc-opt-rowbtn)) { background:transparent; color:var(--pt-fg-default); box-shadow: inset 0 0 0 1px var(--pt-border-default); }
         :where(:root[data-ui7]) .sbc-opt-btn.ghost:where(:not(.sbc-opt-rowbtn)):hover:not(:disabled) { background:var(--pt-state-hover); box-shadow: inset 0 0 0 1px var(--pt-border-strong); }
         :where(:root[data-ui7]) .sbc-opt-btn.ghost:where(:not(.sbc-opt-rowbtn)):active:not(:disabled) { background:var(--pt-state-press); }
+        /* v6.55.0 Etappe 2: Freigabe als Fuss des Blatts - immer dort, immer gleich */
+        :where(:root[data-ui7]) #sbc-opt-foot { position:sticky; bottom:0; z-index:3; }
+        :where(:root[data-ui7]) #sbc-opt-foot > .sbc-opt-confirm {
+            margin:0; max-height:70vh; overflow-y:auto; padding:var(--pt-stack) var(--pt-gutter);
+            border-width:1px 0 0; border-radius:var(--pt-panel-radius) var(--pt-panel-radius) 0 0;
+            background:var(--pt-bg-raised);
+            /* Rest des Blatts abgedunkelt: Schatten ueber die ganze Flaeche (das Blatt schneidet ihn ab) */
+            box-shadow:var(--pt-shadow-3), 0 0 0 200vh var(--pt-bg-scrim);
+            animation: pt7-fuss var(--pt-dur-slow) var(--pt-ease-out);
+        }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-asking] .sbc-opt-tabs,
+        :where(:root[data-ui7]) #sbc-opt-panel[data-asking] .sbc-opt-main,
+        :where(:root[data-ui7]) #sbc-opt-panel[data-asking] #sbc-opt-run { opacity:1; }
+        /* Rot = halten (Abgeben, Abstossen, Packs oeffnen): Fuellung waehrend des Haltens */
+        :where(:root[data-ui7]) .sbc-opt-confirm .sbc-opt-btn[data-hold] { position:relative; overflow:hidden; flex-direction:column; }
+        :where(:root[data-ui7]) .sbc-opt-confirm .sbc-opt-btn[data-hold]::after {
+            content:'gedrückt halten'; display:block; font-size:var(--pt-type-meta); font-weight:var(--pt-weight-regular); opacity:.8;
+        }
+        :where(:root[data-ui7]) .sbc-opt-confirm .sbc-opt-btn[data-hold]::before {
+            content:''; position:absolute; left:0; top:0; bottom:0; width:100%; background:currentColor; opacity:.22;
+            transform:scaleX(0); transform-origin:left center; pointer-events:none;
+        }
+        :where(:root[data-ui7]) .sbc-opt-confirm .sbc-opt-btn[data-hold].is-holding::before { transform:scaleX(1); transition:transform var(--pt-hold) linear; }
+        :where(:root[data-ui7]) .sbc-opt-confirm .sbc-opt-btn[data-hold].is-armed::before { transform:scaleX(1); }
+        :where(:root[data-ui7]) .sbc-opt-confirm .sbc-opt-btn[data-hold].is-hint { animation: pt7-wackel var(--pt-dur-slow) var(--pt-ease-out); }
+        @keyframes pt7-fuss { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:none; } }
+        @keyframes pt7-wackel { 0%, 100% { transform:none; } 30% { transform:translateX(-4px); } 60% { transform:translateX(4px); } }
 
         @media (max-width: 359px) { .sbc-opt-tab-btn svg { display:none; } }
         .sbc-opt-tab-btn { padding:0 var(--pt-space-1); }
@@ -8081,6 +8111,7 @@
             host.innerHTML = confirmBoxHtml(spec);
             host.hidden = false;
             host.addEventListener('click', onClick);
+            if (typeof ptConfirmShown === 'function') ptConfirmShown(host);
             const ms = spec && spec.timeoutMs > 0 ? spec.timeoutMs : 10 * 60 * 1000;
             timer = setTimeout(function () { fin(false); }, ms);
             try { host.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) {}
@@ -8112,6 +8143,12 @@
         const panel = (ui && ui.panel) || document.getElementById('sbc-opt-panel');
         if (!panel || !nearEl || !nearEl.parentNode) return Promise.resolve(false);
         let host = nearEl.__ptConfirmHost;
+        // v6.55.0: unter UI 7 lebt der Kasten im Fuss des Blatts; nach dem
+        // Umschalten wird er neu angelegt, statt am falschen Ort zu stehen.
+        if (host && host.isConnected !== false && typeof ptInFoot === 'function' && ptInFoot(host) !== ui7IsOn()) {
+            try { host.remove(); } catch (e) {}
+            host = null;
+        }
         if (!host || host.isConnected === false) {
             host = document.createElement('div');
             host.className = 'sbc-opt-confirm';
@@ -8191,9 +8228,113 @@
         const k = ctx && ctx.kind;
         return k === 'loesen' ? 'Lösen' : k === 'punkte' ? 'Punkte' : k === 'packs' ? 'Packs' : '';
     }
+    // v6.55.0 Etappe 2 (Entscheidung 2): Ja-Knoepfe sind 0,4 s nach dem
+    // Erscheinen gesperrt (gegen den Doppeltipp an derselben Stelle wie die
+    // Hauptaktion); rote mit data-hold (Abgeben, Abstossen, Packs oeffnen)
+    // verlangen 0,6 s Halten. Bieten und Kaufen bleiben ein Tipp.
+    const PT_CONFIRM_LOCK_MS = 400;
+    const PT_HOLD_MS = 600;
+    /** 'ok' | 'frueh' | 'halten'. holdStart/releaseAt aus pointerdown/-up bzw. keydown/-up. */
+    function ptConfirmGate(g) {
+        g = g || {};
+        const now = Number(g.now) || 0;
+        const shown = Number(g.shownAt) || 0;
+        if (shown > 0 && now - shown < PT_CONFIRM_LOCK_MS) return 'frueh';
+        if (!g.hold) return 'ok';
+        const st = Number(g.holdStart) || 0;
+        const end = Number(g.releaseAt) > 0 ? Number(g.releaseAt) : now;
+        return st > 0 && end >= st && end - st >= PT_HOLD_MS ? 'ok' : 'halten';
+    }
     // [UI7-END]
     function ui7IsOn() {
         try { return document.documentElement.hasAttribute('data-ui7'); } catch (e) { return false; }
+    }
+    function ptInFoot(el) { return !!(el && el.parentNode && el.parentNode.id === 'sbc-opt-foot'); }
+    /**
+     * v6.55.0 Etappe 2: ein Freigabe-Kasten ist gerade erschienen. Unter UI 7
+     * wandert er in den Fuss des Blatts (ein Ort fuer Ja/Nein); ohne Schalter
+     * kehrt ein frueher verschobener Kasten an seinen Platz zurueck. Merkt den
+     * Zeitpunkt fuer die 0,4-s-Sperre. Logik, Fristen und Busy-Flags der
+     * Aufrufer bleiben unberuehrt.
+     */
+    function ptConfirmShown(box) {
+        if (!box) return;
+        box.__ptShownAt = Date.now();
+        const foot = document.getElementById('sbc-opt-foot');
+        try {
+            if (ui7IsOn() && foot) {
+                if (!ptInFoot(box)) {
+                    if (!box.__ptHome && box.parentNode) box.__ptHome = { parent: box.parentNode, next: box.nextSibling };
+                    foot.appendChild(box);
+                }
+            } else if (ptInFoot(box) && box.__ptHome && box.__ptHome.parent && box.__ptHome.parent.isConnected !== false) {
+                const h = box.__ptHome;
+                h.parent.insertBefore(box, h.next && h.next.parentNode === h.parent ? h.next : null);
+            }
+        } catch (e) {}
+    }
+    /** Fuss + Sperre/Halten an den Ja-Knoepfen im Panel (nur unter UI 7 wirksam). */
+    function initConfirmFoot(panel) {
+        if (!panel || document.getElementById('sbc-opt-foot')) return;
+        const foot = document.createElement('div');
+        foot.id = 'sbc-opt-foot';
+        panel.appendChild(foot);
+        const yesSel = '[data-confirm="yes"], #sbc-opt-batch-confirm-yes, [data-bid-act$="-yes"], [data-act="yes"]';
+        const yesOf = function (t) {
+            const b = t && typeof t.closest === 'function' ? t.closest(yesSel) : null;
+            return b && b.closest('.sbc-opt-confirm') && panel.contains(b) ? b : null;
+        };
+        const st = { btn: null, start: 0, end: 0, timer: null, hintAt: 0 };
+        const clear = function (b) { if (b) b.classList.remove('is-holding', 'is-armed'); };
+        const begin = function (b) {
+            if (st.btn && st.btn !== b) clear(st.btn);
+            st.btn = b; st.start = Date.now(); st.end = 0;
+            b.classList.remove('is-armed'); b.classList.add('is-holding');
+            clearTimeout(st.timer);
+            st.timer = setTimeout(function () { if (st.btn === b && !st.end) { b.classList.remove('is-holding'); b.classList.add('is-armed'); } }, PT_HOLD_MS);
+        };
+        const release = function () {
+            if (!st.btn || st.end) return;
+            st.end = Date.now();
+            clearTimeout(st.timer);
+            if (st.end - st.start < PT_HOLD_MS) clear(st.btn);
+        };
+        panel.addEventListener('pointerdown', function (ev) {
+            if (!ui7IsOn()) return;
+            const b = yesOf(ev.target);
+            if (b && b.hasAttribute('data-hold')) begin(b);
+        }, true);
+        panel.addEventListener('pointerup', release, true);
+        panel.addEventListener('pointercancel', function () { if (st.btn) { clear(st.btn); st.btn = null; } clearTimeout(st.timer); }, true);
+        panel.addEventListener('keydown', function (ev) {
+            if (!ui7IsOn() || ev.repeat || (ev.key !== 'Enter' && ev.key !== ' ')) return;
+            const b = yesOf(ev.target);
+            if (b && b.hasAttribute('data-hold')) begin(b);
+        }, true);
+        panel.addEventListener('keyup', function (ev) { if (ev.key === ' ') release(); if (ev.key === 'Enter' && st.btn) { clear(st.btn); st.btn = null; } }, true);
+        panel.addEventListener('click', function (ev) {
+            if (!ui7IsOn()) return;
+            const b = yesOf(ev.target);
+            if (!b) return;
+            const box = b.closest('.sbc-opt-confirm');
+            const hold = b.hasAttribute('data-hold');
+            const mine = st.btn === b;
+            const r = ptConfirmGate({ now: Date.now(), shownAt: box && box.__ptShownAt, hold: hold,
+                holdStart: mine ? st.start : 0, releaseAt: mine ? st.end : 0 });
+            if (r === 'ok') {
+                if (hold) { clear(b); st.btn = null; st.start = 0; st.end = 0; }
+                return;
+            }
+            ev.preventDefault();
+            ev.stopImmediatePropagation();
+            if (r === 'halten' && Date.now() - st.hintAt > 1200) {
+                st.hintAt = Date.now();
+                b.classList.remove('is-hint');
+                void b.offsetWidth;
+                b.classList.add('is-hint');
+                setTimeout(function () { b.classList.remove('is-hint'); }, 900);
+            }
+        }, true);
     }
     /** Schaltet die neue Huelle an/aus (Attribut an <html>); schreibt nur bei Aenderung. */
     function ui7Apply(on) {
@@ -9119,7 +9260,7 @@
                         <div class="sbc-opt-confirm-body" id="sbc-opt-batch-confirm-body"></div>
                         <div class="sbc-opt-confirm-actions">
                             <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-batch-confirm-no">Abbrechen</button>
-                            <button type="button" class="sbc-opt-btn danger" id="sbc-opt-batch-confirm-yes">Ja, alle abgeben</button>
+                            <button type="button" class="sbc-opt-btn danger" id="sbc-opt-batch-confirm-yes" data-hold="600">Ja, alle abgeben</button>
                         </div>
                     </div>
                     <details id="sbc-opt-batch-details" class="sbc-opt-details-toggle" style="display:none;">
@@ -9272,6 +9413,7 @@
         initUxHelpers(panel);
         initTips(panel);
         initPanelSize(panel);
+        initConfirmFoot(panel);
         // Fortschritts-Overlay: bewusst ausserhalb des Panels, damit es auch
         // sichtbar ist, wenn das Panel zu ist.
         const prog = document.createElement('div');
@@ -15894,7 +16036,7 @@ const HybridSbcEa = (() => {
         return 'Bis zu ' + p.n + ' Gebote à höchstens ' + p.cap + ' Coins, zusammen höchstens ' + (p.n * p.cap) + ' Coins, Rating ' + p.range.min + '–' + p.range.max +
                ', Dauer höchstens ' + Math.round(BID_ROUND_MAX_MS / 60000) + ' min. Genau eine Runde, danach Schluss.';
     }
-    function bidBox(html) { const el = document.getElementById('sbc-opt-bid-confirm'); if (!el) return; el.innerHTML = html || ''; el.hidden = !html; }
+    function bidBox(html) { const el = document.getElementById('sbc-opt-bid-confirm'); if (!el) return; el.innerHTML = html || ''; el.hidden = !html; if (html && typeof ptConfirmShown === 'function') ptConfirmShown(el); }
     function onBidRoundClick() {
         const p = bidRoundProposal();
         if (p.why) { toast(p.why, 'error'); return; }
@@ -19209,11 +19351,17 @@ const HybridSbcEa = (() => {
             }) + '</div>');
             const box = document.getElementById(id);
             let done = false;
-            const fin = v => { if (done) return; done = true; clearTimeout(t); resolve(v); };
+            const fin = v => {
+                if (done) return; done = true; clearTimeout(t);
+                // v6.55.0: im Fuss des Blatts bleibt nach der Antwort nichts stehen
+                try { if (box && typeof ptInFoot === 'function' && ptInFoot(box)) box.remove(); } catch (e) {}
+                resolve(v);
+            };
             const t = setTimeout(() => fin(false), 10 * 60 * 1000);
             if (!box) { fin(false); return; }
             box.querySelector('[data-act="yes"]').addEventListener('click', () => fin(true));
             box.querySelector('[data-act="no"]').addEventListener('click', () => fin(false));
+            if (typeof ptConfirmShown === 'function') ptConfirmShown(box);
             toast('Die KI wartet auf deine Kauf-Freigabe im Reiter „Galerie“.', 'warn');
         });
     }
@@ -27132,6 +27280,7 @@ const HybridSbcEa = (() => {
         document.getElementById('sbc-opt-batch-confirm-title').textContent = title;
         document.getElementById('sbc-opt-batch-confirm-body').textContent = body;
         box.hidden = false;
+        if (typeof ptConfirmShown === 'function') ptConfirmShown(box);
         if (ui.batchRun) ui.batchRun.style.display = 'none';
         try { box.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) {}
     }
@@ -29621,7 +29770,7 @@ const HybridSbcEa = (() => {
                 text: mode === 'verwerten'
                     ? 'Special-Karten stoppen den Lauf, bevor etwas abgestoßen wird – dann entscheidest du im Spiel selbst. Unverkäufliche Karten werden einsortiert (SBC-Material).'
                     : 'Stoppt beim ersten Fehler; bereits geöffnete Packs sind dann schon verteilt.',
-                danger: true, yes: { label: mode === 'verwerten' ? 'Ja, öffnen und abstoßen' : 'Ja, öffnen' }, timeoutMs: 3 * 60 * 1000 },
+                danger: true, yes: { label: mode === 'verwerten' ? 'Ja, öffnen und abstoßen' : 'Ja, öffnen', attrs: { 'data-hold': '600' } }, timeoutMs: 3 * 60 * 1000 },
                 function () {
                     const g = (STATE.packGroups || []).find(function (x) { return String(x.id) === String(groupId); });
                     return ownPersonaId() + ':' + (g ? g.count : 0) + ':' + !!STATE.loading;

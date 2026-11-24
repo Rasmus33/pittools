@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.61.2
+// @version      6.61.3
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.61.2';
+    const VERSION = '6.61.3';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7788,6 +7788,18 @@
         :where(:root[data-ui7]) .sbc-opt-confirm .sbc-opt-btn[data-hold].is-holding::before { transform:scaleX(1); transition:transform var(--pt-hold) linear; }
         :where(:root[data-ui7]) .sbc-opt-confirm .sbc-opt-btn[data-hold].is-armed::before { transform:scaleX(1); }
         :where(:root[data-ui7]) .sbc-opt-confirm .sbc-opt-btn[data-hold].is-hint { animation: pt7-wackel var(--pt-dur-slow) var(--pt-ease-out); }
+        /* v6.61.3: dasselbe Halten am roten "Trotzdem alle N abgeben" der Vorlagen-Pause */
+        :where(:root[data-ui7]) #sbc-opt-vorlagen .sbc-opt-btn[data-hold] { position:relative; overflow:hidden; flex-direction:column; }
+        :where(:root[data-ui7]) #sbc-opt-vorlagen .sbc-opt-btn[data-hold]::after {
+            content:'gedrückt halten'; display:block; font-size:var(--pt-type-meta); font-weight:var(--pt-weight-regular); opacity:.8;
+        }
+        :where(:root[data-ui7]) #sbc-opt-vorlagen .sbc-opt-btn[data-hold]::before {
+            content:''; position:absolute; left:0; top:0; bottom:0; width:100%; background:currentColor; opacity:.22;
+            transform:scaleX(0); transform-origin:left center; pointer-events:none;
+        }
+        :where(:root[data-ui7]) #sbc-opt-vorlagen .sbc-opt-btn[data-hold].is-holding::before { transform:scaleX(1); transition:transform var(--pt-hold) linear; }
+        :where(:root[data-ui7]) #sbc-opt-vorlagen .sbc-opt-btn[data-hold].is-armed::before { transform:scaleX(1); }
+        :where(:root[data-ui7]) #sbc-opt-vorlagen .sbc-opt-btn[data-hold].is-hint { animation: pt7-wackel var(--pt-dur-slow) var(--pt-ease-out); }
         /* v6.55.1 Etappe 2b: Laufleiste oben statt Fenster in der Mitte. Nur der Stopp nimmt Tipps an. */
         :where(:root[data-ui7]) #sbc-opt-progress {
             left:0; right:0; top:0; transform:none; min-width:0; max-width:none;
@@ -8010,6 +8022,9 @@
         :where(:root[data-ui7]) #sbc-opt-panel[data-view7="akt"] #sbc-opt-tab-ki > #sbc-opt-protokoll { order:-2; margin-top:var(--pt-space-4); }
         :where(:root[data-ui7]) #sbc-opt-panel[data-view7="akt"] #sbc-opt-tab-ki > .sbc-opt-head:has(+ #sbc-opt-mcp-message), :where(:root[data-ui7]) #sbc-opt-panel[data-view7="akt"] #sbc-opt-mcp-message, :where(:root[data-ui7]) #sbc-opt-panel[data-view7="akt"] #sbc-opt-ki-nomsg { order:-1; }
         :where(:root[data-ui7]) #sbc-opt-set7 #sbc-opt-ki-setup { margin-top:0; }
+        /* v6.61.3: Einstellungen › Über - Version/Bruecke, Installations-Link, Technikzeile (die vorhandenen Elemente) */
+        :where(:root[data-ui7]) #sbc-opt-panel[data-set7] #sbc-opt-set7 #sbc-opt-more-line { display:flex; margin-top:0; }
+        :where(:root[data-ui7]) #sbc-opt-set7 #sbc-opt-debug { display:block; margin:var(--pt-space-2) 0 0; padding:0; overflow-wrap:anywhere; }
         :where(:root[data-ui7]) .sbc-opt-flash7 { animation: pt7-wackel var(--pt-dur-slow) var(--pt-ease-out); }
         /* v6.60.0 Etappe 6: Ort "Galerie" im neuen Geruest - Kontextzeile (Galerie · N Sets · Kontostand bzw. Set-Name,
            Note, Tokens; in Set und Verkauf mit Rueckweg "‹ Sets"), EINE Hauptaktion in der Aktionsleiste. Die echten
@@ -8763,7 +8778,9 @@
         // die Klappe "Verbindung einrichten") und "Käufe im Chat freigeben". Das Protokoll steht jetzt in "Aktivität".
         { id: 'ki', title: 'KI', subs: [{ title: '', fields: ['mcp-chatok', 'relay-on', 'mcp-on'] }] },
         { id: 'darstellung', title: 'Darstellung', subs: [{ title: '', fields: ['ui7', 'size'] }] },
-        { id: 'system', title: 'System', subs: [{ title: '', fields: ['poolcache'] }] }
+        { id: 'system', title: 'System', subs: [{ title: '', fields: ['poolcache'] }] },
+        // v6.61.3 (Rasmus 24.11.): Version, Bruecken-Status samt Installations-Link und die Technikzeile (API/SID/Services)
+        { id: 'ueber', title: 'Über', subs: [{ title: '', fields: ['more-line', 'bridge-install', 'debug'] }] }
     ];
     /** Flache Liste [{ field, group, sub, slot }] - slot ist der Platz in der Ebene ("regeln/1"). Rein. */
     function ptSet7Fields(groups) {
@@ -9069,7 +9086,8 @@
         { id: 'set-kaufen', group: 'Einstellungen', label: 'Kaufen: Plattform, Live-Preise', words: 'konsole pc preise marktcheck', go: { set7: 'kaufen' } },
         { id: 'set-ki', group: 'Einstellungen', label: 'KI verbinden', words: 'internet pc chat freigeben adresse schlüssel chatgpt claude', go: { set7: 'ki' } },
         { id: 'set-darstellung', group: 'Einstellungen', label: 'Darstellung', words: 'neue alte oberfläche breite', go: { set7: 'darstellung' } },
-        { id: 'set-system', group: 'Einstellungen', label: 'System', words: 'verein zwischenspeichern cache', go: { set7: 'system' } }
+        { id: 'set-system', group: 'Einstellungen', label: 'System', words: 'verein zwischenspeichern cache', go: { set7: 'system' } },
+        { id: 'set-ueber', group: 'Einstellungen', label: 'Über: Version, Brücke', words: 'bridge installieren technik api sid services tampermonkey', go: { set7: 'ueber' } }
     ];
     /** Fuer die Suche: klein, Umlaute ausgeschrieben ("Lösen" = "loesen"), nur Buchstaben/Ziffern. */
     function ptCmdNorm(x) {
@@ -9181,11 +9199,20 @@
     // (startVorlage, runVorlagenStep, vorlagenFrage, executePlan), Minimieren und die Leiste oben bleiben
     // unberuehrt. vorlagenMinimize schliesst das Blatt wie bisher selbst - im Lauf ist nichts ueber EAs Zeilen.
     const ptVl7 = { moved: false, shown: false, open: false };
+    // v6.61.3: der Knopf der Pause, der trotz Warnung ALLE Runden abgibt (rot). Nur Optik und Tor - die Vorlagen-Logik bleibt.
+    const PT_VL_HOLD = '#sbc-opt-vorlagen [data-act="vl-pause:all"]';
+    function ptVl7Hold(on) {
+        const b = document.querySelector(PT_VL_HOLD);
+        if (!b) return;
+        if (on && !b.hasAttribute('data-hold')) b.setAttribute('data-hold', String(PT_HOLD_MS));
+        else if (!on && b.hasAttribute('data-hold')) b.removeAttribute('data-hold');
+    }
     function ptVl7Sync() {
         const ov = ui.vorlagenOverlay, panel = ui.panel;
         if (!ov || !panel) return;
         if (!ui7IsOn() || !ptOrt.on) {
             if (ptVl7.moved) { ptSet7Back(ov); ptVl7.moved = false; }
+            ptVl7Hold(false);
             if (panel.hasAttribute('data-vl7')) panel.removeAttribute('data-vl7');
             ptVl7.shown = false; ptVl7.open = false;
             return;
@@ -9202,6 +9229,7 @@
         ptVl7.shown = ov.style.display === 'block';
         ptVl7.open = panel.classList.contains('open');
         if (panel.hasAttribute('data-vl7') !== ptVl7.shown) panel.toggleAttribute('data-vl7', ptVl7.shown);
+        if (ptVl7.shown) ptVl7Hold(true);
     }
     /** Zustand fuer ptActState aus Panel und Lauf-Flags (nur lesen). */
     function ptActRead() {
@@ -9508,10 +9536,11 @@
         const foot = document.createElement('div');
         foot.id = 'sbc-opt-foot';
         panel.appendChild(foot);
-        const yesSel = '[data-confirm="yes"], #sbc-opt-batch-confirm-yes, [data-bid-act$="-yes"], [data-act="yes"]';
+        // v6.61.3 (Rasmus 24.11.): auch das rote "Trotzdem alle N abgeben" der Vorlagen-Pause verlangt Halten (PT_VL_HOLD)
+        const yesSel = '[data-confirm="yes"], #sbc-opt-batch-confirm-yes, [data-bid-act$="-yes"], [data-act="yes"], ' + PT_VL_HOLD;
         const yesOf = function (t) {
             const b = t && typeof t.closest === 'function' ? t.closest(yesSel) : null;
-            return b && b.closest('.sbc-opt-confirm') && panel.contains(b) ? b : null;
+            return b && (b.closest('.sbc-opt-confirm') || b.matches(PT_VL_HOLD)) && panel.contains(b) ? b : null;
         };
         const st = { btn: null, start: 0, end: 0, timer: null, hintAt: 0 };
         const clear = function (b) { if (b) b.classList.remove('is-holding', 'is-armed'); };
@@ -9581,7 +9610,7 @@
         if (field === 'futbin-market' || field === 'mcp-chatok') return [el.closest('.sbc-opt-withtip') || el];
         // v6.59.0: beide KI-Schalter wohnen in der Klappe "Verbindung einrichten" - sie zieht als Ganzes um (ptSet7MoveTo nimmt jeden Knoten nur einmal)
         if (field === 'relay-on' || field === 'mcp-on') { const d = el.closest('#sbc-opt-ki-setup'); return d ? [d] : []; }
-        if (field === 'bandbox') return [el];
+        if (field === 'bandbox' || field === 'more-line' || field === 'bridge-install' || field === 'debug') return [el];
         const row = el.closest('.sbc-opt-row');
         return row ? [row] : [];
     }

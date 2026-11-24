@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.45.0
+// @version      6.46.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.45.0';
+    const VERSION = '6.46.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7442,6 +7442,14 @@
         .sbc-opt-withtip > .sbc-opt-confirm-warn { margin:var(--pt-space-1) 0; }
         .sbc-opt-head .sbc-opt-tag { margin-left:var(--pt-space-1); }
 
+        /* v6.46.0: Anleitung als nummerierte Zeilen. */
+        .sbc-opt-steps { margin:var(--pt-space-2) 0; padding-left:var(--pt-space-5); font-size:var(--pt-type-meta); line-height:var(--pt-leading-normal); color:var(--pt-fg-muted); }
+        .sbc-opt-steps li + li { margin-top:var(--pt-space-1); }
+        .sbc-opt-steps b { color:var(--pt-fg-secondary); }
+        #sbc-opt-ki-setup .sbc-opt-switch { margin:var(--pt-space-1) 0; }
+        #sbc-opt-ki-setup .sbc-opt-fb-meta { margin:0 0 var(--pt-space-2); }
+        #sbc-opt-ki-line > span:not(.sbc-opt-dot):not(.grow) { flex:0 0 auto; margin-right:var(--pt-space-2); }
+
         /* v6.40.0: Abstands-Hilfsklassen statt style="margin/padding" im
            Panel-Template. Mit #sbc-opt-panel .sbc-opt-body davor (schlaegt auch
            #sbc-opt-panel input[type=number]), damit sie (wie vorher das
@@ -8587,16 +8595,39 @@
                      ueberladen wirkt"): REITER KI. Die bisherigen Elemente der KI-Verbindung (gleiche IDs,
                      gleiche Verdrahtung) plus Uebersicht: Auftraege, Galerie auf einen Blick. -->
                 <div class="sbc-opt-tab" id="sbc-opt-tab-ki" role="tabpanel">
-                    <div class="sbc-opt-card">
-                        <div class="sbc-opt-group-title sbc-opt-mt0">KI-Assistent</div>
-                        <!-- v6.21.0 (Rasmus 18.11.: Mike hat nur ein Handy): ueber den PitTools-Vermittler im
-                             Internet (relay/, Cloudflare). PitTools baut die Verbindung selbst auf, die KI
-                             (ChatGPT, Claude.ai - auch deren Handy-Apps) ruft die Adresse unten auf. -->
+                    <!-- v6.46.0: gleiches Geruest - Statuszeile (beide Verbindungen), die eine
+                         sicherheitsrelevante Einstellung sichtbar, Abschnitte mit gleichem Kopf,
+                         Einrichtung/Kaufbuch/Verlauf zugeklappt am Ende. -->
+                    <div class="sbc-opt-line" id="sbc-opt-ki-line">
+                        <span class="sbc-opt-dot" id="sbc-opt-ki-dot-relay"></span><span>Internet <b id="sbc-opt-ki-relay-short">aus</b></span>
+                        <span class="sbc-opt-dot" id="sbc-opt-ki-dot-pc"></span><span class="grow">PC <b id="sbc-opt-ki-pc-short">aus</b></span>
+                        <button type="button" class="sbc-opt-tip" aria-label="Info: Rechte der KI" aria-expanded="false" data-tip="Die KI liest und plant. Gekauft, eingetragen und abgegeben wird nur mit deiner Freigabe, gelistet erst nach deinem Tipp auf „Karten listen“. Anleitung: pittools-mcp/README.md.">i</button>
+                    </div>
+                    <div class="sbc-opt-withtip">
+                    <label class="sbc-opt-switch">
+                        <input type="checkbox" id="sbc-opt-mcp-chatok">
+                        <span class="track" aria-hidden="true"></span>
+                        <span class="txt">Käufe im Chat freigeben</span>
+                    </label>
+                    <button type="button" class="sbc-opt-tip" aria-label="Info: Käufe im Chat freigeben" aria-expanded="false" data-tip="Dein Ja im Chat ersetzt den Tipp hier (Galerie) und erlaubt der KI, eine offene SBC zu lösen. Ohne den Schalter fragt PitTools jeden Kauf zusätzlich im Panel.">i</button>
+                    </div>
+                    <div class="sbc-opt-head"><span>Nachricht</span></div>
+                    <div class="sbc-opt-summary" id="sbc-opt-mcp-message" hidden></div>
+                    <div class="sbc-opt-dim" id="sbc-opt-ki-nomsg">Noch keine Nachricht.</div>
+                    <div class="sbc-opt-head"><span>Aufträge</span></div>
+                    <div id="sbc-opt-ki-jobs" class="sbc-opt-dim">Keine laufenden Aufträge.</div>
+                    <div class="sbc-opt-head"><span>Galerie</span></div>
+                    <div id="sbc-opt-ki-gallery" class="sbc-opt-dim">–</div>
+                    <details class="sbc-opt-details-toggle sbc-opt-mt2" id="sbc-opt-ki-setup">
+                        <summary>Verbindung einrichten</summary>
+                        <div class="sbc-opt-withtip">
                         <label class="sbc-opt-switch">
                             <input type="checkbox" id="sbc-opt-relay-on">
                             <span class="track" aria-hidden="true"></span>
-                            <span class="txt">Über das Internet verbinden<small>ChatGPT oder Claude – auch am Handy, ohne PC</small></span>
+                            <span class="txt">Über das Internet verbinden</span>
                         </label>
+                        <button type="button" class="sbc-opt-tip" aria-label="Info: Über das Internet verbinden" aria-expanded="false" data-tip="Für ChatGPT oder Claude – auch am Handy, ohne PC. PitTools baut die Verbindung selbst auf; die Adresse unten trägst du einmal bei deiner KI ein.">i</button>
+                        </div>
                         <div class="sbc-opt-fb-meta">Status: <b id="sbc-opt-relay-status">Aus</b></div>
                         <div id="sbc-opt-relay-box" hidden>
                             <div class="sbc-opt-relay-label">Adresse für deine KI</div>
@@ -8604,46 +8635,34 @@
                                 <input type="text" id="sbc-opt-relay-url" readonly spellcheck="false" aria-label="MCP-Adresse für die KI">
                                 <button type="button" class="sbc-opt-btn" id="sbc-opt-relay-copy"><span>Kopieren</span></button>
                             </div>
-                            <div class="sbc-opt-debug"><b>ChatGPT:</b> Einstellungen → Apps &amp; Konnektoren → Erweitert → Entwicklermodus an → Erstellen → diese Adresse, Authentifizierung „Keine“. <b>Claude:</b> Einstellungen → Konnektoren → Benutzerdefinierten Konnektor hinzufügen → diese Adresse. Einmal am PC oder im Browser einrichten, danach geht es auch in der Handy-App. Die Adresse ist dein Schlüssel – nicht weitergeben.</div>
+                            <ol class="sbc-opt-steps">
+                                <li><b>ChatGPT:</b> Einstellungen → Apps &amp; Konnektoren → Erweitert → Entwicklermodus → Erstellen → Adresse, Authentifizierung „Keine“.</li>
+                                <li><b>Claude:</b> Einstellungen → Konnektoren → Benutzerdefinierten Konnektor hinzufügen → Adresse.</li>
+                            </ol>
                             <div class="sbc-opt-dim" id="sbc-opt-relay-hint" hidden></div>
-                            <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-relay-new"><span>Neuen Schlüssel erzeugen</span></button>
+                            <div class="sbc-opt-withtip">
+                            <button type="button" class="sbc-opt-btn link" id="sbc-opt-relay-new"><span>Neuen Schlüssel erzeugen</span></button>
+                            <button type="button" class="sbc-opt-tip" aria-label="Info: Schlüssel" aria-expanded="false" data-tip="Einmal am PC oder im Browser einrichten, danach geht es auch in der Handy-App. Die Adresse ist dein Schlüssel – nicht weitergeben. Ein neuer Schlüssel macht die alte Adresse ungültig.">i</button>
+                            </div>
                         </div>
-                        <!-- v6.8.0: Claude Desktop / Claude Code am PC ruft ueber den lokalen PitTools-MCP-Server Werkzeuge auf. -->
+                        <div class="sbc-opt-withtip">
                         <label class="sbc-opt-switch">
                             <input type="checkbox" id="sbc-opt-mcp-on">
                             <span class="track" aria-hidden="true"></span>
-                            <span class="txt">Am PC verbinden<small>Claude Desktop oder ChatGPT/Codex über den PitTools-MCP-Server</small></span>
+                            <span class="txt">Am PC verbinden</span>
                         </label>
+                        <button type="button" class="sbc-opt-tip" aria-label="Info: Am PC verbinden" aria-expanded="false" data-tip="Für Claude Desktop oder ChatGPT/Codex am selben PC, über den PitTools-MCP-Server und die PitTools Bridge.">i</button>
+                        </div>
                         <div class="sbc-opt-fb-meta">Status: <b id="sbc-opt-mcp-status">Aus</b></div>
-                        <!-- v6.19.0: Galerie-Kauf im Chat freigeben (z.B. Claude-App am Handy), Default AUS. -->
-                        <label class="sbc-opt-switch">
-                            <input type="checkbox" id="sbc-opt-mcp-chatok">
-                            <span class="track" aria-hidden="true"></span>
-                            <span class="txt">Käufe im Chat freigeben<small>Dein Ja im Chat ersetzt den Tipp hier (Galerie) und erlaubt der KI, eine offene SBC zu lösen</small></span>
-                        </label>
-                        <div class="sbc-opt-debug">Die KI kann lesen, planen und Galerie-Käufe vorschlagen. Gekauft wird nur mit deiner Freigabe: für die Galerie und – ab v6.29.0 – für eine offene SBC, die die KI dann auch einträgt und abgibt (nur mit Schalter „Käufe im Chat freigeben“). Gelistet wird erst nach deinem Tipp auf „Karten listen“. Anleitung: pittools-mcp/README.md.</div>
-                    </div>
-                    <div class="sbc-opt-card">
-                        <div class="sbc-opt-group-title sbc-opt-mt0">Nachricht der KI</div>
-                        <div class="sbc-opt-summary" id="sbc-opt-mcp-message" hidden></div>
-                        <div class="sbc-opt-dim" id="sbc-opt-ki-nomsg">Noch keine Nachricht.</div>
-                    </div>
-                    <div class="sbc-opt-card">
-                        <div class="sbc-opt-group-title sbc-opt-mt0">Aufträge</div>
-                        <div id="sbc-opt-ki-jobs" class="sbc-opt-dim">Keine laufenden Aufträge.</div>
-                    </div>
-                    <div class="sbc-opt-card">
-                        <div class="sbc-opt-group-title sbc-opt-mt0">Galerie auf einen Blick</div>
-                        <div id="sbc-opt-ki-gallery" class="sbc-opt-dim">–</div>
-                    </div>
-                    <div class="sbc-opt-card">
-                        <div class="sbc-opt-group-title sbc-opt-mt0">Kaufbuch (letzte Käufe)</div>
+                    </details>
+                    <details class="sbc-opt-details-toggle" id="sbc-opt-ki-ledger-box">
+                        <summary>Kaufbuch<span id="sbc-opt-ki-ledger-n"></span></summary>
                         <div id="sbc-opt-ki-ledger" class="sbc-opt-dim">Noch keine Käufe festgehalten.</div>
-                    </div>
-                    <div class="sbc-opt-card">
-                        <div class="sbc-opt-group-title sbc-opt-mt0">Verlauf</div>
+                    </details>
+                    <details class="sbc-opt-details-toggle" id="sbc-opt-ki-log-box">
+                        <summary>Verlauf</summary>
                         <div class="sbc-opt-dim" id="sbc-opt-mcp-log"></div>
-                    </div>
+                    </details>
                 </div>
                 <div class="sbc-opt-tab" id="sbc-opt-tab-mehr" role="tabpanel">
                     <div class="sbc-opt-stats sbc-opt-card sbc-opt-mb3">
@@ -19360,7 +19379,31 @@ const HybridSbcEa = (() => {
             ': geboten ' + n(e.bid) + (e.answered ? ' · EA-Preis ' + n(e.eaPrice) + ' · abgebucht ' + n(e.charged) + ' · Kontostand danach ' + n(e.creditsAfter) : ' · keine EA-Antwort gespeichert') +
             '<div class="sbc-opt-muted">„Bought For“ der Karte vorher ' + n(e.lastSaleBefore) + ' → nachher ' + n(e.lastSaleAfter) + '</div></div>').join('');
     }
+    // v6.46.0: Kurzform beider Verbindungen fuer die Statuszeile des Reiters.
+    // Rein: liefert je Verbindung ein Wort und die Art des Zustandspunkts.
+    function kiLineParts(relay, pc) {
+        relay = relay || {}; pc = pc || {};
+        const r = !relay.on ? (relay.replaced ? { t: 'anderes Gerät', dot: 'warn' } : { t: 'aus', dot: '' })
+            : relay.status === 'verbunden' ? { t: 'verbunden', dot: 'on' }
+            : relay.status === 'verbinde' ? { t: 'verbindet …', dot: 'warn' }
+            : relay.status === 'getrennt' ? { t: 'getrennt', dot: 'warn' } : { t: String(relay.status || 'aus'), dot: 'warn' };
+        const p = !pc.on ? { t: 'aus', dot: '' }
+            : pc.status === 'verbunden' ? { t: 'verbunden', dot: 'on' }
+            : pc.status === 'kein Server' ? { t: 'wartet', dot: 'warn' }
+            : (pc.status === 'aus' || !pc.status) ? { t: 'startet …', dot: 'warn' } : { t: String(pc.status), dot: 'warn' };
+        return { relay: r, pc: p };
+    }
+    function renderKiLine() {
+        const parts = kiLineParts(relayState, mcpState);
+        [['relay', 'sbc-opt-ki-relay-short', 'sbc-opt-ki-dot-relay'], ['pc', 'sbc-opt-ki-pc-short', 'sbc-opt-ki-dot-pc']].forEach(function (x) {
+            const t = document.getElementById(x[1]), d = document.getElementById(x[2]), v = parts[x[0]];
+            if (t && t.textContent !== v.t) t.textContent = v.t;
+            const cls = 'sbc-opt-dot' + (v.dot ? ' ' + v.dot : '');
+            if (d && d.className !== cls) d.className = cls;
+        });
+    }
     function renderKiTab() {
+        try { renderKiLine(); } catch (e) {}
         const jobsEl = document.getElementById('sbc-opt-ki-jobs');
         if (jobsEl) {
             const jobs = Array.from(mcpJobs.values()).map(j => { const v = mcpJobView(j); delete v.result; return v; });
@@ -19374,7 +19417,12 @@ const HybridSbcEa = (() => {
             if (gEl.innerHTML !== h) gEl.innerHTML = h;
         }
         const lEl = document.getElementById('sbc-opt-ki-ledger');
-        if (lEl) { const h = kiLedgerHtml(buyLedgerLoad()); if (lEl.innerHTML !== h) lEl.innerHTML = h; }
+        if (lEl) {
+            const led = buyLedgerLoad();
+            const h = kiLedgerHtml(led); if (lEl.innerHTML !== h) lEl.innerHTML = h;
+            const nEl = document.getElementById('sbc-opt-ki-ledger-n'), nt = led && led.length ? ' (' + led.length + ')' : '';
+            if (nEl && nEl.textContent !== nt) nEl.textContent = nt;
+        }
     }
     function initGalleryTokens() {
         const card = document.getElementById('sbc-opt-gtokens');
@@ -20411,6 +20459,7 @@ const HybridSbcEa = (() => {
                 (l.ok ? ' ✓' : ' ✗ ' + escapeHtml(String(l.error || '').slice(0, 80))) + '</div>').join('');
             if (ui.mcpLog.innerHTML !== html) ui.mcpLog.innerHTML = html;
         }
+        try { renderKiLine(); } catch (e) {}
     }
     /** Pure: Argumente auf das erlaubte Mass bringen (Zahlen begrenzen, Strings kuerzen). */
     function mcpSanitizeArgs(args) {
@@ -21299,6 +21348,7 @@ const HybridSbcEa = (() => {
             if (ui.relayHint.hidden !== !h) ui.relayHint.hidden = !h;
         }
         STATE.diag.relay = relayDiag();
+        try { renderKiLine(); } catch (e) {}
     }
     function relaySetEnabled(on) {
         relayState.on = !!on;

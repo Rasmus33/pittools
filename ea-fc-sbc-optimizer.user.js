@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.54.1
+// @version      6.54.2
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.54.1';
+    const VERSION = '6.54.2';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -6402,6 +6402,7 @@
             --pt-header-h: 44px;
             --pt-row-h: 52px;                         /* Finger; mit Maus 44 (siehe unten) */
             --pt-main-h: 52px;                        /* Hauptaktion; mit Maus 46 */
+            --pt-sheet-mini: 20vh;
             --pt-sheet-half: 60vh;
             --pt-sheet-full: 92vh;
             --pt-fab-h: 48px;
@@ -7666,6 +7667,7 @@
             border-radius:var(--pt-panel-radius) var(--pt-panel-radius) 0 0;
         }
         :where(:root[data-ui7]) #sbc-opt-panel[data-size-mode="hoehe"][data-h="halb"] { height:var(--pt-sheet-half); max-height:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-size-mode="hoehe"][data-h="mini"] { height:var(--pt-sheet-mini); max-height:none; }
         :where(:root[data-ui7]) #sbc-opt-panel[data-size-mode="hoehe"].open { animation: pt7-auf var(--pt-dur-slow) var(--pt-ease-out); }
         /* PC: angedockte Seitenleiste rechts, volle Hoehe; Breite weiter ueber --pt-panel-w */
         :where(:root[data-ui7]) #sbc-opt-panel[data-size-mode="breite"] {
@@ -8153,17 +8155,36 @@
     }
     /** Raste des Blatts am Handy: ohne gemerkte Wahl "halb" (EAs Kader bleibt sichtbar). */
     function ui7SheetLoad(storage) {
-        try { return storage.getItem('sbcOptPanelH') === 'voll' ? 'voll' : 'halb'; } catch (e) { return 'halb'; }
+        try {
+            const v = storage.getItem('sbcOptPanelH');
+            return v === 'voll' || v === 'mini' ? v : 'halb';
+        } catch (e) { return 'halb'; }
+    }
+    /** v6.54.2: Raste merken (mini/halb/voll; alles andere = halb). Die alte Oberflaeche liest "mini" als "voll". */
+    function ui7SheetSave(storage, h) {
+        const v = h === 'voll' || h === 'mini' ? h : 'halb';
+        try { storage.setItem('sbcOptPanelH', v); } catch (e) {}
+        return v;
+    }
+    /** Tipp auf den Griff: mini -> halb -> voll -> halb. */
+    function ui7SheetNext(h) {
+        return h === 'halb' ? 'voll' : 'halb';
     }
     /**
      * v6.54.1: Raste nach dem Ziehen am Griff (Rasmus 24.11.: "groesser oder
      * kleiner ziehen geht nicht"). Naechste der beiden Rasten 60vh / 92vh;
      * kaputte Werte = "halb".
      */
+    // v6.54.2 (Rasmus 24.11.: "ein einrasten unten … bei 20%, und wenn man es
+    // dann noch tiefer schiebt, sollte es sich auch schliessen wie bei x"):
+    // drei Rasten 20 / 60 / 92 vh, unter 12 % = "zu" (schliesst wie ✕).
     function ui7SheetSnap(px, vh) {
         px = Number(px); vh = Number(vh);
         if (!(px > 0) || !(vh > 0)) return 'halb';
-        return px / vh >= (0.60 + 0.92) / 2 ? 'voll' : 'halb';
+        const r = px / vh;
+        if (r < 0.12) return 'zu';
+        if (r < (0.20 + 0.60) / 2) return 'mini';
+        return r >= (0.60 + 0.92) / 2 ? 'voll' : 'halb';
     }
     /** Kontextwort des Knopfs aus ptContext(): Konzept 3.1 "Knopf sagt". */
     function ptFabWord(ctx) {
@@ -8304,8 +8325,8 @@
                 setW(PANEL_W_STD);
                 const h = heightNow();
                 panel.setAttribute('data-h', h);
-                btn.textContent = h === 'halb' ? 'Halb' : 'Voll';
-                btn.setAttribute('aria-label', 'Panelhöhe: ' + (h === 'halb' ? 'halb' : 'voll') + ' – tippen zum Umschalten');
+                btn.textContent = h === 'halb' ? 'Halb' : h === 'mini' ? 'Klein' : 'Voll';
+                btn.setAttribute('aria-label', 'Panelhöhe: ' + (h === 'halb' ? 'halb' : h === 'mini' ? 'klein' : 'voll') + ' – tippen zum Umschalten, ziehen zum Ändern');
             }
             try { grip.style.height = panel.clientHeight + 'px'; } catch (e) {}
         }
@@ -8320,8 +8341,11 @@
             if (t !== btn && t && t.closest && t.closest('button, input, select, a, label')) return;
             sheet = { y: ev.clientY, h: panel.getBoundingClientRect().height, moved: false, id: ev.pointerId };
         });
-        header.addEventListener('pointermove', function (ev) {
-            if (!sheet) return;
+        // v6.54.2: Bewegung und Loslassen am DOKUMENT hoeren - der Finger
+        // verlaesst den schmalen Kopf schon beim ersten Schritt nach unten.
+        const dragHost = doc && typeof doc.addEventListener === 'function' ? doc : header;
+        dragHost.addEventListener('pointermove', function (ev) {
+            if (!sheet || (ev.pointerId != null && sheet.id != null && ev.pointerId !== sheet.id)) return;
             const dy = ev.clientY - sheet.y;
             if (!sheet.moved && Math.abs(dy) < 6) return;
             // Erst beim echten Ziehen festhalten - sonst landet der Tipp auf den
@@ -8329,7 +8353,7 @@
             if (!sheet.moved) { try { header.setPointerCapture(sheet.id); } catch (e) {} }
             sheet.moved = true;
             const vh = win.innerHeight || 800;
-            panel.style.height = Math.round(Math.max(vh * 0.3, Math.min(vh * 0.92, sheet.h - dy))) + 'px';
+            panel.style.height = Math.round(Math.max(vh * 0.05, Math.min(vh * 0.92, sheet.h - dy))) + 'px';
             if (ev.cancelable) ev.preventDefault();
         });
         function sheetEnd() {
@@ -8338,15 +8362,20 @@
             if (!s0.moved) return;
             const h = panel.getBoundingClientRect().height;
             panel.style.height = '';
-            panelHeightSave(storage, ui7SheetSnap(h, win.innerHeight));
             sheetMovedAt = Date.now();
+            const snap = ui7SheetSnap(h, win.innerHeight);
+            // Ganz nach unten gezogen = schliessen wie ✕; beim naechsten Oeffnen
+            // kommt das Blatt halb hoch (nicht als 20-%-Streifen).
+            if (snap === 'zu') { ui7SheetSave(storage, 'halb'); try { closeBtn.click(); } catch (e) {} apply(); return; }
+            ui7SheetSave(storage, snap);
             apply();
         }
-        header.addEventListener('pointerup', sheetEnd);
-        header.addEventListener('pointercancel', sheetEnd);
+        dragHost.addEventListener('pointerup', sheetEnd);
+        dragHost.addEventListener('pointercancel', sheetEnd);
         btn.addEventListener('click', function () {
             if (Date.now() - sheetMovedAt < 400) return; // Ziehen ist kein Tipp
             if (mode() === 'breite') panelWidthSave(storage, panelStepNext(panelWidthLoad(storage)));
+            else if (ui7()) ui7SheetSave(storage, ui7SheetNext(heightNow()));
             else panelHeightSave(storage, heightNow() === 'halb' ? 'voll' : 'halb');
             apply();
         });

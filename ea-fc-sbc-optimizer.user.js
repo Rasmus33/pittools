@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.52.1
+// @version      6.52.2
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.52.1';
+    const VERSION = '6.52.2';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -22220,10 +22220,25 @@ const HybridSbcEa = (() => {
                       (mk && mk.tiers ? ' + ' + mk.tiers + ' Stufe(n)' : mk && mk.pct ? ' + ' + Math.round(mk.pct * 100) + ' %' : '') + ')?\n\n' +
                       sellable.slice(0, 12).map(x => x.rec.name + ': ' + fmtCoins(x.price.buyNow)).join('\n') + (sellable.length > 12 ? '\n...' : '') +
                       '\n\nDie Karten bleiben für die Galerie gezählt (sie waren im Verein) - bewerten kannst du später im Spiel.';
-        if (!window.confirm(frage)) return;
-        sellBusy = true;
+        // v6.52.2: Freigabe im Panel. sellBusy steht schon waehrend der Frage; der alte Wortlaut geht in den Report.
         const diagKey = (sellLastRows && sellLastRows.diagKey) || 'gallerySell';
+        const rowsAtAsk = sellLastRows;
+        sellBusy = true;
+        let okSell = false;
+        try {
+            const sum = sellable.reduce(function (a, x) { return a + (x.price && x.price.buyNow || 0); }, 0);
+            okSell = await uiConfirm(sellTargetEl || ui.galleryResult, {
+                title: sellable.length + (sellable.length === 1 ? ' Karte' : ' Karten') + ' auf den Transfermarkt stellen?',
+                facts: [['Sofortkauf zusammen', fmtCoins(sum)], ['Dauer', '1 Stunde'],
+                        ['Aufschlag', mk && mk.tiers ? '+ ' + mk.tiers + (mk.tiers === 1 ? ' Stufe' : ' Stufen') : mk && mk.pct ? '+ ' + Math.round(mk.pct * 100) + ' %' : 'keiner']],
+                details: { label: 'Karten', lines: sellable.map(function (x) { return x.rec.name + ': ' + fmtCoins(x.price.buyNow); }) },
+                text: 'Die Karten bleiben für die Galerie gezählt (sie waren im Verein) – bewerten kannst du später im Spiel.',
+                yes: { label: 'Ja, listen' }, timeoutMs: 3 * 60 * 1000 },
+                function () { return ownPersonaId() + ':' + (sellLastRows === rowsAtAsk) + ':' + sellable.length; });
+        } catch (e) { okSell = false; }
+        if (!okSell) { sellBusy = false; return; }
         const diag = STATE.diag[diagKey] || (STATE.diag[diagKey] = {});
+        diag.question = frage;
         diag.steps = []; diag.listed = 0; diag.stopped = null;
         const lines = [];
         const render = function (cur) {

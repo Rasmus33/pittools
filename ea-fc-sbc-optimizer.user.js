@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.55.2
+// @version      6.56.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.55.2';
+    const VERSION = '6.56.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7092,6 +7092,10 @@
         #sbc-opt-progress .p-stop { display:none; }
         /* v6.55.2: Protokoll gibt es nur in der neuen Oberflaeche */
         #sbc-opt-protokoll { display:none; }
+        /* v6.56.0: Ort "Loesen" gibt es nur in der neuen Oberflaeche */
+        #sbc-opt-tab-loesen, #sbc-opt-way, .sbc-opt-ctxline { display:none; }
+        .sbc-opt-ctxline { align-items:baseline; gap:var(--pt-space-2); padding:var(--pt-space-2-5) 0 var(--pt-space-1-5); font-size:var(--pt-type-label); color:var(--pt-fg-muted); }
+        .sbc-opt-ctxline b { color:var(--pt-fg-default); font-weight:var(--pt-weight-semibold); }
         .sbc-opt-line.sbc-opt-logline { align-items:flex-start; flex-wrap:nowrap; gap:var(--pt-space-2); min-height:0; margin:0; padding:var(--pt-space-1) 0; font-size:var(--pt-type-label); }
         .sbc-opt-line.sbc-opt-logline > :last-child { flex:1 1 auto; min-width:0; color:var(--pt-fg-default); }
         .sbc-opt-line.sbc-opt-logline > :first-child { margin-top:var(--pt-space-1); }
@@ -7797,6 +7801,13 @@
         }
         :where(:root[data-ui7]) #sbc-opt-vl-topbar .t { flex:1 1 auto; max-width:none; }
         :where(:root[data-ui7]) #sbc-opt-protokoll { display:block; }
+        /* v6.56.0 Etappe 3a: Ort "Loesen" (Kaufen + Rating) mit Weg-Wahl und Kontextzeile */
+        :where(:root[data-ui7]) #sbc-opt-tab-loesen { display:flex; }
+        :where(:root[data-ui7]) .sbc-opt-tab-btn[data-tab="kaufen"], :where(:root[data-ui7]) .sbc-opt-tab-btn[data-tab="rating"] { display:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-way] .sbc-opt-ctxline { display:flex; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-way] #sbc-opt-way { display:flex; margin:0 0 var(--pt-stack); }
+        :where(:root[data-ui7]) #sbc-opt-buy-modes { display:none; }
+        :where(:root[data-ui7]) #sbc-opt-way .sbc-opt-chip { white-space:nowrap; padding-left:var(--pt-space-1); padding-right:var(--pt-space-1); }
         @keyframes pt7-leiste { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:none; } }
         @keyframes pt7-fuss { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:none; } }
         @keyframes pt7-wackel { 0%, 100% { transform:none; } 30% { transform:translateX(-4px); } 60% { transform:translateX(4px); } }
@@ -8060,6 +8071,7 @@
             if (b.getAttribute('aria-pressed') !== String(on)) b.setAttribute('aria-pressed', String(on));
         });
         if (remember) { try { localStorage.setItem('sbcOptBuyMode', mode); } catch (e) {} }
+        if (typeof ptWaySync === 'function') ptWaySync();
         try { nextBarRefreshers.forEach(function (f) { f(); }); } catch (e) {}
         return mode;
     }
@@ -8403,6 +8415,7 @@
      * nur bei echter Aenderung.
      */
     function syncFabWord() {
+        try { syncCtxLine(); } catch (e) {}
         const el = document.getElementById('sbc-opt-fab-word');
         if (!el) return;
         let w = '';
@@ -8930,11 +8943,25 @@
                     <div class="sbc-opt-debug sbc-opt-stat-wide sbc-opt-tech" id="sbc-opt-debug">API: – · SID: – · Services: –</div>
                 </div>
                 <div class="sbc-opt-tabs" id="sbc-opt-tabs" role="tablist">
+                    <button type="button" class="sbc-opt-tab-btn" id="sbc-opt-tab-loesen" aria-selected="false">Lösen</button>
                     <button type="button" class="sbc-opt-tab-btn" data-tab="kaufen" role="tab" aria-selected="false" aria-controls="sbc-opt-tab-kaufen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>Kaufen</button>
                     <button type="button" class="sbc-opt-tab-btn" data-tab="galerie" role="tab" aria-selected="false" aria-controls="sbc-opt-tab-galerie"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Galerie</button>
                     <button type="button" class="sbc-opt-tab-btn" data-tab="rating" role="tab" aria-selected="false" aria-controls="sbc-opt-tab-rating"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/></svg>Rating</button>
                     <button type="button" class="sbc-opt-tab-btn" data-tab="ki" role="tab" aria-selected="false" aria-controls="sbc-opt-tab-ki"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 9h8"/><path d="M8 13h5"/></svg>KI</button>
                     <button type="button" class="sbc-opt-tab-btn" data-tab="mehr" role="tab" aria-selected="false" aria-controls="sbc-opt-tab-mehr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/><circle cx="5" cy="12" r="1.5"/></svg>Mehr</button>
+                </div>
+                <!-- v6.56.0 UI 7 Etappe 3a: Ort "Loesen" = Kaufen + Rating mit
+                     Weg-Wahl. Nur unter data-ui7 sichtbar; die Wege schalten die
+                     vorhandenen Reiter um (gleiche Handler, gleiche IDs). -->
+                <div class="sbc-opt-ctxline" id="sbc-opt-ctxline">
+                    <div class="grow"><b id="sbc-opt-ctx-title">SBC</b><span id="sbc-opt-ctx-sub"></span></div>
+                    <span class="sbc-opt-meta" id="sbc-opt-ctx-val"></span>
+                </div>
+                <div class="sbc-opt-chips" id="sbc-opt-way" role="group" aria-label="Weg">
+                    <button type="button" class="sbc-opt-chip" data-way="verein" aria-pressed="false">Verein</button>
+                    <button type="button" class="sbc-opt-chip" data-way="zukaufen" aria-pressed="false">Zukaufen</button>
+                    <button type="button" class="sbc-opt-chip" data-way="hybrid" aria-pressed="false">Verein + Kauf</button>
+                    <button type="button" class="sbc-opt-chip" data-way="gebote" aria-pressed="false">Gebote</button>
                 </div>
                 <!-- REITER KAUFEN: FUTBIN-LOESUNG (v5.16.0) fuer SBCs, die man
                      zusammenkauft. Holt die Community-Lösungen der offenen
@@ -9701,7 +9728,7 @@
         // v5.28.0: Reiter. Letzte Wahl merken; beim Oeffnen einer SBC waehlt
         // autoPickTab() nach SBC-Art (ein Tipp uebersteuert fuer diese SBC).
         ui.tabBar = panel.querySelector('#sbc-opt-tabs');
-        ui.tabBtns = Array.from(panel.querySelectorAll('.sbc-opt-tab-btn'));
+        ui.tabBtns = Array.from(panel.querySelectorAll('.sbc-opt-tab-btn[data-tab]'));
         ui.tabPanes = Array.from(panel.querySelectorAll('.sbc-opt-tab'));
         ui.tabBtns.forEach(function (b) {
             b.addEventListener('click', function () {
@@ -9710,6 +9737,12 @@
                 if (STATE.sbc.challengeId != null) { try { if (inSbcView()) ptSetTabPut(ptStore(), STATE.sbc.setId, b.getAttribute('data-tab')); } catch (e) {} }
                 setTab(b.getAttribute('data-tab'), true);
             });
+        });
+        // v6.56.0 UI 7: Ort "Loesen" und Weg-Wahl (rufen nur setTab/setBuyMode)
+        panel.querySelector('#sbc-opt-tab-loesen').addEventListener('click', onLoesenTabClick);
+        panel.querySelector('#sbc-opt-way').addEventListener('click', function (ev) {
+            const b = ev.target.closest('.sbc-opt-chip');
+            if (b) ptWayPick(b.getAttribute('data-way'));
         });
         // v5.31.0: Start immer im Kaufen-Reiter (die gemerkte Handwahl gilt
         // nur innerhalb einer Sitzung fuer die jeweilige SBC).
@@ -10390,6 +10423,7 @@
             b.setAttribute('aria-selected', on ? 'true' : 'false');
         });
         (ui.tabPanes || []).forEach(p => p.classList.toggle('on', p.id === 'sbc-opt-tab-' + name));
+        if (typeof ptWaySync === 'function') ptWaySync();
         if (manual) { try { localStorage.setItem('sbcOptTab', name); } catch (e) {} }
         if (name === 'ki') { try { renderKiTab(); } catch (e) {} }
         if (name === 'mehr') {
@@ -10490,6 +10524,36 @@
         if (s.view === 'store') return { kind: 'packs', way: null, wayWhy: null, tab: null, sure: true, complex: [], title: null };
         return { kind: 'start', way: null, wayWhy: null, tab: null, sure: true, complex: [], title: null };
     }
+    // v6.56.0 Etappe 3a: Weg-Wahl im Ort "Loesen". Reiter + Kaufweg -> Weg und zurueck.
+    function ptWayOf(tab, buyMode) {
+        if (tab === 'rating') return 'verein';
+        if (tab !== 'kaufen') return null;
+        return buyMode === 'hybrid' ? 'hybrid' : buyMode === 'gebote' ? 'gebote' : 'zukaufen';
+    }
+    function ptWayTarget(way) {
+        return way === 'verein' ? { tab: 'rating', mode: null }
+            : way === 'hybrid' ? { tab: 'kaufen', mode: 'hybrid' }
+            : way === 'gebote' ? { tab: 'kaufen', mode: 'gebote' }
+            : way === 'zukaufen' ? { tab: 'kaufen', mode: 'loesung' } : null;
+    }
+    // Kontextzeile: was PitTools erkannt hat ("Ziel 81 · TOTW" bzw. "Chemie · Nation · Liga").
+    const PT_REQ_WORDS = [[/CHEM/, 'Chemie'], [/NATION/, 'Nation'], [/LEAGUE/, 'Liga'], [/CLUB/, 'Verein'],
+        [/LEGEND|ICON/, 'Icon'], [/FIRST_OWNER|OWNER/, 'Erstbesitz'], [/CUSTOM_BRICK/, 'Pflicht-Slot'], [/SAME_/, 'Gleiche']];
+    function ptCtxLine(c, s) {
+        c = c || {}; s = s || {};
+        if (c.kind === 'punkte') return { title: 'Punkte-SBC', sub: s.title ? ' · ' + s.title : '' };
+        if (c.kind === 'packs') return { title: 'Packs', sub: '' };
+        if (c.kind !== 'loesen') return { title: 'Keine SBC offen', sub: '' };
+        const bits = [];
+        if (s.target) bits.push('Ziel ' + s.target);
+        if (s.req && s.req !== 'keine') bits.push(s.req);
+        (c.complex || []).forEach(function (t) {
+            const hit = PT_REQ_WORDS.find(function (w) { return w[0].test(String(t)); });
+            const word = hit ? hit[1] : 'weitere Vorgabe';
+            if (bits.indexOf(word) < 0) bits.push(word);
+        });
+        return { title: s.title || 'SBC', sub: bits.length ? ' · ' + bits.join(' · ') : '' };
+    }
     // [PTCONTEXT-END]
     function ptStore() { try { return window.localStorage; } catch (e) { return null; } }
     /** Kontext jetzt, aus EA und dem Set-Cache (nur lesen, keine Anfrage). */
@@ -10511,6 +10575,58 @@
             remembered: ptSetTabGet(ptStore(), STATE.sbc.setId), title: STATE.sbc.challengeName || null });
         c.reqTypes = types;
         return c;
+    }
+    /** v6.56.0: Weg-Chips und Loesen-Reiter nach dem aktuellen Reiter/Kaufweg markieren (schreibt nur bei Aenderung). */
+    function ptWaySync() {
+        const pane = document.getElementById('sbc-opt-tab-kaufen');
+        const way = ptWayOf(tabCurrent, pane ? pane.getAttribute('data-mode') : null);
+        const box = document.getElementById('sbc-opt-way');
+        if (box) Array.from(box.querySelectorAll('.sbc-opt-chip')).forEach(function (b) {
+            const on = b.getAttribute('data-way') === way;
+            if (b.classList.contains('on') !== on) b.classList.toggle('on', on);
+            if (b.getAttribute('aria-pressed') !== String(on)) b.setAttribute('aria-pressed', String(on));
+        });
+        const t = document.getElementById('sbc-opt-tab-loesen');
+        if (t) {
+            const on = !!way;
+            if (t.classList.contains('on') !== on) t.classList.toggle('on', on);
+            if (t.getAttribute('aria-selected') !== String(on)) t.setAttribute('aria-selected', String(on));
+        }
+        const panel = document.getElementById('sbc-opt-panel');
+        if (panel && (panel.getAttribute('data-way') || '') !== (way || '')) {
+            if (way) panel.setAttribute('data-way', way); else panel.removeAttribute('data-way');
+        }
+    }
+    /** Weg gewaehlt: wie ein Tipp auf den Reiter (Handwahl gilt fuers Set) plus Kaufweg. */
+    function ptWayPick(way) {
+        const t = ptWayTarget(way);
+        if (!t) return;
+        tabPinnedChallenge = STATE.sbc.challengeId;
+        if (STATE.sbc.challengeId != null) { try { if (inSbcView()) ptSetTabPut(ptStore(), STATE.sbc.setId, t.tab); } catch (e) {} }
+        if (t.mode) setBuyMode(t.mode, true);
+        setTab(t.tab, true);
+    }
+    /** Tipp auf "Loesen": der zuletzt gueltige Weg dieser SBC (Kontext), sonst der zuletzt offene. */
+    let ptLastLoesenTab = null;
+    function onLoesenTabClick() {
+        let tab = tabCurrent === 'kaufen' || tabCurrent === 'rating' ? tabCurrent : ptLastLoesenTab;
+        if (!tab) { try { tab = ptContextNow().tab; } catch (e) { tab = null; } }
+        setTab(tab === 'rating' ? 'rating' : 'kaufen', true);
+    }
+    /** Kontextzeile (nur UI 7, Panel offen; schreibt nur bei Aenderung). Haengt am 500-ms-Takt. */
+    function syncCtxLine() {
+        if (tabCurrent === 'kaufen' || tabCurrent === 'rating') ptLastLoesenTab = tabCurrent;
+        if (!ui7IsOn() || !ui.panel || !ui.panel.classList.contains('open')) return;
+        const tEl = document.getElementById('sbc-opt-ctx-title'), sEl = document.getElementById('sbc-opt-ctx-sub'), vEl = document.getElementById('sbc-opt-ctx-val');
+        if (!tEl || !sEl || !vEl) return;
+        let c = null;
+        try { c = ptContextNow(); } catch (e) { c = null; }
+        const l = ptCtxLine(c, { title: STATE.sbc.challengeName || null, target: STATE.sbc.targetOVR || null,
+            req: ui.rarity ? ui.rarity.textContent : '' });
+        const v = STATE.pool && STATE.pool.length ? 'Verein ' + STATE.pool.length.toLocaleString('de-DE') : '';
+        if (tEl.textContent !== l.title) tEl.textContent = l.title;
+        if (sEl.textContent !== l.sub) sEl.textContent = l.sub;
+        if (vEl.textContent !== v) vEl.textContent = v;
     }
     /**
      * Reiter beim Wechsel der SBC (UI 7 Entscheidung 1, Rasmus 24.11.): einfache

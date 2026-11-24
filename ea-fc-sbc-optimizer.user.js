@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.57.1
+// @version      6.58.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.57.1';
+    const VERSION = '6.58.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7096,6 +7096,8 @@
         #sbc-opt-tab-loesen, #sbc-opt-way, .sbc-opt-ctxline { display:none; }
         /* v6.57.0: Aktionsleiste (eine Hauptaktion im Fuss) gibt es nur in der neuen Oberflaeche */
         #sbc-opt-actbar { display:none; }
+        /* v6.58.0 UI 7 Etappe 4: Zahnrad und Ebene "Einstellungen" gibt es nur in der neuen Oberflaeche */
+        #sbc-opt-gear, #sbc-opt-set7 { display:none; }
         /* v6.57.1: Zeilen "Anzahl" und "Ganzes Set" gibt es nur in der neuen Oberflaeche */
         #sbc-opt-count-lbl, #sbc-opt-set-row { display:none; }
         .sbc-opt-ctxline { align-items:baseline; gap:var(--pt-space-2); padding:var(--pt-space-2-5) 0 var(--pt-space-1-5); font-size:var(--pt-type-label); color:var(--pt-fg-muted); }
@@ -7893,7 +7895,37 @@
         :where(:root[data-ui7]) #sbc-opt-panel[data-act7][data-punkte7][data-multi7] #sbc-opt-multi.has-queue #sbc-opt-set-row, :where(:root[data-ui7]) #sbc-opt-panel[data-act7][data-punkte7][data-multi7] #sbc-opt-queuesection,
         :where(:root[data-ui7]) #sbc-opt-panel[data-act7][data-punkte7][data-multi7] #sbc-opt-advanced, :where(:root[data-ui7]) #sbc-opt-panel[data-act7][data-punkte7][data-multi7] #sbc-opt-runhint,
         :where(:root[data-ui7]) #sbc-opt-panel[data-act7][data-punkte7][data-multi7] #sbc-opt-result, :where(:root[data-ui7]) #sbc-opt-panel[data-act7][data-punkte7][data-multi7] #sbc-opt-planresult,
-        :where(:root[data-ui7]) #sbc-opt-panel[data-act7][data-punkte7][data-multi7] #sbc-opt-vorlagensection { display:none; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7][data-punkte7][data-multi7] #sbc-opt-vorlagensection, :where(:root[data-ui7]) #sbc-opt-panel[data-act7][data-punkte7][data-multi7] [data-pick7] { display:none; }
+        /* v6.58.0 Etappe 4: Ebene "Einstellungen" hinter dem Zahnrad im Kopf. Die Zeilen sind die vorhandenen
+           Elemente (ptSet7Place haengt sie um); ihre alten Gehaeuse sind aus, sobald die Ebene steht (data-set7ok). */
+        :where(:root[data-ui7]) #sbc-opt-gear {
+            display:flex; align-items:center; justify-content:center; flex:0 0 auto; margin:0 0 0 auto; padding:0;
+            width:var(--pt-control-h); height:var(--pt-control-h); border:none; border-radius:var(--pt-radius-md);
+            background:transparent; color:var(--pt-fg-secondary); cursor:pointer;
+            transition: background var(--pt-dur-fast) ease, color var(--pt-dur-fast) ease;
+        }
+        :where(:root[data-ui7]) #sbc-opt-gear svg { width:18px; height:18px; }
+        :where(:root[data-ui7]) #sbc-opt-gear:hover { background:var(--pt-state-hover); color:var(--pt-fg-default); }
+        :where(:root[data-ui7]) #sbc-opt-gear:active { background:var(--pt-state-press); }
+        :where(:root[data-ui7]) #sbc-opt-gear[aria-pressed="true"] { color:var(--pt-accent); }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-set7] > .sbc-opt-body > :not(#sbc-opt-set7) { display:none !important; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-set7] #sbc-opt-set7 { display:block; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-set7ok] #sbc-opt-advanced, :where(:root[data-ui7]) #sbc-opt-panel[data-set7ok] #sbc-opt-system { display:none; }
+        :where(:root[data-ui7]) .sbc-opt-set7-top {
+            display:flex; align-items:center; justify-content:space-between; min-height:var(--pt-row-h);
+            font-size:var(--pt-type-title); color:var(--pt-fg-default);
+        }
+        :where(:root[data-ui7]) .sbc-opt-set7-top .sbc-opt-btn { width:auto; margin:0; }
+        :where(:root[data-ui7]) .sbc-opt-set7-group { margin:0 0 var(--pt-space-4); }
+        :where(:root[data-ui7]) .sbc-opt-set7-title {
+            margin:var(--pt-space-4) 0 var(--pt-space-2); font-size:var(--pt-type-label); font-weight:var(--pt-weight-semibold); color:var(--pt-fg-subtle);
+        }
+        :where(:root[data-ui7]) .sbc-opt-set7-group > .sbc-opt-details-toggle { margin:0; }
+        :where(:root[data-ui7]) #sbc-opt-set7 #sbc-opt-size {
+            flex:0 0 auto; min-width:var(--pt-control-h); height:var(--pt-control-h); margin:0; padding:0 var(--pt-space-3);
+            border-radius:var(--pt-radius-md); color:var(--pt-fg-default); font-size:var(--pt-type-label);
+        }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7] [data-pick7] { order:4; min-width:0; }
         @keyframes pt7-leiste { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:none; } }
         @keyframes pt7-fuss { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:none; } }
         @keyframes pt7-wackel { 0%, 100% { transform:none; } 30% { transform:translateX(-4px); } 60% { transform:translateX(4px); } }
@@ -8403,7 +8435,7 @@
         s = s || {};
         const none = { show: false, label: '', target: null, step: '', busy: false, disabled: false, blocked: false, tone: '', side: null };
         const mk = function (o) { return Object.assign({}, none, { show: true }, o); };
-        if (s.asking || s.store) return none;
+        if (s.asking || s.store || s.set7) return none;
         if (s.way === 'zukaufen') {
             const f = s.fb || {};
             const again = { label: 'Neu suchen', target: 'futbin-search' };
@@ -8464,6 +8496,43 @@
         if (m === 'reihe' && ev.queue === false) m = 'eins';
         return m;
     }
+    // v6.58.0 Etappe 4: Ebene "Einstellungen" (Konzept 7 und 9). Welches Feld
+    // der alten Oberflaeche in welcher Gruppe wohnt - EINE Liste, gegen die der
+    // Test das alte Markup zaehlt (ein vergessenes Feld = stiller Standardwert).
+    // Feld = ID ohne "sbc-opt-"; verschoben wird die vorhandene Zeile des Felds.
+    const PT_SET7 = [
+        { id: 'regeln', title: 'Regeln', subs: [
+            { title: 'Kartenwahl', fields: ['maxrating-en', 'maxrating', 'applyrarity', 'specialstorage', 'uselocks', 'maxrare', 'maxcommon'] },
+            { title: 'Schonen', fields: ['scarcity', 'raritymode', 'rarityguard', 'totwsoft', 'specialsoft'] },
+            { title: 'Verbrauchen', fields: ['storagebonus', 'untradeable', 'maxwaste'] },
+            { title: 'Kosten', fields: ['costmode', 'bandbox'] }] },
+        { id: 'kaufen', title: 'Kaufen', subs: [{ title: '', fields: ['futbin-platform', 'futbin-market'] }] },
+        { id: 'darstellung', title: 'Darstellung', subs: [{ title: '', fields: ['ui7', 'size'] }] },
+        { id: 'system', title: 'System', subs: [{ title: '', fields: ['poolcache', 'protokoll'] }] }
+    ];
+    /** Flache Liste [{ field, group, sub, slot }] - slot ist der Platz in der Ebene ("regeln/1"). Rein. */
+    function ptSet7Fields(groups) {
+        const out = [];
+        (groups || PT_SET7).forEach(function (g) {
+            (g.subs || []).forEach(function (sb, i) {
+                (sb.fields || []).forEach(function (f) { out.push({ field: f, group: g.id, sub: sb.title || '', slot: g.id + '/' + i }); });
+            });
+        });
+        return out;
+    }
+    /** Geruest der Ebene als HTML (nur Koepfe und leere Plaetze; die Zeilen sind die vorhandenen Elemente). Rein. */
+    function ptSet7Html(groups) {
+        let h = '<div class="sbc-opt-set7-top"><b>Einstellungen</b><button type="button" class="sbc-opt-btn link" id="sbc-opt-set7-done">Fertig</button></div>';
+        (groups || PT_SET7).forEach(function (g) {
+            h += '<div class="sbc-opt-set7-group" data-group="' + g.id + '"><div class="sbc-opt-set7-title">' + g.title + '</div>';
+            (g.subs || []).forEach(function (sb, i) {
+                const slot = '<div data-slot="' + g.id + '/' + i + '"></div>';
+                h += sb.title ? '<details class="sbc-opt-details-toggle"><summary>' + sb.title + '</summary>' + slot + '</details>' : slot;
+            });
+            h += '</div>';
+        });
+        return h;
+    }
     // [UI7-END]
     function ui7IsOn() {
         try { return document.documentElement.hasAttribute('data-ui7'); } catch (e) { return false; }
@@ -8487,6 +8556,7 @@
         const s = { way: ptWayOf(tabCurrent, pane ? pane.getAttribute('data-mode') : null) };
         s.asking = panel.hasAttribute('data-asking') || !!panel.querySelector('.sbc-opt-confirm:not([hidden])');
         s.store = panel.hasAttribute('data-store'); // im Store steht der Pack-Opener oben, keine SBC ist offen
+        s.set7 = panel.hasAttribute('data-set7'); // v6.58.0: in den Einstellungen gibt es keine Hauptaktion
         if (s.way === 'zukaufen') {
             const f = { rows: 0, price: '', buyN: 0, loadBtn: false, searchBusy: false, searchText: '', buyBusy: false, inserted: false, missing: 0, step: 1 };
             const sb = ui.futbinSearch, res = ui.futbinResult;
@@ -8680,7 +8750,7 @@
                 if (queued || !ui7IsOn()) return;
                 queued = true; Promise.resolve().then(run);
             }).observe(panel, { subtree: true, childList: true, attributes: true,
-                attributeFilter: ['class', 'hidden', 'style', 'disabled', 'data-mode', 'data-tab', 'data-way', 'data-asking', 'data-store'] });
+                attributeFilter: ['class', 'hidden', 'style', 'disabled', 'data-mode', 'data-tab', 'data-way', 'data-asking', 'data-store', 'data-set7'] });
         }
         syncActBar();
     }
@@ -8770,6 +8840,122 @@
             }
         }, true);
     }
+    // ---- v6.58.0 Etappe 4: Ebene "Einstellungen" (nur UI 7) -----------------
+    // Die VORHANDENEN Zeilen (dieselben Elemente, IDs, Handler - readConfig()
+    // liest weiter genau diese Felder ueber ui.*) wandern unter UI 7 in die
+    // Ebene und ohne Schalter an ihren Platz zurueck (Muster ptConfirmShown).
+    let ptSet7Moved = [], ptSet7Placed = false;
+    /** Die Knoten, die fuer ein Feld umziehen (Zeile des Felds; je Knoten nur einmal). */
+    function ptSet7Nodes(field) {
+        const el = document.getElementById('sbc-opt-' + field);
+        if (!el || field === 'size') return [];
+        if (field === 'futbin-platform') {
+            const l = el.previousElementSibling;
+            return (l && l.classList.contains('sbc-opt-chiplabel') ? [l] : []).concat([el]);
+        }
+        if (field === 'futbin-market') return [el.closest('.sbc-opt-withtip') || el];
+        if (field === 'protokoll' || field === 'bandbox') return [el];
+        const row = el.closest('.sbc-opt-row');
+        return row ? [row] : [];
+    }
+    function ptSet7MoveTo(node, host, before) {
+        if (!node || !host || node.__ptHome) return;
+        node.__ptHome = { parent: node.parentNode, next: node.nextSibling };
+        host.insertBefore(node, before || null);
+        ptSet7Moved.push(node);
+    }
+    function ptSet7Back(node) {
+        const h = node && node.__ptHome;
+        if (!h) return;
+        node.__ptHome = null;
+        try { if (h.parent) h.parent.insertBefore(node, h.next && h.next.parentNode === h.parent ? h.next : null); } catch (e) {}
+    }
+    /** Zeilen in die Ebene haengen (an) bzw. in umgekehrter Reihenfolge zurueck (aus). */
+    function ptSet7Place(on) {
+        const panel = ui.panel, box = document.getElementById('sbc-opt-set7');
+        if (!panel || !box) return;
+        if (on) {
+            ptSet7Fields().forEach(function (f) {
+                const slot = box.querySelector('[data-slot="' + f.slot + '"]');
+                ptSet7Nodes(f.field).forEach(function (n) { ptSet7MoveTo(n, slot, null); });
+            });
+            // "Vorgabe-Karte" gilt je SBC und ist keine Einstellung: sie steht in "Loesen" (Weg Verein).
+            const pick = document.getElementById('sbc-opt-raritypick'), adv = document.getElementById('sbc-opt-advanced');
+            const pickRow = pick ? pick.closest('.sbc-opt-row') : null;
+            if (pickRow && adv && adv.parentNode) { ptSet7MoveTo(pickRow, adv.parentNode, adv.nextSibling); pickRow.setAttribute('data-pick7', '1'); }
+            ptSet7Placed = true;
+            panel.setAttribute('data-set7ok', '1');
+        } else {
+            const wasOpen = panel.hasAttribute('data-set7');
+            ptSet7Open(false);
+            panel.removeAttribute('data-set7ok');
+            ptSet7Moved.slice().reverse().forEach(function (n) {
+                if (n.hasAttribute('data-pick7')) { n.removeAttribute('data-pick7'); n.hidden = false; }
+                ptSet7Back(n);
+            });
+            ptSet7Moved = [];
+            ptSet7Placed = false;
+            try { renderAdvCount(); } catch (e) {}
+            // Aus den Einstellungen heraus abgeschaltet: dorthin, wo der Schalter in der alten Oberflaeche liegt.
+            if (wasOpen) { try { setTab('mehr', false); const sys = document.getElementById('sbc-opt-system'); if (sys) sys.open = true; } catch (e) {} }
+        }
+    }
+    function ptSet7Open(open) {
+        const panel = ui.panel, gear = document.getElementById('sbc-opt-gear');
+        if (!panel) return;
+        open = !!open && ptSet7Placed;
+        if (panel.hasAttribute('data-set7') !== open) panel.toggleAttribute('data-set7', open);
+        if (gear && gear.getAttribute('aria-pressed') !== String(open)) gear.setAttribute('aria-pressed', String(open));
+        if (open) { try { panel.scrollTop = 0; const b = panel.querySelector('.sbc-opt-body'); if (b) b.scrollTop = 0; } catch (e) {} }
+        try { syncActBar(); } catch (e) {}
+    }
+    /** Am 500-ms-Takt (syncFabWord): Platz der Zeilen folgt dem Schalter; schreibt nur bei Aenderung. */
+    function ptSet7Sync() {
+        const panel = ui.panel, box = document.getElementById('sbc-opt-set7');
+        if (!panel || !box) return;
+        const on = ui7IsOn();
+        if (on !== ptSet7Placed) ptSet7Place(on);
+        // Panelbreite (S/M/L): am PC steht der Knopf in "Darstellung"; am Handy ist er der Griff und bleibt im Kopf.
+        const size = document.getElementById('sbc-opt-size'), row = document.getElementById('sbc-opt-set7-sizerow');
+        if (size && row) {
+            const want = on && panel.getAttribute('data-size-mode') === 'breite';
+            if (want && !size.__ptHome) { size.__ptHome = { parent: size.parentNode, next: size.nextSibling }; row.appendChild(size); }
+            else if (!want && size.__ptHome) ptSet7Back(size);
+            if (row.hidden !== !want) row.hidden = !want;
+        }
+        if (!on) return;
+        if (panel.hasAttribute('data-set7') && !panel.classList.contains('open')) ptSet7Open(false);
+        // Vorgabe-Karte nur zeigen, wenn die SBC eine Rarity-Vorgabe hat - oder schon eine Karte gewaehlt ist (nichts wirkt unsichtbar).
+        const pickRow = panel.querySelector('[data-pick7]');
+        if (pickRow) {
+            let need = false;
+            try { need = !!((STATE.sbc && (STATE.sbc.rarityConstraints || []).length) || (ui.rarityPick && ui.rarityPick.value)); } catch (e) {}
+            if (pickRow.hidden !== !need) pickRow.hidden = !need;
+        }
+    }
+    /** Zahnrad im Kopf und die Ebene anlegen (per Script, nicht im Panel-Markup; ohne Schalter unsichtbar). */
+    function initSet7(panel) {
+        const body = panel ? panel.querySelector('.sbc-opt-body') : null, closeBtn = panel ? panel.querySelector('#sbc-opt-close') : null;
+        if (!body || !closeBtn || document.getElementById('sbc-opt-set7')) return;
+        const gear = document.createElement('button');
+        gear.type = 'button'; gear.id = 'sbc-opt-gear'; gear.className = 'sbc-opt-nodrag';
+        gear.setAttribute('aria-label', 'Einstellungen'); gear.setAttribute('aria-pressed', 'false');
+        gear.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>';
+        closeBtn.parentNode.insertBefore(gear, closeBtn);
+        const box = document.createElement('div');
+        box.id = 'sbc-opt-set7';
+        box.innerHTML = ptSet7Html();
+        const sizeSlot = box.querySelector('[data-slot="darstellung/0"]');
+        if (sizeSlot) {
+            const row = document.createElement('div');
+            row.className = 'sbc-opt-fieldrow'; row.id = 'sbc-opt-set7-sizerow'; row.hidden = true;
+            row.innerHTML = '<label>Breite der Seitenleiste</label>';
+            sizeSlot.appendChild(row);
+        }
+        body.appendChild(box);
+        gear.addEventListener('click', function () { if (ui7IsOn()) ptSet7Open(!panel.hasAttribute('data-set7')); });
+        box.querySelector('#sbc-opt-set7-done').addEventListener('click', function () { ptSet7Open(false); });
+    }
     /** Schaltet die neue Huelle an/aus (Attribut an <html>); schreibt nur bei Aenderung. */
     function ui7Apply(on) {
         try {
@@ -8788,6 +8974,7 @@
      */
     function syncFabWord() {
         try { syncCtxLine(); } catch (e) {}
+        try { ptSet7Sync(); } catch (e) {}
         try { syncActBar(); } catch (e) {}
         const el = document.getElementById('sbc-opt-fab-word');
         if (!el) return;
@@ -9873,6 +10060,7 @@
         initPanelSize(panel);
         initConfirmFoot(panel);
         try { initActBar(panel); } catch (e) { reportError('Aktionsleiste', e); }
+        try { initSet7(panel); } catch (e) { reportError('Einstellungs-Ebene', e); }
         try {
             const pd = panel.querySelector('#sbc-opt-protokoll');
             pd.addEventListener('toggle', function () { if (pd.open) renderProtokoll(); });

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.58.0
+// @version      6.58.1
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.58.0';
+    const VERSION = '6.58.1';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7097,7 +7097,7 @@
         /* v6.57.0: Aktionsleiste (eine Hauptaktion im Fuss) gibt es nur in der neuen Oberflaeche */
         #sbc-opt-actbar { display:none; }
         /* v6.58.0 UI 7 Etappe 4: Zahnrad und Ebene "Einstellungen" gibt es nur in der neuen Oberflaeche */
-        #sbc-opt-gear, #sbc-opt-set7 { display:none; }
+        #sbc-opt-gear, #sbc-opt-set7, #sbc-opt-prof7 { display:none; }
         /* v6.57.1: Zeilen "Anzahl" und "Ganzes Set" gibt es nur in der neuen Oberflaeche */
         #sbc-opt-count-lbl, #sbc-opt-set-row { display:none; }
         .sbc-opt-ctxline { align-items:baseline; gap:var(--pt-space-2); padding:var(--pt-space-2-5) 0 var(--pt-space-1-5); font-size:var(--pt-type-label); color:var(--pt-fg-muted); }
@@ -7926,6 +7926,17 @@
             border-radius:var(--pt-radius-md); color:var(--pt-fg-default); font-size:var(--pt-type-label);
         }
         :where(:root[data-ui7]) #sbc-opt-panel[data-act7] [data-pick7] { order:4; min-width:0; }
+        /* v6.58.1 Etappe 4 (2): Zeile "Regeln" mit den Profilen in "Loesen › Verein" (statt "Einstellungen · N geaendert") */
+        :where(:root[data-ui7]) #sbc-opt-panel[data-set7ok] #sbc-opt-prof7 { display:block; order:4; min-width:0; margin:0 0 var(--pt-stack-tight); }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-act7][data-punkte7][data-multi7] #sbc-opt-prof7 { display:none; }
+        :where(:root[data-ui7]) .sbc-opt-prof7-head {
+            display:flex; align-items:center; justify-content:space-between;
+            margin:0 0 var(--pt-space-1-5); font-size:var(--pt-type-label); color:var(--pt-fg-muted);
+        }
+        :where(:root[data-ui7]) .sbc-opt-prof7-head .sbc-opt-btn { width:auto; margin:0; min-height:var(--pt-control-h-sm); }
+        :where(:root[data-ui7]) #sbc-opt-prof7-state { color:var(--pt-fg-default); }
+        :where(:root[data-ui7]) #sbc-opt-prof7-chips { margin:0; }
+        :where(:root[data-ui7]) #sbc-opt-prof7-chips .sbc-opt-chip { white-space:nowrap; padding-left:var(--pt-space-1); padding-right:var(--pt-space-1); }
         @keyframes pt7-leiste { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:none; } }
         @keyframes pt7-fuss { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:none; } }
         @keyframes pt7-wackel { 0%, 100% { transform:none; } 30% { transform:translateX(-4px); } 60% { transform:translateX(4px); } }
@@ -8533,6 +8544,55 @@
         });
         return h;
     }
+    // v6.58.1 Etappe 4 (2): Regel-Profile (Entscheidung 4: "Standard", "Storage
+    // leeren", "Schonen"). Ein Profil ist ein Satz von Feldwerten: der
+    // Auslieferungszustand des Markups (wie advFieldStates) plus die Abweichungen
+    // in set. Welches Profil "an" ist, folgt dem INHALT der Felder (wie bei den
+    // Band-Presets), nie einem gemerkten Namen. Felder = Regel-Felder, die ein
+    // PROFILE_KEY speist; NICHT dabei: Min. Rating (eigene Zeile in "Loesen"),
+    // die Band-Tabelle (eigene Presets) und "Gesperrte nie verbauen" (kein
+    // Profil-Schluessel, Sperren gelten immer frisch).
+    const PT_PROFILE_FIELDS = { 'maxrating-en': 'maxRatingEnabled', 'maxrating': 'maxRating', 'applyrarity': 'applyRarity',
+        'specialstorage': 'specialOnlyFromStorage', 'maxrare': 'maxRareRating', 'maxcommon': 'maxCommonRating',
+        'scarcity': 'scarcityWeight', 'raritymode': 'rarityMode', 'rarityguard': 'rarityGuardCost', 'totwsoft': 'totwSoftCost',
+        'specialsoft': 'specialCost', 'storagebonus': 'storageBonus', 'untradeable': 'untradeableBonus',
+        'maxwaste': 'maxOvershoot', 'costmode': 'costMode' };
+    // FACHWERTE (legt Rasmus fest - siehe CLAUDE.md v6.58.1):
+    // Storage leeren: nur das Rating-Fenster auf. Schonen: Tabelle (nur dort
+    // wirken Scarcity und Aufschlaege) und jede Schon-Stufe auf ihre staerkste.
+    const PT_PROFILES = [
+        { id: 'standard', label: 'Standard', set: {} },
+        { id: 'storage', label: 'Storage leeren', set: { 'maxwaste': '0.25' } },
+        { id: 'schonen', label: 'Schonen', set: { 'costmode': 'table', 'scarcity': '35', 'rarityguard': '20', 'totwsoft': '20', 'specialsoft': '4' } }
+    ];
+    function ptProfSame(a, b) {
+        if (typeof a === 'boolean' || typeof b === 'boolean') return !!a === !!b;
+        const num = function (v) { const t = String(v == null ? '' : v).trim().replace(',', '.'); return t !== '' && isFinite(Number(t)) ? Number(t) : null; };
+        const x = num(a), y = num(b);
+        return x !== null && y !== null ? x === y : String(a) === String(b);
+    }
+    /** Sollwert eines Felds in einem Profil: Abweichung des Profils, sonst der Auslieferungszustand. */
+    function ptProfWant(prof, field, st) {
+        return prof && prof.set && Object.prototype.hasOwnProperty.call(prof.set, field) ? prof.set[field] : (st ? st.def : undefined);
+    }
+    /** state: { feld: { value, def } } -> 'standard' | 'storage' | 'schonen' | 'angepasst'. Rein. */
+    function ptProfileOf(state, profiles) {
+        state = state || {};
+        const fields = Object.keys(PT_PROFILE_FIELDS);
+        if (!fields.every(function (f) { return state[f]; })) return 'angepasst';
+        const hit = (profiles || PT_PROFILES).filter(function (p) {
+            return fields.every(function (f) { return ptProfSame(state[f].value, ptProfWant(p, f, state[f])); });
+        })[0];
+        return hit ? hit.id : 'angepasst';
+    }
+    /** Was muss sich aendern, damit das Profil gilt? [{ field, value, from }] - leer, wenn es schon gilt oder unbekannt ist. Rein. */
+    function ptProfilePlan(state, id, profiles) {
+        state = state || {};
+        const p = (profiles || PT_PROFILES).filter(function (x) { return x.id === id; })[0];
+        if (!p) return [];
+        return Object.keys(PT_PROFILE_FIELDS).filter(function (f) { return state[f] && !ptProfSame(state[f].value, ptProfWant(p, f, state[f])); })
+            .map(function (f) { return { field: f, value: ptProfWant(p, f, state[f]), from: state[f].value }; });
+    }
     // [UI7-END]
     function ui7IsOn() {
         try { return document.documentElement.hasAttribute('data-ui7'); } catch (e) { return false; }
@@ -8882,7 +8942,8 @@
             // "Vorgabe-Karte" gilt je SBC und ist keine Einstellung: sie steht in "Loesen" (Weg Verein).
             const pick = document.getElementById('sbc-opt-raritypick'), adv = document.getElementById('sbc-opt-advanced');
             const pickRow = pick ? pick.closest('.sbc-opt-row') : null;
-            if (pickRow && adv && adv.parentNode) { ptSet7MoveTo(pickRow, adv.parentNode, adv.nextSibling); pickRow.setAttribute('data-pick7', '1'); }
+            const prof = document.getElementById('sbc-opt-prof7');
+            if (pickRow && adv && adv.parentNode) { ptSet7MoveTo(pickRow, adv.parentNode, prof && prof.parentNode === adv.parentNode ? prof.nextSibling : adv.nextSibling); pickRow.setAttribute('data-pick7', '1'); }
             ptSet7Placed = true;
             panel.setAttribute('data-set7ok', '1');
         } else {
@@ -8932,6 +8993,89 @@
             try { need = !!((STATE.sbc && (STATE.sbc.rarityConstraints || []).length) || (ui.rarityPick && ui.rarityPick.value)); } catch (e) {}
             if (pickRow.hidden !== !need) pickRow.hidden = !need;
         }
+        try { ptProfSync(); } catch (e) {}
+    }
+    // ---- v6.58.1 Etappe 4 (2): Regel-Profile in "Loesen" (nur UI 7) -----------
+    let ptProfUndo = null;
+    /** Stand der Profil-Felder aus den vorhandenen Elementen (Standard = Markup, wie advFieldStates). */
+    function ptProfRead() {
+        const st = {};
+        Object.keys(PT_PROFILE_FIELDS).forEach(function (f) {
+            if (f === 'costmode') { st[f] = { value: (typeof costMode === 'string' ? costMode : 'itemScore'), def: 'itemScore' }; return; }
+            const el = document.getElementById('sbc-opt-' + f);
+            if (!el) return;
+            if (el.type === 'checkbox') st[f] = { value: !!el.checked, def: !!el.defaultChecked };
+            else if (el.tagName === 'SELECT') {
+                const d = Array.from(el.options).filter(function (o) { return o.defaultSelected; })[0] || el.options[0];
+                st[f] = { value: el.value, def: d ? d.value : '' };
+            } else st[f] = { value: el.value, def: el.defaultValue };
+        });
+        return st;
+    }
+    /** Ein Feld wie von Hand setzen: das vorhandene Element bekommt den Wert und feuert input/change (Speichern laeuft wie bei Handeingabe). */
+    function ptProfSetField(field, value) {
+        if (field === 'costmode') {
+            const chip = ui.costMode ? ui.costMode.querySelector('[data-costmode="' + (value === 'table' ? 'table' : 'itemScore') + '"]') : null;
+            if (chip) chip.click();
+            return;
+        }
+        const el = document.getElementById('sbc-opt-' + field);
+        if (!el) return;
+        if (el.type === 'checkbox') { if (!!el.checked !== !!value) el.click(); return; }
+        el.value = String(value);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    function ptProfApply(id) {
+        if (!ui7IsOn()) return;
+        const st = ptProfRead();
+        const plan = ptProfilePlan(st, id);
+        if (!plan.length) return;
+        // Eigene Werte gehen nicht mit einem Tipp verloren: der vorige Stand bleibt fuer "Rückgängig" stehen.
+        ptProfUndo = ptProfileOf(st) === 'angepasst' ? plan.map(function (c) { return { field: c.field, value: c.from }; }) : null;
+        plan.forEach(function (c) { try { ptProfSetField(c.field, c.value); } catch (e) {} });
+        ptProfSync();
+    }
+    /** Chips nach dem INHALT der Felder markieren; schreibt nur bei Aenderung. */
+    function ptProfSync() {
+        const row = document.getElementById('sbc-opt-prof7');
+        if (!row || !ui7IsOn()) return;
+        const cur = ptProfileOf(ptProfRead());
+        Array.from(row.querySelectorAll('[data-prof]')).forEach(function (b) {
+            const on = b.getAttribute('data-prof') === cur;
+            if (b.classList.contains('on') !== on) b.classList.toggle('on', on);
+            if (b.getAttribute('aria-pressed') !== String(on)) b.setAttribute('aria-pressed', String(on));
+        });
+        const state = document.getElementById('sbc-opt-prof7-state'), undo = document.getElementById('sbc-opt-prof7-undo');
+        const t = cur === 'angepasst' ? ' · angepasst' : '';
+        if (state && state.textContent !== t) state.textContent = t;
+        if (cur === 'angepasst') ptProfUndo = null; // von Hand weiter geaendert: der gemerkte Stand passt nicht mehr
+        if (undo && undo.hidden !== !ptProfUndo) undo.hidden = !ptProfUndo;
+    }
+    function initProf7(panel) {
+        const adv = panel ? panel.querySelector('#sbc-opt-advanced') : null;
+        if (!adv || !adv.parentNode || document.getElementById('sbc-opt-prof7')) return;
+        const row = document.createElement('div');
+        row.id = 'sbc-opt-prof7';
+        row.innerHTML = '<div class="sbc-opt-prof7-head"><span>Regeln<span id="sbc-opt-prof7-state"></span></span>' +
+            '<button type="button" class="sbc-opt-btn link" id="sbc-opt-prof7-undo" hidden>Rückgängig</button></div>' +
+            '<div class="sbc-opt-chips" id="sbc-opt-prof7-chips" role="group" aria-label="Regel-Profil">' +
+            PT_PROFILES.map(function (p) { return '<button type="button" class="sbc-opt-chip" data-prof="' + p.id + '" aria-pressed="false">' + p.label + '</button>'; }).join('') +
+            '<button type="button" class="sbc-opt-chip edit" data-prof-open="1" aria-label="Regeln in den Einstellungen anpassen">✎</button></div>';
+        adv.parentNode.insertBefore(row, adv.nextSibling);
+        row.addEventListener('click', function (ev) {
+            const t = ev.target && typeof ev.target.closest === 'function' ? ev.target : null;
+            if (!t || !ui7IsOn()) return;
+            if (t.closest('#sbc-opt-prof7-undo')) {
+                const u = ptProfUndo; ptProfUndo = null;
+                (u || []).forEach(function (c) { try { ptProfSetField(c.field, c.value); } catch (e) {} });
+                ptProfSync();
+                return;
+            }
+            if (t.closest('[data-prof-open]')) { ptSet7Open(true); return; }
+            const b = t.closest('[data-prof]');
+            if (b) ptProfApply(b.getAttribute('data-prof'));
+        });
     }
     /** Zahnrad im Kopf und die Ebene anlegen (per Script, nicht im Panel-Markup; ohne Schalter unsichtbar). */
     function initSet7(panel) {
@@ -8955,6 +9099,11 @@
         body.appendChild(box);
         gear.addEventListener('click', function () { if (ui7IsOn()) ptSet7Open(!panel.hasAttribute('data-set7')); });
         box.querySelector('#sbc-opt-set7-done').addEventListener('click', function () { ptSet7Open(false); });
+        // v6.58.1: ein in der Ebene geaendertes Feld zieht die Profil-Anzeige sofort nach (sonst erst am 500-ms-Takt).
+        const later = function () { setTimeout(function () { try { ptProfSync(); } catch (e) {} }, 0); };
+        box.addEventListener('change', later);
+        box.addEventListener('click', later);
+        try { initProf7(panel); } catch (e) { reportError('Regel-Profile', e); }
     }
     /** Schaltet die neue Huelle an/aus (Attribut an <html>); schreibt nur bei Aenderung. */
     function ui7Apply(on) {

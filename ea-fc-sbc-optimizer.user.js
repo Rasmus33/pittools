@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.59.0
+// @version      6.59.1
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.59.0';
+    const VERSION = '6.59.1';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -7100,6 +7100,8 @@
         #sbc-opt-gear, #sbc-opt-set7, #sbc-opt-prof7 { display:none; }
         /* v6.59.0 UI 7 Etappe 5: Orte (Aktivitaet, Start, Pack-Liste, Zurueck, Zaehler) gibt es nur in der neuen Oberflaeche */
         #sbc-opt-tab-akt, #sbc-opt-start7, #sbc-opt-akt7, #sbc-opt-pack-list7, #sbc-opt-back7, #sbc-opt-fab-n { display:none; }
+        /* v6.59.1: Lupe und Ebene "Alle Aktionen" gibt es nur in der neuen Oberflaeche */
+        #sbc-opt-find, #sbc-opt-cmd7 { display:none; }
         /* v6.57.1: Zeilen "Anzahl" und "Ganzes Set" gibt es nur in der neuen Oberflaeche */
         #sbc-opt-count-lbl, #sbc-opt-set-row { display:none; }
         .sbc-opt-ctxline { align-items:baseline; gap:var(--pt-space-2); padding:var(--pt-space-2-5) 0 var(--pt-space-1-5); font-size:var(--pt-type-label); color:var(--pt-fg-muted); }
@@ -7994,6 +7996,26 @@
         :where(:root[data-ui7]) #sbc-opt-panel[data-view7="akt"] #sbc-opt-tab-ki > .sbc-opt-head:has(+ #sbc-opt-mcp-message), :where(:root[data-ui7]) #sbc-opt-panel[data-view7="akt"] #sbc-opt-mcp-message, :where(:root[data-ui7]) #sbc-opt-panel[data-view7="akt"] #sbc-opt-ki-nomsg { order:-1; }
         :where(:root[data-ui7]) #sbc-opt-set7 #sbc-opt-ki-setup { margin-top:0; }
         :where(:root[data-ui7]) .sbc-opt-flash7 { animation: pt7-wackel var(--pt-dur-slow) var(--pt-ease-out); }
+        /* v6.59.1 Etappe 5 (2): "Alle Aktionen" hinter der Lupe im Kopf (am PC Strg+K) - Register zum Hinspringen */
+        :where(:root[data-ui7]) #sbc-opt-find {
+            display:flex; align-items:center; justify-content:center; flex:0 0 auto; margin:0 0 0 auto; padding:0;
+            width:var(--pt-control-h); height:var(--pt-control-h); border:none; border-radius:var(--pt-radius-md);
+            background:transparent; color:var(--pt-fg-secondary); cursor:pointer;
+            transition: background var(--pt-dur-fast) ease, color var(--pt-dur-fast) ease;
+        }
+        :where(:root[data-ui7]) #sbc-opt-find svg { width:18px; height:18px; }
+        :where(:root[data-ui7]) #sbc-opt-find:hover { background:var(--pt-state-hover); color:var(--pt-fg-default); }
+        :where(:root[data-ui7]) #sbc-opt-find:active { background:var(--pt-state-press); }
+        :where(:root[data-ui7]) #sbc-opt-find[aria-pressed="true"] { color:var(--pt-accent); }
+        :where(:root[data-ui7]) #sbc-opt-find + #sbc-opt-gear { margin-left:0; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-cmd7] > .sbc-opt-body > :not(#sbc-opt-cmd7) { display:none !important; }
+        :where(:root[data-ui7]) #sbc-opt-panel[data-cmd7] #sbc-opt-cmd7 { display:block; }
+        :where(:root[data-ui7]) #sbc-opt-cmd7-q {
+            display:block; box-sizing:border-box; width:100%; min-height:var(--pt-control-h); margin:0 0 var(--pt-stack-tight); padding:0 var(--pt-space-3);
+            border:1px solid var(--pt-border-default); border-radius:var(--pt-radius-md); background:var(--pt-bg-sunken);
+            color:var(--pt-fg-default); font:inherit; font-size:var(--pt-type-body);
+        }
+        :where(:root[data-ui7]) #sbc-opt-cmd7-q:focus { outline:none; border-color:var(--pt-accent); }
         @keyframes pt7-leiste { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:none; } }
         @keyframes pt7-fuss { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:none; } }
         @keyframes pt7-wackel { 0%, 100% { transform:none; } 30% { transform:translateX(-4px); } 60% { transform:translateX(4px); } }
@@ -8804,6 +8826,57 @@
                 '<span>' + ptEsc(x.label) + '</span><span class="sbc-opt-meta">' + (Number(x.count) || 0) + ' Stück</span></button>';
         }).join('');
     }
+    // v6.59.1 Etappe 5 (2): "Alle Aktionen" (Konzept 3.1/3.2: vollstaendiges Register als ERGAENZUNG, nicht als
+    // Hauptbedienung). Jede Zeile ist ein SPRUNG - ausgeloest wird nichts (einzige Ausnahme: das Vorlagen-Fenster
+    // geht auf). go: { way } = Weg in "Loesen" | { ort } = Ziel von ptOrtGo | { set7 } = Gruppe der Einstellungen;
+    // flash = ID (ohne "sbc-opt-") des Elements, das kurz aufblitzt; open = <details>, das aufgeht; only = nur in
+    // diesem Kontext.
+    const PT_ACTIONS = [
+        { id: 'verein', group: 'Lösen', label: 'SBC aus dem Verein lösen', words: 'rating optimieren eintragen anzahl ganzes set punkte', go: { way: 'verein' } },
+        { id: 'zukaufen', group: 'Lösen', label: 'Lösung zukaufen', words: 'futbin kaufen einfügen marquee', go: { way: 'zukaufen' } },
+        { id: 'hybrid', group: 'Lösen', label: 'Verein + Kauf vergleichen', words: 'nachkäufe budget hybrid', go: { way: 'hybrid' } },
+        { id: 'konzept', group: 'Lösen', label: 'Konzept-Spieler nachkaufen', words: 'kader kaufen', go: { way: 'zukaufen', flash: 'futbin-buyconcepts' } },
+        { id: 'laden', group: 'Lösen', label: 'Verein laden', words: 'spieler laden neu pool storage', go: { way: 'verein', flash: 'load' } },
+        { id: 'packs', group: 'Packs', label: 'Packs öffnen', words: 'store pack abstoßen einsortieren', go: { ort: 'jetzt' }, only: 'packs' },
+        { id: 'galerie', group: 'Galerie', label: 'Galerie-Sets', words: 'fut gallery tokens set kaufen aufwertung', go: { ort: 'galerie' } },
+        { id: 'verkaufen', group: 'Galerie', label: 'Gekaufte Karten verkaufen', words: 'listen transfermarkt', go: { ort: 'galerie-sell' } },
+        { id: 'vorlagen', group: 'Vorlagen', label: 'Vorlagen', words: 'abläufe lauf mehrere schritte', go: { ort: 'vorlagen' } },
+        { id: 'gebote', group: 'Werkzeuge', label: 'Gebots-Helfer', words: 'bieten gebote gold 600 runde', go: { ort: 'gebote' } },
+        { id: 'transferliste', group: 'Werkzeuge', label: 'Transferliste listen', words: 'verkaufen marktpreis', go: { ort: 'start', flash: 'tools-sell' } },
+        { id: 'ueberblick', group: 'Werkzeuge', label: 'Verein im Überblick', words: 'bestand rating liga nation', go: { ort: 'start', flash: 'clubview' } },
+        { id: 'gauntlet', group: 'Werkzeuge', label: 'Gauntlet-Teams', words: 'teams chemie meta', go: { ort: 'start', flash: 'gauntlet-open' } },
+        { id: 'diagnose', group: 'Werkzeuge', label: 'Diagnose schreiben', words: 'report fehler konsole log', go: { ort: 'start', flash: 'diag' } },
+        { id: 'aktivitaet', group: 'Aktivität', label: 'Aktivität', words: 'freigaben aufträge protokoll meldungen heute ki nachricht verlauf', go: { ort: 'aktivitaet' } },
+        { id: 'kaufbuch', group: 'Aktivität', label: 'Kaufbuch', words: 'käufe bought', go: { ort: 'aktivitaet', open: 'ki-ledger-box' } },
+        { id: 'set-regeln', group: 'Einstellungen', label: 'Regeln', words: 'kartenwahl schonen verbrauchen kosten tabelle item score überschuss rare totw sperren', go: { set7: 'regeln' } },
+        { id: 'set-kaufen', group: 'Einstellungen', label: 'Kaufen: Plattform, Live-Preise', words: 'konsole pc preise marktcheck', go: { set7: 'kaufen' } },
+        { id: 'set-ki', group: 'Einstellungen', label: 'KI verbinden', words: 'internet pc chat freigeben adresse schlüssel chatgpt claude', go: { set7: 'ki' } },
+        { id: 'set-darstellung', group: 'Einstellungen', label: 'Darstellung', words: 'neue alte oberfläche breite', go: { set7: 'darstellung' } },
+        { id: 'set-system', group: 'Einstellungen', label: 'System', words: 'verein zwischenspeichern cache', go: { set7: 'system' } }
+    ];
+    /** Fuer die Suche: klein, Umlaute ausgeschrieben ("Lösen" = "loesen"), nur Buchstaben/Ziffern. */
+    function ptCmdNorm(x) {
+        return String(x == null ? '' : x).toLowerCase().replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss')
+            .replace(/[^a-z0-9]+/g, ' ').trim();
+    }
+    /** Aktionen zum Suchtext: jedes Wort muss in Name, Gruppe oder Stichwoertern vorkommen; ohne Text alle. kind = Kontext (fuer "only"). */
+    function ptCmdFilter(list, q, kind) {
+        const words = ptCmdNorm(q).split(' ').filter(Boolean);
+        return (Array.isArray(list) ? list : []).filter(function (a) {
+            if (!a || !a.id || (a.only && a.only !== kind)) return false;
+            const hay = ' ' + ptCmdNorm(a.label + ' ' + a.group + ' ' + (a.words || ''));
+            return words.every(function (w) { return hay.indexOf(' ' + w) >= 0; });
+        });
+    }
+    function ptCmdHtml(list) {
+        if (!list || !list.length) return '<div class="sbc-opt-meta">Nichts gefunden.</div>';
+        let h = '', g = null;
+        list.forEach(function (a) {
+            if (a.group !== g) { g = a.group; h += '<div class="sbc-opt-head"><span>' + ptEsc(g) + '</span></div>'; }
+            h += '<button type="button" class="sbc-opt-btn ghost sbc-opt-row7" data-cmd="' + ptEsc(a.id) + '"><span>' + ptEsc(a.label) + '</span></button>';
+        });
+        return h;
+    }
     // [UI7ORT-END]
     function ui7IsOn() {
         try { return document.documentElement.hasAttribute('data-ui7'); } catch (e) { return false; }
@@ -8828,6 +8901,7 @@
         s.asking = panel.hasAttribute('data-asking') || !!panel.querySelector('.sbc-opt-confirm:not([hidden])');
         s.store = panel.hasAttribute('data-store'); // im Store steht der Pack-Opener oben, keine SBC ist offen
         s.set7 = panel.hasAttribute('data-set7'); // v6.58.0: in den Einstellungen gibt es keine Hauptaktion
+        if (panel.hasAttribute('data-cmd7')) s.set7 = true; // v6.59.1: auch in "Alle Aktionen" keine Hauptaktion
         s.view = panel.getAttribute('data-view7') || null; // v6.59.0: "Jetzt › Packs" hat eine Hauptaktion
         if (s.view === 'packs') {
             const cur = ui.packType ? ui.packType.value : '';
@@ -9028,7 +9102,7 @@
                 if (queued || !ui7IsOn()) return;
                 queued = true; Promise.resolve().then(run);
             }).observe(panel, { subtree: true, childList: true, attributes: true,
-                attributeFilter: ['class', 'hidden', 'style', 'disabled', 'data-mode', 'data-tab', 'data-way', 'data-asking', 'data-store', 'data-view7', 'data-set7'] });
+                attributeFilter: ['class', 'hidden', 'style', 'disabled', 'data-mode', 'data-tab', 'data-way', 'data-asking', 'data-store', 'data-view7', 'data-cmd7', 'data-set7'] });
         }
         syncActBar();
     }
@@ -9188,6 +9262,7 @@
         const panel = ui.panel, gear = document.getElementById('sbc-opt-gear');
         if (!panel) return;
         open = !!open && ptSet7Placed;
+        if (open && panel.hasAttribute('data-cmd7')) panel.removeAttribute('data-cmd7'); // v6.59.1: nie zwei Ebenen uebereinander
         if (panel.hasAttribute('data-set7') !== open) panel.toggleAttribute('data-set7', open);
         if (gear && gear.getAttribute('aria-pressed') !== String(open)) gear.setAttribute('aria-pressed', String(open));
         if (open) { try { panel.scrollTop = 0; const b = panel.querySelector('.sbc-opt-body'); if (b) b.scrollTop = 0; } catch (e) {} }
@@ -9516,9 +9591,9 @@
         if (!ptOrt.on) return;
         ptOrt.on = false;
         const panel = ui.panel;
-        if (panel) panel.removeAttribute('data-view7');
+        if (panel) { panel.removeAttribute('data-view7'); panel.removeAttribute('data-cmd7'); }
         ptOrtSetText('sbc-opt-jetzt-lbl', 'Lösen');
-        ['sbc-opt-start7', 'sbc-opt-akt7', 'sbc-opt-pack-list7'].forEach(function (id) { ptOrtSetHtml(id, ''); });
+        ['sbc-opt-start7', 'sbc-opt-akt7', 'sbc-opt-pack-list7', 'sbc-opt-cmd7-list'].forEach(function (id) { ptOrtSetHtml(id, ''); });
         ptOrtSetText('sbc-opt-fab-n', ''); ptOrtSetText('sbc-opt-akt-n', '');
         const j = document.getElementById('sbc-opt-tab-loesen');
         if (j) j.removeAttribute('data-neu');
@@ -9532,6 +9607,7 @@
         if (!ptOrt.on) { ptOrt.on = true; ptOrt.seen = null; ptOrt.wasOpen = false; }
         ptOrt.kind = ctx.kind;
         const open = panel.classList.contains('open');
+        if (!open && panel.hasAttribute('data-cmd7')) ptCmdOpen(false);   // "Alle Aktionen" schliesst mit dem Blatt
         const key = ptOrtKey(ctx, STATE.sbc.challengeId);
         const cur = ptOrtNow();
         const b = open && key !== ptOrt.seen ? ptOrtBusy(cur.view) : {};
@@ -9547,6 +9623,81 @@
         const neu = open && key !== ptOrt.seen;
         if (j && j.hasAttribute('data-neu') !== neu) j.toggleAttribute('data-neu', neu);
         ptOrtDraw();
+    }
+    // ---- v6.59.1 Etappe 5 (2): "Alle Aktionen" (Lupe im Kopf, am PC Strg+K) - nur UI 7 ----
+    function ptCmdDraw() {
+        const q = document.getElementById('sbc-opt-cmd7-q');
+        ptOrtSetHtml('sbc-opt-cmd7-list', ptCmdHtml(ptCmdFilter(PT_ACTIONS, q ? q.value : '', ptOrt.kind)));
+    }
+    function ptCmdOpen(open) {
+        const panel = ui.panel, btn = document.getElementById('sbc-opt-find');
+        if (!panel) return;
+        open = !!open && ptOrt.on && ui7IsOn() && !panel.hasAttribute('data-asking');
+        if (open && panel.hasAttribute('data-set7')) ptSet7Open(false);
+        if (panel.hasAttribute('data-cmd7') !== open) panel.toggleAttribute('data-cmd7', open);
+        if (btn && btn.getAttribute('aria-pressed') !== String(open)) btn.setAttribute('aria-pressed', String(open));
+        if (open) {
+            const q = document.getElementById('sbc-opt-cmd7-q');
+            if (q) { q.value = ''; }
+            ptCmdDraw();
+            try { panel.scrollTop = 0; const b = panel.querySelector('.sbc-opt-body'); if (b) b.scrollTop = 0; } catch (e) {}
+            // Am Handy kein Fokus: die Tastatur wuerde die Liste verdecken - dort wird getippt, nicht geschrieben.
+            if (q && panel.getAttribute('data-size-mode') === 'breite') { try { q.focus(); } catch (e) {} }
+        }
+        try { syncActBar(); } catch (e) {}
+    }
+    /** Sprung zur Aktion. Nichts wird ausgeloest - nur Ort/Weg/Ebene gewechselt und das Ziel kurz markiert. */
+    function ptCmdGo(id) {
+        const a = PT_ACTIONS.filter(function (x) { return x.id === id; })[0];
+        if (!a || !ui7IsOn()) return;
+        ptCmdOpen(false);
+        const go = a.go || {};
+        if (go.way) ptWayPick(go.way);
+        else if (go.ort) ptOrtGo(go.ort);
+        else if (go.set7) {
+            ptSet7Open(true);
+            const grp = document.querySelector('#sbc-opt-set7 [data-group="' + go.set7 + '"]');
+            if (grp) setTimeout(function () { ptFlash(grp); }, 60);
+        }
+        if (go.open) { const d = document.getElementById('sbc-opt-' + go.open); if (d) d.open = true; }
+        const mark = go.flash || go.open;
+        if (mark) setTimeout(function () { ptFlash(document.getElementById('sbc-opt-' + mark)); }, 60);
+    }
+    function initCmd7(panel) {
+        const body = panel ? panel.querySelector('.sbc-opt-body') : null, gear = document.getElementById('sbc-opt-gear');
+        if (!body || !gear || document.getElementById('sbc-opt-cmd7')) return;
+        const find = document.createElement('button');
+        find.type = 'button'; find.id = 'sbc-opt-find'; find.className = 'sbc-opt-nodrag';
+        find.setAttribute('aria-label', 'Alle Aktionen'); find.setAttribute('aria-pressed', 'false');
+        find.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>';
+        gear.parentNode.insertBefore(find, gear);
+        const box = document.createElement('div');
+        box.id = 'sbc-opt-cmd7';
+        box.innerHTML = '<div class="sbc-opt-set7-top"><b>Alle Aktionen</b><button type="button" class="sbc-opt-btn link" id="sbc-opt-cmd7-done">Fertig</button></div>' +
+            '<input type="search" id="sbc-opt-cmd7-q" placeholder="Suchen …" aria-label="Aktion suchen" autocomplete="off" spellcheck="false">' +
+            '<div id="sbc-opt-cmd7-list"></div>';
+        body.appendChild(box);
+        find.addEventListener('click', function () { if (ui7IsOn()) ptCmdOpen(!panel.hasAttribute('data-cmd7')); });
+        box.querySelector('#sbc-opt-cmd7-done').addEventListener('click', function () { ptCmdOpen(false); });
+        const q = box.querySelector('#sbc-opt-cmd7-q');
+        q.addEventListener('input', ptCmdDraw);
+        q.addEventListener('keydown', function (ev) {
+            if (ev.key === 'Escape') { ev.preventDefault(); ptCmdOpen(false); return; }
+            if (ev.key !== 'Enter') return;
+            const first = box.querySelector('[data-cmd]');
+            if (first) { ev.preventDefault(); ptCmdGo(first.getAttribute('data-cmd')); }
+        });
+        box.addEventListener('click', function (ev) {
+            const b = ev.target && typeof ev.target.closest === 'function' ? ev.target.closest('[data-cmd]') : null;
+            if (b) ptCmdGo(b.getAttribute('data-cmd'));
+        });
+        // Strg+K (Mac: Cmd+K) nur am PC und nur bei OFFENEM Blatt - bei geschlossenem Blatt gehoert die Taste EA und dem Browser.
+        document.addEventListener('keydown', function (ev) {
+            if (!(ev.ctrlKey || ev.metaKey) || ev.altKey || ev.shiftKey || String(ev.key).toLowerCase() !== 'k') return;
+            if (!ui7IsOn() || !ptOrt.on || !panel.classList.contains('open') || panel.getAttribute('data-size-mode') !== 'breite' || panel.hasAttribute('data-asking')) return;
+            ev.preventDefault();
+            ptCmdOpen(!panel.hasAttribute('data-cmd7'));
+        });
     }
     /** Kaesten und Knoepfe der Orte anlegen (per Script, nicht im Panel-Markup; ohne Schalter unsichtbar). */
     function initOrt7(panel) {
@@ -9604,6 +9755,7 @@
         // Zaehler offener Freigaben am Knopf
         const fab = document.getElementById('sbc-opt-fab');
         if (fab && !document.getElementById('sbc-opt-fab-n')) fab.appendChild(mk('span', 'sbc-opt-fab-n'));
+        try { initCmd7(panel); } catch (e) { reportError('Alle Aktionen', e); }
         ptOrt.ready = true;
     }
     /** Schaltet die neue Huelle an/aus (Attribut an <html>); schreibt nur bei Aenderung. */

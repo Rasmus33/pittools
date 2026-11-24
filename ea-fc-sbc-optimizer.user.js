@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.52.0
+// @version      6.52.1
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.52.0';
+    const VERSION = '6.52.1';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -13778,7 +13778,14 @@ const HybridSbcEa = (() => {
             const total = plan.reduce((s,p) => s+p.maxPrice,0);
             const question = plan.length+' Karten für die offene SBC kaufen?\n\n'+plan.map(p => p.name+': bis '+p.maxPrice+' Coins').join('\n')+
                 '\n\nZusammen höchstens '+total+' Coins (Budget '+last.budget+'). Obergrenzen werden bei Preisänderungen nicht erhöht. Ein Kauf alle 3–6 Sekunden. Die SBC selbst abgeben.';
-            if (!window.confirm(question)) return;
+            // v6.52.1: Freigabe im Panel. futbinBusy steht waehrend der Frage; danach wird die Lage neu geprueft.
+            futbinBusy = true;
+            let okH = false;
+            try { okH = await uiConfirm(ui.hybridClubResult, Object.assign(confirmSpecFromText(question), { yes: { label: 'Ja, kaufen' }, timeoutMs: 3 * 60 * 1000 })); }
+            finally { futbinBusy = false; }
+            if (!okH) return;
+            hybridActionRunning(last);
+            if (!hybridPitchMatches(last)) throw Error('Kader verändert. Bitte erneut vergleichen.');
             hybridClubCancel = false;
             if (ui.hybridClubStop) ui.hybridClubStop.hidden = false;
             await buyPlannedPlayers(null,plan,{noSquad:true,mode:'hybrid',setResult:setHybridClubResult,
@@ -16334,10 +16341,27 @@ const HybridSbcEa = (() => {
                       (coins != null ? ' (Kontostand ' + fmtCoins(coins) + ')' : '') +
                       (noLive ? '\n' + noLive + ' Preis(e) stammen von futbin, weil der Markt gerade kein Angebot zeigt.' : '') +
                       '.\nEin Kauf alle 3-6 Sekunden, Abbruch bei Fehlern. ' + BUY_REPLAN_NOTE;
-        if (!window.confirm(frage)) return;
-        if (coins != null && coins < total) {
-            if (!window.confirm('Der Kontostand reicht nicht für die Obergrenze aller Spieler. Trotzdem starten (kauft, so weit die Coins reichen)?')) return;
-        }
+        // v6.52.1: Freigabe im Panel statt Browser-Dialog; der alte Wortlaut geht in den Report.
+        STATE.diag.futbinBuyQuestion = frage;
+        const sameCtx = function () { return ownPersonaId() + ':' + (STATE.sbc && STATE.sbc.challengeId) + ':' + (futbinLast && futbinLast.ranked[idx] === c); };
+        buyBusy = true;
+        let okGo = false;
+        try {
+            okGo = await uiConfirm(ui.futbinResult, {
+                title: plan.length + (plan.length === 1 ? ' Spieler kaufen?' : ' Spieler nach und nach kaufen?'),
+                facts: [['Höchstens', fmtCoins(total)], coins != null ? ['Kontostand', fmtCoins(coins)] : null].filter(Boolean),
+                warns: [noLive ? noLive + (noLive === 1 ? ' Preis stammt' : ' Preise stammen') + ' von futbin – der Markt zeigt gerade kein Angebot' : null].filter(Boolean),
+                details: { label: 'Spieler', lines: lines.split('\n') },
+                text: 'Ein Kauf alle 3–6 s, Abbruch bei Fehlern. ' + BUY_REPLAN_NOTE,
+                yes: { label: 'Ja, kaufen' }, timeoutMs: 3 * 60 * 1000 }, sameCtx);
+            if (okGo && coins != null && coins < total) {
+                okGo = await uiConfirm(ui.futbinResult, { title: 'Der Kontostand reicht nicht für alle Obergrenzen. Trotzdem starten?',
+                    facts: [['Höchstens', fmtCoins(total)], ['Kontostand', fmtCoins(coins)]], text: 'Gekauft wird, so weit die Coins reichen.',
+                    yes: { label: 'Ja, trotzdem' }, timeoutMs: 3 * 60 * 1000 }, sameCtx);
+            }
+        } catch (e) { okGo = false; }
+        finally { buyBusy = false; }
+        if (!okGo) return;
         await buyPlannedPlayers(c, plan, { confirmedTotal: total }); // v6.32.3: Neubewertung bleibt in der bestaetigten Summe
     }
     function buyBudgetAllows(plan, player, offer, spent, opts) {
@@ -22326,7 +22350,16 @@ const HybridSbcEa = (() => {
             const frage = built.plan.length + ' Konzept-Spieler nach und nach kaufen?\n\n' + lines + '\n\nZusammen höchstens ' + fmtCoins(total) +
                           (coins != null ? ' (Kontostand ' + fmtCoins(coins) + ')' : '') +
                           '.\nEin Kauf alle 3-6 Sekunden, Abbruch bei Fehlern. ' + BUY_REPLAN_NOTE;
-            if (!window.confirm(frage)) return;
+            // v6.52.1: Freigabe im Panel (buyBusy steht seit Funktionsbeginn); die Liste steht darunter im Ergebnis.
+            STATE.diag.futbinBuyPlan.question = frage;
+            const okC = await uiConfirm(ui.futbinResult, {
+                title: built.plan.length + (built.plan.length === 1 ? ' Konzept-Spieler kaufen?' : ' Konzept-Spieler nach und nach kaufen?'),
+                facts: [['Höchstens', fmtCoins(total)], coins != null ? ['Kontostand', fmtCoins(coins)] : null].filter(Boolean),
+                details: { label: 'Spieler', lines: lines.split('\n') },
+                text: 'Ein Kauf alle 3–6 s, Abbruch bei Fehlern. ' + BUY_REPLAN_NOTE,
+                yes: { label: 'Ja, kaufen' }, timeoutMs: 3 * 60 * 1000 },
+                function () { return ownPersonaId() + ':' + (STATE.sbc && STATE.sbc.challengeId); });
+            if (!okC) return;
             buyBusy = false; // buyPlannedPlayers setzt es selbst
             await buyPlannedPlayers(null, built.plan, { confirmedTotal: total }); // v6.32.3
         } catch (e) {

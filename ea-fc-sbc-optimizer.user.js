@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.64.2
+// @version      6.64.3
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.64.2';
+    const VERSION = '6.64.3';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -5600,7 +5600,8 @@
             return Object.keys(by).map(Number).map(function (r) {
                 const list = by[r].slice().sort(function (a, b) { return a.price - b.price || a.id - b.id; });
                 const rep = list[Math.min(2, list.length - 1)];
-                return { rating: r, rep: rep, ref: (list.length > 1 ? list[1].price : list[0].price) / tbl[r], n: list.length };
+                // v6.64.3: die ZWEI guenstigsten Spieler (Duplikate erlaubt - der billigste Spieler bestimmt den Kurs des Ratings)
+                return { rating: r, rep: rep, reps: list.slice(0, 2), ref: (list.length > 1 ? list[1].price : list[0].price) / tbl[r], n: list.length };
             }).sort(function (a, b) { return a.ref - b.ref || a.rating - b.rating; }).slice(0, Math.max(1, Number(k) || 4));
         }
         /** Aus gemessenen Live-Kursen je Rating ({rating: coinsJePunkt}) die erlaubten Ratings (bis +10 % zum besten). */
@@ -22415,15 +22416,23 @@ const HybridSbcEa = (() => {
         let i = 0, searches = 0;
         for (const pr of probes) {
             i++;
-            if (box) scoreBuyShow(box).innerHTML = '<div class="sbc-opt-dim">Marktcheck ' + i + ' von ' + probes.length + ': echter Sofortkauf-Preis der ' + pr.rating + 'er (' + escapeHtml(pr.rep.name) + ') …</div>';
-            try { await marketGuardGate({ searches: 5 }, 'Marktcheck', t => { if (box) scoreBuyShow(box).innerHTML = '<div class="sbc-opt-dim">' + escapeHtml(t) + '</div>'; }); }
-            catch (e) { last.marketError = String(e && e.message || e); break; }
-            let lv = null;
-            try { lv = await marketMinBin(pr.rep.id, { fresh: true }); searches += 1 + (Number(lv && lv.steps) || 0); }
-            catch (e) { const st = httpStatusOf(e); if (isSessionExpired(st) || isRateLimit(st)) { last.marketError = 'Marktcheck abgebrochen (HTTP ' + st + ')'; break; } continue; }
-            const live = lv && (lv.robust || lv.min) || null;
-            if (live) rows.push({ rating: pr.rating, live: live, score: last.table[pr.rating], perPoint: live / last.table[pr.rating], probe: pr.rep.name, players: null });
-            await futbinSleep(randomBetween(MARKET_STEP_GAP_MIN_MS, MARKET_STEP_GAP_MAX_MS));
+            // v6.64.3 (live 26.11.: 84er mit Foden gemessen = 1.400, futbin: guenstigster 84er 1.000): je Rating die zwei
+            // guenstigsten Spieler live messen, der niedrigere Sofortkauf gilt - Duplikate sind erlaubt
+            let best = null;
+            for (const rep of (pr.reps && pr.reps.length ? pr.reps : [pr.rep])) {
+                if (last.marketError) break;
+                if (box) scoreBuyShow(box).innerHTML = '<div class="sbc-opt-dim">Marktcheck ' + i + ' von ' + probes.length + ': echter Sofortkauf-Preis der ' + pr.rating + 'er (' + escapeHtml(rep.name) + ') …</div>';
+                try { await marketGuardGate({ searches: 5 }, 'Marktcheck', t => { if (box) scoreBuyShow(box).innerHTML = '<div class="sbc-opt-dim">' + escapeHtml(t) + '</div>'; }); }
+                catch (e) { last.marketError = String(e && e.message || e); break; }
+                let lv = null;
+                try { lv = await marketMinBin(rep.id, { fresh: true }); searches += 1 + (Number(lv && lv.steps) || 0); }
+                catch (e) { const st = httpStatusOf(e); if (isSessionExpired(st) || isRateLimit(st)) { last.marketError = 'Marktcheck abgebrochen (HTTP ' + st + ')'; break; } continue; }
+                const live = lv && (lv.robust || lv.min) || null;
+                if (live && (!best || live < best.live)) best = { live: live, name: rep.name };
+                await futbinSleep(randomBetween(MARKET_STEP_GAP_MIN_MS, MARKET_STEP_GAP_MAX_MS));
+            }
+            if (best) rows.push({ rating: pr.rating, live: best.live, score: last.table[pr.rating], perPoint: best.live / last.table[pr.rating], probe: best.name, players: null });
+            if (last.marketError) break;
         }
         rows.sort((a, b) => a.perPoint - b.perPoint || a.rating - b.rating);
         last.market = rows.slice(0, 3);

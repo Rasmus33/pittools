@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.64.0
+// @version      6.64.2
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.64.0';
+    const VERSION = '6.64.2';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -5610,6 +5610,24 @@
             const best = Math.min.apply(null, rs.map(function (r) { return liveByRating[r]; }));
             return { best: best, ratings: rs.filter(function (r) { return liveByRating[r] <= best * BAND + 1e-9; }).map(Number).sort(function (a, b) { return a - b; }) };
         }
+        /**
+         * v6.64.1 (live 26.11.: keine 84er in der Auswahl - der Nutzer besitzt 56 normale 84er, die 11 guenstigsten
+         * von fut.ggs "Cheapest by Rating" alle): fut.ggs Spielerliste /api/fut/players/v2/<jahr>/?overall__gte=R&
+         * overall__lte=R&rarity_id=0&sorts=current_price&page=N (30 je Seite, alle normalen Karten des Ratings, nach
+         * Preis sortiert). Nur normale Karten (rarityEaId 0/1, kein Special/Evo/SBC/Objective).
+         */
+        function parseFutggPlayers(json, rating) {
+            const d = json && Array.isArray(json.data) ? json.data : [];
+            const out = [];
+            d.forEach(function (x) {
+                if (!x || typeof x !== 'object') return;
+                const id = Number(x.eaId), r = Number(x.overall), rf = Number(x.rarityEaId);
+                if (!(id > 0) || r !== Number(rating) || !(rf === 0 || rf === 1)) return;
+                if (x.isSpecial === true || x.isEvolutionPlayerItem === true || x.isSbc === true || x.isObjective === true || x.isIcon === true || x.isHero === true) return;
+                out.push({ id: id, name: String(x.cardName || x.commonName || ('#' + id)), rating: r });
+            });
+            return { players: out, next: json && Number(json.next) > 0 ? Number(json.next) : null, total: json && Number(json.total) || null };
+        }
         /** v6.64.0: wie viele Karten der Lauf hoechstens nimmt: Budget / Hoechstpreis, verfuegbare Spieler, Tageslimit. */
         function maxCards(budget, max, available, roomN) {
             const b = Math.floor(Number(budget) || 0), m = Math.floor(Number(max) || 0);
@@ -5686,7 +5704,7 @@
             return Number.isFinite(n) && n >= 1000 && n <= 2000000 ? n : null;
         }
         return { FALLBACK: FALLBACK, LIMITS: LIMITS, BAND: BAND, LIVE_SLACK: LIVE_SLACK, BUDGETS: BUDGETS, BID_PCTS: BID_PCTS, table: table, ranked: ranked, pick: pick,
-                 bidCap: bidCap, refRatio: refRatio, liveOk: liveOk, probeRatings: probeRatings, pickRatings: pickRatings, maxCards: maxCards, breakAfter: breakAfter, bidState: bidState, bidAmount: bidAmount, blocks: blocks, dayPrune: dayPrune, room: room, budget: budget };
+                 bidCap: bidCap, refRatio: refRatio, liveOk: liveOk, probeRatings: probeRatings, pickRatings: pickRatings, maxCards: maxCards, parseFutggPlayers: parseFutggPlayers, breakAfter: breakAfter, bidState: bidState, bidAmount: bidAmount, blocks: blocks, dayPrune: dayPrune, room: room, budget: budget };
     })();
     // [SCOREBUY-END]
     // ========================================================================
@@ -22365,7 +22383,8 @@ const HybridSbcEa = (() => {
             try { json = JSON.parse(r.text); } catch (e) { throw new Error('fut.gg lieferte kein JSON.'); }
             const all = PointsBuyCore.parseCheapest(json, { minRating: 75 });
             const cands = all.filter(c => t.table[c.rating] > 0 && !owned.has(c.id) && !owned.has(c.id & 0xFFFFFF));
-            scoreBuyLast = { persona: persona, at: Date.now(), platform: platform, table: t.table, source: t.source, cands: cands, stamp: Date.now() + ':' + Math.random() };
+            scoreBuyLast = { persona: persona, at: Date.now(), platform: platform, table: t.table, source: t.source, cands: cands, stamp: Date.now() + ':' + Math.random(),
+                             all: all.filter(c => t.table[c.rating] > 0), owned: owned, year: year, lists: {} };
             await scoreMarketCheck(scoreBuyLast, box); // v6.64.0: echte Sofortkauf-Preise der aussichtsreichsten Ratings
             Object.assign(diag, { candidates: all.length, usable: cands.length, table: t.table, source: t.source,
                                   ratios: PointsBuyCore.ratios(cands, t.table).map(x => ({ rating: x.rating, score: x.score, cheapest: x.cheapest, perPoint: Math.round(x.perPoint * 100) / 100 })) });
@@ -22390,7 +22409,8 @@ const HybridSbcEa = (() => {
     const scoreSel = { rating: null, max: null }; // Auswahl der laufenden Ansicht (nicht gemerkt - der Markt aendert sich)
     async function scoreMarketCheck(last, box) {
         const L = ScoreBuyCore.LIMITS;
-        const probes = ScoreBuyCore.probeRatings(last.cands, last.table, 5);
+        // v6.64.1: Marktpreis je Rating auch dann messen, wenn die guenstigsten Spieler schon im Verein sind
+        const probes = ScoreBuyCore.probeRatings(last.all || last.cands, last.table, 5);
         const rows = [];
         let i = 0, searches = 0;
         for (const pr of probes) {
@@ -22402,8 +22422,7 @@ const HybridSbcEa = (() => {
             try { lv = await marketMinBin(pr.rep.id, { fresh: true }); searches += 1 + (Number(lv && lv.steps) || 0); }
             catch (e) { const st = httpStatusOf(e); if (isSessionExpired(st) || isRateLimit(st)) { last.marketError = 'Marktcheck abgebrochen (HTTP ' + st + ')'; break; } continue; }
             const live = lv && (lv.robust || lv.min) || null;
-            if (live) rows.push({ rating: pr.rating, live: live, score: last.table[pr.rating], perPoint: live / last.table[pr.rating], probe: pr.rep.name,
-                                  players: last.cands.filter(c => c.rating === pr.rating).length });
+            if (live) rows.push({ rating: pr.rating, live: live, score: last.table[pr.rating], perPoint: live / last.table[pr.rating], probe: pr.rep.name, players: null });
             await futbinSleep(randomBetween(MARKET_STEP_GAP_MIN_MS, MARKET_STEP_GAP_MAX_MS));
         }
         rows.sort((a, b) => a.perPoint - b.perPoint || a.rating - b.rating);
@@ -22412,7 +22431,36 @@ const HybridSbcEa = (() => {
         const d = STATE.diag.scoreBuy || (STATE.diag.scoreBuy = {});
         d.market = { at: last.marketAt, searches: searches, error: last.marketError || null,
                      rows: rows.map(x => ({ rating: x.rating, live: x.live, perPoint: Math.round(x.perPoint * 100) / 100, probe: x.probe, players: x.players })) };
-        if (last.market.length) { scoreSel.rating = last.market[0].rating; scoreSel.max = scoreDefaultMax(last.market[0].live); }
+        if (last.market.length) {
+            scoreSel.rating = last.market[0].rating; scoreSel.max = scoreDefaultMax(last.market[0].live);
+            for (const row of last.market) await scoreLoadList(last, row, box); // Spielerliste der 3 Ratings (je bis 3 fut.gg-Seiten)
+        }
+    }
+    /** v6.64.1: alle normalen Spieler eines Ratings von fut.gg (guenstigste zuerst), ohne die eigenen. */
+    async function scoreLoadList(last, row, box) {
+        if (!last || !row || last.lists[row.rating]) return;
+        const list = [], seen = new Set();
+        let page = 1, total = null, raw = 0;
+        try {
+            for (let k = 0; k < 1 && page; k++) { // v6.64.2: eine Seite (30 guenstigste) reicht - Duplikate sind erlaubt
+                if (box) scoreBuyShow(box).innerHTML = '<div class="sbc-opt-dim">Lade Spielerliste der ' + row.rating + 'er von fut.gg (Seite ' + page + ') …</div>';
+                const r = await bridgeFetch('https://www.fut.gg/api/fut/players/v2/' + last.year + '/?overall__gte=' + row.rating + '&overall__lte=' + row.rating + '&rarity_id=0&sorts=current_price&page=' + page, 30000);
+                if (!r || r.status !== 200) break;
+                let json = null;
+                try { json = JSON.parse(r.text); } catch (e) { break; }
+                const res = ScoreBuyCore.parseFutggPlayers(json, row.rating);
+                raw += res.players.length; total = res.total;
+                // v6.64.2 (Rasmus: "vollkommen egal ob das alles Duplikate werden … man kann die so abgeben"): eigene Spieler NICHT ausschliessen
+                res.players.forEach(c => { if (seen.has(c.id)) return; seen.add(c.id); list.push(c); });
+                page = res.next;
+            }
+        } catch (e) {}
+        // Rueckfall: die Spieler aus "Cheapest by Rating"
+        if (!list.length) (last.all || last.cands).filter(c => c.rating === row.rating).forEach(c => list.push({ id: c.id, name: c.name, rating: c.rating }));
+        last.lists[row.rating] = list;
+        row.players = list.length; row.total = total; row.owned = Math.max(0, raw - list.length);
+        const d = STATE.diag.scoreBuy || (STATE.diag.scoreBuy = {});
+        (d.lists = d.lists || {})[row.rating] = { total: total, loaded: raw, notOwned: list.length };
     }
     /** Vorschlag fuers Hoechstgebot: beim Bieten eine Preisstufe unter dem Sofortkauf, beim Sofortkauf der Sofortkauf selbst. */
     function scoreDefaultMax(live) {
@@ -22437,7 +22485,7 @@ const HybridSbcEa = (() => {
         } else {
             h += '<div class="sbc-opt-head"><span>Günstigste Ratings am Markt</span><span class="count">' + (function () { const d = new Date(last.marketAt); return 'Stand ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); })() + '</span></div>' +
                 last.market.map(x => '<button type="button" class="sbc-opt-btn ghost' + (x.rating === scoreSel.rating ? ' on' : '') + '" data-rating="' + x.rating + '" aria-pressed="' + (x.rating === scoreSel.rating) + '"><span>' +
-                    (x.rating === scoreSel.rating ? '● ' : '○ ') + x.rating + 'er · ' + fmt(x.live) + ' Coins · ' + scorePP(x.live, x.score) + ' Coins je Punkt · ' + x.players + ' Spieler</span></button>').join('');
+                    (x.rating === scoreSel.rating ? '● ' : '○ ') + x.rating + 'er · ' + fmt(x.live) + ' Coins · ' + scorePP(x.live, x.score) + ' Coins je Punkt · ' + (x.players != null ? x.players + ' Spieler' : '…') + '</span></button>').join('');
             const row = scoreSelRow(last);
             h += scoreChips('sbc-opt-scorebuy-mode', 'Wie kaufen?', [{ v: 'bieten', t: 'Bieten' }, { v: 'kaufen', t: 'Sofortkauf' }], mode, 'data-mode');
             const max = scoreSel.max;
@@ -22448,9 +22496,9 @@ const HybridSbcEa = (() => {
             h += scoreChips('sbc-opt-scorebuy-budget', 'Budget', ScoreBuyCore.BUDGETS.map(v => ({ v: v, t: (v / 1000) + 'k' })), budget, 'data-budget') +
                  '<div class="sbc-opt-fieldrow"><label for="sbc-opt-scorebuy-coins">Eigener Betrag</label><input type="number" id="sbc-opt-scorebuy-coins" min="1000" step="1000" value="' + (budgetIsChip ? '' : budget) + '" placeholder="z. B. 30000"></div>';
             const roomN = ScoreBuyCore.room(scoreBuyLog(last.persona), Date.now());
-            const n = row && max ? ScoreBuyCore.maxCards(budget, max, row.players, roomN) : 0;
+            const n = row && max ? ScoreBuyCore.maxCards(budget, max, 999, roomN) : 0;
             if (row && max) {
-                h += '<div class="sbc-opt-dim">Bis zu <b>' + n + ' Karten</b> (' + fmt(budget) + ' ÷ ' + fmt(max) + (n < Math.floor(budget / max) ? ', begrenzt durch ' + (n === row.players ? row.players + ' verfügbare Spieler' : 'Tageslimit') : '') + ') = bis zu ' + fmt(n * row.score) + ' Punkte.' +
+                h += '<div class="sbc-opt-dim">Bis zu <b>' + n + ' Karten</b> (' + fmt(budget) + ' ÷ ' + fmt(max) + (n < Math.floor(budget / max) ? ', begrenzt durch das Limit je Lauf/Tag' : '') + ') = bis zu ' + fmt(n * row.score) + ' Punkte.' +
                      (max > row.live ? ' <b>Achtung:</b> über dem Marktpreis.' : '') + '</div>';
                 if (n > 0) h += '<button type="button" class="sbc-opt-btn primary" id="sbc-opt-scorebuy-go"><span>' + (mode === 'bieten' ? 'Auf ' + row.rating + 'er bieten (je bis ' + fmt(max) + ') …' : row.rating + 'er kaufen (je bis ' + fmt(max) + ') …') + '</span></button>';
             }
@@ -22490,9 +22538,11 @@ const HybridSbcEa = (() => {
         const max = scoreSel.max > 0 ? bidRoundDown(Math.floor(scoreSel.max), tiers) : 0; // auf eine gueltige Preisstufe ABrunden
         if (!row || !(max >= 200)) { toast('Bitte Rating und Höchstpreis wählen.', 'warn'); return null; }
         const budget = scoreBudget();
-        const players = last.cands.filter(c => c.rating === row.rating).slice().sort((a, b) => a.price - b.price || a.id - b.id)
-            .map(c => Object.assign({}, c, { score: row.score }));
-        const n = ScoreBuyCore.maxCards(budget, max, players.length, ScoreBuyCore.room(scoreBuyLog(last.persona), Date.now()));
+        // v6.64.1: fut.ggs Spielerliste des Ratings (nach Preis sortiert, ohne eigene); Rueckfall "Cheapest by Rating"
+        const players = (last.lists && last.lists[row.rating] && last.lists[row.rating].length ? last.lists[row.rating]
+            : (last.all || last.cands).filter(c => c.rating === row.rating).slice().sort((a, b) => a.price - b.price || a.id - b.id))
+            .map(c => Object.assign({}, c, { score: row.score, price: c.price || 0 }));
+        const n = ScoreBuyCore.maxCards(budget, max, 999, ScoreBuyCore.room(scoreBuyLog(last.persona), Date.now())); // v6.64.2: je Spieler mehrere Karten erlaubt
         if (!n) { toast('Mit diesem Budget und Höchstpreis passt keine Karte.', 'warn'); return null; }
         return { last: last, row: row, max: max, budget: budget, players: players, n: n };
     }
@@ -22534,14 +22584,16 @@ const HybridSbcEa = (() => {
         };
         try {
             let k = 0, bi = 0;
-            while (k < rp.players.length && run.bought < n) {
+            const seq = []; // v6.64.2: Duplikate erlaubt - Spielerliste wird wiederholt durchlaufen
+            for (let r2 = 0; seq.length < n * 3 && rp.players.length && r2 < 30; r2++) rp.players.forEach(x => seq.push(x));
+            while (k < seq.length && run.bought < n) {
                 if (scoreBuyCancel) { run.stopped = 'auf Wunsch gestoppt'; break; }
                 if (ownPersonaId() !== persona) { run.stopped = 'Account gewechselt'; break; }
                 if (!sessionReady()) { run.stopped = 'EA-Sitzung weg'; break; }
                 const c = userCoins();
                 if (c != null && c < max) { run.stopped = 'Kontostand reicht nicht mehr'; break; }
-                const size = Math.min(ScoreBuyCore.breakAfter(), n - run.bought, rp.players.length - k);
-                const part = rp.players.slice(k, k + size).map((x, i) => ({ index: k + i, resourceId: x.id, name: x.name, rating: x.rating, planned: max, futggPrice: x.price, maxPrice: max, score: x.score }));
+                const size = Math.min(ScoreBuyCore.breakAfter(), n - run.bought, seq.length - k);
+                const part = seq.slice(k, k + size).map((x, i) => ({ index: k + i, resourceId: x.id, name: x.name, rating: x.rating, planned: max, futggPrice: x.price, maxPrice: max, score: x.score }));
                 k += size; bi++;
                 status = 'Block ' + bi + ': prüfe Markt-Takt …'; render();
                 try { await marketGuardGate({ searches: part.length }, 'Item-Score-Kauf', t => { status = t; render(); }); }
@@ -22565,7 +22617,7 @@ const HybridSbcEa = (() => {
                 run.bought += d.bought || 0; run.spent += d.spent || 0;
                 run.blocks.push({ n: part.length, bought: d.bought || 0, spent: d.spent || 0, stopped: d.stopped || null });
                 if (d.stopped) { run.stopped = scoreBuyCancel ? 'auf Wunsch gestoppt' : d.stopped; break; }
-                if (run.bought < n && k < rp.players.length) await scorePause(() => scoreBuyCancel || ownPersonaId() !== persona, t => { status = t; render(); });
+                if (run.bought < n && k < seq.length) await scorePause(() => scoreBuyCancel || ownPersonaId() !== persona, t => { status = t; render(); });
             }
         } catch (e) {
             run.stopped = String(e && e.message || e);
@@ -22613,7 +22665,7 @@ const HybridSbcEa = (() => {
                 facts: [['Höchstens zusammen', fmtCoins(Math.min(budget, n * max))], ['Je Punkt', scorePP(max, row.score) + ' Coins'], coins != null ? ['Kontostand', fmtCoins(coins)] : null].filter(Boolean),
                 warns: [coins != null && coins < n * max ? 'Der Kontostand reicht nicht für alle Gebote – geboten wird, so weit er reicht' : null, max > row.live ? 'Höchstgebot liegt über dem Marktpreis (' + fmtCoins(row.live) + ')' : null].filter(Boolean),
                 details: { label: 'Spieler (der Reihe nach)', lines: rp.players.map(x => x.rating + ' ' + x.name) },
-                text: 'Je Spieler eine Auktionssuche und höchstens ein Gebot von ' + fmtCoins(max) + ' – nur auf Auktionen, die in 1–15 min enden; ein Sofortkauf bis ' + fmtCoins(max) + ' wird genommen. 12–30 s zwischen den Schritten, Pausen nach 5–8 Geboten. Danach wartet PitTools auf das Ende und holt die Gewonnenen in den Verein. Automatisches Bieten verstößt gegen EAs Regeln – ein Restrisiko bleibt.',
+                text: 'Je Spieler eine Auktionssuche, dann Gebote von ' + fmtCoins(max) + ' auf alle passenden Auktionen (Duplikate erlaubt) – nur auf Auktionen, die in 1–15 min enden; ein Sofortkauf bis ' + fmtCoins(max) + ' wird genommen. 12–30 s zwischen den Schritten, Pausen nach 5–8 Geboten. Danach wartet PitTools auf das Ende und holt die Gewonnenen in den Verein. Automatisches Bieten verstößt gegen EAs Regeln – ein Restrisiko bleibt.',
                 yes: { label: 'Ja, langsam bieten' }, timeoutMs: 3 * 60 * 1000
             }, () => ownPersonaId() + '|' + (scoreBuyLast && scoreBuyLast.stamp) + '|' + scoreSel.rating + '|' + scoreSel.max);
         } catch (e) { ok = false; }
@@ -22634,7 +22686,6 @@ const HybridSbcEa = (() => {
         const tiers = eaPriceTiers();
         const h = { minFor: a => bidMinFor(a, tiers), roundDown: v => bidRoundDown(v, tiers), onGrid: v => bidOnGrid(v, tiers) };
         const placed = scoreBidsLoad(persona);
-        const persons = new Set();
         let sinceBreak = 0, breakAt = ScoreBuyCore.breakAfter();
         try {
             for (let i = 0; i < rp.players.length; i++) {
@@ -22644,8 +22695,6 @@ const HybridSbcEa = (() => {
                 if (run.bids >= n || run.committed + max > budget) break;
                 if (run.searches >= L.bidSearchMax) { run.stopped = 'Suchgrenze je Lauf (' + L.bidSearchMax + ') erreicht'; break; }
                 const c = rp.players[i];
-                const person = c.id & 0xFFFFFF;
-                if (persons.has(person)) continue;
                 const cn = userCoins();
                 if (cn != null && cn < max) { run.stopped = 'Kontostand reicht nicht mehr'; break; }
                 status = 'Suche Auktionen: ' + c.rating + ' ' + c.name + ' (bis ' + fmtCoins(max) + ') …'; render();
@@ -22660,42 +22709,48 @@ const HybridSbcEa = (() => {
                     break;
                 }
                 const auctions = parseBidAuctions(json && json.auctionInfo).filter(a => a.item && a.item.rating === c.rating && (a.item.rareflag === 0 || a.item.rareflag === 1));
-                let pick = null, amt = null;
-                for (const a of auctions) { const r = ScoreBuyCore.bidAmount(a, max, ownPersonaId(), h); if (r) { pick = a; amt = r; break; } }
-                const step = { name: c.name, rating: c.rating, cap: max, auctions: auctions.length, bid: null, buyNow: false, status: null };
+                // v6.64.2: Duplikate erlaubt - auf JEDE passende Auktion dieser Suche bieten (soonest-ending zuerst), bis Anzahl/Budget erreicht
+                const fits = [];
+                for (const a of auctions) { const r = ScoreBuyCore.bidAmount(a, max, ownPersonaId(), h); if (r) fits.push({ a: a, amt: r }); }
+                const step = { name: c.name, rating: c.rating, cap: max, auctions: auctions.length, fits: fits.length, bids: 0, status: null };
                 run.steps.push(step);
-                if (!pick) {
+                if (!fits.length) {
                     run.noAuction++; step.status = 'keine passende Auktion';
                     lines.push('– ' + escapeHtml(c.rating + ' ' + c.name) + ': keine Auktion bis ' + fmtCoins(max) + ', die bald endet.');
                     render();
                     await futbinSleep(randomBetween(L.gapMin, L.gapMax));
                     continue;
                 }
-                await futbinSleep(randomBetween(2500, 6000)); // wie ein Mensch: erst ansehen, dann bieten
-                if (scoreBuyCancel || ownPersonaId() !== persona) { run.stopped = scoreBuyCancel ? 'auf Wunsch gestoppt' : 'Account gewechselt'; break; }
-                if (!(amt.amount > 0) || amt.amount > max || run.committed + amt.amount > budget) { step.status = 'Grenze'; continue; }
-                let resp = null;
-                try { resp = await apiPut('trade/' + pick.tradeId + '/bid', { bid: amt.amount }, 2); } // kein 401-Retry (wie bidPutCapped)
-                catch (e) {
-                    const st = httpStatusOf(e);
-                    step.status = 'abgelehnt ' + (st || '?');
-                    if (st === 461) { lines.push('– ' + escapeHtml(c.name) + ': schon überboten oder vorbei.'); render(); await futbinSleep(randomBetween(L.gapMin, L.gapMax)); continue; }
-                    run.stopped = isSessionExpired(st) ? 'EA-Sitzung abgelaufen – im Spiel einmal navigieren, dann erneut.' : 'Gebot abgelehnt (HTTP ' + (st || '?') + ') – Lauf gestoppt';
-                    break;
+                for (let j = 0; j < fits.length; j++) {
+                    const pick = fits[j].a, amt = fits[j].amt;
+                    if (run.bids >= n || run.committed + amt.amount > budget) break;
+                    if (scoreBuyCancel || ownPersonaId() !== persona) { run.stopped = scoreBuyCancel ? 'auf Wunsch gestoppt' : 'Account gewechselt'; break; }
+                    const cn2 = userCoins();
+                    if (cn2 != null && cn2 < amt.amount) { run.stopped = 'Kontostand reicht nicht mehr'; break; }
+                    await futbinSleep(randomBetween(2500, 6000)); // wie ein Mensch: erst ansehen, dann bieten
+                    if (!(amt.amount > 0) || amt.amount > max || run.committed + amt.amount > budget) break;
+                    let resp = null;
+                    try { resp = await apiPut('trade/' + pick.tradeId + '/bid', { bid: amt.amount }, 2); } // kein 401-Retry (wie bidPutCapped)
+                    catch (e) {
+                        const st = httpStatusOf(e);
+                        if (st === 461) { lines.push('– ' + escapeHtml(c.name) + ': eine Auktion schon überboten oder vorbei.'); render(); await futbinSleep(randomBetween(L.gapMin, L.gapMax)); continue; }
+                        run.stopped = isSessionExpired(st) ? 'EA-Sitzung abgelaufen – im Spiel einmal navigieren, dann erneut.' : 'Gebot abgelehnt (HTTP ' + (st || '?') + ') – Lauf gestoppt';
+                        break;
+                    }
+                    run.bids++; run.committed += amt.amount; if (amt.buyNow) run.buyNow++; step.bids++;
+                    step.status = 'geboten';
+                    placed.push({ tradeId: String(pick.tradeId), amount: amt.amount, rating: c.rating, score: c.score, name: c.name, until: Date.now() + (Number(pick.expires) || 0) * 1000 + 20000 });
+                    scoreBidsSave(persona, placed);
+                    try { buyLedgerRecord({ run: run.at, mode: 'itemscore-gebot', via: 'gebot', name: c.name, defId: c.id, rating: c.rating, tradeId: pick.tradeId, bid: amt.amount, planned: max, max: max, ea: buyLedgerFromResponse(resp, pick.tradeId) }); } catch (e) {}
+                    lines.push('✓ ' + escapeHtml(c.rating + ' ' + c.name) + ': ' + (amt.buyNow ? 'Sofortkauf ' : 'Gebot ') + fmtCoins(amt.amount) + (amt.buyNow ? '' : ' · endet in ' + Math.ceil((Number(pick.expires) || 0) / 60) + ' min'));
+                    render();
+                    sinceBreak++;
+                    if (sinceBreak >= breakAt && run.bids < n) { sinceBreak = 0; breakAt = ScoreBuyCore.breakAfter(); await scorePause(() => scoreBuyCancel || ownPersonaId() !== persona, t => { status = t; render(); }); }
+                    else await futbinSleep(randomBetween(L.gapMin, L.gapMax));
                 }
-                persons.add(person);
-                run.bids++; run.committed += amt.amount; if (amt.buyNow) run.buyNow++;
-                step.bid = amt.amount; step.buyNow = amt.buyNow; step.status = 'geboten';
-                placed.push({ tradeId: String(pick.tradeId), amount: amt.amount, rating: c.rating, score: c.score, name: c.name, until: Date.now() + (Number(pick.expires) || 0) * 1000 + 20000 });
-                scoreBidsSave(persona, placed);
-                try { buyLedgerRecord({ run: run.at, mode: 'itemscore-gebot', via: 'gebot', name: c.name, defId: c.id, rating: c.rating, tradeId: pick.tradeId, bid: amt.amount, planned: max, max: max, ea: buyLedgerFromResponse(resp, pick.tradeId) }); } catch (e) {}
-                lines.push('✓ ' + escapeHtml(c.rating + ' ' + c.name) + ': ' + (amt.buyNow ? 'Sofortkauf ' : 'Gebot ') + fmtCoins(amt.amount) + (amt.buyNow ? '' : ' · endet in ' + Math.ceil((Number(pick.expires) || 0) / 60) + ' min'));
-                render();
-                sinceBreak++;
-                if (sinceBreak >= breakAt && run.bids < n) { sinceBreak = 0; breakAt = ScoreBuyCore.breakAfter(); await scorePause(() => scoreBuyCancel || ownPersonaId() !== persona, t => { status = t; render(); }); }
-                else await futbinSleep(randomBetween(L.gapMin, L.gapMax));
+                if (run.stopped) break;
             }
-            if (!run.stopped && run.bids < n) lines.push('Keine weiteren ' + row.rating + 'er mit passender Auktion (' + rp.players.length + ' Spieler durchsucht).');
+            if (!run.stopped && run.bids < n) lines.push('Keine weiteren ' + row.rating + 'er-Auktionen bis ' + fmtCoins(max) + ' gefunden (' + run.searches + ' Spieler durchsucht).');
             // Auf das Ende der letzten Auktion warten, dann abholen (Stopp-Knopf beendet nur das Bieten).
             const mine = scoreBidsLoad(persona);
             const until = mine.reduce((m, x) => Math.max(m, Number(x.until) || 0), 0);

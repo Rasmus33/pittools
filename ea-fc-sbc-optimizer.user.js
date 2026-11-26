@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.63.0
+// @version      6.63.1
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.63.0';
+    const VERSION = '6.63.1';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -5506,11 +5506,15 @@
         // Bloecke zu 5-8 Kaeufen, dazwischen 12-30 s, nach jedem Block 1-3 min Pause.
         // Bieten: hoechstens 30 Suchen je Lauf, nur Auktionen mit 1-15 min Restzeit.
         const LIMITS = { perRun: 30, perDay: 60, blockMin: 5, blockMax: 8, gapMin: 12000, gapMax: 30000, pauseMin: 60000, pauseMax: 180000, searchesPerCard: 2,
-                         bidSearchMax: 30, bidMinLeftS: 60, bidMaxLeftS: 900 };
+                         bidSearchMax: 40, bidMinLeftS: 60, bidMaxLeftS: 900 };
         // Nur Karten, deren Kurs hoechstens so viel schlechter ist als der beste (1.10 = +10 %).
         const BAND = 1.10;
         const BUDGETS = [10000, 25000, 50000, 100000];
-        const BID_PCTS = [5, 10, 15];
+        // v6.63.1: 0 = eine Preisstufe unter dem guenstigsten Sofortkauf (Rasmus 26.11.: "vielleicht einfach 1 Schritt unter Sofortkauf"), Standard.
+        const BID_PCTS = [0, 5, 10];
+        // v6.63.1: Live-Kurs darf hoechstens so viel schlechter sein als der beste fut.gg-Kurs (fut.gg ist eine Momentaufnahme,
+        // live 26.11.: 87er laut fut.gg 7.200, am Markt ~9.100).
+        const LIVE_SLACK = 1.20;
         /**
          * Punkte je Rating. entries: [{ rating, rareflag, itemScore }] (Pool, ohne Evos).
          * Nur rareflag STRENG 0/1 und nur eindeutige Werte je Rating; sonst der Messwert.
@@ -5559,8 +5563,33 @@
         /** Gebots-Obergrenze: pct % unter dem Marktpreis, auf eine Preisstufe abgerundet. */
         function bidCap(price, pct, roundDown) {
             const p = Math.max(0, Number(price) || 0), f = Math.max(0, Math.min(50, Number(pct) || 0)) / 100;
-            const v = Math.floor(p * (1 - f));
+            if (!(p > 0)) return 0;
+            // pct 0 = eine Preisstufe unter dem Preis: auf die Stufe UNTER p abrunden (9.100 -> 9.000).
+            const v = f > 0 ? Math.floor(p * (1 - f)) : p - 1;
             return typeof roundDown === 'function' ? roundDown(v) : v;
+        }
+        /** Live-Pruefung: Kurs mit dem echten Marktpreis hoechstens LIVE_SLACK x der beste fut.gg-Kurs. */
+        function liveOk(ref, score, bestRatio) {
+            const r = Number(ref), sc = Number(score), b = Number(bestRatio);
+            return r > 0 && sc > 0 && b > 0 && r / sc <= b * LIVE_SLACK + 1e-9;
+        }
+        /** Nach wie vielen Geboten eine lange Pause kommt (blockMin..blockMax). */
+        function breakAfter(rnd) {
+            const r = typeof rnd === 'function' ? rnd : Math.random;
+            const span = LIMITS.blockMax - LIMITS.blockMin + 1;
+            return LIMITS.blockMin + Math.min(span - 1, Math.floor(Math.max(0, r()) * span));
+        }
+        /**
+         * Zustand eines eigenen Gebots in den Transferzielen. a = EAs Eintrag (oder null), now/until in ms.
+         * won nur bei closed + highest/buyNow, lost nur bei eindeutigem outbid/closed/expired; alles andere
+         * bleibt offen (EA schliesst Auktionen mit Verzoegerung) - fehlt der Eintrag 2 h nach Ende: unklar.
+         */
+        function bidState(a, now, until) {
+            if (!a) return now > until + 2 * 3600000 ? 'unklar' : 'offen';
+            const ts = String(a.tradeState || '').toLowerCase(), bs = String(a.bidState || '').toLowerCase();
+            if (ts === 'closed' && (bs === 'highest' || bs === 'buynow')) return 'won';
+            if (bs === 'outbid' || ts === 'closed' || ts === 'expired') return 'lost';
+            return 'offen';
         }
         /**
          * Betrag fuer EIN Gebot auf eine Auktion oder null. a: parseBidAuctions-Eintrag.
@@ -5613,8 +5642,8 @@
             const n = Math.floor(Number(String(v == null ? '' : v).replace(/[.\s]/g, '')));
             return Number.isFinite(n) && n >= 1000 && n <= 2000000 ? n : null;
         }
-        return { FALLBACK: FALLBACK, LIMITS: LIMITS, BAND: BAND, BUDGETS: BUDGETS, BID_PCTS: BID_PCTS, table: table, ranked: ranked, pick: pick,
-                 bidCap: bidCap, bidAmount: bidAmount, blocks: blocks, dayPrune: dayPrune, room: room, budget: budget };
+        return { FALLBACK: FALLBACK, LIMITS: LIMITS, BAND: BAND, LIVE_SLACK: LIVE_SLACK, BUDGETS: BUDGETS, BID_PCTS: BID_PCTS, table: table, ranked: ranked, pick: pick,
+                 bidCap: bidCap, liveOk: liveOk, breakAfter: breakAfter, bidState: bidState, bidAmount: bidAmount, blocks: blocks, dayPrune: dayPrune, room: room, budget: budget };
     })();
     // [SCOREBUY-END]
     // ========================================================================
@@ -22261,7 +22290,7 @@ const HybridSbcEa = (() => {
     const scorePctOk = v => ScoreBuyCore.BID_PCTS.indexOf(Number(v)) >= 0 ? Number(v) : null;
     function scoreBudget() { return scoreBuyPref('budget', SCORE_BUY_BUDGET_KEY, ScoreBuyCore.budget, 25000); }
     function scoreMode() { return scoreBuyPref('mode', SCORE_BUY_MODE_KEY, scoreModeOk, 'kaufen'); }
-    function scorePct() { return scoreBuyPref('pct', SCORE_BUY_PCT_KEY, scorePctOk, 10); }
+    function scorePct() { return scoreBuyPref('pct', SCORE_BUY_PCT_KEY, scorePctOk, 0); }
     function scoreBidsLoad(persona) {
         try { const m = JSON.parse(localStorage.getItem(SCORE_BIDS_KEY) || '{}') || {}; return Array.isArray(m[persona]) ? m[persona] : []; } catch (e) { return []; }
     }
@@ -22340,7 +22369,7 @@ const HybridSbcEa = (() => {
             scoreChips('sbc-opt-scorebuy-budget', 'Wie viele Coins?', ScoreBuyCore.BUDGETS.map(v => ({ v: v, t: (v / 1000) + 'k' })), pp.budget, 'data-budget') +
             '<div class="sbc-opt-fieldrow"><label for="sbc-opt-scorebuy-coins">Eigener Betrag</label><input type="number" id="sbc-opt-scorebuy-coins" min="1000" step="1000" value="' + (budgetIsChip ? '' : pp.budget) + '" placeholder="z. B. 30000"></div>' +
             scoreChips('sbc-opt-scorebuy-mode', 'Wie kaufen?', [{ v: 'kaufen', t: 'Sofortkauf' }, { v: 'bieten', t: 'Bieten' }], pp.mode, 'data-mode');
-        if (pp.mode === 'bieten') h += scoreChips('sbc-opt-scorebuy-pct', 'Gebot unter Marktpreis', ScoreBuyCore.BID_PCTS.map(v => ({ v: v, t: '−' + v + ' %' })), pp.pct, 'data-pct');
+        if (pp.mode === 'bieten') h += scoreChips('sbc-opt-scorebuy-pct', 'Gebot unter günstigstem Sofortkauf', ScoreBuyCore.BID_PCTS.map(v => ({ v: v, t: v ? '−' + v + ' %' : '1 Stufe' })), pp.pct, 'data-pct');
         const plan = pp.plan;
         if (plan.cards) {
             const by = {};
@@ -22349,7 +22378,7 @@ const HybridSbcEa = (() => {
                 return '<div class="sbc-opt-batch-card"><span class="r">' + r + '</span> ' + g.n + '× · ' + fmt(pp.mode === 'bieten' ? g.caps : g.coins) + ' C · ' + fmt(g.n * g.score) + ' P <span class="src storage">' +
                     ((pp.mode === 'bieten' ? g.caps : g.coins) / (g.n * g.score)).toFixed(2).replace('.', ',') + '</span></div>'; }).join('');
             h += pp.mode === 'bieten'
-                ? '<div class="sbc-opt-dim">Plan: auf bis zu <b>' + plan.cards + ' Karten bieten</b>, je ' + pp.pct + ' % unter fut.gg, zusammen höchstens ' + fmt(plan.capSum) + ' Coins. Gewinnst du alle: ' + fmt(plan.points) + ' Punkte.</div>'
+                ? '<div class="sbc-opt-dim">Plan (Schätzung nach fut.gg): auf bis zu <b>' + plan.cards + ' Karten bieten</b>, je ' + (pp.pct ? pp.pct + ' %' : 'eine Preisstufe') + ' unter dem günstigsten Sofortkauf, zusammen höchstens ' + fmt(pp.budget) + ' Coins. Vor jedem Gebot prüft PitTools den echten Marktpreis.</div>'
                 : '<div class="sbc-opt-dim">Plan: <b>' + plan.cards + ' Karten = ' + fmt(plan.points) + ' Punkte für ~' + fmt(plan.coins) + ' Coins</b> (' + plan.perPoint.toFixed(2).replace('.', ',') + ' C/P), höchstens ' + fmt(plan.capSum) + '.</div>';
             h += '<div class="sbc-opt-batch-cards">' + rows + '</div>';
             if (plan.capSum < pp.budget * 0.8) h += '<div class="sbc-opt-dim">Mehr gibt es gerade nicht zum guten Kurs' + (pp.room < ScoreBuyCore.LIMITS.perRun ? ' (heute noch ' + pp.room + ' Karten)' : ' (höchstens ' + ScoreBuyCore.LIMITS.perRun + ' Karten je Lauf)') + '.</div>';
@@ -22507,10 +22536,10 @@ const HybridSbcEa = (() => {
         try {
             ok = await uiConfirm(box, {
                 title: 'Auf bis zu ' + Math.min(maxBids, order.length) + ' Karten bieten, zusammen höchstens ' + fmtCoins(budget) + '?',
-                facts: [['Gebot', pct + ' % unter fut.gg'], ['Höchstens', fmtCoins(budget)], coins != null ? ['Kontostand', fmtCoins(coins)] : null].filter(Boolean),
+                facts: [['Gebot', (pct ? pct + ' %' : 'eine Preisstufe') + ' unter dem günstigsten Sofortkauf'], ['Höchstens', fmtCoins(budget)], coins != null ? ['Kontostand', fmtCoins(coins)] : null].filter(Boolean),
                 warns: [coins != null && coins < budget ? 'Der Kontostand reicht nicht für alle Gebote – geboten wird, so weit er reicht' : null].filter(Boolean),
-                details: { label: 'Karten (beste zuerst)', lines: order.slice(0, 40).map(x => x.rating + ' ' + x.name + ' · bis ' + fmtCoins(x.maxPrice)) },
-                text: 'Je Spieler eine Suche (soonest-ending zuerst) und höchstens ein Gebot, nur auf Auktionen, die in 1–15 min enden; ein Sofortkauf unter der Grenze wird genommen. 12–30 s zwischen den Schritten, Pausen nach 5–8 Geboten. Danach wartet PitTools auf das Ende und holt die Gewonnenen in den Verein. Automatisches Bieten verstößt gegen EAs Regeln – ein Restrisiko bleibt.',
+                details: { label: 'Karten (beste zuerst, Preis laut fut.gg)', lines: order.slice(0, 40).map(x => x.rating + ' ' + x.name + ' · fut.gg ' + fmtCoins(x.price)) },
+                text: 'Je Spieler erst der echte Marktpreis (günstigster Sofortkauf), dann eine Auktionssuche und höchstens ein Gebot; Karten, deren Marktpreis deutlich über fut.gg liegt, werden übersprungen. Geboten wird nur auf Auktionen, die in 1–15 min enden; ein Sofortkauf unter der Grenze wird genommen. 12–30 s zwischen den Schritten, Pausen nach 5–8 Geboten. Danach wartet PitTools auf das Ende und holt die Gewonnenen in den Verein. Automatisches Bieten verstößt gegen EAs Regeln – ein Restrisiko bleibt.',
                 yes: { label: 'Ja, langsam bieten' }, timeoutMs: 3 * 60 * 1000
             }, () => ownPersonaId() + '|' + (scoreBuyLast && scoreBuyLast.stamp));
         } catch (e) { ok = false; }
@@ -22532,7 +22561,9 @@ const HybridSbcEa = (() => {
         const h = { minFor: a => bidMinFor(a, tiers), roundDown: v => bidRoundDown(v, tiers), onGrid: v => bidOnGrid(v, tiers) };
         const placed = scoreBidsLoad(persona);
         const persons = new Set();
-        let sinceBreak = 0, breakAt = ScoreBuyCore.blocks(1)[0] || 5;
+        // v6.63.1: lange Pause erst nach 5-8 Geboten (vorher kam die Pause nach JEDEM Gebot).
+        let sinceBreak = 0, breakAt = ScoreBuyCore.breakAfter();
+        const bestRatio = order.length ? order[0].ratio : 0;
         try {
             for (let i = 0; i < order.length; i++) {
                 if (scoreBuyCancel) { run.stopped = 'auf Wunsch gestoppt'; break; }
@@ -22540,15 +22571,42 @@ const HybridSbcEa = (() => {
                 if (!sessionReady()) { run.stopped = 'EA-Sitzung weg'; break; }
                 if (run.bids >= maxBids) break;
                 if (run.searches >= L.bidSearchMax) { run.stopped = 'Suchgrenze je Lauf (' + L.bidSearchMax + ') erreicht'; break; }
-                const c = order[i];
-                if (run.committed + c.maxPrice > budget) continue;
-                const person = c.id & 0xFFFFFF;
+                const c0 = order[i];
+                if (run.committed + Math.floor(c0.maxPrice * 0.8) > budget) continue; // grob vorab, genau nach dem Live-Preis
+                const person = c0.id & 0xFFFFFF;
                 if (persons.has(person)) continue;
-                const cn = userCoins();
-                if (cn != null && cn < c.maxPrice) { run.stopped = 'Kontostand reicht nicht mehr'; break; }
-                status = 'Suche Auktionen: ' + c.rating + ' ' + c.name + ' (Gebot bis ' + fmtCoins(c.maxPrice) + ') …'; render();
-                try { await marketGuardGate({ searches: 1 }, 'Item-Score-Gebote', t => { status = t; render(); }); }
+                // v6.63.1 (live 26.11.: 87er laut fut.gg 7.200, am Markt ~9.100): ERST den echten guenstigsten
+                // Sofortkauf holen (zweitguenstigstes Angebot, robustMinBin), daraus Kurs und Gebots-Grenze.
+                status = 'Marktpreis: ' + c0.rating + ' ' + c0.name + ' …'; render();
+                try { await marketGuardGate({ searches: 5 }, 'Item-Score-Gebote', t => { status = t; render(); }); }
                 catch (e) { run.stopped = String(e && e.message || e); break; }
+                let live = null;
+                try { live = await marketMinBin(c0.id, { fresh: true }); run.searches += 1 + (Number(live && live.steps) || 0); }
+                catch (e) {
+                    const st = httpStatusOf(e);
+                    if (isSessionExpired(st)) { run.stopped = 'EA-Sitzung abgelaufen – im Spiel einmal navigieren, dann erneut.'; break; }
+                    if (isRateLimit(st)) { run.stopped = 'EA drosselt (HTTP ' + st + ') – Lauf gestoppt'; break; }
+                    lines.push('– ' + escapeHtml(c0.name) + ': Marktpreis nicht lesbar.'); render();
+                    await futbinSleep(randomBetween(L.gapMin, L.gapMax));
+                    continue;
+                }
+                const ref = live && (live.robust || live.min) || null;
+                const cap = ref ? capOf(ref) : 0;
+                const c = Object.assign({}, c0, { liveRef: ref, maxPrice: cap });
+                const step0 = { name: c.name, rating: c.rating, futgg: c0.price, live: ref, cap: cap, auctions: null, bid: null, buyNow: false, status: null };
+                if (!ref || !ScoreBuyCore.liveOk(ref, c.score, bestRatio)) {
+                    step0.status = ref ? 'Markt zu teuer' : 'kein Sofortkauf-Angebot';
+                    run.steps.push(step0);
+                    lines.push('– ' + escapeHtml(c.rating + ' ' + c.name) + ': ' + (ref ? 'am Markt ' + fmtCoins(ref) + ' (fut.gg ' + fmtCoins(c0.price) + ') – Kurs zu schlecht' : 'kein Sofortkauf-Angebot') + '.');
+                    render();
+                    await futbinSleep(randomBetween(L.gapMin, L.gapMax));
+                    continue;
+                }
+                if (!(cap > 0) || run.committed + cap > budget) { step0.status = 'Budget'; run.steps.push(step0); continue; }
+                const cn = userCoins();
+                if (cn != null && cn < cap) { run.stopped = 'Kontostand reicht nicht mehr'; break; }
+                await futbinSleep(randomBetween(MARKET_STEP_GAP_MIN_MS, MARKET_STEP_GAP_MAX_MS));
+                status = 'Suche Auktionen: ' + c.rating + ' ' + c.name + ' (Markt ' + fmtCoins(ref) + ', Gebot bis ' + fmtCoins(cap) + ') …'; render();
                 let json;
                 run.searches++;
                 try { json = await apiGet('transfermarket?num=21&start=0&type=player&maskedDefId=' + c.id + '&macr=' + c.maxPrice); }
@@ -22560,7 +22618,7 @@ const HybridSbcEa = (() => {
                 const auctions = parseBidAuctions(json && json.auctionInfo).filter(a => a.item && a.item.rating === c.rating && (a.item.rareflag === 0 || a.item.rareflag === 1));
                 let pick = null, amt = null;
                 for (const a of auctions) { const r = ScoreBuyCore.bidAmount(a, c.maxPrice, ownPersonaId(), h); if (r) { pick = a; amt = r; break; } }
-                const step = { name: c.name, rating: c.rating, cap: c.maxPrice, auctions: auctions.length, bid: null, buyNow: false, status: null };
+                const step = Object.assign(step0, { auctions: auctions.length });
                 run.steps.push(step);
                 if (!pick) {
                     run.noAuction++; step.status = 'keine passende Auktion';
@@ -22590,7 +22648,7 @@ const HybridSbcEa = (() => {
                 lines.push('✓ ' + escapeHtml(c.rating + ' ' + c.name) + ': ' + (amt.buyNow ? 'Sofortkauf ' : 'Gebot ') + fmtCoins(amt.amount) + (amt.buyNow ? '' : ' · endet in ' + Math.ceil((Number(pick.expires) || 0) / 60) + ' min'));
                 render();
                 sinceBreak++;
-                if (sinceBreak >= breakAt && run.bids < maxBids) { sinceBreak = 0; breakAt = ScoreBuyCore.blocks(1)[0] || 5; await scorePause(() => scoreBuyCancel || ownPersonaId() !== persona, t => { status = t; render(); }); }
+                if (sinceBreak >= breakAt && run.bids < maxBids) { sinceBreak = 0; breakAt = ScoreBuyCore.breakAfter(); await scorePause(() => scoreBuyCancel || ownPersonaId() !== persona, t => { status = t; render(); }); }
                 else await futbinSleep(randomBetween(L.gapMin, L.gapMax));
             }
             // Auf das Ende der letzten Auktion warten, dann abholen (Stopp-Knopf beendet nur das Bieten).
@@ -22607,7 +22665,9 @@ const HybridSbcEa = (() => {
         } finally {
             scoreBuyBusy = false; scoreBuyLast = null;
         }
-        const res = await onScoreBidCollect(lines);
+        let res = await onScoreBidCollect(lines);
+        // EA schliesst Auktionen mit Verzoegerung: noch offene Gebote nach 45 s ein zweites Mal pruefen.
+        for (let k = 0; res && res.open > 0 && k < 2 && ownPersonaId() === persona; k++) { await futbinSleep(45000); res = await onScoreBidCollect(lines); }
         if (run.stopped && box) box.insertAdjacentHTML('afterbegin', '<div class="sbc-opt-dim">Gebote beendet: ' + escapeHtml(run.stopped) + '</div>');
         if (res) run.collect = res;
     }
@@ -22627,13 +22687,15 @@ const HybridSbcEa = (() => {
             const ai = json && Array.isArray(json.auctionInfo) ? json.auctionInfo : [];
             const byTrade = new Map(ai.filter(a => a && a.tradeId != null).map(a => [String(a.tradeId), a]));
             const keep = [], bought = [];
+            out.seen = [];
             mine.forEach(x => {
                 const a = byTrade.get(String(x.tradeId));
-                const ts = a ? String(a.tradeState || '').toLowerCase() : '', bs = a ? String(a.bidState || '').toLowerCase() : '';
-                if (a && ts === 'closed' && (bs === 'highest' || bs === 'buynow')) { bought.push({ itemId: a.itemData && a.itemData.id, raw: a.itemData || null, rec: x, paid: Number(a.currentBid) || x.amount }); }
-                else if (a && ts === 'active' && bs === 'highest') { keep.push(x); out.open++; }
-                else if (!a && Date.now() < Number(x.until)) { keep.push(x); out.open++; }
-                else out.lost++;
+                const st = ScoreBuyCore.bidState(a, Date.now(), Number(x.until) || 0);
+                out.seen.push({ name: x.name, tradeId: x.tradeId, amount: x.amount, tradeState: a ? a.tradeState : null, bidState: a ? a.bidState : null, expires: a ? a.expires : null, state: st });
+                if (st === 'won') bought.push({ itemId: a.itemData && a.itemData.id, raw: a.itemData || null, rec: x, paid: Number(a.currentBid) || x.amount });
+                else if (st === 'offen') { keep.push(x); out.open++; }
+                else if (st === 'lost') out.lost++;
+                else out.unclear = (out.unclear || 0) + 1;
             });
             if (bought.length) {
                 const ad = await adoptBoughtIntoClient(bought.filter(b => b.raw && b.itemId != null), () => ownPersonaId() === persona);
@@ -22654,7 +22716,7 @@ const HybridSbcEa = (() => {
         d.collect = Object.assign({ at: Date.now() }, out);
         if (box) scoreBuyShow(box).innerHTML = (Array.isArray(prevLines) ? prevLines.slice(-12).map(l => '<div>' + l + '</div>').join('') : '') +
             '<div class="sbc-opt-summary">Gewonnen: ' + out.won + ' Karten = ' + fmt(out.points) + ' Punkte für ' + fmtCoins(out.paid) + (out.points ? ' (' + (out.paid / out.points).toFixed(2).replace('.', ',') + ' je Punkt)' : '') + '.</div>' +
-            '<div class="sbc-opt-dim">' + (out.lost ? out.lost + ' überboten oder ohne Zuschlag (liegen ggf. noch in den Transferzielen). ' : '') +
+            '<div class="sbc-opt-dim">' + (out.lost ? out.lost + ' überboten (liegen ggf. noch in den Transferzielen). ' : '') + (out.unclear ? out.unclear + ' nicht mehr in den Transferzielen – bitte im Spiel prüfen. ' : '') +
             (out.open ? out.open + ' Gebote laufen noch – später „Item Score kaufen“ → „Gebote prüfen“. ' : '') +
             (out.won ? out.moved + ' davon in den Verein verschoben; sie zählen bei „Karten auswählen“ 14 Tage wie Storage.' : '') +
             (out.error ? ' Fehler: ' + escapeHtml(out.error) : '') + '</div>';

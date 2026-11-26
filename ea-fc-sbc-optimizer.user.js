@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.61.4
+// @version      6.62.0
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.61.4';
+    const VERSION = '6.62.0';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -212,6 +212,7 @@
             batchSpare: null,        // v6.7.0: Vorschau-Tausch (geschonte Karten, neu geplant)
             mcp: null,               // v6.8.0: KI-Verbindung (letzte Aufrufe: Werkzeug, ok, Fehler)
             pointsBuy: null,         // v6.22.0: Punkte kaufen (Bedarf, Punkte je Rating, Coins je Punkt, Plan, Kauf)
+            scoreBuy: null,          // v6.62.0: Item Score kaufen (Punkte je Rating, Kurse, Lauf mit Bloecken)
             relay: null,             // v6.21.0: KI ueber das Internet (Status, Aufrufe, Fehler - nie der Schluessel)
             galleryCheck: null,      // v5.65.0: Sammelstand je Spieler ueber Marktangebote
             gallerySell: null,       // v5.35.0: Verkauf gekaufter Galerie-Karten (Preise, Schritte)
@@ -5486,6 +5487,67 @@
         return { parseCheapest: parseCheapest, scoreTable: scoreTable, ratios: ratios, plan: plan };
     })();
     // [POINTSBUY-END]
+    // [SCOREBUY-BEGIN]
+    /**
+     * v6.62.0 (Rasmus 26.11.: "gerade haben wir eine Knappheit was Item Score angeht ... welche
+     * Karten den besten Item Score pro Gold Value haben und dann die fuer den absolut minimalen
+     * Preis nachkaufen. Immer mit Pausen dazwischen und so natuerlich"). Unabhaengig von einer
+     * offenen Punkte-SBC: Punkte je Rating aus EAs gradingScore an den eigenen NORMALEN Karten
+     * (Rueckfall: live gemessene Werte vom 18.11.), Takt-Regeln fuer den langsamen Kauf. Rein.
+     */
+    const ScoreBuyCore = (function () {
+        // Live 18.11.2026 an normalen Gold-Karten gemessen (CLAUDE.md, Punkte-SBC kaufen).
+        const FALLBACK = { 81: 280, 82: 340, 83: 410, 84: 830, 85: 2100, 86: 4100, 87: 5500, 88: 8300, 89: 11000, 90: 14000 };
+        // Kauf-Takt: hoechstens 30 Karten je Freigabe (Transferziele fassen 50), 60 je 24 h,
+        // Bloecke zu 5-8 Kaeufen, dazwischen 12-30 s, nach jedem Block 1-3 min Pause.
+        const LIMITS = { perRun: 30, perDay: 60, blockMin: 5, blockMax: 8, gapMin: 12000, gapMax: 30000, pauseMin: 60000, pauseMax: 180000, searchesPerCard: 2 };
+        const TARGETS = [5000, 10000, 25000, 50000];
+        /**
+         * Punkte je Rating. entries: [{ rating, rareflag, itemScore }] (Pool, ohne Evos).
+         * Nur rareflag STRENG 0/1 und nur eindeutige Werte je Rating; sonst der Messwert.
+         */
+        function table(entries) {
+            const by = {};
+            (Array.isArray(entries) ? entries : []).forEach(function (p) {
+                if (!p) return;
+                const rf = p.rareflag, r = Number(p.rating), sc = Number(p.itemScore); // rareflag STRENG 0/1 (null/NaN zaehlt nicht)
+                if (!(rf === 0 || rf === 1) || !(r >= 75) || !(sc > 0)) return;
+                (by[r] = by[r] || new Set()).add(sc);
+            });
+            const out = {}, src = {};
+            Object.keys(by).forEach(function (r) { if (by[r].size === 1) { out[r] = Array.from(by[r])[0]; src[r] = 'ea'; } });
+            Object.keys(FALLBACK).forEach(function (r) { if (!(out[r] > 0)) { out[r] = FALLBACK[r]; src[r] = 'messung'; } });
+            return { table: out, source: src };
+        }
+        /** n Kaeufe in Bloecke zu blockMin..blockMax (der letzte darf kleiner sein). rnd() in [0, 1). */
+        function blocks(n, rnd) {
+            n = Math.max(0, Math.floor(Number(n) || 0));
+            const r = typeof rnd === 'function' ? rnd : Math.random;
+            const out = [];
+            while (n > 0) {
+                const span = LIMITS.blockMax - LIMITS.blockMin + 1;
+                let k = LIMITS.blockMin + Math.min(span - 1, Math.floor(Math.max(0, r()) * span));
+                if (k > n) k = n;
+                out.push(k); n -= k;
+            }
+            return out;
+        }
+        /** Kauf-Zeitstempel der letzten 24 h (je Persona gefuehrt). */
+        function dayPrune(log, now) {
+            return (Array.isArray(log) ? log : []).filter(function (t) { return Number.isFinite(t) && t <= now && now - t < 86400000; });
+        }
+        /** Wie viele Karten darf die naechste Freigabe hoechstens kaufen? */
+        function room(log, now) {
+            return Math.max(0, Math.min(LIMITS.perRun, LIMITS.perDay - dayPrune(log, now).length));
+        }
+        /** Ziel einlesen: ganze Zahl 100..200000, sonst null. */
+        function target(v) {
+            const n = Math.floor(Number(String(v == null ? '' : v).replace(/[.\s]/g, '')));
+            return Number.isFinite(n) && n >= 100 && n <= 200000 ? n : null;
+        }
+        return { FALLBACK: FALLBACK, LIMITS: LIMITS, TARGETS: TARGETS, table: table, blocks: blocks, dayPrune: dayPrune, room: room, target: target };
+    })();
+    // [SCOREBUY-END]
     // ========================================================================
     //  6. IN SBC EINTRAGEN
     // ========================================================================
@@ -9079,6 +9141,7 @@
         { id: 'transferliste', group: 'Werkzeuge', label: 'Transferliste listen', words: 'verkaufen marktpreis', go: { ort: 'start', flash: 'tools-sell' } },
         { id: 'ueberblick', group: 'Werkzeuge', label: 'Verein im Überblick', words: 'bestand rating liga nation', go: { ort: 'start', flash: 'clubview' } },
         { id: 'gauntlet', group: 'Werkzeuge', label: 'Gauntlet-Teams', words: 'teams chemie meta', go: { ort: 'start', flash: 'gauntlet-open' } },
+        { id: 'itemscore', group: 'Werkzeuge', label: 'Item Score kaufen', words: 'punkte streamlined storage gold nachkaufen', go: { ort: 'start', flash: 'scorebuy' } },
         { id: 'diagnose', group: 'Werkzeuge', label: 'Diagnose schreiben', words: 'report fehler konsole log', go: { ort: 'start', flash: 'diag' } },
         { id: 'aktivitaet', group: 'Aktivität', label: 'Aktivität', words: 'freigaben aufträge protokoll meldungen heute ki nachricht verlauf', go: { ort: 'aktivitaet' } },
         { id: 'kaufbuch', group: 'Aktivität', label: 'Kaufbuch', words: 'käufe bought', go: { ort: 'aktivitaet', open: 'ki-ledger-box' } },
@@ -9865,7 +9928,7 @@
         const flag = function (f) { try { return !!f(); } catch (e) { return false; } };
         b.running = flag(function () { return buyBusy; }) || flag(function () { return sbcSolveBusy; }) || flag(function () { return futbinBusy; }) ||
             flag(function () { return hybridClubBusy; }) || flag(function () { return galleryBusy; }) || flag(function () { return sellBusy; }) ||
-            flag(function () { return gauntletBusy; }) || flag(function () { return pointsBusy; }) || flag(function () { return pointsBuyBusy; }) ||
+            flag(function () { return gauntletBusy; }) || flag(function () { return pointsBusy; }) || flag(function () { return pointsBuyBusy; }) || flag(function () { return scoreBuyBusy; }) ||
             flag(function () { return bidHelperBusy; }) || flag(function () { return bidPlanBusy; }) || flag(function () { return STATE.packOpenBusy; }) ||
             flag(function () { return ptRun.kind; }) || flag(function () { return vorlagenRun && !vorlagenRun.fertig; }) ||
             flag(function () { return (ui.run && ui.run.disabled) || (ui.batchPlan && ui.batchPlan.disabled); });
@@ -9874,7 +9937,7 @@
             b.result = tabCurrent === 'kaufen' ? (filled('sbc-opt-futbin-result') || filled('sbc-opt-hybrid-club-result'))
                 : (filled('sbc-opt-result') || filled('sbc-opt-points-result') || filled('sbc-opt-points-buyres') ||
                     !!(ui.planResult && !ui.planResult.classList.contains('sbc-opt-hidden')));
-        } else if (view === 'start') b.result = filled('sbc-opt-tools-result') || filled('sbc-opt-clubview-result') || filled('sbc-opt-gauntlet-result');
+        } else if (view === 'start') b.result = filled('sbc-opt-tools-result') || filled('sbc-opt-clubview-result') || filled('sbc-opt-gauntlet-result') || filled('sbc-opt-scorebuy-result');
         else if (view === 'gebote') b.result = filled('sbc-opt-bid-result');
         // v6.60.0: Galerie - ein offenes Set, eine Verkaufs-Vorschau oder ein Zwischenstand ist ein Ergebnis (die Liste und der Leerzustand nicht)
         else if (view === 'galerie') b.result = ptGal.kind === 'set' || ptGal.kind === 'verkauf' || ptGal.kind === 'sonst';
@@ -11269,6 +11332,11 @@
                     <button type="button" class="sbc-opt-tip" aria-label="Info: Gauntlet-Teams" aria-expanded="false" data-tip="Baut aus deinem Verein mehrere Teams ohne gemeinsame Spieler: Chemie plus Ø Meta-Rating je Position (fut.gg). Zeigt die besten 5 Varianten, Anker je Team möglich.">i</button>
                     </div>
                     <div class="sbc-opt-result" id="sbc-opt-gauntlet-result"></div>
+                    <div class="sbc-opt-withtip">
+                    <button type="button" class="sbc-opt-btn ghost" id="sbc-opt-scorebuy"><span>Item Score kaufen</span></button>
+                    <button type="button" class="sbc-opt-tip" aria-label="Info: Item Score kaufen" aria-expanded="false" data-tip="Zeigt je Rating die Coins je Punkt (fut.gg) und plant die günstigsten normalen Gold-Karten für dein Ziel. Gekauft wird nach Rückfrage langsam mit Pausen, höchstens 30 Karten je Lauf und 60 am Tag.">i</button>
+                    </div>
+                    <div class="sbc-opt-result" id="sbc-opt-scorebuy-result"></div>
                     <div class="sbc-opt-withtip">
                     <button class="sbc-opt-btn ghost" id="sbc-opt-diag">Diagnose in Konsole schreiben</button>
                     <button type="button" class="sbc-opt-tip" aria-label="Info: Diagnose" aria-expanded="false" data-tip="JSON-Report für die Fehlersuche. Landet in der Konsole bzw. im App-Log.">i</button>
@@ -18047,7 +18115,7 @@ const HybridSbcEa = (() => {
     /** Andere Laeufe, mit denen der Helfer nie parallel laeuft (Kauf, Listen, Galerie, SBC-Abgabe/Planung, Vorlagen). */
     function bidOtherRunBusy() {
         try {
-            if (buyBusy || sbcSolveBusy || sellBusy || galleryBusy || pointsBuyBusy) return 'Gerade läuft ein Kauf-, Verkaufs- oder Galerie-Lauf.';
+            if (buyBusy || sbcSolveBusy || sellBusy || galleryBusy || pointsBuyBusy || scoreBuyBusy) return 'Gerade läuft ein Kauf-, Verkaufs- oder Galerie-Lauf.';
             if (vorlagenRun && !vorlagenRun.fertig) return 'Gerade läuft eine Vorlage.';
             if (ui.batchRun && ui.batchRun.disabled && ui.batchPlan && ui.batchPlan.disabled) return 'Gerade wird eine SBC geplant oder abgegeben.';
         } catch (e) {}
@@ -19483,6 +19551,7 @@ const HybridSbcEa = (() => {
         if (ui.toolsSell && !ui.toolsSell.dataset.wired) { ui.toolsSell.dataset.wired = '1'; ui.toolsSell.addEventListener('click', onTradepileSellClick); }
         if (ui.gauntletOpen && !ui.gauntletOpen.dataset.wired) { ui.gauntletOpen.dataset.wired = '1'; ui.gauntletOpen.addEventListener('click', onGauntletOpenClick); }
         if (ui.clubView && !ui.clubView.dataset.wired) { ui.clubView.dataset.wired = '1'; ui.clubView.addEventListener('click', onClubViewClick); }
+        { const sb = document.getElementById('sbc-opt-scorebuy'); if (sb && !sb.dataset.wired) { sb.dataset.wired = '1'; sb.addEventListener('click', onScoreBuyClick); } } // v6.62.0
         if (ui.mcpChatOk && !ui.mcpChatOk.dataset.wired) {
             ui.mcpChatOk.dataset.wired = '1';
             ui.mcpChatOk.checked = galleryChatOkEnabled();
@@ -21918,13 +21987,15 @@ const HybridSbcEa = (() => {
     function pointsBoughtIds() {
         const persona = ownPersonaId();
         const list = persona && Array.isArray(pointsBoughtLoad()[persona]) ? pointsBoughtLoad()[persona] : [];
-        return new Set(list.filter(x => x && Date.now() - Number(x.at) < POINTS_BOUGHT_TTL_MS).map(x => String(x.id)));
+        return new Set(list.filter(x => x && Date.now() - Number(x.at) < pointsBoughtTtl(x)).map(x => String(x.id)));
     }
-    function pointsBoughtAdd(ids) {
+    /** v6.62.0: Eintraege aus "Item Score kaufen" tragen days (Vorrat, 14 Tage); alte Eintraege ohne days: 3 Tage wie bisher. */
+    function pointsBoughtTtl(x) { return x && Number(x.days) > 0 ? Number(x.days) * 86400000 : POINTS_BOUGHT_TTL_MS; }
+    function pointsBoughtAdd(ids, days) {
         const persona = ownPersonaId(); if (!persona || !ids.length) return;
         const m = pointsBoughtLoad();
-        const keep = (Array.isArray(m[persona]) ? m[persona] : []).filter(x => x && Date.now() - Number(x.at) < POINTS_BOUGHT_TTL_MS);
-        ids.forEach(id => keep.push({ id: String(id), at: Date.now() }));
+        const keep = (Array.isArray(m[persona]) ? m[persona] : []).filter(x => x && Date.now() - Number(x.at) < pointsBoughtTtl(x));
+        ids.forEach(id => keep.push(days > 0 ? { id: String(id), at: Date.now(), days: days } : { id: String(id), at: Date.now() }));
         m[persona] = keep.slice(-200);
         try { localStorage.setItem(POINTS_BOUGHT_KEY, JSON.stringify(m)); } catch (e) {}
     }
@@ -21944,7 +22015,7 @@ const HybridSbcEa = (() => {
     let pointsBuyBusy = false, pointsBuyCancel = false, pointsBuyPending = null;
     function pointsBuyBox() { return document.getElementById('sbc-opt-points-buyres'); }
     async function onPointsBuyClick() {
-        if (pointsBuyBusy || buyBusy) { toast('Es läuft schon ein Kauf.', 'warn'); return; }
+        if (pointsBuyBusy || buyBusy || scoreBuyBusy) { toast('Es läuft schon ein Kauf.', 'warn'); return; }
         const btn = document.getElementById('sbc-opt-points-buy');
         const box = pointsBuyBox();
         const wa = findOneClickWorkArea();
@@ -22068,6 +22139,234 @@ const HybridSbcEa = (() => {
             if (box && b) box.innerHTML = buyLog + '<div class="sbc-opt-summary">Gekauft: ' + b.bought + ' Karten = ' + fmt(b.points) + ' Punkte für ' + fmt(b.spent) + ' Coins' +
                 (b.points ? ' (' + (b.spent / b.points).toFixed(2).replace('.', ',') + ' je Punkt)' : '') + '.</div>' +
                 '<div class="sbc-opt-dim">Jetzt „Karten auswählen“ – die gekauften Karten zählen dort wie Storage.' + (b.bought < pend.plan.length ? ' Fehlt noch etwas, „Fehlende Punkte kaufen“ rechnet mit frischen Preisen neu.' : '') + '</div>';
+        }
+    }
+    // ===================== v6.62.0 Item Score kaufen (Vorrat, ohne offene SBC) =====================
+    // Rasmus 26.11.: Knappheit an Item Score. Je Rating die Punkte aus EAs gradingScore der eigenen
+    // normalen Karten, Preise aus fut.ggs "Cheapest by Rating", Plan mit den wenigsten Coins je Ziel
+    // (PointsBuyCore.plan). Gekauft wird nur nach Freigabe im Panel und LANGSAM: Bloecke zu 5-8
+    // Karten, 12-30 s zwischen den Karten, 1-3 min Pause nach jedem Block, Markt-Takt vor jedem Block,
+    // hoechstens 30 Karten je Freigabe und 60 in 24 h. Je Karte wird das guenstigste Angebot bis zum
+    // fut.gg-Preis gekauft, sonst hoechstens eine Preisstufe darueber (keine Neubewertung).
+    // Gekaufte Karten zaehlen bei "Karten auswaehlen" einer Punkte-SBC wie Storage (14 Tage).
+    const SCORE_BUY_LOG_KEY = 'sbcOptScoreBuyLog';
+    const SCORE_BUY_TARGET_KEY = 'sbcOptScoreBuyTarget';
+    const SCORE_BUY_KEEP_DAYS = 14;
+    const SCORE_BUY_TTL_MS = 10 * 60000;
+    let scoreBuyBusy = false, scoreBuyCancel = false, scoreBuyLast = null;
+    function scoreBuyBox() { return document.getElementById('sbc-opt-scorebuy-result'); }
+    function scoreBuyLogAll() {
+        let m = {};
+        try { m = JSON.parse(localStorage.getItem(SCORE_BUY_LOG_KEY) || '{}') || {}; } catch (e) { m = {}; }
+        return m && typeof m === 'object' && !Array.isArray(m) ? m : {};
+    }
+    function scoreBuyLog(persona) { return ScoreBuyCore.dayPrune(scoreBuyLogAll()[persona], Date.now()); }
+    function scoreBuyLogAdd(persona, n) {
+        if (!persona || !(n > 0)) return;
+        try {
+            const m = scoreBuyLogAll(), now = Date.now();
+            const list = ScoreBuyCore.dayPrune(m[persona], now);
+            for (let i = 0; i < n; i++) list.push(now);
+            m[persona] = list;
+            localStorage.setItem(SCORE_BUY_LOG_KEY, JSON.stringify(m));
+        } catch (e) {}
+    }
+    let scoreBuyTarget = null; // gilt auch ohne localStorage
+    function scoreBuyTargetGet() {
+        if (scoreBuyTarget) return scoreBuyTarget;
+        let v = null;
+        try { v = ScoreBuyCore.target(localStorage.getItem(SCORE_BUY_TARGET_KEY)); } catch (e) {}
+        return (scoreBuyTarget = v || 10000);
+    }
+    function scoreBuyTargetPut(v) {
+        const t = ScoreBuyCore.target(v);
+        if (!t) return;
+        scoreBuyTarget = t;
+        try { localStorage.setItem(SCORE_BUY_TARGET_KEY, String(t)); } catch (e) {}
+    }
+    async function onScoreBuyClick() {
+        const box = scoreBuyBox();
+        const btn = document.getElementById('sbc-opt-scorebuy');
+        if (scoreBuyBusy || buyBusy || pointsBuyBusy) { toast('Es läuft schon ein Kauf.', 'warn'); return; }
+        if (!sessionReady()) { toast('EA-Sitzung noch nicht erfasst - einmal im Spiel klicken.', 'warn'); return; }
+        if (!bridgeKind()) { if (box) box.innerHTML = '<div class="sbc-opt-dim">' + escapeHtml(BRIDGE_HINT) + '</div>'; return; }
+        if (!STATE.pool || !STATE.pool.length) { if (box) box.innerHTML = '<div class="sbc-opt-dim">Erst den Verein laden – sonst weiß PitTools nicht, welche Spieler du schon hast.</div>'; return; }
+        scoreBuyBusy = true; setBtnBusy(btn, true, 'Rechne …');
+        const platform = readFutbinSettings().platform;
+        const persona = ownPersonaId();
+        const diag = STATE.diag.scoreBuy = { at: Date.now(), platform: platform };
+        try {
+            const pool = STATE.pool.filter(p => p && !p.evo);
+            const t = ScoreBuyCore.table(pool.map(p => ({ rating: p.rating, rareflag: p.rareflag, itemScore: p.itemScore })));
+            // Wer schon im Verein/Storage liegt (auch als Evo), wird nicht gekauft (EA nimmt kein Duplikat in den Verein).
+            const owned = new Set();
+            const addPerson = x => { const v = pointsPersonOf(x); if (v) owned.add(v); const a = Number(x && x.assetId); if (a > 0) owned.add(a); };
+            STATE.pool.forEach(p => addPerson(p.raw || p));
+            (STATE.evoRaws ? Array.from(STATE.evoRaws.values()) : []).forEach(addPerson);
+            if (box) box.innerHTML = '<div class="sbc-opt-dim">Hole die günstigsten Karten je Rating von fut.gg …</div>';
+            const year = futbinYear(STATE.diag.gameName, window.fut_year);
+            const r = await bridgeFetch('https://www.fut.gg/api/fut/market/' + year + '/cheapest-by-rating/v2/overview/?platform=' + (platform === 'pc' ? 'pc' : 'ps'), 30000);
+            if (!r || r.status !== 200) throw new Error('fut.gg antwortet nicht (HTTP ' + (r && r.status) + ').');
+            let json = null;
+            try { json = JSON.parse(r.text); } catch (e) { throw new Error('fut.gg lieferte kein JSON.'); }
+            const all = PointsBuyCore.parseCheapest(json, { minRating: 75 });
+            const cands = all.filter(c => t.table[c.rating] > 0 && !owned.has(c.id) && !owned.has(c.id & 0xFFFFFF));
+            scoreBuyLast = { persona: persona, at: Date.now(), platform: platform, table: t.table, source: t.source, cands: cands, stamp: Date.now() + ':' + Math.random() };
+            Object.assign(diag, { candidates: all.length, usable: cands.length, table: t.table, source: t.source,
+                                  ratios: PointsBuyCore.ratios(cands, t.table).map(x => ({ rating: x.rating, score: x.score, cheapest: x.cheapest, perPoint: Math.round(x.perPoint * 100) / 100 })) });
+            scoreBuyRender();
+        } catch (e) {
+            diag.error = String(e && e.message || e);
+            reportError('Item Score kaufen', e);
+            if (box) box.innerHTML = '<div class="sbc-opt-dim">' + escapeHtml(diag.error) + '</div>';
+        } finally {
+            scoreBuyBusy = false; setBtnBusy(btn, false);
+        }
+    }
+    /** Plan zum gewaehlten Ziel aus den zuletzt geholten Kandidaten - keine Anfrage. */
+    function scoreBuyPlanNow() {
+        const last = scoreBuyLast;
+        if (!last) return null;
+        const need = scoreBuyTargetGet();
+        const roomN = ScoreBuyCore.room(scoreBuyLog(last.persona), Date.now());
+        const plan = roomN > 0 ? PointsBuyCore.plan(last.cands, last.table, need, roomN) : { ok: false, reason: 'Tageslimit erreicht (' + ScoreBuyCore.LIMITS.perDay + ' Karten in 24 h)' };
+        return { need: need, room: roomN, plan: plan };
+    }
+    function scoreBuyRender() {
+        const box = scoreBuyBox(), last = scoreBuyLast;
+        if (!box || !last) return;
+        const fmt = n => Number(n).toLocaleString('de-DE');
+        const pp = scoreBuyPlanNow();
+        const ratios = PointsBuyCore.ratios(last.cands, last.table).sort((a, b) => a.perPoint - b.perPoint);
+        const best = ratios[0];
+        const est = ratios.some(x => last.source[x.rating] === 'messung');
+        const tab = ratios.map((x, i) => '<div class="sbc-opt-batch-card"><span class="r">' + x.rating + '</span> ab ' + fmt(x.cheapest) + ' C · ' + fmt(x.score) + ' P' +
+            (last.source[x.rating] === 'messung' ? '*' : '') + ' · <b>' + x.perPoint.toFixed(2).replace('.', ',') + '</b> C/P' + (i === 0 ? ' <span class="src storage">bester Kurs</span>' : '') + '</div>').join('');
+        const chips = '<div class="sbc-opt-chips" id="sbc-opt-scorebuy-target" role="group" aria-label="Ziel in Punkten">' +
+            ScoreBuyCore.TARGETS.map(v => '<button type="button" class="sbc-opt-chip' + (v === pp.need ? ' on' : '') + '" data-target="' + v + '" aria-pressed="' + (v === pp.need) + '">' + (v >= 1000 ? (v / 1000) + 'k' : v) + '</button>').join('') + '</div>';
+        let h = '<div class="sbc-opt-summary">' + (best ? 'Bester Kurs gerade: ' + best.rating + 'er, ' + best.perPoint.toFixed(2).replace('.', ',') + ' Coins je Punkt' : 'Keine passenden Karten bei fut.gg') + '</div>' +
+            '<div class="sbc-opt-head"><span>Wie viele Punkte?</span></div>' + chips;
+        const plan = pp.plan;
+        if (plan && plan.ok) {
+            const v = pointsBuyPlanHtml(plan, [], fmt);
+            const tiers = eaPriceTiers();
+            const cap = plan.picks.reduce((a, x) => a + planMaxPrice(x.price, 0, tiers), 0);
+            h += '<div class="sbc-opt-dim">Plan: <b>' + plan.cards + ' Karten = ' + fmt(plan.points) + ' Punkte für ~' + fmt(plan.coins) + ' Coins</b> (' + plan.perPoint.toFixed(2).replace('.', ',') + ' C/P), höchstens ' + fmt(cap) + '.</div>' +
+                 '<div class="sbc-opt-batch-cards">' + v.rows + '</div>' +
+                 // fut.gg nennt je Rating nur 11 Karten, je Lauf gelten hoechstens 30: ein grosses Ziel greift dann zu teureren Ratings.
+                 (best && plan.perPoint > best.perPoint * 1.15 ? '<div class="sbc-opt-warn-box">Für dieses Ziel reichen die günstigsten Karten nicht – der Plan nimmt teurere (' +
+                     plan.perPoint.toFixed(2).replace('.', ',') + ' statt ' + best.perPoint.toFixed(2).replace('.', ',') + ' C/P). Ein kleineres Ziel in mehreren Läufen ist günstiger.</div>' : '') +
+                 '<button type="button" class="sbc-opt-btn primary" id="sbc-opt-scorebuy-go"><span>' + plan.cards + ' Karten langsam kaufen …</span></button>';
+        } else {
+            h += '<div class="sbc-opt-dim">Kein Kaufplan: ' + escapeHtml(plan && plan.reason || '?') + (pp.room > 0 && pp.room < ScoreBuyCore.LIMITS.perRun ? ' (heute noch ' + pp.room + ' Karten)' : '') + '.</div>';
+        }
+        h += '<details class="sbc-opt-details-toggle"><summary>Coins je Punkt nach Rating (fut.gg, ' + (last.platform === 'pc' ? 'PC' : 'Konsole') + ')</summary><div class="sbc-opt-batch-cards">' + tab + '</div>' +
+             (est ? '<div class="sbc-opt-dim">* Punktwert gemessen am 18.11. (keine eigene Karte dieses Ratings im Verein).</div>' : '') + '</details>';
+        box.innerHTML = h;
+        box.querySelectorAll('#sbc-opt-scorebuy-target [data-target]').forEach(b => b.addEventListener('click', () => {
+            if (scoreBuyBusy) return;
+            scoreBuyTargetPut(Number(b.getAttribute('data-target'))); scoreBuyRender();
+        }));
+        const go = document.getElementById('sbc-opt-scorebuy-go');
+        if (go) go.addEventListener('click', onScoreBuyGo);
+    }
+    async function onScoreBuyGo() {
+        const box = scoreBuyBox(), last = scoreBuyLast;
+        if (scoreBuyBusy || buyBusy || pointsBuyBusy) { toast('Es läuft schon ein Kauf.', 'warn'); return; }
+        if (!last || Date.now() - last.at > SCORE_BUY_TTL_MS || ownPersonaId() !== last.persona) {
+            scoreBuyLast = null;
+            if (box) box.innerHTML = '<div class="sbc-opt-dim">Die Preise sind älter als 10 Minuten oder der Account hat gewechselt – bitte neu rechnen.</div>';
+            return;
+        }
+        const pp = scoreBuyPlanNow();
+        if (!pp || !pp.plan || !pp.plan.ok || !pp.plan.picks.length) return;
+        const fmt = n => Number(n).toLocaleString('de-DE');
+        const tiers = eaPriceTiers();
+        const buyPlan = pp.plan.picks.map((x, i) => ({ index: i, resourceId: x.id, name: x.name, rating: x.rating, planned: x.price, futggPrice: x.price,
+                                                        maxPrice: planMaxPrice(x.price, 0, tiers), score: x.score }));
+        const cap = buyPlan.reduce((a, x) => a + x.maxPrice, 0);
+        const coins = userCoins();
+        const persona = last.persona, stamp = last.stamp;
+        const L = ScoreBuyCore.LIMITS;
+        scoreBuyBusy = true; // v6.52: das Busy-Flag haelt ueber die Frage
+        let ok = false;
+        try {
+            ok = await uiConfirm(box, {
+                title: buyPlan.length + ' Karten für ' + fmt(pp.plan.points) + ' Punkte kaufen?',
+                facts: [['Höchstens', fmtCoins(cap)], ['Punkte', fmt(pp.plan.points)], coins != null ? ['Kontostand', fmtCoins(coins)] : null].filter(Boolean),
+                warns: [coins != null && coins < cap ? 'Der Kontostand reicht nicht für alle Obergrenzen – gekauft wird, so weit er reicht' : null].filter(Boolean),
+                details: { label: 'Karten', lines: buyPlan.map(x => x.rating + ' ' + x.name + ' · bis ' + fmtCoins(x.maxPrice)) },
+                text: 'Je Karte das günstigste Angebot bis zum fut.gg-Preis, sonst höchstens eine Preisstufe darüber. Langsam: 12–30 s je Karte, nach 5–8 Käufen 1–3 min Pause. Automatisches Kaufen verstößt gegen EAs Regeln – ein Restrisiko bleibt.',
+                yes: { label: 'Ja, langsam kaufen' }, timeoutMs: 3 * 60 * 1000
+            }, () => ownPersonaId() + '|' + (scoreBuyLast && scoreBuyLast.stamp));
+        } catch (e) { ok = false; }
+        if (!ok || !scoreBuyLast || scoreBuyLast.stamp !== stamp || ownPersonaId() !== persona) { scoreBuyBusy = false; return; }
+        scoreBuyCancel = false;
+        const diag = STATE.diag.scoreBuy || (STATE.diag.scoreBuy = {});
+        diag.run = { at: Date.now(), planned: buyPlan.length, cap: cap, points: pp.plan.points, coins: pp.plan.coins, blocks: [], bought: 0, spent: 0, gotPoints: 0, stopped: null };
+        const run = diag.run;
+        let blockHtml = '', status = '';
+        const render = () => {
+            if (!box) return;
+            box.innerHTML = '<div class="sbc-opt-summary">Item Score: ' + run.bought + ' von ' + buyPlan.length + ' Karten · ' + fmt(run.gotPoints) + ' Punkte · ' + fmtCoins(run.spent) + '</div>' +
+                (status ? '<div class="sbc-opt-dim">' + escapeHtml(status) + '</div>' : '') + blockHtml +
+                '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-scorebuy-stop"' + (scoreBuyCancel ? ' disabled' : '') + '><span>Stopp nach dieser Karte</span></button>';
+            const st = document.getElementById('sbc-opt-scorebuy-stop');
+            if (st) st.addEventListener('click', () => { scoreBuyCancel = true; st.disabled = true; });
+        };
+        try {
+            const sizes = ScoreBuyCore.blocks(buyPlan.length);
+            let k = 0;
+            for (let bi = 0; bi < sizes.length; bi++) {
+                if (scoreBuyCancel) { run.stopped = 'auf Wunsch gestoppt'; break; }
+                if (ownPersonaId() !== persona) { run.stopped = 'Account gewechselt'; break; }
+                if (!sessionReady()) { run.stopped = 'EA-Sitzung weg'; break; }
+                const part = buyPlan.slice(k, k + sizes[bi]); k += sizes[bi];
+                const c = userCoins();
+                if (c != null && c < Math.min.apply(null, part.map(x => x.planned))) { run.stopped = 'Kontostand reicht nicht mehr'; break; }
+                status = 'Block ' + (bi + 1) + ' von ' + sizes.length + ': prüfe Markt-Takt …'; render();
+                try { await marketGuardGate({ searches: part.length * L.searchesPerCard }, 'Item-Score-Kauf', t => { status = t; render(); }); }
+                catch (e) { run.stopped = String(e && e.message || e); break; }
+                if (scoreBuyCancel) { run.stopped = 'auf Wunsch gestoppt'; break; }
+                status = 'Block ' + (bi + 1) + ' von ' + sizes.length + ' (' + part.length + ' Karten)';
+                const partCap = part.reduce((a, x) => a + x.maxPrice, 0);
+                const d = await buyPlannedPlayers(null, part, { noSquad: true, mode: 'itemscore', hardBudget: partCap, fixedCaps: true, leanSearch: true,
+                    maxPerRun: part.length, gapMin: L.gapMin, gapMax: L.gapMax,
+                    setResult: h => { blockHtml = h; render(); },
+                    cancelled: () => scoreBuyCancel || ownPersonaId() !== persona,
+                    canAdopt: () => ownPersonaId() === persona,
+                    onFinish: (dd, bought) => {
+                        const ids = bought.map(b => b.itemId).filter(x => x != null);
+                        if (ownPersonaId() === persona) pointsBoughtAdd(ids, SCORE_BUY_KEEP_DAYS);
+                        scoreBuyLogAdd(persona, bought.length);
+                        run.gotPoints += bought.reduce((a, b) => a + (Number(b.plan.score) || 0), 0);
+                        try { mergeIntoPool(bought.map(b => b.raw ? normalizePlayer(Object.assign({}, b.raw), false) : null).filter(Boolean)); } catch (e) {}
+                    }
+                });
+                run.bought += d.bought || 0; run.spent += d.spent || 0;
+                run.blocks.push({ n: part.length, bought: d.bought || 0, spent: d.spent || 0, stopped: d.stopped || null });
+                // Gestoppt im Block (Rate-Limit, Sitzung, Marktsperre, Fehler, Stopp-Knopf) = ganzer Lauf vorbei.
+                if (d.stopped) { run.stopped = scoreBuyCancel ? 'auf Wunsch gestoppt' : d.stopped; break; }
+                if (bi < sizes.length - 1) {
+                    const until = Date.now() + randomBetween(L.pauseMin, L.pauseMax);
+                    while (Date.now() < until && !scoreBuyCancel && ownPersonaId() === persona) {
+                        status = 'Pause wie ein Mensch: weiter in ' + Math.ceil((until - Date.now()) / 1000) + ' s';
+                        render();
+                        await futbinSleep(Math.min(5000, Math.max(200, until - Date.now())));
+                    }
+                }
+            }
+        } catch (e) {
+            run.stopped = String(e && e.message || e);
+            reportError('Item Score kaufen', e);
+        } finally {
+            scoreBuyBusy = false; scoreBuyLast = null;
+            if (box) box.innerHTML = blockHtml + '<div class="sbc-opt-summary">Gekauft: ' + run.bought + ' Karten = ' + fmt(run.gotPoints) + ' Punkte für ' + fmtCoins(run.spent) +
+                (run.gotPoints ? ' (' + (run.spent / run.gotPoints).toFixed(2).replace('.', ',') + ' je Punkt)' : '') + '.</div>' +
+                (run.stopped ? '<div class="sbc-opt-dim">Gestoppt: ' + escapeHtml(run.stopped) + '</div>' : '') +
+                '<div class="sbc-opt-dim">Die Karten liegen im Verein und zählen bei „Karten auswählen“ einer Punkte-SBC 14 Tage lang wie Storage.' +
+                (run.bought < buyPlan.length ? ' Für den Rest „Item Score kaufen“ erneut tippen – mit frischen Preisen.' : '') + '</div>';
+            toast('Item Score: ' + run.bought + ' Karten, ' + fmt(run.gotPoints) + ' Punkte für ' + fmtCoins(run.spent) + (run.stopped ? ' – gestoppt: ' + run.stopped : ''), run.stopped ? 'warn' : 'ok');
         }
     }
     /*
@@ -25626,7 +25925,7 @@ const HybridSbcEa = (() => {
             // Futbin-Loesungssuche (v5.16.0): Bruecke, URL, Kandidaten mit
             // Kosten, Marktabfragen, Fehler, eingefuegte Loesung.
             hybridSbc: STATE.diag.hybridSbc || null,
-            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, batchSpare: STATE.diag.batchSpare || null, mcp: STATE.diag.mcp || null, relay: STATE.diag.relay || null, liveChecks: liveChecksLoad(), buyLedger: (function () { try { return buyLedgerLoad().slice(-50); } catch (e) { return null; } })(), protokoll: (function () { try { return ptLogAdd(ptLogLoad(), null, Date.now(), PT_LOG_MAX).slice(-50); } catch (e) { return null; } })(), marketBudget: (function () { try { return marketGuardSnapshot(marketGuardLoad(), Date.now()); } catch (e) { return null; } })(), points: STATE.diag.points || null, pointsBuy: STATE.diag.pointsBuy || null, galleryTokens: (function () { try { const p = ownPersonaId(); return p ? galleryTokenBookLoad(p) : null; } catch (e) { return null; } })(), galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null, handBuys: STATE.diag.handBuys || null, bidHelper: (function () { try { return bidHelperReport(STATE.diag.bidCapture, STATE.diag.bidRuns); } catch (e) { return null; } })(), bidSbc: (function () { try { const b = STATE.diag.bidSbc; if (!b) return null; const pl = STATE.batch; return Object.assign({}, b, { done: pl && pl.bidOnly && pl.bidStamp === b.stamp ? (pl.usedChallengeIds || []).length : null }); } catch (e) { return null; } })(),
+            futbin: STATE.diag.futbin, futbinBuyRefresh: STATE.diag.futbinBuyRefresh || null, gallery: STATE.diag.gallery || null, galleryEaCollect: STATE.diag.galleryEaCollect || null, gauntlet: STATE.diag.gauntlet || null, clubView: STATE.diag.clubView || null, batchSpare: STATE.diag.batchSpare || null, mcp: STATE.diag.mcp || null, relay: STATE.diag.relay || null, liveChecks: liveChecksLoad(), buyLedger: (function () { try { return buyLedgerLoad().slice(-50); } catch (e) { return null; } })(), protokoll: (function () { try { return ptLogAdd(ptLogLoad(), null, Date.now(), PT_LOG_MAX).slice(-50); } catch (e) { return null; } })(), marketBudget: (function () { try { return marketGuardSnapshot(marketGuardLoad(), Date.now()); } catch (e) { return null; } })(), points: STATE.diag.points || null, pointsBuy: STATE.diag.pointsBuy || null, scoreBuy: STATE.diag.scoreBuy || null, galleryTokens: (function () { try { const p = ownPersonaId(); return p ? galleryTokenBookLoad(p) : null; } catch (e) { return null; } })(), galleryCheck: STATE.diag.galleryCheck || null, gallerySell: STATE.diag.gallerySell || null, tradepileSell: STATE.diag.tradepileSell || null, clientTradeSamples: STATE.diag.clientTradeSamples || null, handBuys: STATE.diag.handBuys || null, bidHelper: (function () { try { return bidHelperReport(STATE.diag.bidCapture, STATE.diag.bidRuns); } catch (e) { return null; } })(), bidSbc: (function () { try { const b = STATE.diag.bidSbc; if (!b) return null; const pl = STATE.batch; return Object.assign({}, b, { done: pl && pl.bidOnly && pl.bidStamp === b.stamp ? (pl.usedChallengeIds || []).length : null }); } catch (e) { return null; } })(),
             futbinBuy: STATE.diag.futbinBuy || null,
             futbinBuyPlan: STATE.diag.futbinBuyPlan || null,
             marketUrls: STATE.diag.marketUrls,

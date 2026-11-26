@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.62.0
+// @version      6.62.1
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.62.0';
+    const VERSION = '6.62.1';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -22155,6 +22155,8 @@ const HybridSbcEa = (() => {
     const SCORE_BUY_TTL_MS = 10 * 60000;
     let scoreBuyBusy = false, scoreBuyCancel = false, scoreBuyLast = null;
     function scoreBuyBox() { return document.getElementById('sbc-opt-scorebuy-result'); }
+    // v6.62.1: Ergebnisfelder sind nur mit .show sichtbar (.sbc-opt-result) - in v6.62.0 fehlte das, der Knopf wirkte tot.
+    function scoreBuyShow(el) { if (el) el.classList.add('show'); return el; }
     function scoreBuyLogAll() {
         let m = {};
         try { m = JSON.parse(localStorage.getItem(SCORE_BUY_LOG_KEY) || '{}') || {}; } catch (e) { m = {}; }
@@ -22189,8 +22191,8 @@ const HybridSbcEa = (() => {
         const btn = document.getElementById('sbc-opt-scorebuy');
         if (scoreBuyBusy || buyBusy || pointsBuyBusy) { toast('Es läuft schon ein Kauf.', 'warn'); return; }
         if (!sessionReady()) { toast('EA-Sitzung noch nicht erfasst - einmal im Spiel klicken.', 'warn'); return; }
-        if (!bridgeKind()) { if (box) box.innerHTML = '<div class="sbc-opt-dim">' + escapeHtml(BRIDGE_HINT) + '</div>'; return; }
-        if (!STATE.pool || !STATE.pool.length) { if (box) box.innerHTML = '<div class="sbc-opt-dim">Erst den Verein laden – sonst weiß PitTools nicht, welche Spieler du schon hast.</div>'; return; }
+        if (!bridgeKind()) { if (box) scoreBuyShow(box).innerHTML = '<div class="sbc-opt-dim">' + escapeHtml(BRIDGE_HINT) + '</div>'; return; }
+        if (!STATE.pool || !STATE.pool.length) { if (box) scoreBuyShow(box).innerHTML = '<div class="sbc-opt-dim">Erst den Verein laden – sonst weiß PitTools nicht, welche Spieler du schon hast.</div>'; return; }
         scoreBuyBusy = true; setBtnBusy(btn, true, 'Rechne …');
         const platform = readFutbinSettings().platform;
         const persona = ownPersonaId();
@@ -22203,7 +22205,7 @@ const HybridSbcEa = (() => {
             const addPerson = x => { const v = pointsPersonOf(x); if (v) owned.add(v); const a = Number(x && x.assetId); if (a > 0) owned.add(a); };
             STATE.pool.forEach(p => addPerson(p.raw || p));
             (STATE.evoRaws ? Array.from(STATE.evoRaws.values()) : []).forEach(addPerson);
-            if (box) box.innerHTML = '<div class="sbc-opt-dim">Hole die günstigsten Karten je Rating von fut.gg …</div>';
+            if (box) scoreBuyShow(box).innerHTML = '<div class="sbc-opt-dim">Hole die günstigsten Karten je Rating von fut.gg …</div>';
             const year = futbinYear(STATE.diag.gameName, window.fut_year);
             const r = await bridgeFetch('https://www.fut.gg/api/fut/market/' + year + '/cheapest-by-rating/v2/overview/?platform=' + (platform === 'pc' ? 'pc' : 'ps'), 30000);
             if (!r || r.status !== 200) throw new Error('fut.gg antwortet nicht (HTTP ' + (r && r.status) + ').');
@@ -22218,7 +22220,7 @@ const HybridSbcEa = (() => {
         } catch (e) {
             diag.error = String(e && e.message || e);
             reportError('Item Score kaufen', e);
-            if (box) box.innerHTML = '<div class="sbc-opt-dim">' + escapeHtml(diag.error) + '</div>';
+            if (box) scoreBuyShow(box).innerHTML = '<div class="sbc-opt-dim">' + escapeHtml(diag.error) + '</div>';
         } finally {
             scoreBuyBusy = false; setBtnBusy(btn, false);
         }
@@ -22262,7 +22264,7 @@ const HybridSbcEa = (() => {
         }
         h += '<details class="sbc-opt-details-toggle"><summary>Coins je Punkt nach Rating (fut.gg, ' + (last.platform === 'pc' ? 'PC' : 'Konsole') + ')</summary><div class="sbc-opt-batch-cards">' + tab + '</div>' +
              (est ? '<div class="sbc-opt-dim">* Punktwert gemessen am 18.11. (keine eigene Karte dieses Ratings im Verein).</div>' : '') + '</details>';
-        box.innerHTML = h;
+        scoreBuyShow(box).innerHTML = h;
         box.querySelectorAll('#sbc-opt-scorebuy-target [data-target]').forEach(b => b.addEventListener('click', () => {
             if (scoreBuyBusy) return;
             scoreBuyTargetPut(Number(b.getAttribute('data-target'))); scoreBuyRender();
@@ -22275,7 +22277,7 @@ const HybridSbcEa = (() => {
         if (scoreBuyBusy || buyBusy || pointsBuyBusy) { toast('Es läuft schon ein Kauf.', 'warn'); return; }
         if (!last || Date.now() - last.at > SCORE_BUY_TTL_MS || ownPersonaId() !== last.persona) {
             scoreBuyLast = null;
-            if (box) box.innerHTML = '<div class="sbc-opt-dim">Die Preise sind älter als 10 Minuten oder der Account hat gewechselt – bitte neu rechnen.</div>';
+            if (box) scoreBuyShow(box).innerHTML = '<div class="sbc-opt-dim">Die Preise sind älter als 10 Minuten oder der Account hat gewechselt – bitte neu rechnen.</div>';
             return;
         }
         const pp = scoreBuyPlanNow();
@@ -22308,7 +22310,7 @@ const HybridSbcEa = (() => {
         let blockHtml = '', status = '';
         const render = () => {
             if (!box) return;
-            box.innerHTML = '<div class="sbc-opt-summary">Item Score: ' + run.bought + ' von ' + buyPlan.length + ' Karten · ' + fmt(run.gotPoints) + ' Punkte · ' + fmtCoins(run.spent) + '</div>' +
+            scoreBuyShow(box).innerHTML = '<div class="sbc-opt-summary">Item Score: ' + run.bought + ' von ' + buyPlan.length + ' Karten · ' + fmt(run.gotPoints) + ' Punkte · ' + fmtCoins(run.spent) + '</div>' +
                 (status ? '<div class="sbc-opt-dim">' + escapeHtml(status) + '</div>' : '') + blockHtml +
                 '<button type="button" class="sbc-opt-btn ghost" id="sbc-opt-scorebuy-stop"' + (scoreBuyCancel ? ' disabled' : '') + '><span>Stopp nach dieser Karte</span></button>';
             const st = document.getElementById('sbc-opt-scorebuy-stop');
@@ -22361,7 +22363,7 @@ const HybridSbcEa = (() => {
             reportError('Item Score kaufen', e);
         } finally {
             scoreBuyBusy = false; scoreBuyLast = null;
-            if (box) box.innerHTML = blockHtml + '<div class="sbc-opt-summary">Gekauft: ' + run.bought + ' Karten = ' + fmt(run.gotPoints) + ' Punkte für ' + fmtCoins(run.spent) +
+            if (box) scoreBuyShow(box).innerHTML = blockHtml + '<div class="sbc-opt-summary">Gekauft: ' + run.bought + ' Karten = ' + fmt(run.gotPoints) + ' Punkte für ' + fmtCoins(run.spent) +
                 (run.gotPoints ? ' (' + (run.spent / run.gotPoints).toFixed(2).replace('.', ',') + ' je Punkt)' : '') + '.</div>' +
                 (run.stopped ? '<div class="sbc-opt-dim">Gestoppt: ' + escapeHtml(run.stopped) + '</div>' : '') +
                 '<div class="sbc-opt-dim">Die Karten liegen im Verein und zählen bei „Karten auswählen“ einer Punkte-SBC 14 Tage lang wie Storage.' +

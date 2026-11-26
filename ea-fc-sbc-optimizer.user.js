@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EA FC SBC Rating-Optimizer
 // @namespace    https://github.com/sbc-optimizer
-// @version      6.63.1
+// @version      6.63.2
 // @description  Optimiert SBC-Teams rein nach Rating (minimaler Rating-Waste, exakter Solver). Erkennt Ziel-OVR & Rarity-Vorgaben automatisch, bevorzugt Storage- und häufig vorhandene Karten, trägt das Team in die SBC-Auswahl ein.
 // @author       Rasmus Risse
 // @copyright    2026 Rasmus Risse
@@ -65,7 +65,7 @@
     // ========================================================================
     //  0. GLOBALE KONSTANTEN & ZUSTAND
     // ========================================================================
-    const VERSION = '6.63.1';
+    const VERSION = '6.63.2';
     // Web-App-Build, gegen den PitTools zuletzt geprueft wurde (v5.14.0,
     // docs/ea-bundle-baseline.json - ein Test haelt beide gleich). Liefert EA
     // ein anderes Bundle aus, zeigt die Panel-Debugzeile "EA-Bundle NEU":
@@ -5541,8 +5541,24 @@
                 .map(function (c) { return Object.assign({}, c, { score: tbl[c.rating], ratio: c.price / tbl[c.rating] }); })
                 .sort(function (x, y) { return x.ratio - y.ratio || x.price - y.price || x.id - y.id; });
             if (!list.length) return [];
-            const lim = list[0].ratio * BAND;
+            const lim = refRatio(cands, tbl) * BAND;
             return list.filter(function (c) { return c.ratio <= lim + 1e-9; });
+        }
+        /**
+         * v6.63.2 (live 26.11.: Fox 85 laut fut.gg 2.000, am Markt 3.200 - ein einziger veralteter Preis wurde
+         * "bester Kurs" 0,95 und schloss alle normal bepreisten 85er aus): Bezugskurs = je Rating der
+         * ZWEITguenstigste fut.gg-Preis (bei nur einer Karte deren Preis), davon der beste Kurs.
+         */
+        function refRatio(cands, tbl) {
+            const by = {};
+            (Array.isArray(cands) ? cands : []).forEach(function (c) { if (c && c.price > 0 && tbl[c.rating] > 0) (by[c.rating] = by[c.rating] || []).push(c.price); });
+            let best = 0;
+            Object.keys(by).forEach(function (r) {
+                const ps = by[r].sort(function (a, b) { return a - b; });
+                const v = (ps.length > 1 ? ps[1] : ps[0]) / tbl[r];
+                if (!best || v < best) best = v;
+            });
+            return best;
         }
         /**
          * Budget-Plan: von der besten Karte abwaerts nehmen, solange die Summe der OBERGRENZEN
@@ -5643,7 +5659,7 @@
             return Number.isFinite(n) && n >= 1000 && n <= 2000000 ? n : null;
         }
         return { FALLBACK: FALLBACK, LIMITS: LIMITS, BAND: BAND, LIVE_SLACK: LIVE_SLACK, BUDGETS: BUDGETS, BID_PCTS: BID_PCTS, table: table, ranked: ranked, pick: pick,
-                 bidCap: bidCap, liveOk: liveOk, breakAfter: breakAfter, bidState: bidState, bidAmount: bidAmount, blocks: blocks, dayPrune: dayPrune, room: room, budget: budget };
+                 bidCap: bidCap, refRatio: refRatio, liveOk: liveOk, breakAfter: breakAfter, bidState: bidState, bidAmount: bidAmount, blocks: blocks, dayPrune: dayPrune, room: room, budget: budget };
     })();
     // [SCOREBUY-END]
     // ========================================================================
@@ -22365,7 +22381,9 @@ const HybridSbcEa = (() => {
         const tab = ratios.map((x, i) => '<div class="sbc-opt-batch-card"><span class="r">' + x.rating + '</span> ab ' + fmt(x.cheapest) + ' C · ' + fmt(x.score) + ' P' +
             (last.source[x.rating] === 'messung' ? '*' : '') + ' · <b>' + x.perPoint.toFixed(2).replace('.', ',') + '</b> C/P' + (i === 0 ? ' <span class="src storage">bester Kurs</span>' : '') + '</div>').join('');
         const budgetIsChip = ScoreBuyCore.BUDGETS.indexOf(pp.budget) >= 0;
-        let h = '<div class="sbc-opt-summary">' + (best ? 'Bester Kurs gerade: ' + best.rating + 'er, ' + best.perPoint.toFixed(2).replace('.', ',') + ' Coins je Punkt' : 'Keine passenden Karten bei fut.gg') + '</div>' +
+        const ref = ScoreBuyCore.refRatio(last.cands, last.table);
+        let h = '<div class="sbc-opt-summary">' + (best ? 'Bester Kurs gerade: ' + best.rating + 'er, ' + best.perPoint.toFixed(2).replace('.', ',') + ' Coins je Punkt' +
+            (ref > best.perPoint * 1.1 ? ' (Einzelpreis – zweitgünstigster ' + ref.toFixed(2).replace('.', ',') + ')' : '') : 'Keine passenden Karten bei fut.gg') + '</div>' +
             scoreChips('sbc-opt-scorebuy-budget', 'Wie viele Coins?', ScoreBuyCore.BUDGETS.map(v => ({ v: v, t: (v / 1000) + 'k' })), pp.budget, 'data-budget') +
             '<div class="sbc-opt-fieldrow"><label for="sbc-opt-scorebuy-coins">Eigener Betrag</label><input type="number" id="sbc-opt-scorebuy-coins" min="1000" step="1000" value="' + (budgetIsChip ? '' : pp.budget) + '" placeholder="z. B. 30000"></div>' +
             scoreChips('sbc-opt-scorebuy-mode', 'Wie kaufen?', [{ v: 'kaufen', t: 'Sofortkauf' }, { v: 'bieten', t: 'Bieten' }], pp.mode, 'data-mode');
@@ -22563,7 +22581,7 @@ const HybridSbcEa = (() => {
         const persons = new Set();
         // v6.63.1: lange Pause erst nach 5-8 Geboten (vorher kam die Pause nach JEDEM Gebot).
         let sinceBreak = 0, breakAt = ScoreBuyCore.breakAfter();
-        const bestRatio = order.length ? order[0].ratio : 0;
+        const bestRatio = ScoreBuyCore.refRatio(last.cands, last.table); // v6.63.2: robust (zweitguenstigster je Rating)
         try {
             for (let i = 0; i < order.length; i++) {
                 if (scoreBuyCancel) { run.stopped = 'auf Wunsch gestoppt'; break; }
